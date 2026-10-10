@@ -508,7 +508,7 @@ zae-limiter entity top-up user-123 -r claude --add daily:15000
 |-------------|---------|--------------------|
 | Dripping (`rpm`, …) | Back to its ceiling; debt forgiven | At most the room below its ceiling (a refund). Less than asked is reported on stderr |
 | Calendar quota | Back to its share; a new period starts | Exactly `N`, above the plan if need be, until the next reset |
-| Session quota | Back to its share; the current window ends, so the next request opens a fresh one | Exactly `N` until the window ends; with no live window, one opens now |
+| Session quota | Its current window ends; the next request opens a fresh one at its full share (the balance is left for that request to restore) | Exactly `N` until the window ends; with no live window, one opens now |
 
 Neither command touches the consumption counter, the `disabled` flag, configuration, the
 parent's buckets or other resources. A reset of an entity that has never acquired is a no-op;

@@ -40,7 +40,7 @@ The CLI equivalents are `zae-limiter entity reset` and `zae-limiter entity top-u
 |-------------|------------------|---------------------|
 | Dripping (`Limit.per_minute`, …) | Back to its ceiling; any debt is forgiven | At most the room below its ceiling — a refund, not a purchase. `result.amounts` says how much was granted |
 | [Scheduled quota](scheduled-limits.md) (`Limit.quota(..., cron=...)`) | Back to its share; a new period starts now, and the next calendar reset still fires as usual | Exactly `N` for the current period, above the plan if need be. The next reset ends it |
-| [Session quota](session-quotas.md) (`Limit.quota(..., reset_after=...)`) | Back to its share; the current window ends, so the next request opens a fresh one | Exactly `N` until the window ends. With no live window, the top-up opens one now: the purchase starts the session |
+| [Session quota](session-quotas.md) (`Limit.quota(..., reset_after=...)`) | Its current window ends; the next request opens a fresh one at its full share (the balance is left for that request to restore) | Exactly `N` until the window ends. With no live window, the top-up opens one now: the purchase starts the session |
 
 `amounts` mirrors `acquire(consume=...)`: limit name to whole tokens, and several limits can be
 topped up in one call. A pending reset — a quota whose calendar edge or window end has passed
@@ -93,5 +93,9 @@ The gap between the two calls can only under-admit.
   nothing (`result.amounts` reports 0). Acquire once, then top up.
 - If another writer keeps changing the bucket, the operation retries three times and then
   raises `RateLimiterUnavailable`; nothing was written.
+- A write whose response is lost is never applied twice: each call stamps its own operation id
+  on every shard (`op`), and a retry that finds it returns the result instead of re-applying.
+- Once the write has landed the call does not fail: an invalid `principal` is refused before
+  anything is written, and an audit write that fails afterwards is logged, not raised.
 
 See [ADR-149](../adr/149-reset-and-top-up.md) for the design.
