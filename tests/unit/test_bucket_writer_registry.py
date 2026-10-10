@@ -49,6 +49,7 @@ REPOSITORY = {
     "build_composite_retry": (True, False),  # ADD only; never seeds a quota
     "build_composite_adjust": (True, False),  # adjust / rollback ADD
     "build_vu_reset": (False, False),  # vu = 0 after a credit above the ceiling (#679)
+    "build_bucket_operation": (True, True),  # reset / top-up (ADR-149): tk delta, gc, tu
     "build_quota_donor_debits": (True, False),  # the donor side of a move
     "_build_quota_count_freeze": (False, True),  # gc = if_not_exists(gc, :g) on a raise
     "_build_bucket_param_update": (False, False),  # param sync: cp/ra/rp/sched, vu = 0
@@ -169,6 +170,7 @@ def test_only_grant_writers_write_gc():
         "build_bucket_put_item",
         "build_composite_create",
         "build_composite_normal",
+        "build_bucket_operation",
         "_build_quota_count_freeze",
         "_freeze_and_raise_shard_counts",
         "repair_created_quota_shard",

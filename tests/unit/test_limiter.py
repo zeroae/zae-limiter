@@ -815,6 +815,7 @@ class TestLeaseRetryPath:
         state.reset_sched = ()
         state.shard_count = 1
         state.report_shard_count = 1
+        state.report_top_up_milli = 0
         # No duration window (ADR-139): the wait is the schedule walk's, not
         # the time to a window's end.
         state.window_end_ms = None
@@ -830,6 +831,7 @@ class TestLeaseRetryPath:
         undeclared_state.tokens_milli = 0
         undeclared_state.shard_count = 1
         undeclared_state.report_shard_count = 1
+        undeclared_state.report_top_up_milli = 0
         undeclared = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -864,6 +866,7 @@ class TestLeaseRetryPath:
         state.refill_period_ms = 60_000
         state.shard_count = 1
         state.report_shard_count = 1
+        state.report_top_up_milli = 0
         entry = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -902,6 +905,7 @@ class TestLeaseRetryPath:
         state.refill_period_ms = 60_000
         state.shard_count = 1
         state.report_shard_count = 1
+        state.report_top_up_milli = 0
 
         entry = LeaseEntry(
             entity_id="e1",
@@ -955,6 +959,7 @@ class TestWriteOnEnter:
         state.refill_period_ms = 60_000
         state.shard_count = 1
         state.report_shard_count = 1
+        state.report_top_up_milli = 0
         return LeaseEntry(
             entity_id=entity_id,
             resource="gpt-4",
