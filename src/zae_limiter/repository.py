@@ -3760,6 +3760,9 @@ class Repository:
                         child_result.cascade = cascade_cached
                     child_result.parent_id = parent_id_cached
                 child_result.parent_result = parent_result
+                # The parent this path debited, which after a move the item's
+                # `parent_id` can contradict (ADR-150): the limiter refunds it.
+                child_result.debited_parent_id = parent_id_cached
                 return child_result
 
         # Cache miss or non-cascade: single UpdateItem

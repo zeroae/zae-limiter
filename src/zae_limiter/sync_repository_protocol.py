@@ -78,6 +78,10 @@ class SpeculativeResult:
             when the item carries none. A stamp with a generation is
             authoritative for ``cascade`` and ``parent_id`` even when it names
             no parent.
+        debited_parent_id: On the warm parallel cascade path, the parent the
+            nested write in ``parent_result`` went to: the cached parent, which
+            the item's ``parent_id`` can contradict after a move (ADR-150).
+            None when no parallel parent write was issued.
     """
 
     success: bool
@@ -90,6 +94,7 @@ class SpeculativeResult:
     shard_count: int = 1
     failure_reason: SpeculativeFailureReason | None = None
     pgen: int | None = None
+    debited_parent_id: str | None = None
 
     @property
     def stamp_is_policy(self) -> bool:

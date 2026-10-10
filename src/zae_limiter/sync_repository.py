@@ -3157,6 +3157,7 @@ class SyncRepository:
                         child_result.cascade = cascade_cached
                     child_result.parent_id = parent_id_cached
                 child_result.parent_result = parent_result
+                child_result.debited_parent_id = parent_id_cached
                 return child_result
         result = self._speculative_consume_single(
             entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id, now_ms=now_ms

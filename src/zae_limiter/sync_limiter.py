@@ -78,6 +78,22 @@ def _is_custom_config(config_source: str | None) -> bool:
     return config_source in _ENTITY_CONFIG_SOURCES
 
 
+def _item_overrules_debited_parent(result: "SpeculativeResult") -> bool:
+    """Whether the child's item says the warm path's parent write was wrong.
+
+    The warm parallel path debits the parent the entity cache guessed. The
+    child's own item is the authority on both whether this resource cascades
+    (ADR-146) and to which parent (ADR-150): when its stamp is a policy and it
+    either does not cascade or names a different parent from the one debited,
+    that debit must be refunded.
+    """
+    if not result.stamp_is_policy:
+        return False
+    if not (result.cascade and result.parent_id):
+        return True
+    return result.debited_parent_id is not None and result.debited_parent_id != result.parent_id
+
+
 def _reader_window_end(limit: Limit, bucket: BucketState) -> int | None:
     """When a read-only view should treat ``bucket``'s duration window as over (ADR-139).
 
@@ -862,7 +878,7 @@ class SyncRateLimiter:
                     _parent_id=result.parent_id,
                 )
             )
-        if result.parent_result is not None and (not result.cascade) and result.parent_id:
+        if result.parent_result is not None and _item_overrules_debited_parent(result):
             parent_result = result.parent_result
             if parent_result.success and parent_result.buckets:
                 self._compensate_speculative(
@@ -955,9 +971,9 @@ class SyncRateLimiter:
             RateLimitExceeded: If parent is truly exhausted.
         """
         assert result.parent_result is not None
-        assert result.parent_id is not None
+        parent_id = result.debited_parent_id or result.parent_id
+        assert parent_id is not None
         parent_result = result.parent_result
-        parent_id = result.parent_id
         parent_shard = parent_result.shard_id
         parent_shard_count = parent_result.shard_count
         parent_hint = (

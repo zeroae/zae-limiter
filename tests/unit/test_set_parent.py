@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from zae_limiter import RateLimiter, __version__, schema
+from zae_limiter import RateLimiter, RateLimitExceeded, __version__, schema
 from zae_limiter.exceptions import (
     EntityNotFoundError,
     FanoutIncomplete,
@@ -13,6 +13,7 @@ from zae_limiter.exceptions import (
 )
 from zae_limiter.models import AuditAction, Limit
 from zae_limiter.repository import Repository
+from zae_limiter.repository_protocol import SpeculativeResult
 from zae_limiter.version import get_schema_version
 
 TABLE = "test-set-parent"
@@ -371,6 +372,152 @@ class TestStaleWriters:
 
         assert fanout_cascade(client, TABLE, repo._namespace_id, entity_id="user") == 2
         assert _stamp(await _item(repo, "user", "llm")) == (True, "org-b", 1)
+
+
+class TestAnotherProcess:
+    """A process whose cache predates the move learns it from the child's item."""
+
+    @staticmethod
+    async def _warm(limiter: RateLimiter) -> None:
+        async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+            pass
+
+    async def test_the_next_call_debits_the_new_parent_only(self, limiter, other):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._warm(other)
+        org_a, org_b = await _consumed(repo, "org-a"), await _consumed(repo, "org-b")
+
+        await repo.set_parent("user", "org-b")
+
+        async with other.acquire("user", "gpt-4", consume={"rpm": 2}) as lease:
+            assert {e.entity_id for e in lease.entries} == {"user", "org-b"}
+        assert await _consumed(repo, "org-a") == org_a
+        assert await _consumed(repo, "org-b") == org_b + 2
+
+        writes = []
+        other_repo = other._repository
+        real = other_repo._speculative_consume_single
+
+        async def spy(entity_id, *args, **kwargs):
+            writes.append(entity_id)
+            return await real(entity_id, *args, **kwargs)
+
+        other_repo._speculative_consume_single = spy
+        async with other.acquire("user", "gpt-4", consume={"rpm": 1}):
+            pass
+        assert sorted(writes) == ["org-b", "user"]  # the parallel path, to org-b
+        assert await _consumed(repo, "org-a") == org_a
+
+    async def test_a_move_to_no_parent_stops_the_cascade_there_too(self, limiter, other):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._warm(other)
+        org_a = await _consumed(repo, "org-a")
+
+        await repo.set_parent("user", None)
+
+        for _ in range(2):
+            async with other.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user"}
+        assert await _consumed(repo, "org-a") == org_a
+        key = (other._repository._namespace_id, "user", "gpt-4")
+        assert other._repository._cascade_cache[key] is False
+
+    async def test_a_full_new_parent_rejects_and_nothing_is_kept(self, limiter, other):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._warm(other)
+        async with limiter.acquire("org-b", "gpt-4", consume={"rpm": 100}):
+            pass  # org-b drained
+        org_a, user = await _consumed(repo, "org-a"), await _consumed(repo, "user")
+
+        await repo.set_parent("user", "org-b")
+
+        with pytest.raises(RateLimitExceeded):
+            async with other.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+        assert await _consumed(repo, "org-a") == org_a
+        child = await _item(repo, "user", "gpt-4")
+        assert int(child[schema.bucket_attr("rpm", "tk")]["N"]) >= (100 - user - 1) * 1000
+
+    async def test_a_failed_child_teaches_the_new_parent(self, limiter, other):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._warm(other)
+        await repo.set_parent("user", "org-b")
+        async with limiter.acquire("user", "gpt-4", consume={"rpm": 95}):
+            pass  # through this process, which knows the move: 3 left
+
+        with pytest.raises(RateLimitExceeded):
+            async with other.acquire("user", "gpt-4", consume={"rpm": 50}):
+                pass
+
+        other_repo = other._repository
+        assert other_repo._entity_cache[(other_repo._namespace_id, "user")][1] == "org-b"
+
+
+class TestTheItemOverrulesTheDebitedParent:
+    """The warm-path decision, on the result alone."""
+
+    @pytest.mark.parametrize(
+        ("cascade", "parent", "pgen", "debited", "expected"),
+        [
+            (True, "org-a", None, "org-a", False),  # agrees
+            (True, "org-b", None, "org-a", True),  # moved (a pre-ADR-150 stamp still names it)
+            (True, "org-b", 1, "org-a", True),  # moved
+            (False, "org-a", None, "org-a", True),  # ADR-146: the policy is off
+            (False, None, 1, "org-a", True),  # moved to no parent
+            (False, None, None, "org-a", False),  # a pre-#684 stamp teaches nothing
+            (True, "org-b", 1, None, False),  # no parallel write to compare with
+        ],
+    )
+    def test_decision(self, cascade, parent, pgen, debited, expected):
+        from zae_limiter.limiter import _item_overrules_debited_parent
+
+        result = SpeculativeResult(
+            success=True, cascade=cascade, parent_id=parent, pgen=pgen, debited_parent_id=debited
+        )
+        assert _item_overrules_debited_parent(result) is expected
+
+    async def test_a_generation_stamp_without_a_parent_is_a_policy(self, repo):
+        repo._learn_shard_count("user", "llm", 1, meta=(False, None), pgen=1)
+        assert repo._cascade_cache[(repo._namespace_id, "user", "llm")] is False
+
+
+class TestInFlightLease:
+    """Usage already debited stays where it was debited (ADR-150 §7)."""
+
+    async def test_an_adjustment_lands_on_the_old_parent(self, limiter, other):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._warm(other)
+        org_a, org_b = await _consumed(repo, "org-a"), await _consumed(repo, "org-b")
+
+        async with other.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
+            await repo.set_parent("user", "org-b")
+            await lease.adjust(rpm=3)
+
+        assert await _consumed(repo, "org-a") == org_a + 4
+        assert await _consumed(repo, "org-b") == org_b
+
+    async def test_a_rollback_lands_on_the_old_parent(self, limiter, other):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._warm(other)
+        org_a = await _consumed(repo, "org-a")
+
+        with pytest.raises(RuntimeError):
+            async with other.acquire("user", "gpt-4", consume={"rpm": 2}):
+                await repo.set_parent("user", "org-b")
+                raise RuntimeError("the work failed")
+
+        assert await _consumed(repo, "org-a") == org_a
+
+    @staticmethod
+    async def _warm(limiter: RateLimiter) -> None:
+        async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+            pass
 
 
 class TestVersionGate:
