@@ -271,6 +271,19 @@ class TestProvisionerFanoutSoft:
         client, _repo = setup
         stamp_bucket_soft(client, self.TABLE, "default/BUCKET#ghost#llm#0", {"tpm": True})
 
+    def test_the_stamp_sets_and_removes_on_positional_tokens(self):
+        from zae_limiter_provisioner.fanout import stamp_bucket_soft
+
+        from .test_expression_tokens import DOTTED, HYPHENATED, assert_expression_safe
+
+        client = MagicMock()
+        stamp_bucket_soft(client, "t", "pk", {DOTTED: True, HYPHENATED: False})
+        kwargs = client.update_item.call_args.kwargs
+        assert_expression_safe(kwargs)
+        assert " REMOVE " in f" {kwargs['UpdateExpression']}"
+        stamp_bucket_soft(client, "t", "pk", {HYPHENATED: False})
+        assert_expression_safe(client.update_item.call_args.kwargs)
+
     def test_the_param_sync_stamps_soft(self, setup):
         from zae_limiter_provisioner.bucket_sync import build_bucket_param_update
 
