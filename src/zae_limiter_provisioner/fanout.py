@@ -28,10 +28,13 @@ from typing import Any
 from zae_limiter.schema import (
     BUCKET_FIELD_BYPASS,
     BUCKET_FIELD_DISABLED,
+    BUCKET_FIELD_SOFT,
+    BUCKET_PREFIX,
     DEFAULT_RESOURCE,
     DISABLED_BYPASS,
     GSI2_NAME,
     GSI3_NAME,
+    GSI4_NAME,
     decode_cascade,
     decode_disabled,
     gsi2_pk_resource,
@@ -43,6 +46,8 @@ from zae_limiter.schema import (
     sk_meta,
     sk_state,
 )
+
+from .bucket_sync import resolve_bucket_limits
 
 logger = logging.getLogger(__name__)
 
@@ -415,5 +420,80 @@ def fanout_cascade(
             if target is None:
                 continue
             stamp_bucket_cascade(client, table_name, pk, *target)
+            stamped.add(pk)
+    return len(stamped)
+
+
+def stamp_bucket_soft(client: Any, table_name: str, pk: str, targets: dict[str, bool]) -> None:
+    """SET or REMOVE ``b_{name}_soft`` on one bucket item (#467).
+
+    Mirrors ``Repository._stamp_bucket_soft``, positional tokens included.
+    """
+    set_parts: list[str] = []
+    remove_parts: list[str] = []
+    names: dict[str, str] = {}
+    for i, (name, is_soft) in enumerate(sorted(targets.items())):
+        names[f"#f{i}"] = f"b_{name}_{BUCKET_FIELD_SOFT}"
+        (set_parts if is_soft else remove_parts).append(f"#f{i} = :t" if is_soft else f"#f{i}")
+    expr = []
+    kwargs: dict[str, Any] = {}
+    if set_parts:
+        expr.append(f"SET {', '.join(set_parts)}")
+        kwargs["ExpressionAttributeValues"] = {":t": {"BOOL": True}}
+    if remove_parts:
+        expr.append(f"REMOVE {', '.join(remove_parts)}")
+    try:
+        client.update_item(
+            TableName=table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": sk_state()}},
+            UpdateExpression=" ".join(expr),
+            ConditionExpression="attribute_exists(PK)",
+            ExpressionAttributeNames=names,
+            **kwargs,
+        )
+    except client.exceptions.ConditionalCheckFailedException:
+        logger.debug("Bucket %s vanished before stamping", pk)
+
+
+def fanout_soft(
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    resource: str | None,
+    names: set[str],
+) -> int:
+    """Restamp soft-ness after a resource- or system-level change (#467).
+
+    Mirrors ``Repository._fanout_soft``: GSI2 for one resource, GSI4 for the
+    whole namespace when ``resource`` is None; two discovery passes; each
+    bucket stamped from the limits resolved, strongly consistent, for its own
+    entity and resource, and left alone when either entity level decides them.
+
+    Returns the number of buckets stamped.
+    """
+    if resource is not None:
+        query = (GSI2_NAME, "GSI2PK", "GSI2SK", gsi2_pk_resource(namespace_id, resource))
+    else:
+        query = (GSI4_NAME, "GSI4PK", "GSI4SK", namespace_id)
+    resolved: dict[tuple[str, str], tuple[dict[str, dict[str, Any]], str | None]] = {}
+    stamped: set[str] = set()
+    for _pass in range(2):
+        for pk in _query_bucket_pks(client, table_name, *query, BUCKET_PREFIX):
+            if pk in stamped:
+                continue
+            _ns, eid, bucket_resource, _shard = parse_bucket_pk(pk)
+            key = (eid, bucket_resource)
+            if key not in resolved:
+                resolved[key] = resolve_bucket_limits(
+                    client, table_name, namespace_id, eid, bucket_resource, consistent_read=True
+                )
+            limits, level = resolved[key]
+            # The changed level decides only buckets that resolve from it or
+            # from below it: an entity override owns its stamps, and under a
+            # system change so does a resource level.
+            if level in ("entity", "entity_default") or (resource is None and level == "resource"):
+                continue
+            targets = {name: bool(limits.get(name, {}).get("soft")) for name in names | set(limits)}
+            stamp_bucket_soft(client, table_name, pk, targets)
             stamped.add(pk)
     return len(stamped)

@@ -36,6 +36,43 @@ def namespace_option(func: Callable[..., Any]) -> Callable[..., Any]:
     )(func)
 
 
+def soft_option(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Add the repeatable ``--soft NAME`` option (#467, ADR-151 D11)."""
+    return click.option(
+        "--soft",
+        "soft_names",
+        multiple=True,
+        metavar="NAME",
+        help="Make the named limit soft: metered and debited, but never a reason to "
+        "reject (repeatable). Must name a limit given with -l.",
+    )(func)
+
+
+def _apply_soft(limits: list[Any], soft_names: tuple[str, ...]) -> list[Any]:
+    """Mark the limits named by ``--soft`` soft, or exit 1 on a name no ``-l`` gave."""
+    from dataclasses import replace
+
+    unknown = sorted(set(soft_names) - {limit.name for limit in limits})
+    if unknown:
+        click.echo(
+            f"Error: --soft names {unknown} that no -l limit declares; "
+            f"declared: {sorted(limit.name for limit in limits)}",
+            err=True,
+        )
+        sys.exit(1)
+    return [replace(limit, soft=True) if limit.name in soft_names else limit for limit in limits]
+
+
+def _echo_disabled_status(disabled: bool | str | None) -> None:
+    """Show a level's explicit ``disabled`` value (ADR-125, #311); nothing when it inherits."""
+    if disabled == "bypass":
+        click.echo("Status: BYPASSED")
+    elif disabled is True:
+        click.echo("Status: DISABLED")
+    elif disabled is False:
+        click.echo("Status: enabled (explicit override)")
+
+
 async def _connect(
     name: str,
     region: str | None,
@@ -2603,6 +2640,12 @@ def _format_limit(limit: Limit) -> str:
     return base
 
 
+def _format_limit_line(limit: Limit) -> str:
+    """``_format_limit``, marked ``(soft)`` for a soft limit (#467)."""
+    line = _format_limit(limit)
+    return f"{line} (soft)" if limit.soft else line
+
+
 def _echo_cascade_policy(policy: bool | None) -> None:
     """Show a level's explicit cascade policy (ADR-146); nothing when it inherits."""
     if policy is not None:
@@ -2616,7 +2659,7 @@ def _echo_limit(limit: Limit, indent: str = "  ") -> None:
     reaches `system`, `resource` and `entity` at once — the property that made
     #542 a one-function fix and that this keeps.
     """
-    click.echo(f"{indent}{_format_limit(limit)}")
+    click.echo(f"{indent}{_format_limit_line(limit)}")
     for line in _format_schedule_lines(limit, indent):
         click.echo(line)
 
@@ -2668,6 +2711,7 @@ Examples:
     help="Limit in 'name:rate[/period]' or 'name:rate[/period]:burst' format (repeatable). "
     "Period: /sec, /min (default), /hour, /day.",
 )
+@soft_option
 @namespace_option
 def resource_set_defaults(
     resource_name: str,
@@ -2675,6 +2719,7 @@ def resource_set_defaults(
     region: str | None,
     endpoint_url: str | None,
     limits: tuple[str, ...],
+    soft_names: tuple[str, ...],
     namespace: str,
 ) -> None:
     """Set default limits for a resource.
@@ -2704,6 +2749,7 @@ def resource_set_defaults(
         except click.BadParameter as e:
             click.echo(f"Error: {e.message}", err=True)
             sys.exit(1)
+    parsed_limits = _apply_soft(parsed_limits, soft_names)
 
     async def _set() -> None:
         repo = await _connect(name, region, endpoint_url, namespace)
@@ -2794,10 +2840,7 @@ def resource_get_defaults(
             # disable_resource() deliberately works on a resource with no
             # config, producing a stub with `disabled` and no limits (ADR-125).
             disabled = await repo.get_resource_disabled(resource_name)
-            if disabled is True:
-                click.echo("Status: DISABLED")
-            elif disabled is False:
-                click.echo("Status: enabled (explicit override)")
+            _echo_disabled_status(disabled)
             _echo_cascade_policy(await repo.get_resource_cascade(resource_name))
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
@@ -2945,6 +2988,67 @@ def resource_disable(
             click.echo(f"Disabled resource '{resource_name}' ({count} buckets stamped)")
         except Exception as e:
             click.echo(f"Error: Failed to disable resource: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+@resource.command(
+    "bypass",
+    epilog="""\b
+Examples:
+    \b
+    # Admit every request to a resource without debiting its limits
+    zae-limiter resource bypass gpt-4
+""",
+)
+@click.argument("resource_name")
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def resource_bypass(
+    resource_name: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Bypass a resource: admit every request, debit nothing, keep counting.
+
+    RESOURCE_NAME is the resource to bypass (e.g., 'gpt-4').
+
+    Consumption is still counted in usage snapshots; only the reserved `wcu`
+    limit still gates. Entities with their own explicit value (disable or
+    enable) keep it. Lift it with `resource clear-disabled`. Needs the stack's
+    Lambdas at 0.17.0 or later.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter resource bypass gpt-4
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            count = await repo.bypass_resource(resource_name)
+            click.echo(f"Bypassed resource '{resource_name}' ({count} buckets stamped)")
+        except Exception as e:
+            click.echo(f"Error: Failed to bypass resource: {e}", err=True)
             sys.exit(1)
         finally:
             await repo.close()
@@ -3320,6 +3424,7 @@ Examples:
     help="Limit in 'name:rate[/period]' or 'name:rate[/period]:burst' format (repeatable). "
     "Period: /sec, /min (default), /hour, /day.",
 )
+@soft_option
 @click.option(
     "--on-unavailable",
     type=click.Choice(["allow", "block"]),
@@ -3331,6 +3436,7 @@ def system_set_defaults(
     region: str | None,
     endpoint_url: str | None,
     limits: tuple[str, ...],
+    soft_names: tuple[str, ...],
     on_unavailable: str | None,
     namespace: str,
 ) -> None:
@@ -3360,6 +3466,7 @@ def system_set_defaults(
         except click.BadParameter as e:
             click.echo(f"Error: {e.message}", err=True)
             sys.exit(1)
+    parsed_limits = _apply_soft(parsed_limits, soft_names)
 
     async def _set() -> None:
         repo = await _connect(name, region, endpoint_url, namespace)
@@ -3788,6 +3895,7 @@ Examples:
     help="Limit in 'name:rate[/period]' or 'name:rate[/period]:burst' format (repeatable). "
     "Period: /sec, /min (default), /hour, /day.",
 )
+@soft_option
 @namespace_option
 def entity_set_limits(
     entity_id: str,
@@ -3796,6 +3904,7 @@ def entity_set_limits(
     region: str | None,
     endpoint_url: str | None,
     limits: tuple[str, ...],
+    soft_names: tuple[str, ...],
     namespace: str,
 ) -> None:
     """Set limits for a specific entity and resource.
@@ -3825,6 +3934,7 @@ def entity_set_limits(
         except click.BadParameter as e:
             click.echo(f"Error: {e.message}", err=True)
             sys.exit(1)
+    parsed_limits = _apply_soft(parsed_limits, soft_names)
 
     async def _set() -> None:
         repo = await _connect(name, region, endpoint_url, namespace)
@@ -3928,10 +4038,7 @@ def entity_get_limits(
             # disable_entity() deliberately works on an entity with no config,
             # producing a stub with `disabled` and no limits (ADR-125).
             disabled = await repo.get_entity_disabled(entity_id, resource_name)
-            if disabled is True:
-                click.echo("Status: DISABLED")
-            elif disabled is False:
-                click.echo("Status: enabled (explicit override)")
+            _echo_disabled_status(disabled)
             _echo_cascade_policy(await repo.get_entity_cascade(entity_id, resource_name))
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
@@ -4100,6 +4207,77 @@ def entity_disable(
             click.echo(f"Disabled entity '{entity_id}' ({count} buckets stamped)")
         except Exception as e:
             click.echo(f"Error: Failed to disable entity: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+@entity.command(
+    "bypass",
+    epilog="""\b
+Examples:
+    \b
+    # Admit every request an entity makes, on every resource
+    zae-limiter entity bypass user-123
+    \b
+    # Only on one resource
+    zae-limiter entity bypass user-123 --resource gpt-4
+""",
+)
+@click.argument("entity_id")
+@click.option(
+    "--resource",
+    default=None,
+    help="Resource to scope to. Omit to apply across all resources for this entity.",
+)
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def entity_bypass(
+    entity_id: str,
+    resource: str | None,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Bypass an entity: admit every request, debit nothing, keep counting.
+
+    ENTITY_ID is the entity to bypass (e.g., 'user-123', 'api-key-abc').
+
+    Omit --resource to bypass the entity on every resource (targets its
+    `_default_` config). Re-admits the entity to a disabled resource too. A
+    bypass never extends to the entity's cascade parent. Lift it with
+    `entity clear-disabled`. Needs the stack's Lambdas at 0.17.0 or later.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter entity bypass user-123
+        zae-limiter entity bypass user-123 --resource gpt-4
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            count = await repo.bypass_entity(entity_id, resource=resource)
+            click.echo(f"Bypassed entity '{entity_id}' ({count} buckets stamped)")
+        except Exception as e:
+            click.echo(f"Error: Failed to bypass entity: {e}", err=True)
             sys.exit(1)
         finally:
             await repo.close()

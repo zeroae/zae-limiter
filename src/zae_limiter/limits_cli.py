@@ -304,6 +304,10 @@ def _limits_to_cfn(limits: dict[str, Any]) -> dict[str, Any]:
         # `"ResetAfterSeconds": ("reset_after_seconds", _coerce_int)`.
         if "reset_after_seconds" in limit:
             cfn_limit["ResetAfterSeconds"] = limit["reset_after_seconds"]
+        # #467, mirroring `_CFN_LIMIT_OPTIONAL_KEYS`'s `"Soft"`. Emitted only
+        # when true, so a hard limit's template is unchanged.
+        if limit.get("soft"):
+            cfn_limit["Soft"] = True
         # Emitted only when non-empty, matching `LimitDecl.to_dict()`: an
         # unscheduled limit's template is byte-identical to what it was before
         # schedules existed, and an empty list never stands in for "absent".
