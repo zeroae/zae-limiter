@@ -2165,8 +2165,7 @@ class RateLimiter:
             # Soft-ness (#467): config when read fresh, else the item's stamp.
             if parent_soft_authority == _SOFT_FROM_CONFIG:
                 existing.soft = limit.soft
-            elif limit.soft != existing.soft:
-                limit = replace(limit, soft=existing.soft)
+            limit = replace(limit, soft=existing.soft)
 
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms

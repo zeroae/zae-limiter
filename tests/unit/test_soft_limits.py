@@ -455,6 +455,30 @@ class TestResourceAndSystemFanout:
                 await soft_repo.set_resource_defaults("llm", [SOFT_TPM])
         assert exc_info.value.stamped == 0
 
+    async def test_namespace_discovery_follows_pages(self, soft_repo, soft_limiter):
+        await soft_repo.set_system_defaults([HARD_TPM])
+        for entity in ("user-1", "user-2"):
+            await self._bucket(soft_repo, soft_limiter, entity)
+        client = await soft_repo._get_client()
+        real = client.query
+
+        async def one_per_page(**kwargs):
+            kwargs["Limit"] = 1
+            return await real(**kwargs)
+
+        with patch.object(client, "query", side_effect=one_per_page):
+            pks = await soft_repo._discover_namespace_bucket_pks()
+        assert len(pks) == 2
+
+    async def test_an_unexpected_stamp_error_propagates(self, soft_repo):
+        from botocore.exceptions import ClientError
+
+        client = await soft_repo._get_client()
+        error = ClientError({"Error": {"Code": "ThrottlingException"}}, "UpdateItem")
+        with patch.object(client, "update_item", side_effect=error):
+            with pytest.raises(ClientError):
+                await soft_repo._stamp_bucket_soft("ns/BUCKET#x#y#0", {"tpm": True})
+
     async def test_a_vanished_bucket_is_skipped(self, soft_repo):
         await soft_repo._stamp_bucket_soft(
             schema.pk_bucket(soft_repo._namespace_id, "ghost", "llm", 0), {"tpm": True}
