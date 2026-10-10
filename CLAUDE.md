@@ -118,6 +118,7 @@ python scripts/generate_sync.py
 - `tests/unit/test_sync_discovery.py` ← `tests/unit/test_discovery.py`
 - `tests/unit/test_sync_config_cache.py` ← `tests/unit/test_config_cache.py`
 - `tests/unit/test_sync_zero_estimate_lease.py` ← `tests/unit/test_zero_estimate_lease.py`
+- `tests/unit/test_sync_multi_resource_acquire.py` ← `tests/unit/test_multi_resource_acquire.py`
 
 Pre-commit hook verifies generated code is up-to-date. CI also verifies before running tests.
 
@@ -443,7 +444,8 @@ src/zae_limiter/
 ├── repository_protocol.py  # RepositoryProtocol for backend abstraction
 ├── repository.py      # DynamoDB operations (namespace-aware)
 ├── repository_builder.py   # RepositoryBuilder (fluent async construction)
-├── lease.py           # Lease context manager
+├── lease.py           # Lease context manager (+ LeaseResource handle, ADR-148)
+├── _parallel.py       # run_parallel: the sync limiter's and lease's gather executor (ADR-148, hand-written)
 ├── limiter.py         # RateLimiter (async)
 ├── config_cache.py    # Client-side config caching with TTL (CacheStats)
 ├── rejection_cache.py # Last bucket state seen per shard; rejects without a DynamoDB call (ADR-147)
@@ -1239,6 +1241,58 @@ move, which can only under-admit.
   whose previous properties also carried `reset_after` ends in `UPDATE_ROLLBACK_FAILED`
   (`upgrade`, then `continue-update-rollback`, or skip the resource). Option B (hide the config from v0.14 readers) shipped in #640 — see Hidden config above.
 
+### Multi-resource acquire (#675, ADR-148)
+
+`acquire(entity_id, resource, consume, also={"budget": {...}})` debits the primary resource and
+every resource in `also` for one entity and yields **one** lease — **all or none**: any
+rejection, disable or backend error refunds every debit the acquire wrote before it propagates.
+Each resource resolves its own limits, `disabled`, cascade policy, shards and quota grants
+exactly as a single-resource acquire. `RepositoryProtocol` is unchanged; no new bucket writer,
+no schema change. ADR-148 is **Proposed**; the design's decisions D1–D8 were built on their
+recommended options **provisionally** (see `docs/plans/2026-10-09-multi-resource-acquire-design.md`).
+
+- **Boundary** (`RateLimiter._acquire_parts`, before any I/O): `validate_resource` on every
+  name; the primary in `also`, more than `MAX_ACQUIRE_RESOURCES = 16` resources, or `limits=`
+  with a non-empty `also` (D8) is a `ValidationError`. An empty `also` takes today's path.
+- **Fast path** (`_acquire_resources`): `_rejection_precheck` for **every** resource before
+  any write (a known-short one raises with 0 calls), then `_try_speculative_acquire` for all
+  of them through one `asyncio.gather` with the `_safe` wrapper (D4), its `prechecked=`
+  argument carrying the cache answer. Wins are kept (D3); `None` outcomes, with their shard
+  hints, go to the slow path.
+- **Slow path** (`_slow_acquire_resources`): every part planned by `_do_acquire` concurrently,
+  then **one** merged `Lease._commit_initial()` — one `TransactWriteItems` with every part's
+  ADR-145 donor debits. `QuotaMoveLostError` re-plans every part twice, then with
+  `disable_moves=True`; a plan over `_MAX_TRANSACT_ITEMS` (bucket items + one per donor shard,
+  `_transaction_items`) is re-planned without moves (D6). When a part is rejected, the other
+  parts' planned moves are committed with nothing consumed (`_commit_rejected_moves`, ADR-145
+  I5) — the combined error is built **before** that, since the commit zeroes `consumed`.
+- **Errors** (`_combined_error`): `ResourceDisabled` > `RateLimitExceeded` > anything else.
+  A rejection carries every rejected resource's statuses plus the passed statuses of the
+  resources admitted meanwhile (`_admitted_statuses`: the `ALL_NEW` image or the planned
+  state) — evaluated resources only (D5).
+- **Refunds** (`_refund`): the landed fast-path leases merged into one and rolled back.
+- **Lease** (D2): `lease.adjust/consume/release/consumed` are scoped to the primary resource
+  (`Lease._bind_resources`, `_primary`); a lease never bound keeps the old all-entries meaning.
+  `lease.resource(name)` → `LeaseResource` (`SyncLeaseResource`, not exported) with the same
+  methods per resource; `ValidationError` for a name not in the lease, a no-op handle on the
+  degraded lease. `lease.resources` lists them, primary first. The #455 warning names the
+  handle's resource (`_unknown_keys_by_resource`).
+- **Independent writes are concurrent** (D7, applies to every lease): `_commit_adjustments`
+  and `_rollback` send each item as its own `write_each([item])` through one gather
+  (`Lease._write_independently`), tracking which landed — #682 needs *which*, not the order.
+- **Sync twin:** `SyncRateLimiter` and `SyncLease` gather too; the generator injects a
+  `_run_in_executor` into both (`_ORCHESTRATOR_REPOSITORY_ATTR`) that delegates to
+  `zae_limiter._parallel.run_parallel` (hand-written). It honours the repository's
+  `parallel_mode`, but in threadpool mode runs on its **own** pool (`ORCHESTRATION_WORKERS`),
+  never the repository's two workers — a part's own cascade gather would otherwise wait on a
+  worker its caller holds — and runs a nested gather in place.
+- **Write-on-enter:** a fast-path debit can be visible for up to two round trips before its
+  refund — under-admission only, the same accepted cost as the cascade fast rejection.
+
+Tests: `tests/unit/test_multi_resource_acquire.py` (sync twin generated), the mixed-lease
+spends in `test_quota_conservation_fuzz.py`, `test_capacity.py::TestMultiResourceCapacity`.
+CLI: none (runtime limiting). `check_availability` and Locust are unchanged.
+
 ### Combined Capacity Check (Issue #472)
 
 `RateLimiter.check_availability(entity_id, resource, needed=None, limits=None) -> Availability`
@@ -1389,7 +1443,7 @@ docs/
 
 ## Important Invariants
 
-1. **Write-on-enter**: `acquire()` writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating write restores the consumed tokens (see `.claude/rules/write-on-enter.md`)
+1. **Write-on-enter**: `acquire()` writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating write restores the consumed tokens (see `.claude/rules/write-on-enter.md`). A multi-resource acquire (ADR-148) holds this at the end of the acquire, not at every instant: a fast-path debit refunded because another resource rejected is visible for up to two round trips (under-admission only)
 2. **Bucket can go negative (adjust only)**: `lease.adjust()` never throws, allows debt. The initial admission path (`try_consume` + `_commit_initial`) is a gate that MUST NOT over-admit — do not use "bucket can go negative" to justify skipping admission checks
    - **`consume` is the declared scope of a lease (Issue #455)**: only limits named in `acquire(consume=...)` are adjustable through `adjust()`/`consume()`/`release()` and reported by `lease.consumed`, on both the fast and slow paths. The slow path still builds a `LeaseEntry` for every resolved limit because `_commit_initial()` needs them (`build_composite_create` writes only the states it is handed; `build_composite_normal` advances the shared `rf` and credits refill only to the limits it is handed), but those carry `_declared=False` and are write-only. A key that names no declared limit (a typo, or the reserved `wcu`) is ignored with a `FutureWarning` (not `DeprecationWarning`, which Python hides by default outside `__main__` and so would never surface from application code) naming the keys and the declared limits; it becomes a `ValidationError` at v1.0.0. The `on_unavailable=ALLOW` no-op lease is constructed with `degraded=True` and is exempt — never infer degradation from `entries == []`
 3. **Cascade is decided per (entity, resource)** (ADR-146): `create_entity(cascade=True)` sets the entity's default; a tri-state cascade policy on resource or entity config overrides it per resource (see [Per-resource cascade policy](#per-resource-cascade-policy-adr-146)). With no policy set anywhere, every resource follows the entity's flag, as before
@@ -1428,6 +1482,7 @@ Speculative cascade (both succeed, sequential) = 0 RCU + 2 WCU = **$1.25/M** (vs
 Speculative cascade (both succeed, parallel, issue #318) = 0 RCU + 2 WCU = **$1.25/M** (same cost, lower latency).
 Speculative cascade fallback (parent refill helps) = 1 RCU + 3 WCU = **$2.00/M** (deferred compensation; the parent's META rides in its bucket read since #684, +0.5 RCU). Every cascade slow path pays the same +0.5 RCU (~$0.06/M) for the parent's META.
 Speculative cascade fast rejection (parent exhausted) = 0 RCU + 3 WCU = **$1.875/M** (child consumed, failed parent write, compensation).
+Multi-resource acquire (ADR-148), `search` cascading + `budget` per user, all admitted on the fast path = 0 RCU + 3 WCU = **$1.88/M** in **1** round trip (two acquires: the same WCU in 2). A cold-cache rejection adds a refund per landed debit (`budget` rejected: 3 + 2 = 5 WCU, $3.13/M); a rejection the cache already knows is $0. All on the slow path (first acquire) is one 3-item transaction: +1 WCU (~$0.63/M) over two acquires, for atomicity.
 
 `resolve_disabled()` (ADR-125) is deliberately uncached and only runs on the slow path — never
 on the speculative fast path — but when it does run it costs an extra up-to-3-key

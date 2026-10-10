@@ -118,6 +118,7 @@ nav:
       - Scheduled (Cron) Limits: guide/scheduled-limits.md
       - Session Quotas: guide/session-quotas.md
       - Hierarchical Limits: guide/hierarchical.md
+      - Several Resources per Acquire: guide/multi-resource.md
       - LLM Integration: guide/llm-integration.md
       - Usage Snapshots: guide/usage-snapshots.md
       - Unavailability Handling: guide/unavailability.md
