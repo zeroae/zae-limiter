@@ -50,7 +50,7 @@ is the schedule-effective capacity (#222) and `S` the planned shard count (§4).
 |-------------|-----------|
 | Dripping | `tk` → ceiling (`C_eff // S`). Debt is forgiven. |
 | Calendar quota (`reset_schedule`) | `tk` → share, `gc = S`, `tu` removed. `rf` moves to `now`, so the period counts as current. The next calendar edge still fires as usual. |
-| Session quota (`reset_after`) | `tk` → share, `tu` removed, and the window is **marked ended and applied**: `ws = wa = now − rsa·1000`, `wtc` removed. The next admitted request opens a fresh window (idle-restart, ADR-139). |
+| Session quota (`reset_after`) | The window is **marked ended and applied**: `ws = wa = now − rsa·1000`, `wtc` removed. `tk`, `gc` and `tu` are **left alone**: the next admitted request opens a fresh window (idle-restart, ADR-139) and that opener restores the share. Writing the share here was wrong (PR #720 review): it sat in a window already marked ended, where a consumption-only retry whose `rf` lock this write broke could spend it, and the opener then restored it again (20 admitted against 12). |
 | `wcu` | Never touched. Not a nameable limit. |
 
 Why "ended and applied" and not `REMOVE ws`: a rollover fan-out already in flight is guarded by
@@ -112,7 +112,9 @@ The rework happens on #471's branch, as the epic plans.
    `resolve_access` uses. Every named limit must be one of them. `wcu` and unknown names raise
    `ValidationError`.
 2. Discover the shards (GSI3, KEYS_ONLY, resource-scoped). Read them with a **strongly
-   consistent** `BatchGetItem`.
+   consistent** `BatchGetItem`. GSI3 is eventually consistent and can miss a shard created a
+   moment earlier, which a reset would then leave on an old-period grant: so shard 0 and every
+   slot below the highest stored `shard_count` that the index did not list are read by key too.
 3. Plan at `S = max(stored shard_count)`. A shard that lags is raised to `S` in its own write.
    Its legacy grant size is frozen first, as R5 does (`gc = if_not_exists(gc, inferred)`, with
    R7 inference). Without the freeze, the coverage weights in §4.3 are wrong (validator finding 6).
@@ -136,8 +138,15 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
 - `ADD b_{n}_tk :delta` for every limit, where delta = target − read balance. **Never SET.**
   A fast-path debit that lands between the read and the write is kept, and counts against the
   new balance. A SET would erase it.
-- `SET rf = max(now, stored rf, applied ws)` (ADR-140 rule), plus `gc`, `wa`, `tu` for the
-  limits this pass resets, rolls or tops up. `REMOVE tu` / `wtc` where §2 says.
+- `SET rf = max(now, stored rf + 1, applied ws)` (ADR-140 rule, strictly past the stored
+  `rf` so an aggregator refill of a stale image locked on it always loses), plus `gc`, `wa`,
+  `tu` for the limits this pass resets, rolls or tops up. `REMOVE tu` / `wtc` where §2 says.
+- `SET op = :operation_id`: one id per call, on every shard. A write that committed but whose
+  response was lost is retried by the SDK with the identical request, which then fails the
+  `rf` condition; re-planning it would apply the operation twice (one `top_up(5)` recorded 10,
+  PR #720 review). After any failed write the re-read looks for its own id first: found means
+  the write landed, and its planned result is returned. A multi-shard transaction also carries
+  a `ClientRequestToken` (one per attempt), so DynamoDB's own retry succeeds.
 - `SET vu = 0`. This forces one materialising pass per shard on the next acquire. That pass
   clamps any credit that slipped in between the read and the write, and re-stamps the correct
   `vu` (validator finding 4; the same mechanism as #679).
@@ -201,8 +210,17 @@ writes `tu` must pass `_require_readers("0.17.0", …)` and ratchet `client_min_
   (`stack_lambdas_current`), so the gate covers the aggregator too (validator finding 1).
 - Reset and dripping top-up write only attributes that 0.15+ writers already understand, so they
   need **no gate**.
-- A stale `tu` left behind by an old writer's reset is benign: nothing fills tokens above share
-  except a top-up, and the next 0.17 reset clears it.
+- A stale `tu` left behind by an old writer's reset is **not** benign, as this design first
+  said. It raises the ceiling of a period it was not bought in, so a credit (a refund, a
+  rollback) can lift that shard above its plan by up to `tu`, and the clamp keeps it. The gate
+  is what excludes old writers: the aggregator through `lambda_version`, clients through the
+  `client_min_version` ratchet. The residual is a pre-0.17 client that ignores the minimum,
+  bounded by one `tu` per shard per period.
+- The same stale-ceiling problem exists inside one process: a lease that read `tu` holds it in
+  memory after a reset or period edge removed it. Its #679 check after a credit therefore
+  compares against `C // gc` **without** `tu`, forcing a clamping pass (which reads the real
+  `tu`) whenever a credit lands above the base ceiling (PR #720 review: 15 admitted in a new
+  period of 10).
 
 ### 4.5 Missing bucket
 
@@ -244,7 +262,10 @@ writes `tu` must pass `_require_readers("0.17.0", …)` and ratchet `client_min_
   state. A manifest entry would re-apply on every `limits apply`.
 - **Audit:** `AuditAction.BUCKET_RESET` and `BUCKET_TOPPED_UP`, on `entity_id`, with
   `resource`, the limits, the per-limit amounts, `shards`, and `principal`. Written after the
-  transaction commits, and only when at least one shard was written.
+  transaction commits, and only when at least one shard was written. Because it is written
+  after the commit, nothing in it may fail the call (the caller would retry an operation that
+  happened): the principal is validated with the other inputs before any I/O, and a failed
+  audit write is logged as a warning.
 - **Docs:** user guide section in the #678 guide (plans, purchases, sessions);
   `docs/operations/rate-limits.md` runbook; CLI and API references; CLAUDE.md writer table.
 
