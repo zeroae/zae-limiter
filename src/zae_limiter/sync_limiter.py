@@ -808,7 +808,8 @@ class SyncRateLimiter:
             self._check_speculative_failure(result, consume, now_ms)
             observed_count = (
                 None
-                if result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+                if result.failure_reason
+                in (SpeculativeFailureReason.BUCKET_MISSING, SpeculativeFailureReason.CONTENTION)
                 else result.shard_count
             )
             return (None, result.shard_id, observed_count, parent_hint)
@@ -1267,6 +1268,7 @@ class SyncRateLimiter:
             if retry.failure_reason in (
                 SpeculativeFailureReason.BUCKET_MISSING,
                 SpeculativeFailureReason.SCHEDULE_BOUNDARY,
+                SpeculativeFailureReason.CONTENTION,
             ):
                 slow_path_shard = new_shard
                 break

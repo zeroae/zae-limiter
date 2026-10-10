@@ -1010,9 +1010,11 @@ class RateLimiter:
             self._check_speculative_failure(result, consume, now_ms)
             # BUCKET_MISSING has no image to read a shard_count from; let the
             # slow path fall back to the entity cache in that case.
+            # CONTENTION (#724) has no image either.
             observed_count = (
                 None
-                if result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+                if result.failure_reason
+                in (SpeculativeFailureReason.BUCKET_MISSING, SpeculativeFailureReason.CONTENTION)
                 else result.shard_count
             )
             return None, result.shard_id, observed_count, parent_hint
@@ -1624,11 +1626,14 @@ class RateLimiter:
             if retry.failure_reason in (
                 SpeculativeFailureReason.BUCKET_MISSING,
                 SpeculativeFailureReason.SCHEDULE_BOUNDARY,
+                SpeculativeFailureReason.CONTENTION,
             ):
                 # Probing further shards costs 1 RT + 1 WCU each; a missing
                 # shard is one the slow path will create with a fresh share,
                 # and a boundary-expired one is a shard the slow path will
-                # re-materialise. Both are "the fast path cannot settle this,
+                # re-materialise. A contended one (#724) is one the slow
+                # path reads and commits under its own conflict retry. All
+                # are "the fast path cannot settle this,
                 # but the slow path can" — falling through to the caller's
                 # fast rejection instead would reject on the first shard's
                 # stale balance while this one was about to be refilled.

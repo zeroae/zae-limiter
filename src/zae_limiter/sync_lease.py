@@ -609,7 +609,7 @@ class SyncLease:
                 if not retry_items:
                     break
                 try:
-                    repo.transact_write(retry_items)
+                    _transact_retrying_conflict(repo, retry_items)
                     break
                 except Exception as retry_exc:
                     if not _is_condition_check_failure(retry_exc):
@@ -993,7 +993,29 @@ def _is_transaction_conflict(exc: Exception) -> bool:
     reason_codes = _get_cancellation_reason_codes(exc)
     if reason_codes is not None:
         return "TransactionConflict" in reason_codes
+    if hasattr(exc, "response"):
+        error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        return bool(error_code == "TransactionConflictException")
     return False
+
+
+def _transact_retrying_conflict(
+    repo: "SyncRepositoryProtocol", items: list[dict[str, Any]]
+) -> None:
+    """``transact_write`` retried with full jitter on a transaction conflict (#724).
+
+    A conflict rolls the whole write back, so re-sending it is safe. The last
+    attempt's error propagates unchanged.
+    """
+    for attempt in range(_CONFLICT_MAX_RETRIES):
+        try:
+            repo.transact_write(items)
+            return
+        except Exception as exc:
+            if not _is_transaction_conflict(exc) or _is_condition_check_failure(exc):
+                raise
+            time.sleep(random.uniform(0, _CONFLICT_BASE_DELAY_S * 2**attempt))
+    repo.transact_write(items)
 
 
 def _applied_windows(group: list[LeaseEntry]) -> dict[str, int]:

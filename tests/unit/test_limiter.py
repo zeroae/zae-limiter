@@ -12968,3 +12968,333 @@ class TestAdjustmentCommitFailure:
 
         assert await self._consumed(repo, "user") == 10
         assert await self._consumed(repo, "org") == 10
+
+
+def _transaction_conflict() -> ClientError:
+    """What botocore raises when a single-item write meets an in-flight
+    transaction on the same item (#724). moto never raises it."""
+    return ClientError(
+        {
+            "Error": {
+                "Code": "TransactionConflictException",
+                "Message": "Transaction is ongoing for the item",
+            }
+        },
+        "UpdateItem",
+    )
+
+
+class TestTransactionConflictIsContention:
+    """A fast-path write that meets an in-flight transaction is contention (#724).
+
+    ``TransactionConflictException`` on the speculative ``UpdateItem`` used to
+    reach ``acquire()``'s generic handler: a degraded lease (no limiting) under
+    ALLOW, ``RateLimiterUnavailable`` under BLOCK. Every test here asserts the
+    request is admitted or rejected exactly as it would be without the
+    conflict, and that no lease is degraded.
+    """
+
+    LIMITS = [Limit.per_minute("rpm", 10)]
+
+    async def _inject(self, repo, entity_id: str, times: int, *, speculative_only: bool = True):
+        """Make the next ``times`` writes to ``entity_id``'s bucket conflict.
+
+        ``speculative_only`` limits it to the fast path's conditional
+        ``UpdateItem`` (the only write carrying ``:thresh_wcu``).
+        """
+        client = await repo._get_client()
+        original = client.update_item
+        state = {"left": times, "hits": 0}
+
+        async def conflicted(**kwargs):
+            pk = kwargs.get("Key", {}).get("PK", {}).get("S", "")
+            speculative = ":thresh_wcu" in kwargs.get("ExpressionAttributeValues", {})
+            if (
+                f"/BUCKET#{entity_id}#" in pk
+                and (speculative or not speculative_only)
+                and state["left"] > 0
+            ):
+                state["left"] -= 1
+                state["hits"] += 1
+                raise _transaction_conflict()
+            return await original(**kwargs)
+
+        client.update_item = conflicted
+        return state
+
+    def _allow(self, limiter, monkeypatch) -> None:
+        monkeypatch.setattr(
+            limiter._repository, "resolve_on_unavailable", AsyncMock(return_value="allow")
+        )
+
+    async def _acquire(self, limiter, entity_id: str, rpm: int = 1):
+        async with limiter.acquire(
+            entity_id, "gpt-4", limits=self.LIMITS, consume={"rpm": rpm}
+        ) as lease:
+            assert not lease.degraded
+            assert lease.entries
+
+    async def _available(self, limiter, entity_id: str) -> int:
+        result = await limiter.available(entity_id, "gpt-4", limits=self.LIMITS)
+        return result["rpm"]
+
+    async def _cascade(self, limiter) -> None:
+        await limiter.create_entity("org")
+        await limiter.create_entity("user", parent_id="org", cascade=True)
+        freeze_clock(limiter._repository)
+        # Creates both buckets and warms the entity cache for the parallel path.
+        await self._acquire(limiter, "user")
+
+    # -- child, fast path ---------------------------------------------------
+
+    async def test_one_conflict_is_retried_on_the_fast_path(self, limiter):
+        freeze_clock(limiter._repository)
+        await self._acquire(limiter, "solo")
+        state = await self._inject(limiter._repository, "solo", 1)
+
+        await self._acquire(limiter, "solo")
+
+        assert state["hits"] == 1
+        assert await self._available(limiter, "solo") == 8
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_persistent_conflict_falls_to_the_slow_path(self, limiter, monkeypatch, allow):
+        if allow:
+            self._allow(limiter, monkeypatch)
+        freeze_clock(limiter._repository)
+        await self._acquire(limiter, "solo")
+        state = await self._inject(limiter._repository, "solo", 1000)
+
+        await self._acquire(limiter, "solo")
+
+        assert state["hits"] == 4  # the first write and three retries
+        assert await self._available(limiter, "solo") == 8
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_conflicted_exhausted_bucket_is_still_rejected(
+        self, limiter, monkeypatch, allow
+    ):
+        if allow:
+            self._allow(limiter, monkeypatch)
+        freeze_clock(limiter._repository)
+        await self._acquire(limiter, "solo", rpm=10)
+        await self._inject(limiter._repository, "solo", 1000)
+
+        for _ in range(5):
+            with pytest.raises(RateLimitExceeded):
+                await self._acquire(limiter, "solo")
+
+        assert await self._available(limiter, "solo") == 0
+
+    # -- cascade parent, parallel path (#318) --------------------------------
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_conflicted_parent_falls_to_the_slow_path(self, limiter, monkeypatch, allow):
+        if allow:
+            self._allow(limiter, monkeypatch)
+        await self._cascade(limiter)
+        state = await self._inject(limiter._repository, "org", 1000)
+
+        await self._acquire(limiter, "user")
+
+        assert state["hits"] == 4
+        # Child debited once (its fast-path debit refunded, the slow path's
+        # landed), parent debited once by the slow path.
+        assert await self._available(limiter, "user") == 8
+        assert await self._available(limiter, "org") == 8
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_conflicted_exhausted_parent_rejects_and_refunds_the_child(
+        self, limiter, monkeypatch, allow
+    ):
+        if allow:
+            self._allow(limiter, monkeypatch)
+        await self._cascade(limiter)
+        await self._acquire(limiter, "org", rpm=9)  # parent now at 0
+        await self._inject(limiter._repository, "org", 1000)
+
+        for _ in range(3):
+            with pytest.raises(RateLimitExceeded):
+                await self._acquire(limiter, "user")
+
+        assert await self._available(limiter, "user") == 9  # every debit refunded
+        assert await self._available(limiter, "org") == 0
+
+    async def test_a_conflicted_child_refunds_the_parallel_parent(self, limiter):
+        await self._cascade(limiter)
+        state = await self._inject(limiter._repository, "user", 1000)
+
+        await self._acquire(limiter, "user")
+
+        assert state["hits"] == 4
+        assert await self._available(limiter, "user") == 8
+        assert await self._available(limiter, "org") == 8
+
+    # -- cascade parent, sequential path (cold cache) ------------------------
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_conflicted_parent_on_the_sequential_path(self, limiter, monkeypatch, allow):
+        if allow:
+            self._allow(limiter, monkeypatch)
+        await self._cascade(limiter)
+        repo = limiter._repository
+        repo._entity_cache.clear()
+        repo._cascade_cache.clear()
+        state = await self._inject(repo, "org", 1000)
+
+        await self._acquire(limiter, "user")
+
+        assert state["hits"] == 4
+        assert await self._available(limiter, "user") == 8
+        assert await self._available(limiter, "org") == 8
+
+    async def test_a_conflicted_exhausted_parent_on_the_sequential_path(self, limiter):
+        await self._cascade(limiter)
+        await self._acquire(limiter, "org", rpm=9)
+        repo = limiter._repository
+        repo._entity_cache.clear()
+        repo._cascade_cache.clear()
+        await self._inject(repo, "org", 1000)
+
+        with pytest.raises(RateLimitExceeded):
+            await self._acquire(limiter, "user")
+
+        assert await self._available(limiter, "user") == 9
+        assert await self._available(limiter, "org") == 0
+
+    # -- other single-item writes on the acquire path ------------------------
+
+    async def test_a_conflicted_compensation_is_retried(self, limiter):
+        """The refund of a child debit must land even under contention."""
+        await self._cascade(limiter)
+        await self._acquire(limiter, "org", rpm=9)
+        repo = limiter._repository
+        await self._inject(repo, "org", 1000)
+        # The first write to the child that is not a fast-path debit (the
+        # refund) conflicts once.
+        client = await repo._get_client()
+        inner = client.update_item
+        refunds = {"left": 1, "hits": 0}
+
+        async def conflicted_refund(**kwargs):
+            pk = kwargs.get("Key", {}).get("PK", {}).get("S", "")
+            values = kwargs.get("ExpressionAttributeValues", {})
+            if "/BUCKET#user#" in pk and ":thresh_wcu" not in values and refunds["left"] > 0:
+                refunds["left"] -= 1
+                refunds["hits"] += 1
+                raise _transaction_conflict()
+            return await inner(**kwargs)
+
+        client.update_item = conflicted_refund
+
+        with pytest.raises(RateLimitExceeded):
+            await self._acquire(limiter, "user")
+
+        assert refunds["hits"] == 1
+        assert await self._available(limiter, "user") == 9
+
+    async def test_a_conflicted_slow_path_commit_is_retried(self, limiter):
+        """A one-item slow-path commit goes out as a plain UpdateItem."""
+        limiter._speculative_writes = False
+        freeze_clock(limiter._repository)
+        await self._acquire(limiter, "solo")
+        state = await self._inject(limiter._repository, "solo", 1, speculative_only=False)
+
+        await self._acquire(limiter, "solo")
+
+        assert state["hits"] == 1
+        assert await self._available(limiter, "solo") == 8
+
+    async def test_a_conflicted_consumption_only_retry_is_retried(self):
+        from zae_limiter.lease import _transact_retrying_conflict
+
+        repo = MagicMock()
+        repo.transact_write = AsyncMock(side_effect=[_transaction_conflict(), None])
+
+        await _transact_retrying_conflict(repo, [{"Update": {}}])
+
+        assert repo.transact_write.call_count == 2
+
+    async def test_a_persistent_conflict_on_the_retry_propagates(self):
+        from zae_limiter.lease import _transact_retrying_conflict
+
+        repo = MagicMock()
+        repo.transact_write = AsyncMock(side_effect=_transaction_conflict())
+
+        with pytest.raises(ClientError):
+            await _transact_retrying_conflict(repo, [{"Update": {}}])
+
+        assert repo.transact_write.call_count == 4
+
+    async def test_other_errors_on_the_retry_propagate_at_once(self):
+        from zae_limiter.lease import _transact_retrying_conflict
+
+        repo = MagicMock()
+        boom = ClientError({"Error": {"Code": "ValidationException"}}, "UpdateItem")
+        repo.transact_write = AsyncMock(side_effect=boom)
+
+        with pytest.raises(ClientError):
+            await _transact_retrying_conflict(repo, [{"Update": {}}])
+
+        assert repo.transact_write.call_count == 1
+
+    def test_the_single_item_code_is_a_transaction_conflict(self):
+        from zae_limiter.lease import _is_condition_check_failure, _is_transaction_conflict
+        from zae_limiter.repository import _is_item_transaction_conflict
+
+        assert _is_transaction_conflict(_transaction_conflict()) is True
+        assert _is_condition_check_failure(_transaction_conflict()) is False
+        other = ClientError({"Error": {"Code": "ThrottlingException"}}, "UpdateItem")
+        assert _is_transaction_conflict(other) is False
+        assert _is_transaction_conflict(RuntimeError("x")) is False
+        assert _is_item_transaction_conflict(_transaction_conflict()) is True
+        assert _is_item_transaction_conflict(other) is False
+        assert _is_item_transaction_conflict(RuntimeError("x")) is False
+
+    async def test_a_conflicted_doubling_is_skipped_not_raised(self, limiter):
+        repo = limiter._repository
+        freeze_clock(repo)
+        await self._acquire(limiter, "solo")
+        client = await repo._get_client()
+        original = client.update_item
+
+        async def conflicted(**kwargs):
+            if ":old" in kwargs.get("ExpressionAttributeValues", {}):
+                raise _transaction_conflict()
+            return await original(**kwargs)
+
+        client.update_item = conflicted
+
+        assert await repo.bump_shard_count("solo", "gpt-4", 1) == 1
+
+    async def test_a_doubling_that_conflicts_once_still_doubles(self, limiter):
+        repo = limiter._repository
+        freeze_clock(repo)
+        await self._acquire(limiter, "solo")
+        state = await self._inject(repo, "solo", 1, speculative_only=False)
+
+        assert await repo.bump_shard_count("solo", "gpt-4", 1) == 2
+        assert state["hits"] == 1
+
+    async def test_a_conflicted_probe_shard_goes_to_the_slow_path(self, limiter):
+        """A probed shard that stays contended is handed to the slow path."""
+        from zae_limiter.repository_protocol import SpeculativeFailureReason
+
+        repo = limiter._repository
+        exhausted = SpeculativeResult(
+            success=False,
+            shard_id=0,
+            shard_count=2,
+            failure_reason=SpeculativeFailureReason.APP_LIMIT_EXHAUSTED,
+        )
+        contended = SpeculativeResult(
+            success=False, shard_id=1, failure_reason=SpeculativeFailureReason.CONTENTION
+        )
+        repo.speculative_consume = AsyncMock(return_value=contended)
+
+        lease, shard = await limiter._retry_on_other_shard(
+            "solo", "gpt-4", {"rpm": 1}, None, exhausted, repo._now_ms()
+        )
+
+        assert lease is None
+        assert shard == 1

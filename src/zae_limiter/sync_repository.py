@@ -69,6 +69,30 @@ logger = logging.getLogger(__name__)
 _BATCH_GET_MAX_RETRIES = 3
 _CLIENT_MIN_RATCHET_ATTEMPTS = 3
 _BATCH_GET_RETRY_BASE_DELAY = 0.05
+_ITEM_CONFLICT_MAX_RETRIES = 3
+_ITEM_CONFLICT_BASE_DELAY_S = 0.025
+
+
+def _is_item_transaction_conflict(exc: Exception) -> bool:
+    """True when a single-item write lost to an in-flight transaction (#724).
+
+    botocore surfaces it as a ``ClientError`` coded
+    ``TransactionConflictException`` on ``UpdateItem`` / ``PutItem`` /
+    ``DeleteItem``. A ``TransactWriteItems`` call reports the same collision
+    differently — ``TransactionCanceledException`` with a
+    ``TransactionConflict`` cancellation reason — and is handled by
+    ``lease._is_transaction_conflict``.
+    """
+    if not isinstance(exc, ClientError):
+        return False
+    return bool(exc.response.get("Error", {}).get("Code") == "TransactionConflictException")
+
+
+def _conflict_backoff_s(attempt: int) -> float:
+    """Full-jitter delay before retry ``attempt`` (0-based) of a conflicted write."""
+    return random.uniform(0, _ITEM_CONFLICT_BASE_DELAY_S * 2**attempt)
+
+
 _SEED_TOKEN = {
     schema.BUCKET_FIELD_TK: "t",
     schema.BUCKET_FIELD_TC: "c",
@@ -2779,6 +2803,29 @@ class SyncRepository:
             }
         }
 
+    def _update_item_retrying_conflict(self, client: Any, **kwargs: Any) -> Any:
+        """``UpdateItem``, retried with full jitter on a transaction conflict (#724).
+
+        A conflict means the write did not apply, so re-sending it is safe for
+        any write, conditional or not. The last attempt's error, a conflict
+        included, propagates; every other error propagates on the first one.
+        """
+        for attempt in range(_ITEM_CONFLICT_MAX_RETRIES):
+            try:
+                return client.update_item(**kwargs)
+            except ClientError as e:
+                if not _is_item_transaction_conflict(e):
+                    raise
+                delay = _conflict_backoff_s(attempt)
+                logger.debug(
+                    "TransactionConflictException on UpdateItem (attempt %d/%d), retrying in %.3fs",
+                    attempt + 1,
+                    _ITEM_CONFLICT_MAX_RETRIES,
+                    delay,
+                )
+                time.sleep(delay)
+        return client.update_item(**kwargs)
+
     def transact_write(self, items: list[dict[str, Any]]) -> None:
         """Execute a write, using single-item API when possible to halve WCU cost."""
         if not items:
@@ -2816,7 +2863,7 @@ class SyncRepository:
             if "Put" in item:
                 client.put_item(**item["Put"])
             elif "Update" in item:
-                response = client.update_item(**item["Update"])
+                response = self._update_item_retrying_conflict(client, **item["Update"])
             elif "Delete" in item:
                 client.delete_item(**item["Delete"])
             results.append(response.get("Attributes", {}))
@@ -3037,7 +3084,8 @@ class SyncRepository:
         condition_parts.append("(attribute_not_exists(#vu) OR #vu > :vu_now)")
         condition_expr = " AND ".join(condition_parts)
         try:
-            response = client.update_item(
+            response = self._update_item_retrying_conflict(
+                client,
                 TableName=self.table_name,
                 Key={
                     "PK": {
@@ -3067,6 +3115,12 @@ class SyncRepository:
                 shard_count=shard_count,
             )
         except ClientError as e:
+            if _is_item_transaction_conflict(e):
+                return SpeculativeResult(
+                    success=False,
+                    shard_id=shard_id,
+                    failure_reason=SpeculativeFailureReason.CONTENTION,
+                )
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 old_item = cast(dict[str, Any] | None, e.response.get("Item"))
                 if old_item:
@@ -3290,7 +3344,8 @@ class SyncRepository:
         new_count = current_count * 2
         client = self._get_client()
         try:
-            client.update_item(
+            self._update_item_retrying_conflict(
+                client,
                 TableName=self.table_name,
                 Key={
                     "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
@@ -3311,6 +3366,8 @@ class SyncRepository:
                 winner = cast(dict[str, Any] | None, e.response.get("Item")) or {}
                 winner_count = int(winner.get("shard_count", {}).get("N", str(current_count)))
                 effective_count = max(current_count, winner_count)
+            elif _is_item_transaction_conflict(e):
+                effective_count = current_count
             else:
                 raise
         return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)

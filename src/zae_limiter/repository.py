@@ -83,6 +83,33 @@ _BATCH_GET_MAX_RETRIES = 3
 _CLIENT_MIN_RATCHET_ATTEMPTS = 3
 _BATCH_GET_RETRY_BASE_DELAY = 0.05
 
+# A single-item write that touches an item an in-flight TransactWriteItems is
+# writing fails with `TransactionConflictException` (#724). That is contention
+# on one item, not an outage: retry with full jitter a few times (cap 25ms,
+# doubling: 25, 50, 100ms), then let the caller take its contention route.
+_ITEM_CONFLICT_MAX_RETRIES = 3
+_ITEM_CONFLICT_BASE_DELAY_S = 0.025
+
+
+def _is_item_transaction_conflict(exc: Exception) -> bool:
+    """True when a single-item write lost to an in-flight transaction (#724).
+
+    botocore surfaces it as a ``ClientError`` coded
+    ``TransactionConflictException`` on ``UpdateItem`` / ``PutItem`` /
+    ``DeleteItem``. A ``TransactWriteItems`` call reports the same collision
+    differently — ``TransactionCanceledException`` with a
+    ``TransactionConflict`` cancellation reason — and is handled by
+    ``lease._is_transaction_conflict``.
+    """
+    if not isinstance(exc, ClientError):
+        return False
+    return bool(exc.response.get("Error", {}).get("Code") == "TransactionConflictException")
+
+
+def _conflict_backoff_s(attempt: int) -> float:
+    """Full-jitter delay before retry ``attempt`` (0-based) of a conflicted write."""
+    return random.uniform(0, _ITEM_CONFLICT_BASE_DELAY_S * (2**attempt))
+
 
 # Token codes for the fields a seed writes (#633). A seeded limit's aliases are
 # `#s{code}{j}` / `:s{code}{j}`, `j` its position among the seeds — positional,
@@ -3313,6 +3340,29 @@ class Repository:
             }
         }
 
+    async def _update_item_retrying_conflict(self, client: Any, **kwargs: Any) -> Any:
+        """``UpdateItem``, retried with full jitter on a transaction conflict (#724).
+
+        A conflict means the write did not apply, so re-sending it is safe for
+        any write, conditional or not. The last attempt's error, a conflict
+        included, propagates; every other error propagates on the first one.
+        """
+        for attempt in range(_ITEM_CONFLICT_MAX_RETRIES):
+            try:
+                return await client.update_item(**kwargs)
+            except ClientError as e:
+                if not _is_item_transaction_conflict(e):
+                    raise
+                delay = _conflict_backoff_s(attempt)
+                logger.debug(
+                    "TransactionConflictException on UpdateItem (attempt %d/%d), retrying in %.3fs",
+                    attempt + 1,
+                    _ITEM_CONFLICT_MAX_RETRIES,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+        return await client.update_item(**kwargs)
+
     async def transact_write(self, items: list[dict[str, Any]]) -> None:
         """Execute a write, using single-item API when possible to halve WCU cost."""
         if not items:
@@ -3354,7 +3404,10 @@ class Repository:
             if "Put" in item:
                 await client.put_item(**item["Put"])
             elif "Update" in item:
-                response = await client.update_item(**item["Update"])
+                # Refunds, compensation and adjustments: an item a transaction
+                # is writing is contention, never a reason to fail the acquire
+                # or lose a refund (#724), so the write is retried.
+                response = await self._update_item_retrying_conflict(client, **item["Update"])
             elif "Delete" in item:
                 await client.delete_item(**item["Delete"])
             results.append(response.get("Attributes", {}))
@@ -3649,7 +3702,10 @@ class Repository:
         condition_expr = " AND ".join(condition_parts)
 
         try:
-            response = await client.update_item(
+            # Retried on a transaction conflict (#724): a slow-path commit, a
+            # quota move or a reset may be writing this item right now.
+            response = await self._update_item_retrying_conflict(
+                client,
                 TableName=self.table_name,
                 Key={
                     "PK": {
@@ -3682,6 +3738,16 @@ class Repository:
             )
 
         except ClientError as e:
+            if _is_item_transaction_conflict(e):
+                # Still contended after the retries: nothing was written and
+                # there is no image to judge. Contention, not an outage — the
+                # slow path reads the item and commits under its own lock and
+                # transaction retry. Never `on_unavailable` (#724).
+                return SpeculativeResult(
+                    success=False,
+                    shard_id=shard_id,
+                    failure_reason=SpeculativeFailureReason.CONTENTION,
+                )
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 old_item = cast(dict[str, Any] | None, e.response.get("Item"))
                 if old_item:
@@ -3947,7 +4013,8 @@ class Repository:
         new_count = current_count * 2
         client = await self._get_client()
         try:
-            await client.update_item(
+            await self._update_item_retrying_conflict(
+                client,
                 TableName=self.table_name,
                 Key={
                     "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
@@ -3979,6 +4046,12 @@ class Repository:
                 winner = cast(dict[str, Any] | None, e.response.get("Item")) or {}
                 winner_count = int(winner.get("shard_count", {}).get("N", str(current_count)))
                 effective_count = max(current_count, winner_count)
+            elif _is_item_transaction_conflict(e):
+                # Shard 0 stayed contended through the retries (#724): skip
+                # this doubling rather than fail the acquire. The caller's slow
+                # path stays on the shard it has; the next wcu exhaustion
+                # doubles.
+                effective_count = current_count
             else:
                 raise
 

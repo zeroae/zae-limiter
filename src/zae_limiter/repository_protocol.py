@@ -44,6 +44,12 @@ class SpeculativeFailureReason(Enum):
     it cannot help and would create a shard needlessly) and above all not
     fast-reject, which would report RateLimitExceeded against limits the new
     window may have already raised.
+
+    CONTENTION means the write kept colliding with an in-flight DynamoDB
+    transaction on the same item (``TransactionConflictException``, #724)
+    after the repository's bounded retries. Nothing was written and there is
+    no image. The limiter must take the slow path — never fast-reject (there
+    is nothing to judge) and never treat it as the backend being unavailable.
     """
 
     APP_LIMIT_EXHAUSTED = "app_limit_exhausted"
@@ -52,6 +58,7 @@ class SpeculativeFailureReason(Enum):
     BUCKET_MISSING = "bucket_missing"
     DISABLED = "disabled"
     SCHEDULE_BOUNDARY = "schedule_boundary"
+    CONTENTION = "contention"
 
 
 @dataclass
