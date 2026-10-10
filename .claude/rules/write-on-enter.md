@@ -40,6 +40,14 @@ With write-on-exit, there is a window between enter and exit where:
 ## Key Invariants
 
 1. `RateLimitExceeded` is raised BEFORE any write of **consumption** — nothing a rejected request asked for is ever debited. Two documented writes may precede a rejection, and neither admits anything. The first is the **ADR-145 quota move**, committed with nothing consumed: a pass that creates or seeds a quota shard whose slot a sibling covers plans a move off that sibling; if the acquire is then rejected, `RateLimiter._commit_rejected_moves` undoes every in-memory debit and commits the same transaction (recipient plus donor debit, every `consumed = 0`) so the moved tokens are not lost, then raises. If that commit fails, nothing was written (the transaction is atomic) and the rejection stands. The second is planning's own **count raise** (`Repository._freeze_and_raise_shard_counts`, design §8 R5): before a fresh grant, a sibling whose stored `shard_count` lags is raised to the planned count, freezing a legacy grant size onto it — no `tk` moves. The same freeze also runs after that move commit when it created a shard a racing doubling overtook (`Repository.repair_created_quota_shard`, design §8 R7): a count raise on the new shard, no `tk`. The pre-ADR-145 writes — the #587 reclaim clamp and the #633 `persist_seed` — no longer exist
+
+   A **multi-resource acquire** (ADR-148) holds this at the end of the acquire, not at every
+   instant. Its fast-path writes for every resource go out together, so a resource admitted
+   while another is rejected (or disabled, or erroring) is debited and then refunded before the
+   exception reaches the caller — visible to concurrent callers for up to two round trips. That
+   can only under-admit them, the same accepted cost as the cascade fast rejection's child
+   compensation. Its slow path commits every part in one transaction, so there nothing is
+   written on a rejection except the parts' ADR-145 moves, committed with nothing consumed.
 2. `_commit_initial()` writes all consumption (child + parent if cascade) atomically via `transact_write()`
 3. `_commit_adjustments()` is a no-op when no `adjust()`, `consume()`, or `release()` calls were made
 4. `_commit_adjustments()` and `_rollback()` use `write_each()` (independent single-item writes, 1 WCU each) since they produce unconditional ADD operations that do not require cross-item atomicity
