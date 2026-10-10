@@ -8,12 +8,6 @@ on:
       - 'release/[0-9]*'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    branches:
-      - main
-      - 'release/v*'
-      - 'release/[0-9]*'
-      - 'milestone/v*'
-      - 'milestone/[0-9]*'
   workflow_dispatch:
 
 permissions:

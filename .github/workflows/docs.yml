@@ -9,10 +9,6 @@ on:
     tags:
       - 'v*'
   pull_request:
-    branches:
-      - main
-      - 'release/v*'
-      - 'release/[0-9]*'
   workflow_run:
     workflows: ["Tests"]
     types:
