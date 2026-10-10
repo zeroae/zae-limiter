@@ -7205,6 +7205,17 @@ class TestResetAndTopUp:
         assert _op_num(item, "rpm", BUCKET_FIELD_TK) == 100000
         assert _op_num(item, "tpm", BUCKET_FIELD_TK) == 60000
 
+    def test_a_limit_no_longer_configured_is_left_alone(self, repo):
+        tpm = Limit.per_minute("tpm", 600)
+        repo.set_limits("e", [_OP_RPM, tpm], resource="r")
+        _op_put_shard(repo, "e", "r", [_OP_RPM, tpm], tokens={"rpm": 0, "tpm": 0})
+        repo.set_limits("e", [_OP_RPM], resource="r")
+        repo._now_ms = lambda: _OP_T0 + 6000
+        result = repo.reset_bucket("e", "r")
+        item = _op_item(repo, "e", "r")
+        assert result.amounts == {"rpm": 90}
+        assert _op_num(item, "tpm", BUCKET_FIELD_TK) == 0
+
     def test_names_must_be_configured_limits(self, repo):
         repo.set_limits("e", [_OP_RPM], resource="r")
         with pytest.raises(ValidationError, match="not a limit configured"):
