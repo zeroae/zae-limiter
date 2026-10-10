@@ -417,3 +417,28 @@ class TestResetAfterRefusal:
         assert "zae-limiter upgrade" in message
         assert "zae-limiter deploy" not in message
         assert auto is True
+
+
+class TestTopUpRefusal:
+    """The ADR-149 gate's wording, in the ``reset_after_refusal`` contract."""
+
+    def test_missing_record(self):
+        from zae_limiter.version import top_up_refusal
+
+        message, auto = top_up_refusal(False, None)
+        assert "no version record" in message and "0.17.0" in message
+        assert auto is False
+
+    def test_unknown_lambda_version(self):
+        from zae_limiter.version import top_up_refusal
+
+        message, auto = top_up_refusal(True, None)
+        assert "Run 'zae-limiter upgrade' to deploy it" in message
+        assert auto is False
+
+    def test_old_lambda_version(self):
+        from zae_limiter.version import top_up_refusal
+
+        message, auto = top_up_refusal(True, "0.16.0")
+        assert "predate 0.17.0" in message
+        assert auto is True

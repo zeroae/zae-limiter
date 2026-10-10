@@ -2254,6 +2254,8 @@ class TestAuditAction:
         assert AuditAction.ENTITY_DELETED == "entity_deleted"
         assert AuditAction.LIMITS_SET == "limits_set"
         assert AuditAction.LIMITS_DELETED == "limits_deleted"
+        assert AuditAction.BUCKET_RESET == "bucket_reset"
+        assert AuditAction.BUCKET_TOPPED_UP == "bucket_topped_up"
 
 
 class TestLimiterInfo:

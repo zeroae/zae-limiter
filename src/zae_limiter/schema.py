@@ -153,6 +153,15 @@ BUCKET_FIELD_WTC = "wtc"  # b_{name}_wtc — tc at the fan-out, millitokens
 # `shard_count` (owner decision, design §9).
 BUCKET_FIELD_GC = "gc"  # b_{name}_gc — grant count, per limit, per shard
 
+# `b_{name}_tu` (ADR-149): allowance an operator topped this quota shard up by
+# above its grant, this period, in millitokens. Raises the shard's ceiling to
+# `C // gc + tu` so a purchase above the plan is not clamped away by the next
+# materialising pass. Written only by `Repository.top_up` (above the ceiling,
+# behind the 0.17.0 version gate); removed by every reset, window roll and
+# opener, client and aggregator, because it belongs to the period it was bought
+# in. Never read or written by the fast path.
+BUCKET_FIELD_TU = "tu"  # b_{name}_tu — topped-up allowance, millitokens
+
 # The explicit spelling of "this limit has no schedule of its own" (#541).
 #
 # Absence of a `b_{name}_sched` still means "inherit the item default" — that is
