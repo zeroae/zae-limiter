@@ -671,6 +671,33 @@ class TestCompositeWritePaths:
         assert vals[":bd1"]["N"] == "500"
         assert vals[":bcd1"]["N"] == "-500"
 
+    def test_build_composite_adjust_conditions_each_credit_on_its_ceiling(self, repo):
+        """A self-trimming credit (#721): `tk <= ceiling - credit`, credits only."""
+        update = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": 3000, "tpm": -500, "rpd": -2000},
+            ceilings={"rpm": 9000, "tpm": 10000},
+        )["Update"]
+        assert update["ConditionExpression"] == "#bt1 <= :bm1"
+        assert update["ExpressionAttributeValues"][":bm1"] == {"N": "9500"}
+        assert ":bm0" not in update["ExpressionAttributeValues"]
+        assert "SET" not in update["UpdateExpression"]
+
+    def test_build_composite_adjust_trim_stamps_vu_in_the_same_write(self, repo):
+        """The fallback (#721): the same ADD, unconditional, plus `vu = 0`."""
+        update = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": -500},
+            ceilings={"rpm": 10000},
+            trim=True,
+        )["Update"]
+        assert "ConditionExpression" not in update
+        assert update["UpdateExpression"] == "SET #vu = :vuz ADD #bt0 :bd0, #bc0 :bcd0"
+        assert update["ExpressionAttributeNames"]["#vu"] == "vu"
+        assert update["ExpressionAttributeValues"][":vuz"] == {"N": "0"}
+
     def test_build_composite_adjust_zero_deltas(self, repo):
         """build_composite_adjust with all-zero deltas returns empty dict."""
         result = repo.build_composite_adjust(

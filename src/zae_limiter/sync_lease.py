@@ -10,6 +10,7 @@ import logging
 import random
 import time
 import warnings
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -68,8 +69,66 @@ class LeaseEntry:
     _donor_debit: QuotaDonorDebit | None = None
 
 
-_AdjustedItem = tuple[str, str, int, list[LeaseEntry], dict[str, int]]
-"(entity_id, resource, shard_id, entries, deltas) for one adjust write (#679)."
+def credit_ceilings(
+    states: Iterable[tuple[str, BucketState]], deltas: dict[str, int], now_ms: int
+) -> dict[str, int]:
+    """The ceiling of every limit ``deltas`` credits, for a self-trimming credit (#721).
+
+    ``states`` pairs each limit name with its shard's state. The ceiling is
+    ``BucketState.ceiling_milli`` at ``now_ms`` — schedule, shard share and quota
+    grant (ADR-145), the refill clamp's own ceiling. A state that cannot report
+    one leaves its limit unconditional (the pre-#679 behaviour) rather than fail
+    the refund: a credit is never blocked by a broken check.
+    """
+    ceilings: dict[str, int] = {}
+    for name, state in states:
+        if deltas.get(name, 0) >= 0 or name in ceilings:
+            continue
+        try:
+            ceilings[name] = int(state.ceiling_milli(now_ms))
+        except Exception:
+            logger.warning("Could not check a credit against its ceiling", exc_info=True)
+    return ceilings
+
+
+def write_credit(
+    repository: "SyncRepositoryProtocol",
+    entity_id: str,
+    resource: str,
+    deltas: dict[str, int],
+    shard_id: int,
+    ceilings: dict[str, int],
+) -> None:
+    """Write one adjust item whose credits trim themselves (#721, refs #680).
+
+    A credit is an ``ADD``, and a reset edge or a refill to capacity can land
+    between the debit and the credit; the credit then lifts the balance above
+    the ceiling, and the speculative fast path (a pure ``ADD`` with no cap)
+    spends the surplus. So each credited limit with a known ceiling is
+    conditioned on staying at or below it. The usual credit lands in that one
+    write (1 WCU). One that would overflow fails the condition (1 WCU) and is
+    re-issued unconditionally **with** ``SET vu = 0`` in the same write, which
+    keeps the fast path off the item until the next slow pass clamps it. There
+    is no window between the credit and the stamp for another process to use.
+
+    A debit, or a credit with no known ceiling, is one unconditional write.
+    Errors other than the failed ceiling condition propagate to the caller.
+    """
+    kwargs: dict[str, Any] = {"ceilings": ceilings} if ceilings else {}
+    item = repository.build_composite_adjust(
+        entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, **kwargs
+    )
+    if not item:
+        return
+    try:
+        repository.write_each([item])
+    except Exception as exc:
+        if not ceilings or not _is_condition_check_failure(exc):
+            raise
+        trimmed = repository.build_composite_adjust(
+            entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, trim=True
+        )
+        repository.write_each([trimmed])
 
 
 class QuotaMoveLostError(Exception):
@@ -242,18 +301,15 @@ class SyncLease:
         Never raises - allows bucket to go negative.
         Use for post-hoc reconciliation (e.g., LLM token counts).
 
-        A negative delta is a credit, written as an unconditional ``ADD``, so
-        the stored balance can land above the shard's ceiling. The excess is
-        trimmed before the fast path can spend it: when the write reports a
-        balance over its ceiling, the item is marked (``vu = 0``) so the next
-        acquire takes the slow path, which clamps every limit, and the
-        aggregator does not reopen the fast path meanwhile (#679, #681).
-        Not covered: the one round trip between the credit and its ``vu = 0``
-        write (two separate writes); a backend whose ``write_each`` reports no balances; a
-        ``vu = 0`` write that itself fails (logged, the excess then waits for
-        the next materialising pass); an adjustment commit that fails partway
-        (#682); and the speculative compensation a rejected cascade writes,
-        which credits back a debit one round trip old.
+        A negative delta is a credit, an ``ADD``, and a reset edge or a refill
+        to capacity since the debit can make it land above the shard's
+        ceiling. So the credit is conditioned on staying within the ceiling
+        and, when it would not, re-issued with ``vu = 0`` in the same write
+        (#721): the next acquire takes the slow path, which clamps every limit,
+        and the aggregator does not reopen the fast path meanwhile (#679,
+        #681). No process can spend the excess in between. Not covered: a
+        limit whose ceiling the lease could not compute (logged, the credit is
+        then unconditional) and an adjustment commit that fails partway (#682).
 
         Only limits declared in ``acquire(consume=...)`` can be adjusted;
         other keys are reported (Issue #455) and ignored.
@@ -802,8 +858,9 @@ class SyncLease:
         """Write post-enter adjustment deltas to DynamoDB on context exit (Issue #309).
 
         No-op if no adjust/consume/release calls were made during the context.
-        Uses build_composite_adjust() for unconditional ADD, dispatched via
-        write_each() (independent single-item writes, 1 WCU each).
+        Each bucket item gets one adjust write (``write_credit``): an ``ADD``,
+        whose credits are conditioned on staying within the ceiling and, when
+        they would not, re-issued with ``vu = 0`` in the same write (#721).
 
         The lease is marked committed before the first write, so a write that
         fails is re-raised but never rolled back (#682): items that landed keep
@@ -814,137 +871,66 @@ class SyncLease:
         if not self._has_adjustments:
             self._committed = True
             return
-        repo = self.repository
-        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
-        for entry in self.entries:
-            key = (entry.entity_id, entry.resource, entry._shard_id)
-            groups.setdefault(key, []).append(entry)
-        items: list[dict[str, Any]] = []
-        written: list[_AdjustedItem] = []
-        for (entity_id, resource, shard_id), group_entries in groups.items():
-            deltas: dict[str, int] = {}
-            for entry in group_entries:
-                delta = entry.consumed - entry._initial_consumed
-                if delta != 0:
-                    deltas[entry.limit.name] = delta * 1000
-            if deltas:
-                item = repo.build_composite_adjust(
-                    entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id
-                )
-                if item:
-                    items.append(item)
-                    written.append((entity_id, resource, shard_id, group_entries, deltas))
+        writes = self._adjust_writes(
+            lambda entry: (entry.consumed - entry._initial_consumed) * 1000
+        )
         self._committed = True
-        landed: list[_AdjustedItem] = []
-        results: list[dict[str, Any]] | None = []
-        try:
-            for item, adjusted in zip(items, written, strict=True):
-                result = repo.write_each([item])
-                results = None if result is None or results is None else results + result
-                landed.append(adjusted)
-        finally:
-            if landed:
-                self._trim_credits_above_ceiling(landed, results)
+        for entity_id, resource, shard_id, deltas, ceilings in writes:
+            write_credit(self.repository, entity_id, resource, deltas, shard_id, ceilings)
 
     def _rollback(self) -> None:
         """Write compensating deltas to restore consumed tokens (Issue #309).
 
         On error, the initial consumption was already written to DynamoDB by
-        _commit_initial(). This method restores those tokens by writing
-        negative deltas using build_composite_adjust() via write_each()
-        (independent single-item writes, 1 WCU each).
+        _commit_initial(). This method restores those tokens with one
+        self-trimming credit per bucket item (``write_credit``, #721): a reset
+        edge or a refill to capacity that landed since the debit can no longer
+        lift the balance above the ceiling where the fast path would spend it.
         """
         if self._committed or self._rolled_back:
             return
         self._rolled_back = True
         if not self._initial_committed:
             return
-        repo = self.repository
+        writes = self._adjust_writes(lambda entry: -entry._initial_consumed * 1000)
+        try:
+            for entity_id, resource, shard_id, deltas, ceilings in writes:
+                write_credit(self.repository, entity_id, resource, deltas, shard_id, ceilings)
+        except Exception:
+            logger.warning(
+                "Failed to rollback consumed tokens for entities: %s",
+                [write[:3] for write in writes],
+                exc_info=True,
+            )
+
+    def _adjust_writes(
+        self, delta_of: Callable[[LeaseEntry], int]
+    ) -> list[tuple[str, str, int, dict[str, int], dict[str, int]]]:
+        """One ``(entity, resource, shard, deltas, ceilings)`` per bucket item touched.
+
+        Grouped by (entity_id, resource, shard) — the shard is part of a
+        bucket's identity. ``ceilings`` holds the ceiling the lease resolved
+        (``BucketState.ceiling_milli`` now) for every credited limit (#721).
+        """
         groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in self.entries:
             key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
-        items: list[dict[str, Any]] = []
-        written: list[_AdjustedItem] = []
+        now_ms = self.repository._now_ms()
+        writes: list[tuple[str, str, int, dict[str, int], dict[str, int]]] = []
         for (entity_id, resource, shard_id), group_entries in groups.items():
             deltas: dict[str, int] = {}
             for entry in group_entries:
-                if entry._initial_consumed != 0:
-                    deltas[entry.limit.name] = -entry._initial_consumed * 1000
-            if deltas:
-                item = repo.build_composite_adjust(
-                    entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id
-                )
-                if item:
-                    items.append(item)
-                    written.append((entity_id, resource, shard_id, group_entries, deltas))
-        if items:
-            try:
-                results = repo.write_each(items)
-            except Exception:
-                logger.warning(
-                    "Failed to rollback consumed tokens for entities: %s",
-                    list(groups.keys()),
-                    exc_info=True,
-                )
-                return
-            self._trim_credits_above_ceiling(written, results)
-
-    def _trim_credits_above_ceiling(
-        self, written: list[_AdjustedItem], results: list[dict[str, Any]] | None
-    ) -> None:
-        """Force one clamping pass on any item a credit lifted above its ceiling (#679).
-
-        A credit (``release()``, a negative ``adjust()``, a rollback) is an
-        unconditional ``ADD``, so a balance can land above the shard's ceiling.
-        The slow path clamps it, but the speculative fast path is a pure ``ADD``
-        with no cap and would spend the excess first. The adjust write returns
-        the new balances for free; only when one is over its ceiling does this
-        stamp ``vu = 0`` (1 WCU), which sends the next acquire to the slow path.
-        A credit within the ceiling — the common reconcile — costs nothing more.
-
-        The ceiling is the one the lease resolved (``BucketState.ceiling_milli``:
-        schedule, shard share and quota grant, ADR-145). If a schedule boundary
-        moved it since, the item's own ``vu`` has already expired anyway.
-
-        Never raises: it runs after the credit landed, so an error here must not
-        fail the caller, mislabel a rollback, or roll back a committed lease.
-        """
-        try:
-            resets = self._clamps_for_credits_above_ceiling(written, results)
-        except Exception:
-            logger.warning("Could not check a credit against its ceiling", exc_info=True)
-            return
-        for reset in resets:
-            try:
-                self.repository.write_each([reset])
-            except Exception:
-                logger.warning(
-                    "Failed to force a clamp after a credit above capacity", exc_info=True
-                )
-
-    def _clamps_for_credits_above_ceiling(
-        self, written: list[_AdjustedItem], results: list[dict[str, Any]] | None
-    ) -> list[dict[str, Any]]:
-        """The ``vu = 0`` writes for every item a credit lifted above its ceiling."""
-        if not isinstance(results, list) or len(results) != len(written):
-            return []
-        build = getattr(self.repository, "build_vu_reset", None)
-        if build is None:
-            return []
-        now_ms = self.repository._now_ms()
-        resets: list[dict[str, Any]] = []
-        for (entity_id, resource, shard_id, group_entries, deltas), attrs in zip(
-            written, results, strict=True
-        ):
-            for entry in group_entries:
-                if deltas.get(entry.limit.name, 0) >= 0:
-                    continue
-                value = attrs.get(bucket_attr(entry.limit.name, BUCKET_FIELD_TK))
-                if value is not None and int(value["N"]) > entry.state.ceiling_milli(now_ms):
-                    resets.append(build(entity_id, resource, shard_id))
-                    break
-        return resets
+                delta = delta_of(entry)
+                if delta != 0:
+                    deltas[entry.limit.name] = delta
+            if not deltas:
+                continue
+            ceilings = credit_ceilings(
+                [(e.limit.name, e.state) for e in group_entries], deltas, now_ms
+            )
+            writes.append((entity_id, resource, shard_id, deltas, ceilings))
+        return writes
 
 
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:

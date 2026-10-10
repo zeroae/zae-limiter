@@ -2706,13 +2706,28 @@ class SyncRepository:
         return {"Update": update}
 
     def build_composite_adjust(
-        self, entity_id: str, resource: str, deltas: dict[str, int], shard_id: int = 0
+        self,
+        entity_id: str,
+        resource: str,
+        deltas: dict[str, int],
+        shard_id: int = 0,
+        ceilings: dict[str, int] | None = None,
+        trim: bool = False,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
-        Unconditional ADD for post-hoc correction. Can go negative by design.
+        An ``ADD`` for post-hoc correction. Can go negative by design.
         Positive delta = consumed more (subtract tokens, add to counter).
         Negative delta = consumed less (add tokens, subtract from counter).
+
+        A credit is **self-trimming** (#680, #721). With ``ceilings`` (limit name
+        -> the shard's ``BucketState.ceiling_milli``), every credited limit that
+        has one is conditioned on ``tk <= ceiling - credit``: the credit lands
+        only if the balance stays at or below the ceiling. When that fails — a
+        reset edge or a refill to capacity landed after the debit — the caller
+        re-issues the credit with ``trim=True``: the same unconditional ``ADD``
+        plus ``SET vu = 0`` in one write. A debit, or a credit with no known
+        ceiling, stays unconditional.
 
         Every refund, release, rollback and speculative compensation is built
         here, so the shard's cached state is forgotten here (ADR-147): tokens
@@ -2720,8 +2735,10 @@ class SyncRepository:
         """
         self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
         add_parts: list[str] = []
+        condition_parts: list[str] = []
         attr_names: dict[str, str] = {}
         attr_values: dict[str, Any] = {}
+        ceilings = ceilings or {}
         for i, (name, delta) in enumerate(deltas.items()):
             if delta == 0:
                 continue
@@ -2735,49 +2752,30 @@ class SyncRepository:
             attr_values[tc_val] = {"N": str(delta)}
             add_parts.append(f"{tk_alias} {tk_val}")
             add_parts.append(f"{tc_alias} {tc_val}")
+            if delta < 0 and (not trim) and (name in ceilings):
+                max_val = f":bm{i}"
+                attr_values[max_val] = {"N": str(ceilings[name] + delta)}
+                condition_parts.append(f"{tk_alias} <= {max_val}")
         if not add_parts:
             return {}
         update_expr = f"ADD {', '.join(add_parts)}"
-        return {
-            "Update": {
-                "TableName": self.table_name,
-                "Key": {
-                    "PK": {
-                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
-                    },
-                    "SK": {"S": schema.sk_state()},
-                },
-                "UpdateExpression": update_expr,
-                "ExpressionAttributeNames": attr_names,
-                "ExpressionAttributeValues": attr_values,
-                "ReturnValues": "UPDATED_NEW",
-            }
+        if trim:
+            attr_names["#vu"] = schema.BUCKET_FIELD_VU
+            attr_values[":vuz"] = {"N": "0"}
+            update_expr = f"SET #vu = :vuz {update_expr}"
+        update: dict[str, Any] = {
+            "TableName": self.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            "UpdateExpression": update_expr,
+            "ExpressionAttributeNames": attr_names,
+            "ExpressionAttributeValues": attr_values,
         }
-
-    def build_vu_reset(self, entity_id: str, resource: str, shard_id: int = 0) -> dict[str, Any]:
-        """Build an UpdateItem that forces one materialising pass (#679).
-
-        ``vu = 0`` fails the speculative condition, so the next acquire takes the
-        slow path, which clamps every limit to its ceiling under the ``rf`` lock
-        and clears ``vu`` again — the mechanism the limit-change sync uses after a
-        capacity shrink (#222 Task 13). Used after a credit lifted a balance above
-        its ceiling, which the fast path (a pure ``ADD``) would otherwise spend.
-        """
-        return {
-            "Update": {
-                "TableName": self.table_name,
-                "Key": {
-                    "PK": {
-                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
-                    },
-                    "SK": {"S": schema.sk_state()},
-                },
-                "UpdateExpression": "SET #vu = :zero",
-                "ConditionExpression": "attribute_exists(PK)",
-                "ExpressionAttributeNames": {"#vu": schema.BUCKET_FIELD_VU},
-                "ExpressionAttributeValues": {":zero": {"N": "0"}},
-            }
-        }
+        if condition_parts:
+            update["ConditionExpression"] = " AND ".join(condition_parts)
+        return {"Update": update}
 
     def transact_write(self, items: list[dict[str, Any]]) -> None:
         """Execute a write, using single-item API when possible to halve WCU cost."""

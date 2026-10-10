@@ -316,10 +316,24 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
 
-    def test_vu_reset(self) -> None:
-        """#679: forces a clamping pass after a credit above the ceiling."""
-        update = _repo().build_vu_reset("user-1", "api", shard_id=3)["Update"]
+    def test_self_trimming_credit(self) -> None:
+        """#721: each credited limit with a ceiling is conditioned on staying under it."""
+        update = _repo().build_composite_adjust(
+            "user-1",
+            "api",
+            deltas={DOTTED: -1000, "rpm": 0, HYPHENATED: -2000},
+            ceilings={DOTTED: 5000, HYPHENATED: 9000},
+        )["Update"]
         assert_expression_safe(update)
+        assert "ConditionExpression" in update
+
+    def test_trimmed_credit(self) -> None:
+        """#721: the fallback re-issues the credit with ``vu = 0`` in the same write."""
+        update = _repo().build_composite_adjust(
+            "user-1", "api", deltas={DOTTED: -1000, HYPHENATED: 2000}, shard_id=3, trim=True
+        )["Update"]
+        assert_expression_safe(update)
+        assert "ConditionExpression" not in update
 
     def test_quota_donor_debits(self) -> None:
         for item in _repo().build_quota_donor_debits(

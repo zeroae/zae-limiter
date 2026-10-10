@@ -1122,29 +1122,79 @@ class TestWriteOnEnter:
         assert lease._rolled_back is False
         mock_repo.write_each.assert_not_called()
 
-    OVER = [{bucket_attr("rpm", "tk"): {"N": "999999"}}]
+    @staticmethod
+    def _condition_failed():
+        return ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "over"}}, "UpdateItem"
+        )
 
-    @pytest.mark.parametrize(
-        ("returns", "clamps"),
-        [([OVER, OVER], 2), ([None, None], 0), ([OVER, None], 0), ([None, OVER], 0)],
-    )
-    def test_commit_adjustments_without_per_item_results_skips_the_ceiling(self, returns, clamps):
-        """A backend whose write_each reports nothing skips the #679 ceiling check."""
+    def test_a_credit_within_the_ceiling_is_one_conditional_write(self):
+        """#721: the usual credit lands in one write, conditioned on its ceiling."""
         from zae_limiter.sync_lease import SyncLease
 
-        entries = [
-            self._make_entry(consumed=5, initial_consumed=10, entity_id="e1"),
-            self._make_entry(consumed=5, initial_consumed=10, entity_id="e2"),
-        ]
-        for entry in entries:
-            entry.state.ceiling_milli.return_value = 100000
+        entry = self._make_entry(consumed=5, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100000
         mock_repo = self._make_mock_repo()
-        mock_repo.write_each.side_effect = [*returns, None, None]
-        mock_repo.build_vu_reset = MagicMock(return_value={"Update": {}})
-        lease = SyncLease(repository=mock_repo, entries=entries)
+        lease = SyncLease(repository=mock_repo, entries=[entry])
         lease._commit_adjustments()
-        assert lease._committed is True
-        assert mock_repo.build_vu_reset.call_count == clamps
+        mock_repo.build_composite_adjust.assert_called_once_with(
+            entity_id="e1",
+            resource="gpt-4",
+            deltas={"rpm": -5000},
+            shard_id=0,
+            ceilings={"rpm": 100000},
+        )
+        mock_repo.write_each.assert_called_once()
+
+    def test_a_credit_over_the_ceiling_is_re_issued_with_vu_zero(self):
+        """#721: a failed ceiling condition re-issues the same credit with trim=True."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=5, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100000
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = [self._condition_failed(), []]
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        lease._commit_adjustments()
+        assert mock_repo.write_each.call_count == 2
+        assert mock_repo.build_composite_adjust.call_args.kwargs == {
+            "entity_id": "e1",
+            "resource": "gpt-4",
+            "deltas": {"rpm": -5000},
+            "shard_id": 0,
+            "trim": True,
+        }
+
+    def test_a_failure_other_than_the_ceiling_is_not_re_issued(self):
+        """Only the ceiling condition triggers the fallback; anything else propagates."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=5, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100000
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = RuntimeError("throttled")
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        with pytest.raises(RuntimeError, match="throttled"):
+            lease._commit_adjustments()
+        mock_repo.write_each.assert_called_once()
+
+    def test_a_condition_failure_without_a_ceiling_propagates(self):
+        """A debit carries no ceiling condition, so a condition failure is not ours."""
+        from zae_limiter.sync_lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = self._condition_failed()
+        with pytest.raises(ClientError):
+            write_credit(mock_repo, "e1", "gpt-4", {"rpm": 5000}, 0, {})
+        mock_repo.write_each.assert_called_once()
+
+    def test_nothing_to_adjust_writes_nothing(self):
+        from zae_limiter.sync_lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(return_value={})
+        write_credit(mock_repo, "e1", "gpt-4", {"rpm": 0}, 0, {})
+        mock_repo.write_each.assert_not_called()
 
     def test_rollback_skips_when_committed(self):
         """_rollback is no-op when already committed (line 358)."""
@@ -1174,13 +1224,18 @@ class TestWriteOnEnter:
         from zae_limiter.sync_lease import SyncLease
 
         entry = self._make_entry(consumed=10, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100000
         mock_repo = self._make_mock_repo()
         lease = SyncLease(repository=mock_repo, entries=[entry])
         lease._initial_committed = True
         lease._rollback()
         assert lease._rolled_back is True
         mock_repo.build_composite_adjust.assert_called_once_with(
-            entity_id="e1", resource="gpt-4", deltas={"rpm": -10000}, shard_id=0
+            entity_id="e1",
+            resource="gpt-4",
+            deltas={"rpm": -10000},
+            shard_id=0,
+            ceilings={"rpm": 100000},
         )
         mock_repo.write_each.assert_called_once()
 
@@ -5442,9 +5497,9 @@ class TestCascadeEntityCache:
         compensated_entity_ids: list[str] = []
         original_compensate = sync_limiter._compensate_speculative
 
-        def tracking_compensate(entity_id, resource, consume, shard_id):
+        def tracking_compensate(entity_id, resource, consume, shard_id, buckets=None):
             compensated_entity_ids.append(entity_id)
-            return original_compensate(entity_id, resource, consume, shard_id)
+            return original_compensate(entity_id, resource, consume, shard_id, buckets)
 
         def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None):
             if entity_id == "child-1":
@@ -10434,31 +10489,28 @@ class TestCreditAboveCapacity:
         assert item[tk]["N"] == "105000"
         assert item[BUCKET_FIELD_VU]["N"] == "0"
 
-    def test_a_backend_without_the_reset_builder_skips_the_check(self, sync_limiter, monkeypatch):
-        """A third-party backend need not grow the new builder; it keeps the old behaviour."""
+    def test_a_failed_trimmed_write_is_an_adjustment_failure(self, sync_limiter, monkeypatch):
+        """The fallback write failing is re-raised like any adjustment write (#682).
+
+        Nothing landed — neither the credit nor the stamp — and the lease is
+        committed, so the initial consumption stays and nothing rolls it back.
+        """
         repo = sync_limiter._repository
-        repo.set_limits("no-builder", [self.SLOW], resource="r")
-        monkeypatch.delattr(type(repo), "build_vu_reset")
-        with sync_limiter.acquire("no-builder", "r", consume={"q": 10}) as lease:
-            lease.release(q=500)
-        assert BUCKET_FIELD_VU not in self._raw(repo, "no-builder")
+        repo.set_limits("ghost-trim", [self.SLOW], resource="r")
+        original = repo.write_each
 
-    def test_a_failed_clamp_write_is_logged_not_raised(self, sync_limiter, monkeypatch, caplog):
-        """The lease already committed; a failed follow-up must not fail the caller."""
-        import logging
+        def fail_the_trim(items):
+            if any("#vu" in item["Update"].get("ExpressionAttributeNames", {}) for item in items):
+                raise RuntimeError("throttled")
+            return original(items)
 
-        repo = sync_limiter._repository
-        repo.set_limits("ghost-clamp", [self.SLOW], resource="r")
-        original = repo.build_vu_reset
-
-        def aim_at_a_missing_item(_entity, resource, shard):
-            return original("ghost", resource, shard)
-
-        monkeypatch.setattr(repo, "build_vu_reset", aim_at_a_missing_item)
-        with caplog.at_level(logging.WARNING, logger="zae_limiter.sync_lease"):
-            with sync_limiter.acquire("ghost-clamp", "r", consume={"q": 10}) as lease:
+        monkeypatch.setattr(repo, "write_each", fail_the_trim)
+        with pytest.raises(RuntimeError, match="throttled"):
+            with sync_limiter.acquire("ghost-trim", "r", consume={"q": 10}) as lease:
                 lease.release(q=500)
-        assert "Failed to force a clamp after a credit above capacity" in caplog.text
+        item = self._raw(repo, "ghost-trim")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "90000"
+        assert BUCKET_FIELD_VU not in item
 
     def test_write_each_of_nothing_returns_nothing(self, sync_limiter):
         assert sync_limiter._repository.write_each([]) == []
@@ -10485,6 +10537,176 @@ class TestCreditAboveCapacity:
         assert "Could not check a credit against its ceiling" in caplog.text
         item = self._raw(repo, "broken-check")
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "590000"
+
+
+class TestSelfTrimmingRefunds:
+    """A refund cannot be spent above the ceiling before it is trimmed (#721).
+
+    A refund (rollback, release, speculative compensation) is an ``ADD``. A reset
+    edge or a refill to capacity can land between the debit and the refund, so
+    the refund lifts the balance above the ceiling. The #680 trim used to be a
+    separate ``vu = 0`` write one round trip later, and another process's fast
+    path spent the surplus in between: a daily quota of 10 admitted 15. The
+    credit is now conditioned on staying within the ceiling and, when it would
+    not, re-issued with ``vu = 0`` in the same write.
+    """
+
+    QUOTA = Limit.quota("q", 10, cron="0 0 * * *")
+    T0 = int(datetime(2026, 10, 9, 23, 59, 0, tzinfo=UTC).timestamp() * 1000)
+    MIDNIGHT = int(datetime(2026, 10, 10, 0, 0, 0, tzinfo=UTC).timestamp() * 1000)
+
+    @pytest.fixture
+    def two(self, sync_limiter):
+        """Two processes on one table, both on one clock, neither caching rejections."""
+        from zae_limiter.sync_repository import SyncRepository
+
+        now = [self.T0]
+        r1 = sync_limiter._repository
+        r2 = SyncRepository.open(stack="test-rate-limits", rejection_cache_ttl=0)
+        for repo in (r1, r2):
+            repo._rejection_cache.ttl_seconds = 0
+            repo._now_ms = lambda: now[0]
+        r1.set_resource_defaults("budget", [self.QUOTA])
+        l2 = SyncRateLimiter(repository=r2)
+        yield (sync_limiter, l2, now)
+        r2.close()
+
+    @staticmethod
+    def _raw(repo, entity_id, resource="budget", shard=0):
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response["Item"]
+
+    def _admitted(self, sync_limiter, amounts) -> list[int]:
+        admitted = []
+        for amount in amounts:
+            try:
+                with sync_limiter.acquire("solo", "budget", {"q": amount}):
+                    admitted.append(amount)
+            except RateLimitExceeded:
+                pass
+        return admitted
+
+    def test_a_rollback_across_a_reset_is_not_spent_by_the_fast_path(self, two):
+        """The reviewer's reproduction: 15 of 10 admitted on main."""
+        l1, l2, now = two
+        r1 = l1._repository
+        with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        with l1.acquire("solo", "budget", {"q": 3}):
+            pass
+        now[0] = self.T0 + 59000
+        real_write_each = r1.write_each
+        seen = {"refund": False}
+        admitted_before_the_trim: list[int] = []
+
+        def write_each(items):
+            text = repr(items)
+            if not seen["refund"] and "b_q_tk" in text and ("ADD" in text):
+                seen["refund"] = True
+                now[0] = self.MIDNIGHT + 1000
+                with l2.acquire("solo", "budget", {"q": 0}):
+                    pass
+                return real_write_each(items)
+            if seen["refund"] and "vu" in text and ("ADD" not in text):
+                admitted_before_the_trim.extend(self._admitted(l2, [15]))
+            return real_write_each(items)
+
+        r1.write_each = write_each
+        with pytest.raises(RuntimeError):
+            with l1.acquire("solo", "budget", {"q": 5}):
+                raise RuntimeError("user code failed")
+        r1.write_each = real_write_each
+        assert admitted_before_the_trim == []
+        assert self._raw(r1, "solo")[BUCKET_FIELD_VU]["N"] == "0"
+        assert self._admitted(l2, [15, 10, 1]) == [10]
+
+    def test_a_rollback_within_the_ceiling_is_one_write(self, two):
+        """The usual refund: one conditional write, no `vu` stamp."""
+        l1, _, _ = two
+        r1 = l1._repository
+        with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        calls: list[dict] = []
+        client = r1._get_client()
+        original = client.update_item
+
+        def spy(**kwargs):
+            calls.append(kwargs)
+            return original(**kwargs)
+
+        client.update_item = spy
+        try:
+            with pytest.raises(RuntimeError):
+                with l1.acquire("solo", "budget", {"q": 5}):
+                    raise RuntimeError("user code failed")
+        finally:
+            client.update_item = original
+        assert len(calls) == 2
+        assert "ConditionExpression" in calls[1]
+        item = self._raw(r1, "solo")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "8000"
+        assert item[BUCKET_FIELD_VU]["N"] != "0"
+
+    def test_a_compensation_across_a_reset_is_not_spent_by_the_fast_path(self, two):
+        """Speculative compensation is the same credit, built from the debit's image."""
+        l1, l2, now = two
+        r1 = l1._repository
+        with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        now[0] = self.T0 + 59000
+        result = r1.speculative_consume("solo", "budget", {"q": 5}, shard_id=0)
+        assert result.success
+        now[0] = self.MIDNIGHT + 1000
+        with l2.acquire("solo", "budget", {"q": 0}):
+            pass
+        l1._compensate_speculative("solo", "budget", {"q": 5}, 0, result.buckets)
+        item = self._raw(r1, "solo")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "15000"
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
+        assert self._admitted(l2, [15, 10, 1]) == [10]
+
+    def test_a_compensation_within_the_ceiling_leaves_vu_alone(self, two):
+        l1, _, _ = two
+        r1 = l1._repository
+        with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        result = r1.speculative_consume("solo", "budget", {"q": 5}, shard_id=0)
+        l1._compensate_speculative("solo", "budget", {"q": 5}, 0, result.buckets)
+        item = self._raw(r1, "solo")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "8000"
+        assert item[BUCKET_FIELD_VU]["N"] != "0"
+
+    def test_a_cascade_compensation_trims_the_child_too(self, two):
+        """`_compensate_child` hands the child's image through to the same credit."""
+        l1, _, now = two
+        r1 = l1._repository
+        with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        result = r1.speculative_consume("solo", "budget", {"q": 5}, shard_id=0)
+        r1._get_client()
+        tk = bucket_attr("q", BUCKET_FIELD_TK)
+        client = r1._get_client()
+        client.update_item(
+            TableName=r1.table_name,
+            Key={
+                "PK": {"S": pk_bucket(r1._namespace_id, "solo", "budget", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #tk = :full",
+            ExpressionAttributeNames={"#tk": tk},
+            ExpressionAttributeValues={":full": {"N": "10000"}},
+        )
+        l1._compensate_child("solo", "budget", {"q": 5}, 0, result.buckets)
+        item = self._raw(r1, "solo")
+        assert item[tk]["N"] == "15000"
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
 
 
 class TestMiddleEntityKeepsCascading:
