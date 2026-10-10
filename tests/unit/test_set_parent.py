@@ -509,6 +509,21 @@ class TestAnotherProcess:
         assert int((await _item(repo, "org-a", "gpt-4"))["shard_count"]["N"]) == 1
         assert await _consumed(repo, "org-a") == org_a
 
+    async def test_a_disabled_old_parent_does_not_outrank_the_child(self, limiter, other):
+        """Review of #716, finding 5: a parent the child has left cannot 403 it."""
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._warm(other)
+        await repo.set_parent("user", "org-b")
+        await _set(repo, "org-a", disabled=True)
+        await _set(repo, "user", rpm_tk=0, rf=repo._now_ms())  # the child is spent
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with other.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+
+        assert {s.entity_id for s in exc_info.value.violations} == {"user"}
+
 
 async def _set(
     repo: Repository,

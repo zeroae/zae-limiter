@@ -807,9 +807,10 @@ class SyncRateLimiter:
                 else None
             )
             if result.parent_result is not None and result.parent_result.success:
-                assert result.parent_id is not None
+                debited = result.debited_parent_id or result.parent_id
+                assert debited is not None
                 self._compensate_speculative(
-                    result.parent_id, resource, consume, result.parent_result.shard_id
+                    debited, resource, consume, result.parent_result.shard_id
                 )
             if result.failure_reason == SpeculativeFailureReason.DISABLED:
                 raise ResourceDisabled(entity_id=entity_id, resource=resource, level="bucket")
@@ -817,6 +818,7 @@ class SyncRateLimiter:
                 result.cascade
                 and result.parent_result is not None
                 and (result.parent_result.failure_reason == SpeculativeFailureReason.DISABLED)
+                and (result.debited_parent_id in (None, result.parent_id))
             ):
                 assert result.parent_id is not None
                 raise ResourceDisabled(

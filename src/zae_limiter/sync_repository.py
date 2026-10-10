@@ -3152,9 +3152,8 @@ class SyncRepository:
                         meta=(child_result.cascade, child_result.parent_id),
                         pgen=child_result.pgen,
                     )
-                else:
-                    if not child_result.stamp_is_policy:
-                        child_result.cascade = cascade_cached
+                elif not child_result.stamp_is_policy:
+                    child_result.cascade = cascade_cached
                     child_result.parent_id = parent_id_cached
                 child_result.parent_result = parent_result
                 child_result.debited_parent_id = parent_id_cached

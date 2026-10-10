@@ -3748,17 +3748,18 @@ class Repository:
                     # does not cascade is judged as such (no parent outranks
                     # it, and the child-only shard retry stays open). With no
                     # image (a missing bucket) or a pre-#684 stamp, the cache's
-                    # answer stands. parent_id is always the cached one: it is
-                    # the parent this path wrote to, and the caller compensates
-                    # it if that write landed.
+                    # answer stands, and so does its parent.
                     #
                     # A stamp with a parent generation is a policy too, even
-                    # with no parent (ADR-150: a move to no parent), and the
+                    # with no parent (ADR-150: a move to no parent), and its
+                    # parent is the item's, which a move can make differ from
+                    # the one this path wrote to (`debited_parent_id`, below,
+                    # which the caller compensates if that write landed). The
                     # image already taught the cache the item's parent, for the
                     # next call.
                     if not child_result.stamp_is_policy:
                         child_result.cascade = cascade_cached
-                    child_result.parent_id = parent_id_cached
+                        child_result.parent_id = parent_id_cached
                 child_result.parent_result = parent_result
                 # The parent this path debited, which after a move the item's
                 # `parent_id` can contradict (ADR-150): the limiter refunds it.
