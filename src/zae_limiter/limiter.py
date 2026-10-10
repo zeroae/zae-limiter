@@ -29,7 +29,14 @@ from .exceptions import (
     ValidationError,
     VersionMismatchError,
 )
-from .lease import Lease, LeaseEntry, QuotaMoveLostError
+from .lease import (
+    Lease,
+    LeaseEntry,
+    QuotaMoveLostError,
+    credit_ceilings,
+    credit_pin,
+    write_credit,
+)
 from .models import (
     AuditEvent,
     Availability,
@@ -920,7 +927,11 @@ class RateLimiter:
             if result.parent_result is not None and result.parent_result.success:
                 assert result.parent_id is not None  # set by repository cache path
                 await self._compensate_speculative(
-                    result.parent_id, resource, consume, result.parent_result.shard_id
+                    result.parent_id,
+                    resource,
+                    consume,
+                    result.parent_result.shard_id,
+                    result.parent_result.buckets,
                 )
 
             # Disabled: no shard retry or doubling can help (ADR-125).
@@ -1062,6 +1073,7 @@ class RateLimiter:
                     resource,
                     consume,
                     parent_result.shard_id,
+                    parent_result.buckets,
                 )
             result.parent_result = None
 
@@ -1192,7 +1204,9 @@ class RateLimiter:
         # retry can help (ADR-125). The child's speculatively consumed tokens
         # must be returned before the exception propagates.
         if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
-            await self._compensate_child(entity_id, resource, consume, result.shard_id)
+            await self._compensate_child(
+                entity_id, resource, consume, result.shard_id, result.buckets
+            )
             raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
 
         # A closed schedule window on the parent is not a rejection either
@@ -1206,23 +1220,31 @@ class RateLimiter:
         # shard is left unpinned: every shard crosses the boundary at once, so
         # pinning this one buys nothing and would concentrate the writes.
         if parent_result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY:
-            await self._compensate_child(entity_id, resource, consume, result.shard_id)
+            await self._compensate_child(
+                entity_id, resource, consume, result.shard_id, result.buckets
+            )
             return None, parent_hint
 
         if parent_result.old_buckets is None:
-            await self._compensate_child(entity_id, resource, consume, result.shard_id)
+            await self._compensate_child(
+                entity_id, resource, consume, result.shard_id, result.buckets
+            )
             return None, parent_hint
 
         parent_names = {b.limit_name for b in parent_result.old_buckets}
         if not all(name in parent_names for name in consume):
-            await self._compensate_child(entity_id, resource, consume, result.shard_id)
+            await self._compensate_child(
+                entity_id, resource, consume, result.shard_id, result.buckets
+            )
             return None, parent_hint
 
         would_help, parent_statuses = would_refill_satisfy(
             parent_result.old_buckets, consume, now_ms
         )
         if not would_help:
-            await self._compensate_child(entity_id, resource, consume, result.shard_id)
+            await self._compensate_child(
+                entity_id, resource, consume, result.shard_id, result.buckets
+            )
             child_statuses = declared_statuses(result.buckets, consume, now_ms)
             raise RateLimitExceeded(child_statuses + parent_statuses)
 
@@ -1245,7 +1267,9 @@ class RateLimiter:
                 # shard does not exist yet: a parent-only attempt could only
                 # resolve limits, read a miss and return None. Hand the child
                 # straight to the full slow path, which creates it.
-                await self._compensate_child(entity_id, resource, consume, result.shard_id)
+                await self._compensate_child(
+                    entity_id, resource, consume, result.shard_id, result.buckets
+                )
                 return None, parent_shard
 
         # Refill would help — build child entries for parent-only slow path
@@ -1285,13 +1309,15 @@ class RateLimiter:
                 parent_shard_count,
             )
         except Exception:
-            await self._compensate_child(entity_id, resource, consume, result.shard_id)
+            await self._compensate_child(
+                entity_id, resource, consume, result.shard_id, result.buckets
+            )
             raise
 
         if parent_lease is not None:
             return parent_lease, parent_hint
 
-        await self._compensate_child(entity_id, resource, consume, result.shard_id)
+        await self._compensate_child(entity_id, resource, consume, result.shard_id, result.buckets)
         return None, parent_hint
 
     async def _shard_after_wcu_exhaustion(
@@ -1339,9 +1365,10 @@ class RateLimiter:
         resource: str,
         consume: dict[str, int],
         shard_id: int,
+        buckets: "list[BucketState] | None" = None,
     ) -> None:
         """Compensate a speculatively consumed child by adding tokens back."""
-        await self._compensate_speculative(entity_id, resource, consume, shard_id)
+        await self._compensate_speculative(entity_id, resource, consume, shard_id, buckets)
 
     def _shortfall(
         self,
@@ -1502,21 +1529,30 @@ class RateLimiter:
         resource: str,
         consume: dict[str, int],
         shard_id: int,
+        buckets: "list[BucketState] | None" = None,
     ) -> None:
         """Compensate a speculative write by adding consumed tokens back.
 
         The credit must land on the shard the speculative debit hit
         (GHSA-76rv): crediting shard 0 leaves the debited shard short and
         mints tokens on a shard that served nothing.
+
+        ``buckets`` is the debit's ``ALL_NEW`` image. Its ceilings make the
+        credit self-trimming (#721): a reset edge or a refill to capacity that
+        landed after the debit cannot lift the balance above the ceiling where
+        another process's fast path would spend it.
         """
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
-        compensate_item = self._repository.build_composite_adjust(
-            entity_id=entity_id,
-            resource=resource,
-            deltas=deltas,
-            shard_id=shard_id,
+        ceilings = credit_ceilings(
+            [(b.limit_name, b) for b in buckets or ()], deltas, self._repository._now_ms()
         )
-        await self._repository.write_each([compensate_item])
+        # The debit's image is the item as of that write: a speculative debit
+        # moves none of what is pinned, so a later writer that did fails the
+        # pin (#721). Read off a user limit: `wcu` always deserializes with
+        # `shard_count = 1`, which would fail the pin on every sharded entity.
+        image = next((b for b in buckets or () if b.limit_name != WCU_LIMIT_NAME), None)
+        pin = credit_pin(image) if image is not None else None
+        await write_credit(self._repository, entity_id, resource, deltas, shard_id, ceilings, pin)
 
     @staticmethod
     def _check_speculative_failure(
@@ -1613,7 +1649,9 @@ class RateLimiter:
                 # was the first shard's. A child-only lease here would skip the
                 # parent, so undo the debit and let the slow path commit child
                 # and parent together on this shard.
-                await self._compensate_speculative(entity_id, resource, consume, new_shard)
+                await self._compensate_speculative(
+                    entity_id, resource, consume, new_shard, retry.buckets
+                )
                 slow_path_shard = new_shard
                 break
             if retry.success:

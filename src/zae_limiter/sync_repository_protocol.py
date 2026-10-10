@@ -20,6 +20,8 @@ if TYPE_CHECKING:
         BackendCapabilities,
         BucketState,
         ConfigAccess,
+        CreditCeiling,
+        CreditPin,
         Entity,
         Limit,
         OnUnavailableAction,
@@ -631,11 +633,18 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def build_composite_adjust(
-        self, entity_id: str, resource: str, deltas: dict[str, int], shard_id: int = 0
+        self,
+        entity_id: str,
+        resource: str,
+        deltas: dict[str, int],
+        shard_id: int = 0,
+        ceilings: "dict[str, CreditCeiling] | None" = None,
+        trim: bool = False,
+        pin: "CreditPin | None" = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
-        Unconditional ADD for post-hoc correction. Can go negative by design.
+        An ADD for post-hoc correction. Can go negative by design.
         Positive delta = consumed more (subtract tokens, add to counter).
         Negative delta = consumed less (add tokens, subtract from counter).
 
@@ -643,6 +652,19 @@ class SyncRepositoryProtocol(Protocol):
             entity_id: Entity owning the bucket
             resource: Resource name
             deltas: Delta per limit (millitokens, positive=consume, negative=release)
+            ceilings: Limit name -> ``CreditCeiling``. Each credited limit
+                named here is conditioned on its balance staying at or below
+                the ceiling after the credit, and on the stored ``cp`` / ``gc``
+                the ceiling was computed from (#721); a failed condition raises
+                ``ConditionalCheckFailedException`` and the caller re-issues
+                the credit with ``trim=True``.
+            trim: Build the fallback: the same unconditional ADD plus
+                ``SET vu = 0`` in one write, so the speculative fast path cannot
+                spend a balance above the ceiling before a slow pass clamps it.
+            pin: The item's (``shard_count``, ``vu``, item-level schedule
+                strings) the ceilings were computed against (``None`` =
+                absent), pinned beside them: a doubling, a schedule change or a
+                reset may have lowered the real ceiling.
         """
         ...
 
@@ -677,8 +699,7 @@ class SyncRepositoryProtocol(Protocol):
         Returns:
             One entry per item: the attributes an UpdateItem returned (when the
             item asked for ``ReturnValues``), else an empty dict. A backend may
-            return ``None``; callers then skip the post-credit ceiling check
-            (#679) rather than fail.
+            return ``None``; no caller depends on the result.
         """
         ...
 

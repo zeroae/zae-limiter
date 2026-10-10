@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from zae_limiter import Limit, RateLimiter, Repository
-from zae_limiter.models import QuotaDonorDebit
+from zae_limiter.models import CreditCeiling, QuotaDonorDebit
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
     BUCKET_FIELD_GC,
@@ -316,10 +316,28 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
 
-    def test_vu_reset(self) -> None:
-        """#679: forces a clamping pass after a credit above the ceiling."""
-        update = _repo().build_vu_reset("user-1", "api", shard_id=3)["Update"]
+    def test_self_trimming_credit(self) -> None:
+        """#721: each credited limit with a ceiling is conditioned on staying under it."""
+        update = _repo().build_composite_adjust(
+            "user-1",
+            "api",
+            deltas={DOTTED: -1000, "rpm": 0, HYPHENATED: -2000},
+            ceilings={
+                DOTTED: CreditCeiling(5000, 10_000, None, ("1h9-17s500", None)),
+                HYPHENATED: CreditCeiling(9000, 9000, 1, (None, "1m0h0")),
+            },
+            pin=(4, 1_800_000_000_000, ("1h9-17s500", None, "America/New_York")),
+        )["Update"]
         assert_expression_safe(update)
+        assert "ConditionExpression" in update
+
+    def test_trimmed_credit(self) -> None:
+        """#721: the fallback re-issues the credit with ``vu = 0`` in the same write."""
+        update = _repo().build_composite_adjust(
+            "user-1", "api", deltas={DOTTED: -1000, HYPHENATED: 2000}, shard_id=3, trim=True
+        )["Update"]
+        assert_expression_safe(update)
+        assert "ConditionExpression" not in update
 
     def test_quota_donor_debits(self) -> None:
         for item in _repo().build_quota_donor_debits(
