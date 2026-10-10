@@ -1322,7 +1322,12 @@ class Lease:
                 if deltas.get(entry.limit.name, 0) >= 0:
                     continue  # only a credit can lift a balance
                 value = attrs.get(bucket_attr(entry.limit.name, BUCKET_FIELD_TK))
-                if value is not None and int(value["N"]) > entry.state.ceiling_milli(now_ms):
+                # A top-up (`tu`, ADR-149) read by this lease may have been ended
+                # since by a reset or a period edge, so the in-memory ceiling is
+                # taken without it: a credit above `C // gc` alone forces the
+                # clamping pass, which reads the item's real `tu` (PR #720).
+                ceiling = entry.state.ceiling_milli(now_ms) - entry.state.report_top_up_milli
+                if value is not None and int(value["N"]) > ceiling:
                     resets.append(build(entity_id, resource, shard_id))
                     break
         return resets

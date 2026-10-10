@@ -953,7 +953,8 @@ class SyncLease:
                 if deltas.get(entry.limit.name, 0) >= 0:
                     continue
                 value = attrs.get(bucket_attr(entry.limit.name, BUCKET_FIELD_TK))
-                if value is not None and int(value["N"]) > entry.state.ceiling_milli(now_ms):
+                ceiling = entry.state.ceiling_milli(now_ms) - entry.state.report_top_up_milli
+                if value is not None and int(value["N"]) > ceiling:
                     resets.append(build(entity_id, resource, shard_id))
                     break
         return resets

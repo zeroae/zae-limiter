@@ -318,3 +318,60 @@ class TestResetRacingALostLock:
         after = sum(2 for ok in results if ok) + await _drain(slow, "e", name)
         # The old period's 10 plus exactly one allowance from the reset.
         assert 8 + after <= 20
+
+
+class TestRefundAfterATopUpEnded:
+    """PR #720 review, finding 4: a lease read with `tu`; a reset or the period
+    edge then removed it; the lease's refund must still force the clamping
+    pass, which the stale in-memory ceiling (`C // gc + tu`) skipped."""
+
+    async def _refund_into_new_period(self, limiter, clock, end_period) -> tuple[int | None, int]:
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await limiter.set_limits("e", [CAL], resource="r")
+        await repo.top_up("e", "r", {"cal": 5})  # tk 15, tu 5
+        clock[0] += 1
+        with pytest.raises(RuntimeError):
+            async with slow.acquire("e", "r", {"cal": 5}):  # tk 10
+                await end_period(repo)
+                assert await _try(slow, "e", {"cal": 1})  # the new period's first token
+                clock[0] += 1
+                raise RuntimeError("body fails")  # rollback credits 5 -> tk 14
+        item_vu = await _vu(repo, "e")
+        clock[0] += 1
+        return item_vu, 1 + await _drain(limiter, "e", "cal")
+
+    async def test_after_a_reset(self, limiter, clock):
+        async def reset(repo):
+            await repo.reset_bucket("e", "r")
+            clock[0] += 1
+
+        vu, admitted = await self._refund_into_new_period(limiter, clock, reset)
+        assert vu == 0  # the credit above C // gc forced a clamping pass
+        # The new period admits its 10 plus, until the refund write trims
+        # itself (#721), the one old-period token the clamp cannot tell apart.
+        assert admitted <= 11
+
+    async def test_after_the_period_edge(self, limiter, clock):
+        async def edge(repo):
+            clock[0] += DAY  # past midnight
+
+        vu, admitted = await self._refund_into_new_period(limiter, clock, edge)
+        assert vu == 0
+        assert admitted <= 11  # the no-top-up baseline today; 10 after #721
+
+
+async def _vu(repo, entity, resource="r", shard=0):
+    client = await repo._get_client()
+    item = (
+        await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity, resource, shard)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ConsistentRead=True,
+        )
+    )["Item"]
+    raw = item.get(schema.BUCKET_FIELD_VU)
+    return None if raw is None else int(raw["N"])
