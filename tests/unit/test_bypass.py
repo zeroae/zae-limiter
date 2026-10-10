@@ -296,6 +296,48 @@ class TestSlowPath:
         assert lease.bypassed is False
         assert _n(await _item(repo), "b_rpm_tk") < 1_000  # debited, enforced
 
+    async def test_an_undeclared_limit_is_not_written_under_bypass(self, repo, limiter):
+        await repo.set_resource_defaults("llm", [RPM, Limit.per_minute("tpm", 10)])
+        await _use(limiter)
+        await repo.bypass_resource("llm")
+        lease = await RateLimiter(repository=repo)._do_acquire("u", "llm", None, {"rpm": 1})
+        assert [e.limit.name for e in lease.entries] == ["rpm"]
+        await lease._commit_initial()
+        item = await _item(repo)
+        assert _n(item, "b_tpm_tc") == 0
+
+    async def _lose_the_create_race(self, repo, stamp: bool):
+        await repo.bypass_resource("llm")
+        cold = RateLimiter(repository=repo)
+        lease = await cold._do_acquire("u", "llm", None, {"rpm": 1})
+        # Another creator lands first.
+        other = await RateLimiter(repository=repo)._do_acquire("u", "llm", None, {"rpm": 1})
+        await other._commit_initial()
+        if not stamp:
+            await repo._stamp_bucket_disabled(_pk(repo), False)
+        return lease
+
+    async def test_a_bypassed_create_that_loses_its_race_counts_on_the_winner(self, repo, limiter):
+        lease = await self._lose_the_create_race(repo, stamp=True)
+        await lease._commit_initial()
+        item = await _item(repo)
+        assert _n(item, "b_rpm_tc") == 2_000
+        assert _n(item, "b_rpm_tk") == 2_000
+
+    async def test_a_lost_race_onto_an_unstamped_item_is_replanned(self, repo, limiter):
+        lease = await self._lose_the_create_race(repo, stamp=False)
+        with pytest.raises(BypassLostError):
+            await lease._commit_initial()
+
+    async def test_a_refund_of_nothing_writes_nothing(self, repo):
+        from zae_limiter.repository_protocol import SpeculativeResult
+
+        with patch.object(repo, "write_each") as write:
+            await repo._refund_bypassed_debit(
+                "u", "llm", {"rpm": 0}, 0, SpeculativeResult(success=True)
+            )
+        write.assert_not_called()
+
     def test_failure_attribution(self):
         def entry(bypass: bool, new: bool = False) -> LeaseEntry:
             return LeaseEntry(
