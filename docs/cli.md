@@ -38,7 +38,7 @@ The CLI respects standard AWS environment variables:
 Most data-access commands accept `--namespace` / `-N` to scope operations to a specific namespace. When omitted, operations default to the `"default"` namespace.
 
 !!! note "Namespace registration"
-    Commands that **write** (`set-*`, `delete-*`, `entity create`, `disable` / `enable` / `clear-disabled`, `set-cascade` / `clear-cascade`, `limits apply`) register the namespace if it does not exist yet. Commands that only **read** never do: they exit 1 and name the register command (see [Read-Only Commands](#read-only-commands)).
+    Commands that **write** (`set-*`, `delete-*`, `entity create`, `disable` / `enable` / `clear-disabled`, `set-cascade` / `clear-cascade`, `entity reset` / `entity top-up`, `limits apply`) register the namespace if it does not exist yet. Commands that only **read** never do: they exit 1 and name the register command (see [Read-Only Commands](#read-only-commands)).
 
 ```bash
 # Entity operations in a specific namespace
@@ -471,6 +471,52 @@ clearing a policy needs a stack whose Lambdas are 0.16.0 or later — otherwise 
 
 `resource get-defaults` and `entity get-limits` print `Cascade: on (explicit)` or
 `Cascade: off (explicit)` when that level sets a policy, and nothing when it inherits.
+
+## Reset and Top-Up
+
+`entity reset` and `entity top-up` change an entity's balance on one resource **now**, on every
+shard, without touching its configuration. Use them for a plan upgrade, a purchase of more
+allowance, or a support action that gives a user their allowance back. See
+[ADR-149](adr/149-reset-and-top-up.md) and the
+[Reset and Top-Up guide](guide/reset-and-top-up.md).
+
+```bash
+# Give user-123 its whole gpt-4 allowance back
+zae-limiter entity reset user-123 --resource gpt-4
+
+# Reset only the session quota
+zae-limiter entity reset user-123 -r claude --limit session
+
+# A purchase: 5,000 more session tokens, this period only
+zae-limiter entity top-up user-123 -r claude --add session:5000
+
+# A plan upgrade from 10,000 to 25,000 a day: new plan, then the difference
+zae-limiter entity set-limits user-123 -r claude -l ...
+zae-limiter entity top-up user-123 -r claude --add daily:15000
+```
+
+| Command | Option | Meaning |
+|---------|--------|---------|
+| `entity reset ID` | `--resource/-r` (required) | The resource to reset, one at a time |
+| | `--limit/-l` (repeatable) | Limits to reset; omit for every limit on the resource |
+| `entity top-up ID` | `--resource/-r` (required) | The resource to top up |
+| | `--add/-a LIMIT:N` (repeatable, required) | Add `N` whole tokens to `LIMIT`; repeats add up |
+
+**What each does**
+
+| Limit shape | `reset` | `top-up --add L:N` |
+|-------------|---------|--------------------|
+| Dripping (`rpm`, …) | Back to its ceiling; debt forgiven | At most the room below its ceiling (a refund). Less than asked is reported on stderr |
+| Calendar quota | Back to its share; a new period starts | Exactly `N`, above the plan if need be, until the next reset |
+| Session quota | Its current window ends; the next request opens a fresh one at its full share (the balance is left for that request to restore) | Exactly `N` until the window ends; with no live window, one opens now |
+
+Neither command touches the consumption counter, the `disabled` flag, configuration, the
+parent's buckets or other resources. A reset of an entity that has never acquired is a no-op;
+a quota top-up for one creates its bucket.
+
+A quota top-up needs a stack whose Lambdas are **0.17.0 or later** (an older aggregator would
+clamp the purchase away): otherwise the command exits 1 and names `zae-limiter upgrade`. The
+first top-up raises the stack's minimum client version to 0.17.0. A reset is not gated.
 
 ## Namespace Lifecycle
 

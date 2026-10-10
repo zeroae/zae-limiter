@@ -4376,6 +4376,190 @@ def entity_clear_cascade(
 
 
 @entity.command(
+    "reset",
+    epilog="""\b
+Examples:
+    \b
+    # Give user-123 its whole gpt-4 allowance back now
+    zae-limiter entity reset user-123 --resource gpt-4
+    \b
+    # Reset only the session quota, leaving the other limits as they are
+    zae-limiter entity reset user-123 -r claude --limit session
+""",
+)
+@click.argument("entity_id")
+@click.option("--resource", "-r", required=True, help="Resource to reset (one at a time).")
+@click.option(
+    "--limit",
+    "-l",
+    "limit_names",
+    multiple=True,
+    help="Limit to reset (repeatable). Omit to reset every limit on the resource.",
+)
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def entity_reset(
+    entity_id: str,
+    resource: str,
+    limit_names: tuple[str, ...],
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Restore an entity's balance on one resource to its full share, now.
+
+    ENTITY_ID is the entity (e.g., 'user-123'). Every shard of the bucket is
+    restored in one transaction: a dripping limit to its ceiling (debt is
+    forgiven), a calendar quota to its share as a new period, a session quota
+    to its share with its window ended, so the next request opens a fresh one.
+    The consumption counter, the disabled flag, config and the parent's buckets
+    are left alone. A bucket that does not exist yet is left alone too.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter entity reset user-123 --resource gpt-4
+        zae-limiter entity reset user-123 -r claude --limit session
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            result = await repo.reset_bucket(entity_id, resource, limits=list(limit_names) or None)
+            if not result.shards:
+                click.echo(f"Nothing to reset: '{entity_id}' has no bucket for '{resource}'")
+                return
+            restored = ", ".join(f"{k}: {v:+,}" for k, v in sorted(result.amounts.items()))
+            click.echo(f"Reset '{entity_id}' on '{resource}' ({result.shards} shards; {restored})")
+        except Exception as e:
+            click.echo(f"Error: Failed to reset bucket: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+def _parse_top_up(value: str) -> tuple[str, int]:
+    """Parse one ``--add LIMIT:N`` into ``(limit, whole tokens)``."""
+    limit_name, sep, amount = value.rpartition(":")
+    if not sep or not limit_name:
+        raise click.BadParameter(f"'{value}' is not LIMIT:N (e.g. 'session:5000')")
+    try:
+        tokens = int(amount.replace(",", "").replace("_", ""))
+    except ValueError:
+        raise click.BadParameter(f"'{amount}' in '{value}' is not a whole number") from None
+    if tokens <= 0:
+        raise click.BadParameter(f"'{value}': the amount must be positive")
+    return limit_name, tokens
+
+
+@entity.command(
+    "top-up",
+    epilog="""\b
+Examples:
+    \b
+    # A purchase: 5,000 more tokens of the session quota, this period only
+    zae-limiter entity top-up user-123 -r claude --add session:5000
+    \b
+    # A plan upgrade from 10,000 to 25,000: set the new plan, then add the difference
+    zae-limiter entity set-limits user-123 -r claude ...
+    zae-limiter entity top-up user-123 -r claude --add daily:15000
+""",
+)
+@click.argument("entity_id")
+@click.option("--resource", "-r", required=True, help="Resource to top up.")
+@click.option(
+    "--add",
+    "-a",
+    "additions",
+    multiple=True,
+    required=True,
+    help="LIMIT:N — add N whole tokens to LIMIT (repeatable).",
+)
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def entity_top_up(
+    entity_id: str,
+    resource: str,
+    additions: tuple[str, ...],
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Add tokens to an entity's balance on one resource, now.
+
+    ENTITY_ID is the entity (e.g., 'user-123'). A quota gains exactly N, above
+    its plan if need be, until its next reset or window end; a session quota
+    with no live window opens one. A dripping limit gains at most the room
+    below its ceiling. A quota top-up needs a stack whose Lambdas are 0.17.0 or
+    later (run 'zae-limiter upgrade' first if not).
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter entity top-up user-123 -r claude --add session:5000
+        zae-limiter entity top-up user-123 -r gpt-4 --add rpd:100 --add tpd:50000
+        ```
+    """
+    amounts: dict[str, int] = {}
+    for value in additions:
+        limit_name, tokens = _parse_top_up(value)
+        amounts[limit_name] = amounts.get(limit_name, 0) + tokens
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            result = await repo.top_up(entity_id, resource, amounts)
+            granted = ", ".join(f"{k}: +{v:,}" for k, v in sorted(result.amounts.items()))
+            click.echo(
+                f"Topped up '{entity_id}' on '{resource}' ({result.shards} shards; {granted})"
+            )
+            short = sorted(k for k, v in result.amounts.items() if v < amounts[k])
+            if short:
+                click.echo(
+                    f"Note: {', '.join(short)} granted less than asked: a dripping limit "
+                    "is never topped up past its ceiling, and a limit not yet on the "
+                    "bucket is granted nothing.",
+                    err=True,
+                )
+        except Exception as e:
+            click.echo(f"Error: Failed to top up bucket: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+@entity.command(
     "list",
     epilog="""\b
 Examples:
