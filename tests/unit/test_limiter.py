@@ -12996,11 +12996,20 @@ class TestTransactionConflictIsContention:
 
     LIMITS = [Limit.per_minute("rpm", 10)]
 
-    async def _inject(self, repo, entity_id: str, times: int, *, speculative_only: bool = True):
+    async def _inject(
+        self,
+        repo,
+        entity_id: str,
+        times: int,
+        *,
+        speculative_only: bool = True,
+        refunds_only: bool = False,
+    ):
         """Make the next ``times`` writes to ``entity_id``'s bucket conflict.
 
         ``speculative_only`` limits it to the fast path's conditional
-        ``UpdateItem`` (the only write carrying ``:thresh_wcu``).
+        ``UpdateItem`` (the only write carrying ``:thresh_wcu``);
+        ``refunds_only`` to every other ``UpdateItem`` (refunds, commits).
         """
         client = await repo._get_client()
         original = client.update_item
@@ -13009,11 +13018,11 @@ class TestTransactionConflictIsContention:
         async def conflicted(**kwargs):
             pk = kwargs.get("Key", {}).get("PK", {}).get("S", "")
             speculative = ":thresh_wcu" in kwargs.get("ExpressionAttributeValues", {})
-            if (
-                f"/BUCKET#{entity_id}#" in pk
-                and (speculative or not speculative_only)
-                and state["left"] > 0
-            ):
+            if refunds_only:
+                targeted = not speculative
+            else:
+                targeted = speculative or not speculative_only
+            if f"/BUCKET#{entity_id}#" in pk and targeted and state["left"] > 0:
                 state["left"] -= 1
                 state["hits"] += 1
                 raise _transaction_conflict()
@@ -13192,6 +13201,50 @@ class TestTransactionConflictIsContention:
 
         assert refunds["hits"] == 1
         assert await self._available(limiter, "user") == 9
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_lost_child_refund_still_rejects(self, limiter, monkeypatch, allow):
+        """A refund that stays conflicted must not turn a 429 into an admission.
+
+        The parent is exhausted and its fast-path write stays contended, so the
+        child's parallel debit is refunded — and that refund conflicts on every
+        attempt. The refund is best-effort: the request is still rejected, never
+        degraded under ALLOW nor ``RateLimiterUnavailable`` under BLOCK.
+        """
+        if allow:
+            self._allow(limiter, monkeypatch)
+        await self._cascade(limiter)
+        await self._acquire(limiter, "org", rpm=9)  # parent now at 0
+        repo = limiter._repository
+        await self._inject(repo, "org", 1000)
+        refunds = await self._inject(repo, "user", 1000, refunds_only=True)
+
+        for _ in range(3):
+            with pytest.raises(RateLimitExceeded):
+                await self._acquire(limiter, "user")
+
+        assert refunds["hits"] == 3 * 4  # every refund tried, every one lost
+        assert await self._available(limiter, "org") == 0
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_lost_parent_refund_still_falls_to_the_slow_path(
+        self, limiter, monkeypatch, allow
+    ):
+        """The child's write stays contended, the parent's parallel debit landed,
+        and its refund is lost: the acquire still takes the slow path."""
+        if allow:
+            self._allow(limiter, monkeypatch)
+        await self._cascade(limiter)
+        repo = limiter._repository
+        await self._inject(repo, "user", 1000)
+        refunds = await self._inject(repo, "org", 4, refunds_only=True)
+
+        await self._acquire(limiter, "user")
+
+        assert refunds["hits"] == 4
+        assert await self._available(limiter, "user") == 8
+        # The lost refund leaves the parallel debit standing on the parent.
+        assert await self._available(limiter, "org") == 7
 
     async def test_a_conflicted_slow_path_commit_is_retried(self, limiter):
         """A one-item slow-path commit goes out as a plain UpdateItem."""
