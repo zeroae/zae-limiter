@@ -33,7 +33,12 @@ ADR-146 cascade fan-out, which remains the only writer of `cascade` and `parent_
 bucket items outside the slow path's owner stamp. Each move must increment a parent
 generation on META; every write of `parent_id` to a bucket item (owner stamp, create,
 fan-out, provisioner fan-out) must carry the generation it read and must not overwrite a
-higher one, so a stale writer can lose but never undo a move. A bucket item stamped with a
+higher one, so a stale writer can lose but never undo a move. A write that creates a bucket
+item cannot be pinned, so every such write (the client's create, the aggregator's shard
+clone) must re-check the owner's generation against META with a strongly consistent read
+once it lands, and restamp through the pinned write when a move overtook it. An entity's
+generation must start at its creation instant, so a recreated entity outranks any bucket its
+predecessor left behind. A bucket item stamped with a
 generation is authoritative for both `cascade` and `parent_id`, including when it names no
 parent. On the warm path, when the child's returned item names a different parent from the
 one the cache debited, the limiter must refund that debit, debit the item's parent, and
@@ -62,6 +67,10 @@ by leases open across the move, stays where it was debited.
   chain.
 - The rf-locked write gains one condition term; losing it costs that acquire the
   consumption-only retry (one extra write), only in the move's race window.
+- Every bucket created costs one more strongly consistent read (1 RCU, once per shard), and
+  every aggregator record that clones shards one more; a restamp only when a move overtook
+  the create. A `ConditionCheck` would avoid the read but needs
+  `dynamodb:ConditionCheckItem`, which no shipped policy grants.
 
 ## Alternatives Considered
 

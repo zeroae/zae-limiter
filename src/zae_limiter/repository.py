@@ -680,6 +680,19 @@ class Repository:
 
         return self._caller_identity_arn
 
+    def _creation_generation(self) -> int:
+        """The parent generation a new entity starts at (ADR-150): now, in epoch ms.
+
+        Not 0: a bucket can outlive its entity (a delete that missed it in
+        GSI3, an acquire in flight across the delete) and keep the generation
+        the old entity reached. A recreated entity starting at 0 would sit
+        below it, and the slow path's owner stamp, pinned on ``pgen <= :read``,
+        would fail on that bucket forever, leaving the old parent on it. A
+        creation instant is above every generation the old entity reached,
+        since a move adds 1 and no entity is moved once per millisecond.
+        """
+        return self._now_ms()
+
     def _now_ms(self) -> int:
         """Current time in epoch milliseconds — the token-bucket clock (#430).
 
@@ -1817,6 +1830,7 @@ class Repository:
 
         client = await self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        generation = self._creation_generation()
 
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
@@ -1825,6 +1839,7 @@ class Repository:
             "name": {"S": name or entity_id},
             "parent_id": {"S": parent_id} if parent_id else {"NULL": True},
             "cascade": {"BOOL": cascade},
+            schema.ENTITY_FIELD_PGEN: {"N": str(generation)},
             "metadata": {"M": self._serialize_map(metadata or {})},
             "created_at": {"S": now},
             # GSI4: namespace-scoped item discovery
@@ -1867,6 +1882,7 @@ class Repository:
             cascade=cascade,
             metadata=metadata or {},
             created_at=now,
+            parent_generation=generation,
         )
 
     async def get_entity(self, entity_id: str, *, consistent_read: bool = False) -> Entity | None:
@@ -3748,17 +3764,18 @@ class Repository:
                     # does not cascade is judged as such (no parent outranks
                     # it, and the child-only shard retry stays open). With no
                     # image (a missing bucket) or a pre-#684 stamp, the cache's
-                    # answer stands. parent_id is always the cached one: it is
-                    # the parent this path wrote to, and the caller compensates
-                    # it if that write landed.
+                    # answer stands, and so does its parent.
                     #
                     # A stamp with a parent generation is a policy too, even
-                    # with no parent (ADR-150: a move to no parent), and the
+                    # with no parent (ADR-150: a move to no parent), and its
+                    # parent is the item's, which a move can make differ from
+                    # the one this path wrote to (`debited_parent_id`, below,
+                    # which the caller compensates if that write landed). The
                     # image already taught the cache the item's parent, for the
                     # next call.
                     if not child_result.stamp_is_policy:
                         child_result.cascade = cascade_cached
-                    child_result.parent_id = parent_id_cached
+                        child_result.parent_id = parent_id_cached
                 child_result.parent_result = parent_result
                 # The parent this path debited, which after a move the item's
                 # `parent_id` can contradict (ADR-150): the limiter refunds it.
@@ -8177,6 +8194,35 @@ class Repository:
                 raise
             # Bucket vanished between discovery and stamp, or a newer move
             # already stamped it — nothing to restamp either way.
+
+    async def repair_created_owner_stamp(
+        self, entity_id: str, resource: str, shard_id: int, stamped_pgen: int
+    ) -> bool:
+        """Restamp a bucket just created from a META read a move has overtaken (ADR-150).
+
+        One strongly consistent read of the owner's META (1 RCU). When its
+        parent generation still equals the one the create stamped, nothing is
+        written. Otherwise the bucket gets the move's stamp — the policy
+        resolved for this resource (3 consistent reads) and the new parent —
+        through the fan-out's own pinned write, so a newer stamp is never
+        lowered.
+
+        Returns:
+            Whether the bucket was restamped.
+        """
+        owner = await self.get_entity(entity_id, consistent_read=True)
+        if owner is None or owner.parent_generation == stamped_pgen:
+            return False
+        access = await self.resolve_access(entity_id, resource, consistent_read=True)
+        cascade = effective_cascade(access.cascade, owner)
+        await self._stamp_bucket_cascade(
+            schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id),
+            cascade,
+            owner.parent_id,
+            owner.parent_generation,
+        )
+        self._cascade_cache[(self._namespace_id, entity_id, resource)] = cascade
+        return True
 
     async def _fanout_cascade(
         self, *, resource: str | None = None, entity_id: str | None = None

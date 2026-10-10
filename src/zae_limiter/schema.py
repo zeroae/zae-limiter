@@ -184,8 +184,10 @@ BUCKET_FIELD_DISABLED = "disabled"
 # policy for that (entity, resource).
 CONFIG_FIELD_CASCADE = "cascade"
 
-# Parent generation (ADR-150). A number on an entity's META, incremented by
-# every move to a new parent (absent = 0), and on its bucket items beside the
+# Parent generation (ADR-150). A number on an entity's META, set to the
+# creation instant (epoch ms) by `create_entity` so a recreated entity is never
+# below a bucket its predecessor left, incremented by every move to a new
+# parent (absent = 0, an entity created before v0.17), and on its bucket items beside the
 # `cascade` / `parent_id` owner stamp: every writer of that stamp carries the
 # generation it read and is conditioned on not lowering it, so a writer that
 # read META before a move can lose but never undo it. A bucket item carrying

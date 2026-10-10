@@ -100,14 +100,35 @@ consistent META read does not help: S can read before t1 and write after t2.
 
 **Fix:** `pgen` (number) on META and on bucket items.
 
-- META: incremented by every move; absent = 0.
+- META: set to the creation instant (epoch ms) by `create_entity`, incremented by every
+  move; absent = 0 (an entity created before v0.17). Not 0 at creation: a bucket can
+  outlive its entity (a delete whose GSI3 query missed it, an acquire in flight across
+  the delete) and keep the generation the old entity reached; a recreated entity
+  starting at 0 would sit below it, and the owner-stamp pin would fail on that bucket
+  forever, leaving the old parent on it (review of #716, finding 4).
 - Every writer of `parent_id`/`cascade` onto a bucket writes the `pgen` it read beside them and
   adds `attribute_not_exists(pgen) OR pgen <= :pgen` to its condition:
   - **owner stamp** in `build_composite_normal` — a lost pin fails the transaction like a lost
     `rf` lock and goes down the existing consumption-only retry, which stamps no owner;
-  - **create `Put`** — a `Put` cannot condition on attributes of an item that does not exist,
-    and none does; a stale create is the ADR-125 two-pass race (fan-out pass 2 catches it,
-    and its stamp, carrying the higher `pgen`, wins);
+  - **create `Put`** — a `Put` cannot condition on attributes of an item that does not exist.
+    The two-pass fan-out does **not** cover it (review of #716, finding 2): a create that read
+    META before the move can land after both passes, on a resource that had no bucket when
+    the move ran. So after the write, each created bucket's owner META is read once, strongly
+    consistent (`Lease._repair_created_owner_stamps` →
+    `Repository.repair_created_owner_stamp`, +1 RCU per bucket created), and when its
+    generation moved the bucket is restamped through the fan-out's pinned write. A move whose
+    META write follows that read fans out after the bucket exists and finds it (the ADR-125
+    GSI3 lag residual, nothing new). Not a `ConditionCheck` on META inside the create's
+    transaction: no shipped policy grants `dynamodb:ConditionCheckItem`, so an application
+    role on the acquire-only policy would be refused on every create, and a lone `Put` would
+    become a 2-item transaction (4 WCU instead of 1);
+  - **aggregator Path 2 clone** — copies shard 0's stamp from a stream image that can predate
+    the move, again after the fan-out ran (finding 3). After the clones land the aggregator
+    reads the owner's META once per record (strongly consistent, 1 RCU) and, when the
+    generation differs from the image's, restamps each clone with META's parent and the
+    ADR-146 policy walk (consistent reads), through the same pinned write
+    (`processor._repair_clone_owner_stamps`). Same reason as above for a read rather than a
+    `ConditionCheck`: the aggregator role has no `ConditionCheckItem` either;
   - **fan-out stamp** (`_stamp_bucket_cascade`, provisioner `stamp_bucket_cascade`) — a lost
     pin means a newer move already stamped this bucket: skip, as for a vanished bucket. Two
     concurrent moves therefore converge on the later one on every bucket.
@@ -131,9 +152,15 @@ In `RateLimiter` after the parallel write, extend the ADR-146 mismatch handling:
 | no cascade, parent P2 | P1 | existing ADR-146 refund | unchanged |
 
 If the P2 write is rejected the lease fails exactly as a cold-path parent rejection does,
-with the child compensated (existing `_handle_nested_parent_failure` route). A child
-**failure** image keeps today's handling (cache's parent stands for the compensation of the
-write that actually landed), but learns the item's parent for the next call.
+with the child compensated (existing `_handle_nested_parent_failure` route). After the refund
+the result no longer names P1 as the debited parent, so every later step — the parent-only
+slow path when a refill would help P2, a disabled parent's 403, a `wcu` doubling — acts on P2
+(review of #716, finding 1: it used to run the parent-only acquire against P1).
+
+A child **failure** image compensates the write that actually landed (the cached parent,
+`debited_parent_id`) and learns the item's parent for the next call. A disabled cached parent
+outranks the child's own failure only when the item names that same parent; a parent the
+child has been moved away from cannot 403 it (finding 5).
 
 Sequential path and slow path need no change: both act on the item's or META's parent.
 
@@ -165,7 +192,11 @@ is not moved". A lease opened after the stamp holds the new parent. Leases are n
   quota's grants (`gc`), donors and periods are per (entity, resource). Nothing in a child's
   bucket refers to a parent's grant, so a move moves no allowance. The new parent's session
   windows (ADR-139/140) are the new parent's own. **Confirmed: nothing moves.**
-- **Aggregator:** reads neither attribute; Path 2 clones copy `pgen` with the rest. No change.
+- **Aggregator:** its refill reads neither attribute. Path 2 clones copy `cascade`,
+  `parent_id` and `pgen` from the stream image, which can predate a move, so the clone path
+  re-checks the owner's META after the clones land and restamps them (§4). Not "no
+  change", as this design first said: the review of #716 measured 9 of 20 debits going
+  to the old parent from clones of a lagging record.
 - **Rejection cache (ADR-147):** a move is an admin write and clears this process's cache.
   `TestChangesElsewhere` gets a case: a move made by a second `Repository` → the next acquire
   debits the new parent and admits exactly what DynamoDB alone would.
@@ -216,7 +247,10 @@ Per move, entity with R resources × S shards each, ancestor depth d, on-demand 
 (94 × $0.125 + 32 × $0.625). Admin path; a move per user per month is negligible.
 
 Per acquire: **unchanged** (fast path 0 RCU + 1 WCU; `pgen` is one condition term on the
-rf-locked write). After a move, once per (process, entity): **+2 WCU** (refund + new-parent
+rf-locked write). Per bucket **created** (first acquire of an entity on a resource, or a new
+shard): **+1 RCU**, the strongly consistent owner check (§4), ~$0.125/M creates; a restamp
+(+1 WCU, + 4 RCU for the policy) only when a move overtook the create. Per aggregator record
+that clones shards: +1 RCU, the same check. After a move, once per (process, entity): **+2 WCU** (refund + new-parent
 write replace a plain parent write: +1 WCU net over a normal cascade call, ~$0.625/M of those
 calls). A lost `pgen` pin: +1 WCU (the retry), only inside a move's race window.
 

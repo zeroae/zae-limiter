@@ -970,9 +970,10 @@ class RateLimiter:
 
             # Child failed — check if parent was also tried (parallel path)
             if result.parent_result is not None and result.parent_result.success:
-                assert result.parent_id is not None  # set by repository cache path
+                debited = result.debited_parent_id or result.parent_id
+                assert debited is not None  # set by repository cache path
                 await self._compensate_speculative(
-                    result.parent_id, resource, consume, result.parent_result.shard_id
+                    debited, resource, consume, result.parent_result.shard_id
                 )
 
             # Disabled: no shard retry or doubling can help (ADR-125).
@@ -989,10 +990,14 @@ class RateLimiter:
             # Only when the child cascades on this resource (ADR-146): the
             # parallel write followed the cache's guess, and a child whose own
             # stamp says it does not cascade is not answerable to that parent.
+            # Nor to one it has been moved away from (ADR-150): the parallel
+            # write went to the cached parent, and when the item names another
+            # one this falls through to the child's own failure.
             if (
                 result.cascade
                 and result.parent_result is not None
                 and result.parent_result.failure_reason == SpeculativeFailureReason.DISABLED
+                and result.debited_parent_id in (None, result.parent_id)
             ):
                 assert result.parent_id is not None  # set by repository cache path
                 raise ResourceDisabled(
@@ -1123,6 +1128,10 @@ class RateLimiter:
                     parent_result.shard_id,
                 )
             result.parent_result = None
+            # Refunded: from here on the only parent this call can debit is
+            # the item's. Every later use (the parent-only acquire, a disabled
+            # parent's 403, a wcu doubling) must name it, never the old one.
+            result.debited_parent_id = None
 
         # Handle parent result from parallel path (issue #318)
         if result.parent_result is not None:

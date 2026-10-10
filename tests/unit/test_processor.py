@@ -10,7 +10,7 @@ import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
 
 from zae_limiter.schedule import ScheduleEntry, decode, decode_reset
-from zae_limiter.schema import BUCKET_SCHED_NONE
+from zae_limiter.schema import BUCKET_SCHED_NONE, sk_meta
 from zae_limiter_aggregator.processor import (
     BucketRefillState,
     ConsumptionDelta,
@@ -2058,6 +2058,12 @@ class TestTryProactiveShard:
         assert result is True  # 10% remaining < 20% threshold
 
 
+def _assert_only_the_owner_read(table: MagicMock) -> None:
+    """No sibling was read: the one GetItem is the clone owner check's META read (ADR-150)."""
+    keys = [c.kwargs["Key"] for c in table.get_item.call_args_list]
+    assert keys and all(key["SK"] == sk_meta() for key in keys), keys
+
+
 class TestPropagateShardsCount:
     """Tests for propagate_shard_count function."""
 
@@ -2202,6 +2208,7 @@ class TestPropagateShardsCount:
             },
         }
         mock_table = MagicMock()
+        mock_table.get_item.return_value = {}  # no META: no owner stamp to check (ADR-150)
         propagated = propagate_shard_count(mock_table, record)
 
         # Shard 1 is EXISTING (update only), shards 2 and 3 are NEW (put)
@@ -3759,13 +3766,14 @@ class TestQuotaShardCloneIsAMove:
         sibling at all, so a dripping limit's clone is sized at the record's
         count exactly as before."""
         table = MagicMock()
+        table.get_item.return_value = {}
         record = _sched_record(
             limits={"rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0}},
             shard_count=2,
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        table.get_item.assert_not_called()
+        _assert_only_the_owner_read(table)
 
     def test_a_spent_parent_funds_nothing(self, mock_dynamodb) -> None:
         """#587 itself, under ADR-145: the parent's grant covers the clone's
@@ -3909,7 +3917,7 @@ class TestQuotaShardCloneIsAMove:
         item = table.put_item.call_args.kwargs["Item"]
         assert item["b_rpd_tk"] == 5_000_000
         assert "b_rpd_gc" not in item
-        table.get_item.assert_not_called()
+        _assert_only_the_owner_read(table)
 
     def test_the_unscheduled_marker_blocks_inheriting_the_items_reset(self) -> None:
         """#541's marker means "this limit declares none", so it is not a quota

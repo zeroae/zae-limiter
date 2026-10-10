@@ -581,6 +581,19 @@ class SyncRepository:
             self._caller_identity_arn = None
         return self._caller_identity_arn
 
+    def _creation_generation(self) -> int:
+        """The parent generation a new entity starts at (ADR-150): now, in epoch ms.
+
+        Not 0: a bucket can outlive its entity (a delete that missed it in
+        GSI3, an acquire in flight across the delete) and keep the generation
+        the old entity reached. A recreated entity starting at 0 would sit
+        below it, and the slow path's owner stamp, pinned on ``pgen <= :read``,
+        would fail on that bucket forever, leaving the old parent on it. A
+        creation instant is above every generation the old entity reached,
+        since a move adds 1 and no entity is moved once per millisecond.
+        """
+        return self._now_ms()
+
     def _now_ms(self) -> int:
         """Current time in epoch milliseconds — the token-bucket clock (#430).
 
@@ -1538,6 +1551,7 @@ class SyncRepository:
             validate_identifier(parent_id, "parent_id")
         client = self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        generation = self._creation_generation()
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_meta()},
@@ -1545,6 +1559,7 @@ class SyncRepository:
             "name": {"S": name or entity_id},
             "parent_id": {"S": parent_id} if parent_id else {"NULL": True},
             "cascade": {"BOOL": cascade},
+            schema.ENTITY_FIELD_PGEN: {"N": str(generation)},
             "metadata": {"M": self._serialize_map(metadata or {})},
             "created_at": {"S": now},
             "GSI4PK": {"S": self._namespace_id},
@@ -1579,6 +1594,7 @@ class SyncRepository:
             cascade=cascade,
             metadata=metadata or {},
             created_at=now,
+            parent_generation=generation,
         )
 
     def get_entity(self, entity_id: str, *, consistent_read: bool = False) -> Entity | None:
@@ -3152,9 +3168,8 @@ class SyncRepository:
                         meta=(child_result.cascade, child_result.parent_id),
                         pgen=child_result.pgen,
                     )
-                else:
-                    if not child_result.stamp_is_policy:
-                        child_result.cascade = cascade_cached
+                elif not child_result.stamp_is_policy:
+                    child_result.cascade = cascade_cached
                     child_result.parent_id = parent_id_cached
                 child_result.parent_result = parent_result
                 child_result.debited_parent_id = parent_id_cached
@@ -6788,6 +6803,35 @@ class SyncRepository:
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                 raise
+
+    def repair_created_owner_stamp(
+        self, entity_id: str, resource: str, shard_id: int, stamped_pgen: int
+    ) -> bool:
+        """Restamp a bucket just created from a META read a move has overtaken (ADR-150).
+
+        One strongly consistent read of the owner's META (1 RCU). When its
+        parent generation still equals the one the create stamped, nothing is
+        written. Otherwise the bucket gets the move's stamp — the policy
+        resolved for this resource (3 consistent reads) and the new parent —
+        through the fan-out's own pinned write, so a newer stamp is never
+        lowered.
+
+        Returns:
+            Whether the bucket was restamped.
+        """
+        owner = self.get_entity(entity_id, consistent_read=True)
+        if owner is None or owner.parent_generation == stamped_pgen:
+            return False
+        access = self.resolve_access(entity_id, resource, consistent_read=True)
+        cascade = effective_cascade(access.cascade, owner)
+        self._stamp_bucket_cascade(
+            schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id),
+            cascade,
+            owner.parent_id,
+            owner.parent_generation,
+        )
+        self._cascade_cache[self._namespace_id, entity_id, resource] = cascade
+        return True
 
     def _fanout_cascade(self, *, resource: str | None = None, entity_id: str | None = None) -> int:
         """Restamp every bucket a cascade-policy change can reach (ADR-146).
