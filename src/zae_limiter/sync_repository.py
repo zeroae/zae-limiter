@@ -7087,7 +7087,9 @@ class SyncRepository:
                         eid, bucket_resource, consistent_read=True
                     )
                 level, softness = resolved[key]
-                if level in ("entity", "entity_default"):
+                if level in ("entity", "entity_default") or (
+                    resource is None and level == "resource"
+                ):
                     continue
                 targets = {name: softness.get(name, False) for name in names | set(softness)}
                 try:

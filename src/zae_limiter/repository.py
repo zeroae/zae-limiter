@@ -8516,7 +8516,12 @@ class Repository:
                         eid, bucket_resource, consistent_read=True
                     )
                 level, softness = resolved[key]
-                if level in ("entity", "entity_default"):
+                # The changed level decides only buckets that resolve from it
+                # or from below it: an entity override owns its stamps, and
+                # under a system change so does a resource level.
+                if level in ("entity", "entity_default") or (
+                    resource is None and level == "resource"
+                ):
                     continue
                 targets = {name: softness.get(name, False) for name in names | set(softness)}
                 try:
