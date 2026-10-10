@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         BackendCapabilities,
         BucketState,
         ConfigAccess,
+        CreditCeiling,
         Entity,
         Limit,
         OnUnavailableAction,
@@ -698,8 +699,9 @@ class RepositoryProtocol(Protocol):
         resource: str,
         deltas: dict[str, int],
         shard_id: int = 0,
-        ceilings: dict[str, int] | None = None,
+        ceilings: "dict[str, CreditCeiling] | None" = None,
         trim: bool = False,
+        pin: tuple[int, int | None] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
@@ -711,14 +713,19 @@ class RepositoryProtocol(Protocol):
             entity_id: Entity owning the bucket
             resource: Resource name
             deltas: Delta per limit (millitokens, positive=consume, negative=release)
-            ceilings: Limit name -> the shard's ceiling (millitokens). Each
-                credited limit named here is conditioned on its balance staying
-                at or below the ceiling after the credit (#721); a failed
-                condition raises ``ConditionalCheckFailedException`` and the
-                caller re-issues the credit with ``trim=True``.
+            ceilings: Limit name -> ``CreditCeiling``. Each credited limit
+                named here is conditioned on its balance staying at or below
+                the ceiling after the credit, and on the stored ``cp`` / ``gc``
+                the ceiling was computed from (#721); a failed condition raises
+                ``ConditionalCheckFailedException`` and the caller re-issues
+                the credit with ``trim=True``.
             trim: Build the fallback: the same unconditional ADD plus
                 ``SET vu = 0`` in one write, so the speculative fast path cannot
                 spend a balance above the ceiling before a slow pass clamps it.
+            pin: The item's (``shard_count``, ``vu``) the ceilings were computed
+                against (``vu`` ``None`` = absent), pinned beside them: a
+                doubling, a schedule change or a reset may have lowered the
+                real ceiling.
         """
         ...
 

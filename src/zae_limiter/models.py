@@ -2179,6 +2179,22 @@ class QuotaGrant:
 
 
 @dataclass(frozen=True)
+class CreditCeiling:
+    """What a self-trimming credit (#721) checks one credited limit against.
+
+    ``ceiling_milli`` is ``BucketState.ceiling_milli`` from the caller's state.
+    That state can be stale, so the write also pins what the ceiling was
+    computed from and can be lowered by: the stored base capacity
+    (``b_{name}_cp``, moved by a limit change) and the quota grant count
+    (``b_{name}_gc``, moved by a re-grant; ``None`` = absent).
+    """
+
+    ceiling_milli: int
+    capacity_milli: int
+    grant_count: int | None
+
+
+@dataclass(frozen=True)
 class QuotaDonorDebit:
     """The donor side of one ADR-145 move: ``tokens_milli`` off ``shard_id``.
 

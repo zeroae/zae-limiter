@@ -16,7 +16,7 @@ from zae_limiter.exceptions import (
     RateLimiterUnavailable,
     VersionMismatchError,
 )
-from zae_limiter.models import BucketState
+from zae_limiter.models import BucketState, CreditCeiling
 from zae_limiter.repository import Repository
 from zae_limiter.repository_protocol import SpeculativeFailureReason
 from zae_limiter.schedule import ScheduleEntry
@@ -883,13 +883,56 @@ class TestCompositeWritePaths:
             entity_id="entity-1",
             resource="gpt-4",
             deltas={"rpm": 3000, "tpm": -500, "rpd": -2000},
-            ceilings={"rpm": 9000, "tpm": 10_000},  # rpd has none: unconditional
+            # rpd has none: unconditional
+            ceilings={
+                "rpm": CreditCeiling(9000, 9000, None),
+                "tpm": CreditCeiling(10_000, 20_000, 2),
+            },
         )["Update"]
 
-        assert update["ConditionExpression"] == "#bt1 <= :bm1"
-        assert update["ExpressionAttributeValues"][":bm1"] == {"N": "9500"}
-        assert ":bm0" not in update["ExpressionAttributeValues"]  # a debit
+        # Without a pin: the balance bound, plus what the ceiling came from.
+        assert update["ConditionExpression"] == "#bt1 <= :bm1 AND #bp1 = :bp1 AND #bg1 = :bg1"
+        values = update["ExpressionAttributeValues"]
+        assert values[":bm1"] == {"N": "9500"}
+        assert (values[":bp1"], values[":bg1"]) == ({"N": "20000"}, {"N": "2"})
+        assert update["ExpressionAttributeNames"]["#bg1"] == "b_tpm_gc"
+        assert ":bm0" not in values  # a debit
         assert "SET" not in update["UpdateExpression"]
+
+    @pytest.mark.asyncio
+    async def test_build_composite_adjust_pins_the_shard_count_and_vu(self, repo):
+        """#721: a doubling, a schedule change or a reset since the state was read
+        moves one of these, so the in-memory ceiling is trusted only while they hold."""
+        absent = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": -500},
+            ceilings={"rpm": CreditCeiling(10_000, 10_000, None)},
+            pin=(1, None),
+        )["Update"]
+        assert absent["ConditionExpression"] == (
+            "#bt0 <= :bm0 AND #bp0 = :bp0 AND attribute_not_exists(#bg0)"
+            " AND (attribute_not_exists(#bsc) OR #bsc = :bsc)"
+            " AND attribute_not_exists(#bvu)"
+        )
+
+        stamped = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": -500},
+            ceilings={"rpm": CreditCeiling(10_000, 10_000, None)},
+            pin=(4, 1_800_000_000_000),
+        )["Update"]
+        assert stamped["ConditionExpression"].endswith(" AND #bsc = :bsc AND #bvu = :bvu")
+        assert stamped["ExpressionAttributeValues"][":bsc"] == {"N": "4"}
+        assert stamped["ExpressionAttributeValues"][":bvu"] == {"N": "1800000000000"}
+
+    @pytest.mark.asyncio
+    async def test_build_composite_adjust_pins_nothing_without_a_credit_condition(self, repo):
+        update = repo.build_composite_adjust(
+            entity_id="entity-1", resource="gpt-4", deltas={"rpm": 500}, pin=(1, None)
+        )["Update"]
+        assert "ConditionExpression" not in update
 
     @pytest.mark.asyncio
     async def test_build_composite_adjust_trim_stamps_vu_in_the_same_write(self, repo):
@@ -898,8 +941,9 @@ class TestCompositeWritePaths:
             entity_id="entity-1",
             resource="gpt-4",
             deltas={"rpm": -500},
-            ceilings={"rpm": 10_000},
+            ceilings={"rpm": CreditCeiling(10_000, 10_000, None)},
             trim=True,
+            pin=(1, None),
         )["Update"]
 
         assert "ConditionExpression" not in update

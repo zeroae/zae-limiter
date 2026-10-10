@@ -22,7 +22,7 @@ from zae_limiter.exceptions import (
     RateLimiterUnavailable,
     VersionMismatchError,
 )
-from zae_limiter.models import BucketState
+from zae_limiter.models import BucketState, CreditCeiling
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
     BUCKET_FIELD_DISABLED,
@@ -677,12 +677,49 @@ class TestCompositeWritePaths:
             entity_id="entity-1",
             resource="gpt-4",
             deltas={"rpm": 3000, "tpm": -500, "rpd": -2000},
-            ceilings={"rpm": 9000, "tpm": 10000},
+            ceilings={
+                "rpm": CreditCeiling(9000, 9000, None),
+                "tpm": CreditCeiling(10000, 20000, 2),
+            },
         )["Update"]
-        assert update["ConditionExpression"] == "#bt1 <= :bm1"
-        assert update["ExpressionAttributeValues"][":bm1"] == {"N": "9500"}
-        assert ":bm0" not in update["ExpressionAttributeValues"]
+        assert update["ConditionExpression"] == "#bt1 <= :bm1 AND #bp1 = :bp1 AND #bg1 = :bg1"
+        values = update["ExpressionAttributeValues"]
+        assert values[":bm1"] == {"N": "9500"}
+        assert (values[":bp1"], values[":bg1"]) == ({"N": "20000"}, {"N": "2"})
+        assert update["ExpressionAttributeNames"]["#bg1"] == "b_tpm_gc"
+        assert ":bm0" not in values
         assert "SET" not in update["UpdateExpression"]
+
+    def test_build_composite_adjust_pins_the_shard_count_and_vu(self, repo):
+        """#721: a doubling, a schedule change or a reset since the state was read
+        moves one of these, so the in-memory ceiling is trusted only while they hold."""
+        absent = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": -500},
+            ceilings={"rpm": CreditCeiling(10000, 10000, None)},
+            pin=(1, None),
+        )["Update"]
+        assert (
+            absent["ConditionExpression"]
+            == "#bt0 <= :bm0 AND #bp0 = :bp0 AND attribute_not_exists(#bg0) AND (attribute_not_exists(#bsc) OR #bsc = :bsc) AND attribute_not_exists(#bvu)"
+        )
+        stamped = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": -500},
+            ceilings={"rpm": CreditCeiling(10000, 10000, None)},
+            pin=(4, 1800000000000),
+        )["Update"]
+        assert stamped["ConditionExpression"].endswith(" AND #bsc = :bsc AND #bvu = :bvu")
+        assert stamped["ExpressionAttributeValues"][":bsc"] == {"N": "4"}
+        assert stamped["ExpressionAttributeValues"][":bvu"] == {"N": "1800000000000"}
+
+    def test_build_composite_adjust_pins_nothing_without_a_credit_condition(self, repo):
+        update = repo.build_composite_adjust(
+            entity_id="entity-1", resource="gpt-4", deltas={"rpm": 500}, pin=(1, None)
+        )["Update"]
+        assert "ConditionExpression" not in update
 
     def test_build_composite_adjust_trim_stamps_vu_in_the_same_write(self, repo):
         """The fallback (#721): the same ADD, unconditional, plus `vu = 0`."""
@@ -690,8 +727,9 @@ class TestCompositeWritePaths:
             entity_id="entity-1",
             resource="gpt-4",
             deltas={"rpm": -500},
-            ceilings={"rpm": 10000},
+            ceilings={"rpm": CreditCeiling(10000, 10000, None)},
             trim=True,
+            pin=(1, None),
         )["Update"]
         assert "ConditionExpression" not in update
         assert update["UpdateExpression"] == "SET #vu = :vuz ADD #bt0 :bd0, #bc0 :bcd0"

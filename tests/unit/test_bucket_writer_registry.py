@@ -33,7 +33,7 @@ from datetime import timedelta
 from typing import Any
 
 from zae_limiter import Limit, Repository
-from zae_limiter.models import BucketState, QuotaDonorDebit
+from zae_limiter.models import BucketState, CreditCeiling, QuotaDonorDebit
 from zae_limiter.schema import BUCKET_FIELD_GC
 from zae_limiter_aggregator import processor
 
@@ -235,7 +235,11 @@ def _non_gc_builds() -> dict[str, list[dict[str, Any]]]:
             repo.build_composite_adjust("e", "r", deltas={"cal": 1_000, "ses": -1_000})["Update"],
             # The self-trimming credit and its fallback (#721).
             repo.build_composite_adjust(
-                "e", "r", deltas={"cal": -1_000, "ses": -1_000}, ceilings={"cal": 5_000}
+                "e",
+                "r",
+                deltas={"cal": -1_000, "ses": -1_000},
+                ceilings={"cal": CreditCeiling(5_000, 10_000, 2)},
+                pin=(2, None),
             )["Update"],
             repo.build_composite_adjust("e", "r", deltas={"cal": -1_000, "ses": -1_000}, trim=True)[
                 "Update"

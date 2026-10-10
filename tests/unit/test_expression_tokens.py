@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from zae_limiter import Limit, RateLimiter, Repository
-from zae_limiter.models import QuotaDonorDebit
+from zae_limiter.models import CreditCeiling, QuotaDonorDebit
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
     BUCKET_FIELD_GC,
@@ -322,7 +322,11 @@ class TestCompositeBuilders:
             "user-1",
             "api",
             deltas={DOTTED: -1000, "rpm": 0, HYPHENATED: -2000},
-            ceilings={DOTTED: 5000, HYPHENATED: 9000},
+            ceilings={
+                DOTTED: CreditCeiling(5000, 10_000, None),
+                HYPHENATED: CreditCeiling(9000, 9000, 1),
+            },
+            pin=(4, 1_800_000_000_000),
         )["Update"]
         assert_expression_safe(update)
         assert "ConditionExpression" in update

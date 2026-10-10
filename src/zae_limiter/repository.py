@@ -28,6 +28,7 @@ from .models import (
     BackendCapabilities,
     BucketState,
     ConfigAccess,
+    CreditCeiling,
     Entity,
     Limit,
     OnUnavailableAction,
@@ -3228,8 +3229,9 @@ class Repository:
         resource: str,
         deltas: dict[str, int],
         shard_id: int = 0,
-        ceilings: dict[str, int] | None = None,
+        ceilings: dict[str, CreditCeiling] | None = None,
         trim: bool = False,
+        pin: tuple[int, int | None] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
@@ -3238,13 +3240,17 @@ class Repository:
         Negative delta = consumed less (add tokens, subtract from counter).
 
         A credit is **self-trimming** (#680, #721). With ``ceilings`` (limit name
-        -> the shard's ``BucketState.ceiling_milli``), every credited limit that
-        has one is conditioned on ``tk <= ceiling - credit``: the credit lands
-        only if the balance stays at or below the ceiling. When that fails — a
-        reset edge or a refill to capacity landed after the debit — the caller
-        re-issues the credit with ``trim=True``: the same unconditional ``ADD``
-        plus ``SET vu = 0`` in one write. A debit, or a credit with no known
-        ceiling, stays unconditional.
+        -> ``CreditCeiling``), every credited limit that has one is conditioned
+        on ``tk <= ceiling - credit``: the credit lands only if the balance
+        stays at or below the ceiling. The ceiling is the caller's, computed
+        from a state that may be stale, so the condition also pins everything
+        that state's ceiling was computed from and that a write can lower: the
+        limit's stored ``cp`` and ``gc``, and, from ``pin``, the item's
+        ``shard_count`` and ``vu`` (``None`` = absent). When the condition
+        fails — a reset edge, a refill to capacity, a doubling, a re-grant, a
+        changed limit — the caller re-issues the credit with ``trim=True``: the
+        same unconditional ``ADD`` plus ``SET vu = 0`` in one write. A debit,
+        or a credit with no known ceiling, stays unconditional.
 
         Every refund, release, rollback and speculative compensation is built
         here, so the shard's cached state is forgotten here (ADR-147): tokens
@@ -3279,9 +3285,20 @@ class Repository:
             if delta < 0 and not trim and name in ceilings:
                 # Self-trimming credit (#721): the balance after it stays at or
                 # below the ceiling. Debt may take any credit that satisfies it.
-                max_val = f":bm{i}"
-                attr_values[max_val] = {"N": str(ceilings[name] + delta)}
-                condition_parts.append(f"{tk_alias} <= {max_val}")
+                ceiling = ceilings[name]
+                attr_values[f":bm{i}"] = {"N": str(ceiling.ceiling_milli + delta)}
+                condition_parts.append(f"{tk_alias} <= :bm{i}")
+                # ...and the ceiling is still the one computed: the stored base
+                # capacity (a limit change) and grant count (a re-grant) hold.
+                attr_names[f"#bp{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
+                attr_values[f":bp{i}"] = {"N": str(ceiling.capacity_milli)}
+                condition_parts.append(f"#bp{i} = :bp{i}")
+                attr_names[f"#bg{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
+                if ceiling.grant_count is None:
+                    condition_parts.append(f"attribute_not_exists(#bg{i})")
+                else:
+                    attr_values[f":bg{i}"] = {"N": str(ceiling.grant_count)}
+                    condition_parts.append(f"#bg{i} = :bg{i}")
 
         if not add_parts:
             # Nothing to adjust
@@ -3296,6 +3313,27 @@ class Repository:
             attr_names["#vu"] = schema.BUCKET_FIELD_VU
             attr_values[":vuz"] = {"N": "0"}
             update_expr = f"SET #vu = :vuz {update_expr}"
+
+        if condition_parts and pin is not None:
+            # A doubling lowers every share without touching a limit's
+            # attributes; a schedule change or a slow pass re-stamps `vu`
+            # (a reset re-stamps a quota's next edge). Pinning `vu`, not `rf`:
+            # `rf` moves on every refill (the aggregator's included), which the
+            # `tk` bound already covers, and stays put for a writer whose clock
+            # lags the stored `rf` (it stamps `max(now, rf)`).
+            shard_count, vu = pin
+            attr_names["#bsc"] = "shard_count"
+            attr_values[":bsc"] = {"N": str(shard_count)}
+            condition_parts.append(
+                # An item written before sharding carries no count: it is 1.
+                "(attribute_not_exists(#bsc) OR #bsc = :bsc)" if shard_count == 1 else "#bsc = :bsc"
+            )
+            attr_names["#bvu"] = schema.BUCKET_FIELD_VU
+            if vu is None:
+                condition_parts.append("attribute_not_exists(#bvu)")
+            else:
+                attr_values[":bvu"] = {"N": str(vu)}
+                condition_parts.append("#bvu = :bvu")
 
         update: dict[str, Any] = {
             "TableName": self.table_name,

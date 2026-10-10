@@ -33,7 +33,7 @@ from zae_limiter.exceptions import (
     VersionMismatchError,
 )
 from zae_limiter.infra.sync_discovery import SyncInfrastructureDiscovery
-from zae_limiter.models import BucketState
+from zae_limiter.models import BucketState, CreditCeiling
 from zae_limiter.schedule import ScheduleEntry, retry_after_with_schedule
 from zae_limiter.schema import (
     BUCKET_FIELD_CP,
@@ -769,6 +769,10 @@ class TestWriteOnEnter:
         state.refill_period_ms = 60000
         state.shard_count = 1
         state.report_shard_count = 1
+        state.capacity_milli = 100000
+        state.grant_count = None
+        state.stored_vu_read = True
+        state.stored_vu_ms = None
         return LeaseEntry(
             entity_id=entity_id,
             resource="gpt-4",
@@ -1142,7 +1146,8 @@ class TestWriteOnEnter:
             resource="gpt-4",
             deltas={"rpm": -5000},
             shard_id=0,
-            ceilings={"rpm": 100000},
+            ceilings={"rpm": CreditCeiling(100000, 100000, None)},
+            pin=(1, None),
         )
         mock_repo.write_each.assert_called_once()
 
@@ -1185,7 +1190,7 @@ class TestWriteOnEnter:
         mock_repo = self._make_mock_repo()
         mock_repo.write_each.side_effect = self._condition_failed()
         with pytest.raises(ClientError):
-            write_credit(mock_repo, "e1", "gpt-4", {"rpm": 5000}, 0, {})
+            write_credit(mock_repo, "e1", "gpt-4", {"rpm": 5000}, 0, {}, None)
         mock_repo.write_each.assert_called_once()
 
     def test_a_bucket_item_with_nothing_to_refund_gets_no_write(self):
@@ -1202,12 +1207,41 @@ class TestWriteOnEnter:
         mock_repo.build_composite_adjust.assert_called_once()
         assert mock_repo.build_composite_adjust.call_args.kwargs["entity_id"] == "e1"
 
+    def test_a_credit_with_no_known_pin_is_trimmed_outright(self):
+        """#721: with the item's rf unknown the ceiling cannot be trusted: one trimmed write."""
+        from zae_limiter.sync_lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        write_credit(
+            mock_repo,
+            "e1",
+            "gpt-4",
+            {"rpm": -5000},
+            0,
+            {"rpm": CreditCeiling(100000, 100000, None)},
+            None,
+        )
+        mock_repo.build_composite_adjust.assert_called_once_with(
+            entity_id="e1", resource="gpt-4", deltas={"rpm": -5000}, shard_id=0, trim=True
+        )
+        mock_repo.write_each.assert_called_once()
+
+    def test_a_trimmed_credit_with_nothing_to_write_writes_nothing(self):
+        from zae_limiter.sync_lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(return_value={})
+        write_credit(
+            mock_repo, "e1", "gpt-4", {"rpm": 0}, 0, {"rpm": CreditCeiling(1, 1, None)}, None
+        )
+        mock_repo.write_each.assert_not_called()
+
     def test_nothing_to_adjust_writes_nothing(self):
         from zae_limiter.sync_lease import write_credit
 
         mock_repo = self._make_mock_repo()
         mock_repo.build_composite_adjust = MagicMock(return_value={})
-        write_credit(mock_repo, "e1", "gpt-4", {"rpm": 0}, 0, {})
+        write_credit(mock_repo, "e1", "gpt-4", {"rpm": 0}, 0, {}, None)
         mock_repo.write_each.assert_not_called()
 
     def test_rollback_skips_when_committed(self):
@@ -1249,7 +1283,8 @@ class TestWriteOnEnter:
             resource="gpt-4",
             deltas={"rpm": -10000},
             shard_id=0,
-            ceilings={"rpm": 100000},
+            ceilings={"rpm": CreditCeiling(100000, 100000, None)},
+            pin=(1, None),
         )
         mock_repo.write_each.assert_called_once()
 
@@ -10696,6 +10731,65 @@ class TestSelfTrimmingRefunds:
         item = self._raw(r1, "solo")
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "8000"
         assert item[BUCKET_FIELD_VU]["N"] != "0"
+
+    SLOW = Limit.custom("q", capacity=100, refill_amount=1, refill_period_seconds=86400)
+
+    def _bucket_rf_and_shard_moved(self, l1, entity_id, during):
+        """Debit 10 of 100, run `during` inside the body, then roll back."""
+        r1 = l1._repository
+        r1.set_limits(entity_id, [self.SLOW], resource="r")
+        with l1.acquire(entity_id, "r", {"q": 1}):
+            pass
+        with pytest.raises(RuntimeError):
+            with l1.acquire(entity_id, "r", {"q": 10}):
+                during()
+                raise RuntimeError("user code failed")
+        return self._raw(r1, entity_id, resource="r")
+
+    def test_a_doubling_before_the_refund_lowers_the_ceiling(self, two):
+        """The #720 review: the in-memory ceiling (100) is stale once the count doubles
+        (the real share is 50); `tk + credit <= 100` would pass and leave 99 spendable."""
+        l1, _, _ = two
+        r1 = l1._repository
+        client = r1._get_client()
+
+        def double():
+            client.update_item(
+                TableName=r1.table_name,
+                Key={
+                    "PK": {"S": pk_bucket(r1._namespace_id, "dbl", "r", 0)},
+                    "SK": {"S": sk_state()},
+                },
+                UpdateExpression="SET shard_count = :two",
+                ExpressionAttributeValues={":two": {"N": "2"}},
+            )
+
+        item = self._bucket_rf_and_shard_moved(l1, "dbl", double)
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
+        spend = r1.speculative_consume("dbl", "r", {"q": 60}, shard_id=0)
+        assert not spend.success
+
+    def test_a_lowered_limit_clamped_before_the_refund(self, two):
+        """The limit drops to 50 and another process's slow pass clamps to it (moving
+        `rf`) before the refund: the in-memory ceiling is still 100."""
+        l1, l2, _ = two
+        r1 = l1._repository
+
+        def lower_and_clamp():
+            r1.set_limits(
+                "low",
+                [Limit.custom("q", capacity=50, refill_amount=1, refill_period_seconds=86400)],
+                resource="r",
+            )
+            with l2.acquire("low", "r", {"q": 0}):
+                pass
+
+        item = self._bucket_rf_and_shard_moved(l1, "low", lower_and_clamp)
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "60000"
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
+        spend = r1.speculative_consume("low", "r", {"q": 55}, shard_id=0)
+        assert not spend.success
 
     def test_a_cascade_compensation_trims_the_child_too(self, two):
         """`_compensate_child` hands the child's image through to the same credit."""

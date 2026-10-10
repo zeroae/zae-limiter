@@ -1539,7 +1539,15 @@ class RateLimiter:
         ceilings = credit_ceilings(
             [(b.limit_name, b) for b in buckets or ()], deltas, self._repository._now_ms()
         )
-        await write_credit(self._repository, entity_id, resource, deltas, shard_id, ceilings)
+        # The debit's image is the item as of that write: a speculative debit
+        # moves neither `shard_count` nor `vu`, so a later writer that did
+        # fails the pin (#721).
+        pin = (
+            (buckets[0].shard_count, buckets[0].stored_vu_ms)
+            if buckets and buckets[0].stored_vu_read
+            else None
+        )
+        await write_credit(self._repository, entity_id, resource, deltas, shard_id, ceilings, pin)
 
     @staticmethod
     def _check_speculative_failure(

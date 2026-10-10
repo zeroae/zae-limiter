@@ -22,7 +22,7 @@ from .bucket import (
     window_end_in_force,
 )
 from .exceptions import LeaseExpiredError, RateLimitExceeded
-from .models import BucketState, Limit, LimitStatus, QuotaDonorDebit
+from .models import BucketState, CreditCeiling, Limit, LimitStatus, QuotaDonorDebit
 from .schema import (
     BUCKET_FIELD_RF,
     BUCKET_FIELD_TK,
@@ -55,6 +55,7 @@ class LeaseEntry:
     _initial_consumed: int = 0
     _shard_id: int = 0
     _shard_count: int = 1
+    _stored_pin: tuple[int, int | None] | None = None
     _cascade: bool = False
     _parent_id: str | None = None
     _stamp_owner: bool = False
@@ -71,21 +72,27 @@ class LeaseEntry:
 
 def credit_ceilings(
     states: Iterable[tuple[str, BucketState]], deltas: dict[str, int], now_ms: int
-) -> dict[str, int]:
+) -> dict[str, CreditCeiling]:
     """The ceiling of every limit ``deltas`` credits, for a self-trimming credit (#721).
 
     ``states`` pairs each limit name with its shard's state. The ceiling is
     ``BucketState.ceiling_milli`` at ``now_ms`` — schedule, shard share and quota
-    grant (ADR-145), the refill clamp's own ceiling. A state that cannot report
+    grant (ADR-145), the refill clamp's own ceiling — beside the stored base
+    capacity and grant count it was computed from, which the write pins
+    because a limit change or a re-grant since would lower it. A state that cannot report
     one leaves its limit unconditional (the pre-#679 behaviour) rather than fail
     the refund: a credit is never blocked by a broken check.
     """
-    ceilings: dict[str, int] = {}
+    ceilings: dict[str, CreditCeiling] = {}
     for name, state in states:
         if deltas.get(name, 0) >= 0 or name in ceilings:
             continue
         try:
-            ceilings[name] = int(state.ceiling_milli(now_ms))
+            ceilings[name] = CreditCeiling(
+                ceiling_milli=int(state.ceiling_milli(now_ms)),
+                capacity_milli=int(state.capacity_milli),
+                grant_count=None if state.grant_count is None else int(state.grant_count),
+            )
         except Exception:
             logger.warning("Could not check a credit against its ceiling", exc_info=True)
     return ceilings
@@ -97,7 +104,8 @@ def write_credit(
     resource: str,
     deltas: dict[str, int],
     shard_id: int,
-    ceilings: dict[str, int],
+    ceilings: dict[str, CreditCeiling],
+    pin: tuple[int, int | None] | None,
 ) -> None:
     """Write one adjust item whose credits trim themselves (#721, refs #680).
 
@@ -111,10 +119,25 @@ def write_credit(
     keeps the fast path off the item until the next slow pass clamps it. There
     is no window between the credit and the stamp for another process to use.
 
+    The ceilings come from memory, and the real one can have dropped since (a
+    re-grant, a doubling, a lowered limit or schedule). So the condition also
+    pins what each ceiling was computed from — the limit's stored ``cp`` and
+    ``gc``, and the item's ``shard_count`` and ``vu`` as of ``pin`` — and any
+    write that could lower it moves one of them. A moved pin only costs the
+    fallback. With ``pin`` unknown (``None``), the credit
+    goes straight to the trimmed write — one write, nothing to trust.
+
     A debit, or a credit with no known ceiling, is one unconditional write.
     Errors other than the failed ceiling condition propagate to the caller.
     """
-    kwargs: dict[str, Any] = {"ceilings": ceilings} if ceilings else {}
+    if ceilings and pin is None:
+        item = repository.build_composite_adjust(
+            entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, trim=True
+        )
+        if item:
+            repository.write_each([item])
+        return
+    kwargs: dict[str, Any] = {"ceilings": ceilings, "pin": pin} if ceilings else {}
     item = repository.build_composite_adjust(
         entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, **kwargs
     )
@@ -129,6 +152,12 @@ def write_credit(
             entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, trim=True
         )
         repository.write_each([trimmed])
+
+
+_CreditWrite = tuple[
+    str, str, int, dict[str, int], dict[str, CreditCeiling], tuple[int, int | None] | None
+]
+"(entity_id, resource, shard_id, deltas, ceilings, pin) for one adjust write (#721)."
 
 
 class QuotaMoveLostError(Exception):
@@ -178,6 +207,12 @@ class SyncLease:
         self._declared_names = frozenset(
             entry.limit.name for entry in self.entries if entry._declared
         )
+        for entry in self.entries:
+            entry._stored_pin = (
+                (entry.state.shard_count, entry.state.stored_vu_ms)
+                if entry.state.stored_vu_read
+                else None
+            )
 
     @property
     def consumed(self) -> dict[str, int]:
@@ -394,6 +429,7 @@ class SyncLease:
         written_images: list[
             tuple[tuple[str, str, int], list[BucketState], int, int | None, tuple[bool, str | None]]
         ] = []
+        written_pins: dict[tuple[str, str, int], tuple[int, int | None]] = {}
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
             has_custom_config = group_entries[0]._has_custom_config
@@ -410,6 +446,7 @@ class SyncLease:
             owner_entry = next((e for e in group_entries if e._stamp_owner), None)
             if is_new:
                 first_entry = owner_entry or group_entries[0]
+                written_pins[entity_id, resource, shard_id] = (first_entry._shard_count, vu)
                 items.append(
                     repo.build_composite_create(
                         entity_id=entity_id,
@@ -512,6 +549,11 @@ class SyncLease:
                 pin = [e.state.shard_count for e in group_entries if e._seed and e.limit.is_quota]
                 pin += list(grant_counts.values())
                 written_rf = _monotonic_rf(now_ms, expected_rf, group_entries)
+                read_count = next(
+                    (e.state.shard_count for e in group_entries if not e._seed),
+                    group_entries[0].state.shard_count,
+                )
+                written_pins[entity_id, resource, shard_id] = (read_count, vu)
                 read_state = next(
                     (e.state for e in group_entries if not e._seed and e.state.stored_vu_read), None
                 )
@@ -707,6 +749,9 @@ class SyncLease:
         self._initial_committed = True
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
+            key = (entry.entity_id, entry.resource, entry._shard_id)
+            if key in written_pins:
+                entry._stored_pin = None if condition_failed else written_pins[key]
         self._record_written_states(
             groups, [] if condition_failed else written_images, condition_failed
         )
@@ -875,8 +920,8 @@ class SyncLease:
             lambda entry: (entry.consumed - entry._initial_consumed) * 1000
         )
         self._committed = True
-        for entity_id, resource, shard_id, deltas, ceilings in writes:
-            write_credit(self.repository, entity_id, resource, deltas, shard_id, ceilings)
+        for entity_id, resource, shard_id, deltas, ceilings, pin in writes:
+            write_credit(self.repository, entity_id, resource, deltas, shard_id, ceilings, pin)
 
     def _rollback(self) -> None:
         """Write compensating deltas to restore consumed tokens (Issue #309).
@@ -894,8 +939,8 @@ class SyncLease:
             return
         writes = self._adjust_writes(lambda entry: -entry._initial_consumed * 1000)
         try:
-            for entity_id, resource, shard_id, deltas, ceilings in writes:
-                write_credit(self.repository, entity_id, resource, deltas, shard_id, ceilings)
+            for entity_id, resource, shard_id, deltas, ceilings, pin in writes:
+                write_credit(self.repository, entity_id, resource, deltas, shard_id, ceilings, pin)
         except Exception:
             logger.warning(
                 "Failed to rollback consumed tokens for entities: %s",
@@ -903,21 +948,21 @@ class SyncLease:
                 exc_info=True,
             )
 
-    def _adjust_writes(
-        self, delta_of: Callable[[LeaseEntry], int]
-    ) -> list[tuple[str, str, int, dict[str, int], dict[str, int]]]:
-        """One ``(entity, resource, shard, deltas, ceilings)`` per bucket item touched.
+    def _adjust_writes(self, delta_of: Callable[[LeaseEntry], int]) -> list[_CreditWrite]:
+        """One ``(entity, resource, shard, deltas, ceilings, pin)`` per bucket item touched.
 
         Grouped by (entity_id, resource, shard) — the shard is part of a
         bucket's identity. ``ceilings`` holds the ceiling the lease resolved
-        (``BucketState.ceiling_milli`` now) for every credited limit (#721).
+        (``BucketState.ceiling_milli`` now) for every credited limit, and
+        ``pin`` the item's (``rf``, ``shard_count``) it was resolved against, or
+        None when any entry on the item does not know it (#721).
         """
         groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in self.entries:
             key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
         now_ms = self.repository._now_ms()
-        writes: list[tuple[str, str, int, dict[str, int], dict[str, int]]] = []
+        writes: list[_CreditWrite] = []
         for (entity_id, resource, shard_id), group_entries in groups.items():
             deltas: dict[str, int] = {}
             for entry in group_entries:
@@ -929,7 +974,9 @@ class SyncLease:
             ceilings = credit_ceilings(
                 [(e.limit.name, e.state) for e in group_entries], deltas, now_ms
             )
-            writes.append((entity_id, resource, shard_id, deltas, ceilings))
+            pins = {e._stored_pin for e in group_entries}
+            pin = pins.pop() if len(pins) == 1 else None
+            writes.append((entity_id, resource, shard_id, deltas, ceilings, pin))
         return writes
 
 

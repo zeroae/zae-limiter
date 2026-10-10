@@ -1202,7 +1202,12 @@ class SyncRateLimiter:
         ceilings = credit_ceilings(
             [(b.limit_name, b) for b in buckets or ()], deltas, self._repository._now_ms()
         )
-        write_credit(self._repository, entity_id, resource, deltas, shard_id, ceilings)
+        pin = (
+            (buckets[0].shard_count, buckets[0].stored_vu_ms)
+            if buckets and buckets[0].stored_vu_read
+            else None
+        )
+        write_credit(self._repository, entity_id, resource, deltas, shard_id, ceilings, pin)
 
     @staticmethod
     def _check_speculative_failure(
