@@ -1488,6 +1488,37 @@ class TestChangesElsewhere:
     See docs/plans/2026-10-07-adr147-phase3-withdrawn.md.
     """
 
+    async def test_a_reset_elsewhere_admits_after_the_cache_ttl_and_never_more(self, limiter, repo):
+        """ADR-149: a reset by another process is a credit this one cannot see.
+
+        The cached short state may refuse it until the entry ages out — the
+        documented under-admission — and then the write admits exactly the
+        restored share, never more.
+        """
+        await _spent_and_cached(limiter)
+        other = Repository(
+            name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
+        )
+        other._namespace_id = repo._namespace_id
+        await other.reset_bucket("u", "r")
+        with pytest.raises(RateLimitExceeded):  # refused from the cached state
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        repo._rejection_cache._clock.now += 2  # past the 1 s TTL
+        async with limiter.acquire("u", "r", consume={"rpm": 2}):  # the restored share
+            pass
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        await other.close()
+
+    async def test_a_reset_in_this_process_admits_at_once(self, limiter, repo):
+        """ADR-149: the reset clears this process's cache, so no TTL wait."""
+        await _spent_and_cached(limiter)
+        await repo.reset_bucket("u", "r")
+        async with limiter.acquire("u", "r", consume={"rpm": 2}):
+            pass
+
     async def test_a_write_since_the_state_was_cached_falls_back(self, limiter, repo):
         """The rf lock: another writer moved rf, so the state is stale."""
         await _spent_and_cached(limiter)

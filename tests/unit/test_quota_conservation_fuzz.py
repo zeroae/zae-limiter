@@ -24,6 +24,11 @@ The operations and how each is driven — every one through the real path:
   already exist (the #633 case); only for seeds that start without it.
 - **next period** — the frozen clock advanced past the next reset: midnight
   for the calendar quota, the window's end for the session quota.
+- **top up** — ``Repository.top_up`` of the quota by a random amount (ADR-149):
+  exactly that amount joins the period, so the right-hand side becomes
+  ``C + top-ups this period``, and a shard's ceiling becomes ``C // gc + tu``.
+- **reset** — ``Repository.reset_bucket`` of the quota (ADR-149): a new period,
+  every existing shard re-granted at the count, nothing admitted yet.
 
 Not covered here: the aggregator (its Path 2 clone and refill have their own
 tests in the processor suite), concurrent writers (stepped race tests in
@@ -120,6 +125,7 @@ async def real_accounting(repo, entity_id: str, quota: Limit, now_ms: int) -> tu
     tk_attr = schema.bucket_attr(quota.name, schema.BUCKET_FIELD_TK)
     cp_attr = schema.bucket_attr(quota.name, schema.BUCKET_FIELD_CP)
     gc_attr = schema.bucket_attr(quota.name, schema.BUCKET_FIELD_GC)
+    tu_attr = schema.bucket_attr(quota.name, schema.BUCKET_FIELD_TU)
     ws_attr = schema.bucket_attr(quota.name, schema.BUCKET_FIELD_WS)
     wa_attr = schema.bucket_attr(quota.name, schema.BUCKET_FIELD_WA)
 
@@ -138,7 +144,10 @@ async def real_accounting(repo, entity_id: str, quota: Limit, now_ms: int) -> tu
         grant = _num(item, gc_attr)
         assert grant is not None, f"shard {shard}: a v0.15 writer always stamps gc"
         assert tokens >= 0, f"shard {shard} in debt {tokens}: nothing here adjusts"
-        assert tokens <= C * 1000 // grant, f"shard {shard} above its ceiling C // {grant}"
+        topped_up = _num(item, tu_attr) or 0
+        assert tokens <= C * 1000 // grant + topped_up, (
+            f"shard {shard} above its ceiling C // {grant} + {topped_up}"
+        )
         current[shard] = grant
         held += tokens
 
@@ -177,6 +186,7 @@ async def run_fuzz(limiter, seed: int, kind: str) -> None:
     late_seed_at = None if quota_on else rng.randrange(1, 12)
 
     admitted = 0
+    topped_up = 0  # tokens topped up this period (ADR-149)
     trace: list[str] = []
     for step in range(OPS):
         count = _cached_count(repo, eid)
@@ -192,8 +202,21 @@ async def run_fuzz(limiter, seed: int, kind: str) -> None:
         elif roll < 0.27 and quota_on:
             now[0] += period_ms
             admitted = 0
+            topped_up = 0
             model.next_period()
             trace.append("next")
+        elif roll < 0.33 and quota_on:
+            amount = rng.choice([1, 7, 64, 300])
+            # A quota configured after the shards existed and not yet seeded
+            # on any of them is granted nothing (the result says so).
+            granted = (await repo.top_up(eid, RESOURCE, {quota.name: amount})).amounts
+            topped_up += granted[quota.name]
+            trace.append(f"top_up({amount})")
+        elif roll < 0.36 and quota_on:
+            await repo.reset_bucket(eid, RESOURCE, limits=[quota.name])
+            admitted = 0
+            topped_up = 0
+            trace.append("reset")
         else:
             shard = rng.randrange(count)
             amount = rng.choice([1, 3, 10, 40, 100, 300])
@@ -216,10 +239,10 @@ async def run_fuzz(limiter, seed: int, kind: str) -> None:
         if not quota_on:
             continue
         held, grantable, _count = await real_accounting(repo, eid, quota, now[0])
-        assert admitted <= C, (seed, trace)
-        assert admitted * 1000 + held + grantable == C * 1000, (
+        assert admitted <= C + topped_up, (seed, trace)
+        assert admitted * 1000 + held + grantable == (C + topped_up) * 1000, (
             f"seed {seed}: admitted {admitted} + held {held / 1000} + grantable "
-            f"{grantable / 1000} != {C} after {trace}"
+            f"{grantable / 1000} != {C} + {topped_up} after {trace}"
         )
 
 

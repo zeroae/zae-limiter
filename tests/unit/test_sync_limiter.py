@@ -659,12 +659,14 @@ class TestLeaseRetryPath:
         state.reset_sched = ()
         state.shard_count = 1
         state.report_shard_count = 1
+        state.report_top_up_milli = 0
         state.window_end_ms = None
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=60)
         undeclared_state = MagicMock()
         undeclared_state.tokens_milli = 0
         undeclared_state.shard_count = 1
         undeclared_state.report_shard_count = 1
+        undeclared_state.report_top_up_milli = 0
         undeclared = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -697,6 +699,7 @@ class TestLeaseRetryPath:
         state.refill_period_ms = 60000
         state.shard_count = 1
         state.report_shard_count = 1
+        state.report_top_up_milli = 0
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=10)
         statuses = _build_retry_failure_statuses([entry], now_ms=1000)
         assert statuses[0].retry_after_seconds == 0.001
@@ -723,6 +726,7 @@ class TestLeaseRetryPath:
         state.refill_period_ms = 60000
         state.shard_count = 1
         state.report_shard_count = 1
+        state.report_top_up_milli = 0
         entry = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -769,6 +773,7 @@ class TestWriteOnEnter:
         state.refill_period_ms = 60000
         state.shard_count = 1
         state.report_shard_count = 1
+        state.report_top_up_milli = 0
         return LeaseEntry(
             entity_id=entity_id,
             resource="gpt-4",

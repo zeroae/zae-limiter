@@ -13,19 +13,21 @@ from aiobotocore.session import AioSession, get_session
 from botocore.exceptions import ClientError
 from ulid import ULID
 
-from . import schedule, schema
+from . import bucket_ops, schedule, schema
 from .config_cache import CacheStats, ConfigCache, ConfigSource
 from .exceptions import (
     EntityExistsError,
     FanoutIncomplete,
     NamespaceStateError,
     RateLimiterUnavailable,
+    ResourceDisabled,
     ValidationError,
 )
 from .models import (
     AuditAction,
     AuditEvent,
     BackendCapabilities,
+    BucketOperationResult,
     BucketState,
     ConfigAccess,
     Entity,
@@ -83,6 +85,33 @@ _BATCH_GET_MAX_RETRIES = 3
 _CLIENT_MIN_RATCHET_ATTEMPTS = 3
 _BATCH_GET_RETRY_BASE_DELAY = 0.05
 
+# A reset or top-up (ADR-149) re-reads and re-plans when another writer moved a
+# shard's `rf` or `shard_count` between its read and its write: three retries,
+# full jitter, then it fails. The codes are a lost condition (single shard,
+# `UpdateItem`), a cancelled transaction (any shard's condition, or a conflict
+# with an in-flight transaction) and a conflict reported on its own.
+_OPERATION_MAX_ATTEMPTS = 4
+
+
+def _validate_principal(principal: str | None) -> None:
+    """The check ``_log_audit_event`` applies, run before any write (ADR-149).
+
+    A reset or top-up audits *after* it commits, so an invalid principal found
+    there would raise for an operation that already happened.
+    """
+    if principal is not None and not principal.startswith("arn:"):
+        validate_identifier(principal, "principal")
+
+
+_OPERATION_RETRY_BASE_DELAY = 0.05
+_OPERATION_RETRY_CODES = frozenset(
+    {
+        "ConditionalCheckFailedException",
+        "TransactionCanceledException",
+        "TransactionConflictException",
+    }
+)
+
 
 # Token codes for the fields a seed writes (#633). A seeded limit's aliases are
 # `#s{code}{j}` / `:s{code}{j}`, `j` its position among the seeds — positional,
@@ -101,6 +130,7 @@ _SEED_TOKEN = {
     schema.BUCKET_FIELD_WS: "w",
     schema.BUCKET_FIELD_WA: "g",
     schema.BUCKET_FIELD_GC: "k",
+    schema.BUCKET_FIELD_TU: "u",
 }
 
 
@@ -189,6 +219,9 @@ class Repository:
         # it without a read of its own.
         self._lambda_version_read = False
         self._lambda_version: str | None = None
+        # ADR-149: the 0.17.0 gate passed (and ratcheted) once for this
+        # repository; a quota top-up above the plan then skips the read.
+        self._top_up_readers_proven = False
         # #638: the version this Repository deployed the stack's Lambda code
         # at, if it did. Only that may be stamped as a new record's
         # lambda_version — a stamp the reset_after gate trusts.
@@ -2638,6 +2671,10 @@ class Repository:
         }
         if state.grant_count is not None:
             attrs[schema.BUCKET_FIELD_GC] = {"N": str(state.grant_count)}
+        if state.topped_up_milli:
+            # ADR-149: only a top-up into a bucket that did not exist yet
+            # creates one carrying it (`Repository.top_up`, D5).
+            attrs[schema.BUCKET_FIELD_TU] = {"N": str(state.topped_up_milli)}
         if include_window:
             if state.reset_after_seconds is not None:
                 attrs[schema.BUCKET_FIELD_RSA] = {"N": str(state.reset_after_seconds)}
@@ -2808,6 +2845,7 @@ class Repository:
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
+        cleared_top_ups: Sequence[str] = (),
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2915,6 +2953,9 @@ class Repository:
                 that window has to stay unapplied until a pass rolls it. No
                 condition term is needed: the ``rf`` lock already serialises
                 every other writer of the marker.
+            cleared_top_ups: Quotas whose ``b_{name}_tu`` this write removes
+                (ADR-149): a reset or roll on it ends the period the top-up
+                was bought in. Only names the item was read carrying one.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -3066,6 +3107,10 @@ class Repository:
             attr_names[f"#gc{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
             set_parts.append(f"#gc{i} = :gc{i}")
             attr_values[f":gc{i}"] = {"N": str(count)}
+        # ADR-149: positional tokens (`#tu{i}`), disjoint from the rest.
+        for i, name in enumerate(sorted(cleared_top_ups)):
+            attr_names[f"#tu{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TU)
+            remove_parts.append(f"#tu{i}")
         if pin_shard_count is not None:
             attr_names["#pinsc"] = "shard_count"
             attr_values[":pinsc"] = {"N": str(pin_shard_count)}
@@ -3313,8 +3358,16 @@ class Repository:
             }
         }
 
-    async def transact_write(self, items: list[dict[str, Any]]) -> None:
-        """Execute a write, using single-item API when possible to halve WCU cost."""
+    async def transact_write(
+        self, items: list[dict[str, Any]], client_request_token: str | None = None
+    ) -> None:
+        """Execute a write, using single-item API when possible to halve WCU cost.
+
+        ``client_request_token`` makes a multi-item transaction idempotent for
+        ten minutes (``TransactWriteItems``' ``ClientRequestToken``), so an SDK
+        retry of one whose response was lost succeeds instead of failing its
+        conditions. A single item ignores it.
+        """
         if not items:
             return
 
@@ -3330,6 +3383,10 @@ class Repository:
                 await client.delete_item(**item["Delete"])
             else:
                 await client.transact_write_items(TransactItems=items)
+        elif client_request_token is not None:
+            await client.transact_write_items(
+                TransactItems=items, ClientRequestToken=client_request_token
+            )
         else:
             await client.transact_write_items(TransactItems=items)
 
@@ -6568,6 +6625,10 @@ class Repository:
             # (design §9) — decoded here, not defaulted here.
             gc_name = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
             grant_count = self._decode_stored_window_int(gc_name, item.get(gc_name, {}).get("N"))
+            # `b_{name}_tu` (ADR-149), decoded the same way: absent unless an
+            # operator topped this quota shard up above its grant this period.
+            tu_name = schema.bucket_attr(name, schema.BUCKET_FIELD_TU)
+            topped_up = self._decode_stored_window_int(tu_name, item.get(tu_name, {}).get("N"))
 
             # `wcu` is never scheduled — it tracks partition write pressure,
             # not a user limit, and is the one limit `effective_params` must
@@ -6605,6 +6666,7 @@ class Repository:
                     window_applied_ms=window_applied_ms,
                     window_consumed_mark_milli=window_consumed_mark,
                     grant_count=grant_count,
+                    topped_up_milli=topped_up,
                     stored_vu_ms=stored_vu,
                     stored_vu_read=True,
                 )
@@ -8426,6 +8488,498 @@ class Repository:
             details={"cascade": value, "buckets_stamped": count},
         )
         return count
+
+    # -------------------------------------------------------------------------
+    # Reset and top-up of one (entity, resource) (ADR-149)
+    # -------------------------------------------------------------------------
+
+    @clears_rejection_cache
+    async def reset_bucket(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: Sequence[str] | None = None,
+        principal: str | None = None,
+    ) -> BucketOperationResult:
+        """Restore an entity's balance on one resource to its full share, now (ADR-149).
+
+        Every shard of the (entity, resource) bucket gets one rf-locked,
+        zero-consumption pass in **one transaction**: every limit on it is
+        materialised as an acquire would (refill, pending reset edge, pending
+        window roll), then each named limit is restored to its full share:
+
+        - a dripping limit to its ceiling (debt is forgiven);
+        - a calendar quota to its share, starting a new period;
+        - a session quota's current window is marked ended, so the next
+          admitted request opens a fresh one at its full share (the balance
+          itself is left for that opener to restore).
+
+        Nothing else changes: the consumption counter, ``disabled``,
+        ``shard_count``, config, the parent's buckets and other resources are
+        left alone, and every shard's next acquire takes one materialising
+        pass. A bucket that does not exist yet is a no-op (the first acquire
+        creates it at full share). Not gated by version.
+
+        Args:
+            entity_id: Entity whose balance to restore.
+            resource: Resource to restore. One resource at a time.
+            limits: Limit names to restore. ``None`` restores every limit
+                resolved for the pair.
+            principal: Caller identity for audit logging.
+
+        Returns:
+            The shards written and, per limit, the tokens restored.
+
+        Raises:
+            ValidationError: A name is not a limit configured for the pair, or
+                no limit is configured at all.
+            RateLimiterUnavailable: Another writer kept changing the bucket
+                through every retry.
+        """
+        validate_identifier(entity_id, "entity_id")
+        validate_resource(resource)
+        _validate_principal(principal)
+        requested = None if limits is None else dict.fromkeys(limits, 0)
+        return await self._operate_on_bucket(
+            bucket_ops.RESET, entity_id, resource, requested, principal
+        )
+
+    @clears_rejection_cache
+    async def top_up(
+        self,
+        entity_id: str,
+        resource: str,
+        amounts: dict[str, int],
+        principal: str | None = None,
+    ) -> BucketOperationResult:
+        """Add tokens to an entity's balance on one resource, now (ADR-149).
+
+        ``amounts`` mirrors ``acquire(consume=...)``: limit name to whole
+        tokens. Every shard of the bucket gets one rf-locked, zero-consumption
+        pass in **one transaction**; a pending reset edge or window roll is
+        applied first, in the same write, so the credit lands in the current
+        period.
+
+        - A **quota** gains exactly the amount, spread over its shards by
+          the share of the allowance each one holds (``1 / gc``). What lands
+          above a shard's ceiling is recorded as allowance topped up this
+          period (``b_{name}_tu``) and lasts until the next reset or window
+          roll. That needs Lambdas at 0.17.0 or later (an older aggregator
+          clamps it away): the version is checked once per repository and
+          ``client_min_version`` is raised to 0.17.0.
+        - A **session** quota with no live window opens one now, so the
+          purchase starts the session.
+        - A **dripping** limit gains at most the room below its ceiling (a
+          refund, not a purchase); the amount granted is returned.
+
+        A plan upgrade is ``set_limits(...)`` with the new plan followed by
+        ``top_up()`` of the difference. A bucket that does not exist yet is
+        created on shard 0 holding its full share plus the quota top-up.
+
+        Args:
+            entity_id: Entity to credit.
+            resource: Resource to credit.
+            amounts: Whole tokens to add per limit name (each > 0).
+            principal: Caller identity for audit logging.
+
+        Returns:
+            The shards written and, per limit, the tokens granted.
+
+        Raises:
+            ValidationError: An amount is not a positive integer, or a name is
+                not a limit configured for the pair.
+            VersionMismatchError: A quota top-up above the plan against Lambdas
+                predating 0.17.0.
+            ResourceDisabled: The bucket does not exist yet and the resource is
+                disabled for the entity.
+            RateLimiterUnavailable: Another writer kept changing the bucket
+                through every retry.
+        """
+        validate_identifier(entity_id, "entity_id")
+        validate_resource(resource)
+        _validate_principal(principal)
+        if not amounts:
+            raise ValidationError("amounts", "{}", "name at least one limit to top up")
+        for name, amount in amounts.items():
+            if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
+                raise ValidationError(
+                    "amounts", f"{name}={amount!r}", "each amount must be a positive integer"
+                )
+            if amount > schedule.MAX_TOKENS:
+                raise ValidationError(
+                    "amounts",
+                    f"{name}={amount}",
+                    f"each amount must be at most {schedule.MAX_TOKENS}",
+                )
+        return await self._operate_on_bucket(
+            bucket_ops.TOP_UP, entity_id, resource, dict(amounts), principal
+        )
+
+    async def _operate_on_bucket(
+        self,
+        operation: bucket_ops.Operation,
+        entity_id: str,
+        resource: str,
+        requested: dict[str, int] | None,
+        principal: str | None,
+    ) -> BucketOperationResult:
+        """Read, plan and write a reset or top-up, retrying on a conflict (ADR-149 §4)."""
+        resolved, _on_unavailable, source = await self._config_cache._resolve_limits_uncached(
+            entity_id, resource, self.batch_get_configs
+        )
+        if not resolved:
+            raise ValidationError(
+                "resource", resource, f"no limits are configured for entity {entity_id!r}"
+            )
+        by_name = {limit.name: limit for limit in resolved}
+        if requested is None:
+            requested = dict.fromkeys(by_name, 0)
+        unknown = sorted(name for name in requested if name not in by_name)
+        if unknown:
+            raise ValidationError(
+                "limit",
+                ", ".join(unknown),
+                f"not a limit configured for {entity_id!r} on {resource!r} "
+                f"(configured: {', '.join(sorted(by_name))})",
+            )
+
+        # One id per call, stamped on every shard the write touches. A failed
+        # write whose items carry it did land: its response was lost and the
+        # SDK's own retry then failed the rf lock. Re-planning would apply the
+        # operation twice (2N for one top-up), so the id is what tells the two
+        # apart.
+        operation_id = str(ULID())
+        # The result of the last write attempted, returned if its id is found.
+        pending: BucketOperationResult | None = None
+        last_error: Exception | None = None
+        for attempt in range(_OPERATION_MAX_ATTEMPTS):
+            if attempt:
+                # Full jitter, as the acquire's own transaction retry.
+                await asyncio.sleep(random.uniform(0, _OPERATION_RETRY_BASE_DELAY * 2**attempt))
+            now_ms = self._now_ms()
+            shards, raw = await self._read_operation_shards(entity_id, resource, now_ms)
+            if pending is not None and any(
+                item.get(schema.BUCKET_FIELD_OP, {}).get("S") == operation_id
+                for item in raw.values()
+            ):
+                result = pending  # the write landed; only its response was lost
+            elif not shards:
+                if operation == bucket_ops.RESET:
+                    return BucketOperationResult(
+                        entity_id, resource, 0, dict.fromkeys(requested, 0)
+                    )
+                result, landed = await self._top_up_new_bucket(
+                    entity_id, resource, resolved, source, requested, now_ms, operation_id
+                )
+                if not landed:
+                    pending = result
+                    continue  # lost the create race (or its response): re-read
+            else:
+                top = max(shard.shard_count for shard in shards)
+                lagging = [shard for shard in shards if shard.shard_count < top]
+                if lagging:
+                    # D7: plan at the highest stored count. A lagging shard is
+                    # raised first, its legacy grant size frozen (R5), then the
+                    # whole bucket is read again.
+                    await self._freeze_and_raise_shard_counts(
+                        entity_id,
+                        resource,
+                        [
+                            (
+                                shard.shard_id,
+                                self._legacy_quota_sizes(
+                                    shard.shard_id, raw[shard.shard_id], set(), now_ms
+                                ),
+                            )
+                            for shard in lagging
+                        ],
+                        top,
+                    )
+                    continue
+                plan = bucket_ops.plan_operation(operation, resolved, requested, shards, now_ms)
+                if plan.raises_ceiling:
+                    await self._require_top_up_readers()
+                result = BucketOperationResult(entity_id, resource, len(plan.writes), plan.amounts)
+                try:
+                    await self.transact_write(
+                        [
+                            self.build_bucket_operation(entity_id, resource, write, operation_id)
+                            for write in plan.writes
+                        ],
+                        # Per attempt: a re-planned payload under the same token
+                        # would be an IdempotentParameterMismatch.
+                        client_request_token=f"{operation_id}-{attempt}",
+                    )
+                except ClientError as e:
+                    if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
+                        raise
+                    last_error = e
+                    pending = result
+                    continue
+            if result.shards:
+                # The operation has landed. A failed audit write must not raise:
+                # the caller would retry a reset or top-up that already happened.
+                try:
+                    await self._log_audit_event(
+                        action=(
+                            AuditAction.BUCKET_RESET
+                            if operation == bucket_ops.RESET
+                            else AuditAction.BUCKET_TOPPED_UP
+                        ),
+                        entity_id=entity_id,
+                        principal=principal,
+                        resource=resource,
+                        details={"amounts": dict(result.amounts), "shards": result.shards},
+                    )
+                except Exception:
+                    logger.warning(
+                        "%s landed but its audit event could not be written",
+                        operation,
+                        exc_info=True,
+                    )
+            return result
+        raise RateLimiterUnavailable(
+            f"Could not {operation.replace('_', ' ')} the bucket: it kept changing through "
+            f"{_OPERATION_MAX_ATTEMPTS} attempts",
+            last_error,
+            stack_name=self.stack_name,
+            entity_id=entity_id,
+            resource=resource,
+        )
+
+    async def _read_operation_shards(
+        self, entity_id: str, resource: str, now_ms: int
+    ) -> tuple[list[bucket_ops.ReadShard], dict[int, dict[str, Any]]]:
+        """Every shard of the bucket, strongly consistent, with its raw item.
+
+        GSI3 discovery is eventually consistent, so a shard created just before
+        the call can be missing from it — and a reset that skipped it would
+        leave it holding an old-period grant beside re-granted siblings. So
+        shard 0 is always read by key, and every slot below the highest stored
+        ``shard_count`` the index did not list is probed by key too.
+        """
+        pks = set(await self._discover_entity_bucket_pks(entity_id, resource))
+        pks.add(schema.pk_bucket(self._namespace_id, entity_id, resource, 0))
+        raw: dict[int, dict[str, Any]] = {}
+        probed: set[int] = set()
+        while pks:
+            keys = [{"PK": {"S": pk}, "SK": {"S": schema.sk_state()}} for pk in sorted(pks)]
+            for start in range(0, len(keys), 100):
+                for item in await self._batch_get_all(
+                    keys[start : start + 100],
+                    consistent_read=True,
+                    context=f"buckets for entity {entity_id!r}",
+                    entity_id=entity_id,
+                    resource=resource,
+                ):
+                    raw[schema.parse_bucket_pk(item["PK"]["S"])[3]] = item
+            probed |= {schema.parse_bucket_pk(pk)[3] for pk in pks}
+            top = max((self._stored_shard_count(item) for item in raw.values()), default=1)
+            pks = {
+                schema.pk_bucket(self._namespace_id, entity_id, resource, slot)
+                for slot in range(top)
+                if slot not in raw and slot not in probed
+            }
+        shards = [
+            bucket_ops.ReadShard(
+                shard_id=shard_id,
+                shard_count=self._stored_shard_count(item),
+                shard_count_stored="shard_count" in item,
+                rf_ms=int(item.get(schema.BUCKET_FIELD_RF, {}).get("N", "0")),
+                states={
+                    state.limit_name: state for state in self._deserialize_composite_bucket(item)
+                },
+                legacy_grants=dict(self._legacy_quota_sizes(shard_id, item, set(), now_ms)),
+            )
+            for shard_id, item in sorted(raw.items())
+        ]
+        return shards, raw
+
+    async def _top_up_new_bucket(
+        self,
+        entity_id: str,
+        resource: str,
+        resolved: list[Limit],
+        source: ConfigSource | None,
+        requested: dict[str, int],
+        now_ms: int,
+        operation_id: str,
+    ) -> tuple[BucketOperationResult, bool]:
+        """D5: a top-up with no bucket creates shard 0 holding its share plus the quota top-up.
+
+        A dripping limit is created full anyway, so it gains nothing and, when
+        no quota is named, nothing is written. Returns the result and whether
+        the create is known to have landed: False when its condition failed —
+        another writer created the bucket first, or this very create landed and
+        its response was lost — and the caller re-reads to tell which.
+        """
+        states = {
+            limit.name: BucketState.from_limit(entity_id, resource, limit, now_ms)
+            for limit in resolved
+        }
+        by_name = {limit.name: limit for limit in resolved}
+        amounts = {
+            name: amount if by_name[name].is_quota else 0 for name, amount in requested.items()
+        }
+        if not any(amounts.values()):
+            return BucketOperationResult(entity_id, resource, 0, amounts), True
+        access = await self.resolve_access(entity_id, resource)
+        if access.disabled:
+            raise ResourceDisabled(
+                entity_id=entity_id, resource=resource, level=access.disabled_level or "resource"
+            )
+        for name, amount in amounts.items():
+            if amount:
+                state = states[name]
+                state.tokens_milli += amount * 1000
+                state.topped_up_milli = amount * 1000
+        await self._require_top_up_readers()
+        entity = await self.get_entity(entity_id)
+        multiplier = self._bucket_ttl_refill_multiplier
+        ttl_seconds = (
+            None
+            if source in ("entity", "entity_default") or multiplier <= 0
+            else schema.calculate_bucket_ttl_seconds(resolved, multiplier)
+        )
+        create = self.build_composite_create(
+            entity_id=entity_id,
+            resource=resource,
+            states=list(states.values()),
+            now_ms=now_ms,
+            ttl_seconds=ttl_seconds,
+            cascade=effective_cascade(access.cascade, entity),
+            parent_id=entity.parent_id if entity is not None else None,
+            shard_id=0,
+            shard_count=1,
+            vu=bucket_ops.creation_vu(resolved, states, now_ms),
+            rf_ms=now_ms,
+        )
+        create["Put"]["Item"][schema.BUCKET_FIELD_OP] = {"S": operation_id}
+        result = BucketOperationResult(entity_id, resource, 1, amounts)
+        try:
+            await self.transact_write([create])
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
+                raise
+            return result, False
+        return result, True
+
+    async def _require_top_up_readers(self) -> None:
+        """Refuse a quota top-up above the plan the stack's readers would clamp (ADR-149).
+
+        The ADR-141 gate at 0.17.0: one strongly consistent ``GetItem`` of the
+        version record and the ``client_min_version`` ratchet, the first time
+        per repository only; a pass is remembered.
+
+        Raises:
+            VersionMismatchError: the record is missing, or its
+                ``lambda_version`` is unknown or predates 0.17.0.
+        """
+        if self._top_up_readers_proven:
+            return
+        from .version import MIN_READER_VERSION_FOR_TOP_UP, top_up_refusal
+
+        await self._require_readers(MIN_READER_VERSION_FOR_TOP_UP, top_up_refusal)
+        self._top_up_readers_proven = True
+
+    def build_bucket_operation(
+        self,
+        entity_id: str,
+        resource: str,
+        write: bucket_ops.ShardWrite,
+        operation_id: str,
+    ) -> dict[str, Any]:
+        """Build one shard's rf-locked reset or top-up ``Update`` (ADR-149 §4.2).
+
+        ``ADD`` a token delta per limit (never ``SET``: a fast-path debit landing
+        between the read and the write is kept), ``SET rf`` monotonic, ``vu = 0``
+        to force one materialising pass that clamps anything credited in
+        between, plus the grant counts, windows, applied markers and top-ups the
+        plan sets and the ``tu`` / ``wtc`` it removes, and ``op =
+        operation_id`` so a write whose response was lost is recognised as
+        landed. Conditioned on the ``rf`` and ``shard_count`` read; ``tc``,
+        ``disabled``, ``ttl`` and the owner stamps are never touched.
+
+        Tokens are positional (#634): ``#ot``/``:ot`` deltas, ``#og``/``:og``
+        grant counts, ``#ow``/``:ow`` + ``#or``/``:or`` windows, ``#oa``/``:oa``
+        applied markers, ``#ou``/``:ou`` top-ups, ``#ox`` / ``#oy`` removals.
+        """
+        names: dict[str, str] = {
+            "#rf": schema.BUCKET_FIELD_RF,
+            "#vu": schema.BUCKET_FIELD_VU,
+            "#op": schema.BUCKET_FIELD_OP,
+        }
+        values: dict[str, Any] = {
+            ":rf": {"N": str(write.written_rf)},
+            ":erf": {"N": str(write.expected_rf)},
+            ":vu": {"N": "0"},
+            ":op": {"S": operation_id},
+        }
+        set_parts = ["#rf = :rf", "#vu = :vu", "#op = :op"]
+        add_parts: list[str] = []
+        remove_parts: list[str] = []
+
+        def attr(name: str, field: str) -> str:
+            return schema.bucket_attr(name, field)
+
+        for i, (name, delta) in enumerate(sorted(write.deltas.items())):
+            names[f"#ot{i}"] = attr(name, schema.BUCKET_FIELD_TK)
+            values[f":ot{i}"] = {"N": str(delta)}
+            add_parts.append(f"#ot{i} :ot{i}")
+        for i, (name, count) in enumerate(sorted(write.grant_counts.items())):
+            names[f"#og{i}"] = attr(name, schema.BUCKET_FIELD_GC)
+            values[f":og{i}"] = {"N": str(count)}
+            set_parts.append(f"#og{i} = :og{i}")
+        for i, (name, (ws, rsa)) in enumerate(sorted(write.windows.items())):
+            names[f"#ow{i}"] = attr(name, schema.BUCKET_FIELD_WS)
+            names[f"#or{i}"] = attr(name, schema.BUCKET_FIELD_RSA)
+            values[f":ow{i}"] = {"N": str(ws)}
+            values[f":or{i}"] = {"N": str(rsa)}
+            set_parts += [f"#ow{i} = :ow{i}", f"#or{i} = :or{i}"]
+        for i, (name, applied) in enumerate(sorted(write.applied_windows.items())):
+            names[f"#oa{i}"] = attr(name, schema.BUCKET_FIELD_WA)
+            values[f":oa{i}"] = {"N": str(applied)}
+            set_parts.append(f"#oa{i} = :oa{i}")
+        for i, (name, top_up) in enumerate(sorted(write.top_ups.items())):
+            names[f"#ou{i}"] = attr(name, schema.BUCKET_FIELD_TU)
+            values[f":ou{i}"] = {"N": str(top_up)}
+            set_parts.append(f"#ou{i} = :ou{i}")
+        for i, name in enumerate(sorted(write.cleared_top_ups)):
+            names[f"#ox{i}"] = attr(name, schema.BUCKET_FIELD_TU)
+            remove_parts.append(f"#ox{i}")
+        for i, name in enumerate(sorted(write.cleared_window_marks)):
+            names[f"#oy{i}"] = attr(name, schema.BUCKET_FIELD_WTC)
+            remove_parts.append(f"#oy{i}")
+
+        names["#osc"] = "shard_count"
+        if write.shard_count_stored:
+            values[":osc"] = {"N": str(write.shard_count)}
+            count_condition = "#osc = :osc"
+        else:
+            count_condition = "attribute_not_exists(#osc)"
+
+        expression = f"SET {', '.join(set_parts)}"
+        if add_parts:
+            expression += f" ADD {', '.join(add_parts)}"
+        if remove_parts:
+            expression += f" REMOVE {', '.join(remove_parts)}"
+        return {
+            "Update": {
+                "TableName": self.table_name,
+                "Key": {
+                    "PK": {
+                        "S": schema.pk_bucket(
+                            self._namespace_id, entity_id, resource, write.shard_id
+                        )
+                    },
+                    "SK": {"S": schema.sk_state()},
+                },
+                "UpdateExpression": expression,
+                "ConditionExpression": f"#rf = :erf AND {count_condition}",
+                "ExpressionAttributeNames": names,
+                "ExpressionAttributeValues": values,
+            }
+        }
 
     @clears_rejection_cache
     async def invalidate_config_cache(self) -> None:

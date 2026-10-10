@@ -136,6 +136,10 @@ class LeaseEntry:
     # limit). `_commit_initial` appends it to the same transaction, after
     # every bucket item, so the move is atomic (I5).
     _donor_debit: QuotaDonorDebit | None = None
+    # ADR-149: the item as read carries `b_{name}_tu` for this limit, so a
+    # reset or roll this commit applies must REMOVE it (the top-up belonged to
+    # the period that just ended).
+    _stored_top_up: bool = False
 
 
 _AdjustedItem = tuple[str, str, int, list[LeaseEntry], dict[str, int]]
@@ -161,6 +165,7 @@ def _mark_granted(entry: LeaseEntry) -> None:
     """
     if entry.limit.is_quota:
         entry.state.grant_count = entry.state.shard_count
+        entry.state.topped_up_milli = None
         entry._granted = True
 
 
@@ -309,7 +314,9 @@ class Lease:
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                limit=entry.limit.per_shard(
+                    entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                ),
                 available=result.available,
                 requested=amount,
                 exceeded=not result.success,
@@ -330,7 +337,9 @@ class Lease:
                         entity_id=entry.entity_id,
                         resource=entry.resource,
                         limit_name=entry.limit.name,
-                        limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                        limit=entry.limit.per_shard(
+                            entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                        ),
                         available=available,
                         requested=0,
                         exceeded=False,
@@ -682,6 +691,12 @@ class Lease:
                     for e in group_entries
                     if e._granted and not e._seed and e.state.grant_count is not None
                 }
+                # ADR-149: a reset or roll ends the period a top-up was bought in.
+                cleared_top_ups = [
+                    e.limit.name
+                    for e in group_entries
+                    if e._granted and not e._seed and e._stored_top_up
+                ]
                 pin = [e.state.shard_count for e in group_entries if e._seed and e.limit.is_quota]
                 pin += list(grant_counts.values())
                 # Computed after the loop above, which can anchor a window at
@@ -738,6 +753,7 @@ class Lease:
                         applied_windows=_applied_windows(group_entries),
                         seeds=seeds,
                         grant_counts=grant_counts,
+                        cleared_top_ups=cleared_top_ups,
                         # A quota seed's share, and a reset or roll's grant,
                         # are only safe at the count they were sized for
                         # (#633, ADR-145 I4): pin them against a racing
@@ -1306,7 +1322,12 @@ class Lease:
                 if deltas.get(entry.limit.name, 0) >= 0:
                     continue  # only a credit can lift a balance
                 value = attrs.get(bucket_attr(entry.limit.name, BUCKET_FIELD_TK))
-                if value is not None and int(value["N"]) > entry.state.ceiling_milli(now_ms):
+                # A top-up (`tu`, ADR-149) read by this lease may have been ended
+                # since by a reset or a period edge, so the in-memory ceiling is
+                # taken without it: a credit above `C // gc` alone forces the
+                # clamping pass, which reads the item's real `tu` (PR #720).
+                ceiling = entry.state.ceiling_milli(now_ms) - entry.state.report_top_up_milli
+                if value is not None and int(value["N"]) > ceiling:
                     resets.append(build(entity_id, resource, shard_id))
                     break
         return resets
@@ -1516,7 +1537,9 @@ def _retry_statuses(
                     entity_id=entry.entity_id,
                     resource=entry.resource,
                     limit_name=entry.limit.name,
-                    limit=entry.limit.per_shard(real.report_shard_count, now_ms),
+                    limit=entry.limit.per_shard(
+                        real.report_shard_count, now_ms, real.report_top_up_milli
+                    ),
                     available=result.available,
                     requested=entry.consumed,
                     exceeded=exceeded,
@@ -1552,7 +1575,9 @@ def _retry_statuses(
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                limit=entry.limit.per_shard(
+                    entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                ),
                 available=entry.state.tokens_milli // 1000,
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,

@@ -846,7 +846,7 @@ class Limit:
             reset_after=reset_after,
         )
 
-    def per_shard(self, shard_count: int, now_ms: int) -> "Limit":
+    def per_shard(self, shard_count: int, now_ms: int, topped_up_milli: int = 0) -> "Limit":
         """This limit as a single shard of ``shard_count`` sees it at ``now_ms``.
 
         Two narrowings happen here, and the order matters (#222 §2.1): the
@@ -900,8 +900,12 @@ class Limit:
         predicate would be the wrong one here — it is also true of a dripping
         limit whose share has floored away, and zeroing *that* limit's rate
         would report a recovering limit as one that never recovers.
+
+        ``topped_up_milli`` is the drawn shard's ``b_{name}_tu`` (ADR-149): a
+        quota shard topped up above its grant reports ``C // gc + tu``, the
+        ceiling it really holds, so a purchase is not hidden from a 429.
         """
-        if shard_count <= 1 and not self.schedule:
+        if shard_count <= 1 and not self.schedule and not topped_up_milli:
             return self
         # Milli-units, so this floors exactly where `BucketState` does: a
         # status built from a config `Limit` and one built from the bucket
@@ -916,7 +920,7 @@ class Limit:
         divisor = max(1, shard_count)
         return replace(
             self,
-            capacity=max(1, (cp_milli // divisor) // 1000),
+            capacity=max(1, (cp_milli // divisor + topped_up_milli) // 1000),
             refill_amount=(0 if self.is_quota else max(1, (ra_milli // divisor) // 1000)),
             refill_period_seconds=max(1, rp_ms // 1000),
             schedule=(),
@@ -1188,6 +1192,10 @@ class BucketState:
     # grant was sized at. `None` for a rate limit and for a quota item written
     # before ADR-145 (read as `shard_count`, see `grant_shard_count`).
     grant_count: int | None = None
+    # `b_{name}_tu` (ADR-149): allowance topped up above this quota shard's
+    # grant this period, millitokens. `None` when the item carries none. Raises
+    # the ceiling (`ceiling_milli`) until the next reset or roll clears it.
+    topped_up_milli: int | None = None
     # The item's `vu` as this state was read, epoch ms; `None` when the item
     # carries none (or the state was not read off an item). The slow path's
     # rf-locked write pins it whenever it sets or removes `vu`, so a `vu = 0` a
@@ -1243,6 +1251,14 @@ class BucketState:
         """
         return self.grant_shard_count if self.is_quota_state else self.shard_count
 
+    @property
+    def report_top_up_milli(self) -> int:
+        """The ``tu`` a reported per-shard limit adds to its capacity (ADR-149).
+
+        Only a quota carries one; a stray one on anything else is ignored.
+        """
+        return (self.topped_up_milli or 0) if self.is_quota_state else 0
+
     def reset_target_milli(self, now_ms: int) -> int:
         """The balance a reset or window roll sets: this shard's share at ``now_ms``.
 
@@ -1260,10 +1276,15 @@ class BucketState:
         covers, so its ceiling is ``C // gc``; trimming it to ``C // S`` would
         discard allowance no other shard holds (#637). A dripping limit keeps
         ``C // S``: its shards' ceilings must sum to the capacity.
+
+        A quota shard an operator topped up above its grant this period
+        (ADR-149) holds that allowance too: ``C // gc + tu``. A dripping limit
+        never carries ``tu``.
         """
         cp, _ra, _rp = self._scheduled_params(now_ms)
-        divisor = self.grant_shard_count if self.is_quota_state else self.shard_count
-        return cp // divisor
+        if self.is_quota_state:
+            return cp // self.grant_shard_count + (self.topped_up_milli or 0)
+        return cp // self.shard_count
 
     def effective_refill_amount_milli(self, now_ms: int) -> int:
         """This shard's share of the refill in force at ``now_ms``.
@@ -2071,6 +2092,29 @@ class AuditAction:
     ENTITY_DELETED = "entity_deleted"
     LIMITS_SET = "limits_set"
     LIMITS_DELETED = "limits_deleted"
+    BUCKET_RESET = "bucket_reset"
+    BUCKET_TOPPED_UP = "bucket_topped_up"
+
+
+@dataclass(frozen=True)
+class BucketOperationResult:
+    """What ``Repository.reset_bucket`` or ``Repository.top_up`` did (ADR-149).
+
+    Attributes:
+        entity_id: The entity operated on.
+        resource: The resource operated on.
+        shards: Bucket items written (0 when there was nothing to write, such as
+            a reset of an entity that has never acquired).
+        amounts: Per named limit, in whole tokens. For a top-up, what was
+            granted: exactly what was asked for a quota, at most the free room
+            below the ceiling for a dripping limit. For a reset, what was
+            restored across every shard.
+    """
+
+    entity_id: str
+    resource: str
+    shards: int
+    amounts: dict[str, int]
 
 
 @dataclass

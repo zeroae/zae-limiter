@@ -291,6 +291,54 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "#pinsc <= :pinsc" in update["ConditionExpression"]
 
+    def test_normal_clearing_top_ups(self) -> None:
+        """ADR-149: a reset or roll removes `b_{name}_tu` on positional `#tu*`."""
+        update = _repo().build_composite_normal(
+            entity_id="e",
+            resource="r",
+            consumed={DOTTED: 0, HYPHENATED: 0},
+            refill_amounts={},
+            now_ms=2,
+            expected_rf=1,
+            grant_counts={DOTTED: 1, HYPHENATED: 1},
+            pin_shard_count=1,
+            cleared_top_ups=[DOTTED, HYPHENATED],
+        )["Update"]
+        assert_expression_safe(update)
+        assert update["UpdateExpression"].endswith("REMOVE #tu0, #tu1")
+
+    @pytest.mark.parametrize("stored", [True, False])
+    def test_bucket_operation(self, stored: bool) -> None:
+        """ADR-149: a reset or top-up's write, every clause at once."""
+        from zae_limiter.bucket_ops import ShardWrite
+
+        write = ShardWrite(
+            shard_id=1,
+            shard_count=2,
+            shard_count_stored=stored,
+            expected_rf=1,
+            written_rf=2,
+            deltas={DOTTED: 5, HYPHENATED: -5},
+            grant_counts={DOTTED: 2, HYPHENATED: 2},
+            windows={DOTTED: (1, 60)},
+            applied_windows={DOTTED: 1},
+            top_ups={HYPHENATED: 7},
+            cleared_top_ups={DOTTED},
+            cleared_window_marks={DOTTED},
+        )
+        update = _repo().build_bucket_operation("e", "r", write, "01OPERATION")["Update"]
+        assert_expression_safe(update)
+
+    def test_bucket_operation_with_nothing_but_the_lock(self) -> None:
+        from zae_limiter.bucket_ops import ShardWrite
+
+        write = ShardWrite(
+            shard_id=0, shard_count=1, shard_count_stored=True, expected_rf=1, written_rf=2
+        )
+        update = _repo().build_bucket_operation("e", "r", write, "01OPERATION")["Update"]
+        assert_expression_safe(update)
+        assert update["UpdateExpression"] == "SET #rf = :rf, #vu = :vu, #op = :op"
+
     def test_retry_with_seeds(self) -> None:
         seeds = self._seed_states()
         update = _repo().build_composite_retry(

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from .models import (
         AuditEvent,
         BackendCapabilities,
+        BucketOperationResult,
         BucketState,
         ConfigAccess,
         Entity,
@@ -619,6 +620,7 @@ class RepositoryProtocol(Protocol):
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
+        cleared_top_ups: Sequence[str] = (),
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -712,7 +714,9 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
-    async def transact_write(self, items: list[dict[str, Any]]) -> None:
+    async def transact_write(
+        self, items: list[dict[str, Any]], client_request_token: str | None = None
+    ) -> None:
         """
         Execute a write of one or more items.
 
@@ -722,6 +726,8 @@ class RepositoryProtocol(Protocol):
 
         Args:
             items: List of transaction items from build_bucket_put_item
+            client_request_token: Idempotency token for a multi-item
+                transaction (ADR-149); ignored for a single item.
 
         Raises:
             TransactionCanceledException: If multi-item transaction fails
@@ -1467,6 +1473,34 @@ class RepositoryProtocol(Protocol):
         principal: str | None = None,
     ) -> int:
         """Remove the entity's cascade policy, reverting to inherit (ADR-146)."""
+        ...
+
+    async def reset_bucket(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: Sequence[str] | None = None,
+        principal: str | None = None,
+    ) -> "BucketOperationResult":
+        """Restore an entity's balance on one resource to its full share, now (ADR-149).
+
+        Every shard, one rf-locked zero-consumption pass, one transaction; the
+        named limits (all when None) back to their full share and a new period.
+        """
+        ...
+
+    async def top_up(
+        self,
+        entity_id: str,
+        resource: str,
+        amounts: dict[str, int],
+        principal: str | None = None,
+    ) -> "BucketOperationResult":
+        """Add whole tokens per limit to an entity's balance on one resource, now (ADR-149).
+
+        A quota gains exactly the amount (above its plan for this period, behind
+        the 0.17.0 version gate); a dripping limit at most up to its ceiling.
+        """
         ...
 
     async def resolve_on_unavailable(self) -> "OnUnavailableAction":

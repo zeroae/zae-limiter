@@ -28,6 +28,12 @@ MIN_READER_VERSION_FOR_RESET_AFTER = "0.15.0"
 # stamps that on the buckets it creates, undoing the policy there.
 MIN_READER_VERSION_FOR_CASCADE_POLICY = "0.16.0"
 
+# The first release whose readers keep a quota top-up above the plan (ADR-149),
+# gated the same way. A client or aggregator predating it clamps a quota shard
+# to `C // gc` on its next pass, destroying the purchased `b_{name}_tu`
+# allowance (under-admission of paid credit, never over-admission).
+MIN_READER_VERSION_FOR_TOP_UP = "0.17.0"
+
 
 @dataclass(frozen=True, order=False)
 class ParsedVersion:
@@ -357,6 +363,36 @@ def cascade_policy_refusal(record_found: bool, lambda_version: str | None) -> tu
     return (
         f"Refusing to store a cascade policy: the deployed Lambdas predate {minimum} "
         "(the limits provisioner would erase it on its next apply). Run "
+        "'zae-limiter upgrade' first, or open the stack with Repository.open() "
+        "and auto_update=True.",
+        True,
+    )
+
+
+def top_up_refusal(record_found: bool, lambda_version: str | None) -> tuple[str, bool]:
+    """The message and ``can_auto_update`` for a refused top-up above the plan (ADR-149).
+
+    The ``reset_after_refusal`` contract, for a quota top-up that raises a
+    shard's ceiling (``b_{name}_tu``).
+    """
+    minimum = MIN_READER_VERSION_FOR_TOP_UP
+    if not record_found:
+        return (
+            "Refusing to top up a quota above its plan: the stack has no version record, "
+            f"so nothing proves its aggregator keeps the top-up (added in {minimum}). "
+            f"Re-run 'zae-limiter deploy' from {minimum} or later, which writes it.",
+            False,
+        )
+    if lambda_version is None:
+        return (
+            "Refusing to top up a quota above its plan: the version record does not say "
+            "which Lambda code is deployed, so nothing proves the aggregator keeps the "
+            f"top-up (added in {minimum}). Run 'zae-limiter upgrade' to deploy it.",
+            False,
+        )
+    return (
+        f"Refusing to top up a quota above its plan: the deployed Lambdas predate {minimum} "
+        "(the aggregator would clamp the purchased allowance away). Run "
         "'zae-limiter upgrade' first, or open the stack with Repository.open() "
         "and auto_update=True.",
         True,

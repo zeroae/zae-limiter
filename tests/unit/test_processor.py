@@ -4928,3 +4928,56 @@ class TestNoReopeningAboveTheCeiling:
         wrote, item = self._on_a_real_table(self._calendar(quota_tk=90_000), credit_milli=None)
         assert wrote is True
         assert int(item["vu"]["N"]) > TUE_1400
+
+
+class TestAggregatorKeepsTopUps:
+    """ADR-149: the aggregator reads ``b_{name}_tu``, keeps it in a quota's
+    ceiling, removes it with a reset or roll, and never clones it."""
+
+    def test_parse_bucket_record_reads_tu(self) -> None:
+        record = TestNewBucketPKParsing()._make_new_pk_record(limits={"rpd": (0, 1000)})
+        record["dynamodb"]["NewImage"]["b_rpd_tu"] = {"N": "3000"}
+        parsed = _parse_bucket_record(record)
+        assert parsed is not None
+        assert parsed.limits["rpd"].topped_up_milli == 3000
+
+    def test_a_reset_removes_the_top_up(self) -> None:
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET)
+        state.limits["rpd"].topped_up_milli = 5_000
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert kwargs["UpdateExpression"].endswith(" REMOVE #tq0")
+        assert kwargs["ExpressionAttributeNames"]["#tq0"] == "b_rpd_tu"
+
+    def test_a_reset_without_a_top_up_removes_nothing(self) -> None:
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        assert "REMOVE" not in table.update_item.call_args.kwargs["UpdateExpression"]
+
+    def test_a_purchase_above_the_grant_is_not_held_over_the_ceiling(self) -> None:
+        """An expired `vu` is re-stamped only while every quota sits within its
+        ceiling (#679); a purchase lifts that ceiling by `tu`."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, rf_ms=WED_0030 - 60_000)
+        state.vu_ms = WED_0030 - 1
+        state.limits["rpd"].tk_milli = 12_000_000  # 2,000 above C // 1
+        state.limits["rpm"] = LimitRefillInfo(
+            tc_delta=5_000_000, tk_milli=0, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=60_000
+        )
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        assert ":new_vu" not in table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        state.limits["rpd"].topped_up_milli = 2_000_000
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":vq0"] == 12_000_000
+
+    def test_a_clone_does_not_copy_the_top_up(self, mock_dynamodb) -> None:
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=1_300_000, shard_count=2, b_rpd_gc=1, b_rpd_tu=300_000)
+        assert propagate_shard_count(table, _doubling_record(table, 1), TUE_1400) == 1
+        clone = _must(table, 1)
+        assert "b_rpd_tu" not in clone
+        assert clone["b_rpd_tk"] == 500_000, "a move of at most one share"
+        assert _must(table, 0)["b_rpd_tu"] == 300_000, "the purchase stays with its shard"

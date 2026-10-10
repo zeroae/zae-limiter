@@ -66,6 +66,7 @@ class LeaseEntry:
     _seed: bool = False
     _granted: bool = False
     _donor_debit: QuotaDonorDebit | None = None
+    _stored_top_up: bool = False
 
 
 _AdjustedItem = tuple[str, str, int, list[LeaseEntry], dict[str, int]]
@@ -91,6 +92,7 @@ def _mark_granted(entry: LeaseEntry) -> None:
     """
     if entry.limit.is_quota:
         entry.state.grant_count = entry.state.shard_count
+        entry.state.topped_up_milli = None
         entry._granted = True
 
 
@@ -198,7 +200,9 @@ class SyncLease:
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                limit=entry.limit.per_shard(
+                    entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                ),
                 available=result.available,
                 requested=amount,
                 exceeded=not result.success,
@@ -216,7 +220,9 @@ class SyncLease:
                         entity_id=entry.entity_id,
                         resource=entry.resource,
                         limit_name=entry.limit.name,
-                        limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                        limit=entry.limit.per_shard(
+                            entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                        ),
                         available=available,
                         requested=0,
                         exceeded=False,
@@ -453,6 +459,11 @@ class SyncLease:
                     for e in group_entries
                     if e._granted and (not e._seed) and (e.state.grant_count is not None)
                 }
+                cleared_top_ups = [
+                    e.limit.name
+                    for e in group_entries
+                    if e._granted and (not e._seed) and e._stored_top_up
+                ]
                 pin = [e.state.shard_count for e in group_entries if e._seed and e.limit.is_quota]
                 pin += list(grant_counts.values())
                 written_rf = _monotonic_rf(now_ms, expected_rf, group_entries)
@@ -501,6 +512,7 @@ class SyncLease:
                         applied_windows=_applied_windows(group_entries),
                         seeds=seeds,
                         grant_counts=grant_counts,
+                        cleared_top_ups=cleared_top_ups,
                         pin_shard_count=min(pin, default=None),
                         rf_ms=written_rf,
                         clear_vu=not boundaries,
@@ -941,7 +953,8 @@ class SyncLease:
                 if deltas.get(entry.limit.name, 0) >= 0:
                     continue
                 value = attrs.get(bucket_attr(entry.limit.name, BUCKET_FIELD_TK))
-                if value is not None and int(value["N"]) > entry.state.ceiling_milli(now_ms):
+                ceiling = entry.state.ceiling_milli(now_ms) - entry.state.report_top_up_milli
+                if value is not None and int(value["N"]) > ceiling:
                     resets.append(build(entity_id, resource, shard_id))
                     break
         return resets
@@ -1146,7 +1159,9 @@ def _retry_statuses(
                     entity_id=entry.entity_id,
                     resource=entry.resource,
                     limit_name=entry.limit.name,
-                    limit=entry.limit.per_shard(real.report_shard_count, now_ms),
+                    limit=entry.limit.per_shard(
+                        real.report_shard_count, now_ms, real.report_top_up_milli
+                    ),
                     available=result.available,
                     requested=entry.consumed,
                     exceeded=exceeded,
@@ -1166,7 +1181,9 @@ def _retry_statuses(
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                limit=entry.limit.per_shard(
+                    entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                ),
                 available=entry.state.tokens_milli // 1000,
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,
