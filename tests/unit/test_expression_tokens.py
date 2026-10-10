@@ -372,6 +372,27 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
 
+    def test_adjust_counters_or_tokens_only(self) -> None:
+        """#311: a bypassed lease writes `tc` only; a bypass refund writes `tk` only."""
+        deltas = {DOTTED: 1000, HYPHENATED: -2000}
+        tc_only = _repo().build_composite_adjust("user-1", "api", deltas, tokens=False)["Update"]
+        tk_only = _repo().build_composite_adjust("user-1", "api", deltas, counter=False)["Update"]
+        for update in (tc_only, tk_only):
+            assert_expression_safe(update)
+        assert all(v.endswith("_tc") for v in tc_only["ExpressionAttributeNames"].values())
+        assert all(v.endswith("_tk") for v in tk_only["ExpressionAttributeNames"].values())
+
+    def test_bypass_consume(self) -> None:
+        update = _repo().build_bypass_consume(
+            "user-1", "api", {DOTTED: 1000, HYPHENATED: 2000}, shard_id=2
+        )["Update"]
+        assert_expression_safe(update)
+        assert "attribute_exists(#byp)" in update["ConditionExpression"]
+
+    def test_bypass_consume_with_nothing_declared(self) -> None:
+        update = _repo().build_bypass_consume("user-1", "api", {})["Update"]
+        assert_expression_safe(update)
+
     def test_vu_reset(self) -> None:
         """#679: forces a clamping pass after a credit above the ceiling."""
         update = _repo().build_vu_reset("user-1", "api", shard_id=3)["Update"]
@@ -636,6 +657,21 @@ class TestClientWritesThroughMoto:
         with patch.object(client, "update_item", spy.forward):
             await repo._speculative_consume_single("user-1", "api", {DOTTED: 1, HYPHENATED: 2})
         assert_expression_safe(spy.call_args.kwargs)
+
+    async def test_fast_path_bypass_shape(self, limiter: RateLimiter) -> None:
+        """#311: `tc` and `wcu` only, conditioned on the stamp, no `vu` guard."""
+        repo = limiter._repository
+        client = await repo._get_client()
+        spy = await self._spy(repo)
+        repo._bypass_cache.add((repo._namespace_id, "user-1", "api"))
+        with patch.object(client, "update_item", spy.forward):
+            await repo._speculative_consume_single(
+                "user-1", "api", {DOTTED: 1, HYPHENATED: 2}, ttl_seconds=60
+            )
+        bypass_write = spy.call_args_list[0].kwargs
+        assert_expression_safe(bypass_write)
+        assert "attribute_exists(#byp)" in bypass_write["ConditionExpression"]
+        assert "#vu" not in bypass_write["ConditionExpression"]
 
     async def test_fast_path_with_ttl(self, limiter: RateLimiter) -> None:
         repo = limiter._repository

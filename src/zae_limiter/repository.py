@@ -224,6 +224,11 @@ class Repository:
         # Consulted only while the entity has an entry, so dropping that entry
         # still means "start cold".
         self._cascade_cache: dict[tuple[str, str, str], bool] = {}
+        # (namespace, entity, resource) pairs whose bucket items carried the
+        # `bypass` stamp the last time a write returned one (#311, ADR-151).
+        # Positive entries only: bypassed pairs are few. The item a write
+        # returns always overrules it.
+        self._bypass_cache: set[tuple[str, str, str]] = set()
         # The last bucket state seen per (namespace, entity, resource, shard),
         # used only to reject a request that cannot fit without a DynamoDB
         # call (ADR-147, #695). Shared with every namespace() scope.
@@ -582,6 +587,7 @@ class Repository:
         # Share mutable caches
         scoped._entity_cache = self._entity_cache
         scoped._cascade_cache = self._cascade_cache
+        scoped._bypass_cache = self._bypass_cache
         scoped._rejection_cache = self._rejection_cache
         scoped._namespace_cache = self._namespace_cache
         # Scoped repos start with no on_unavailable cache (each namespace
@@ -2301,8 +2307,8 @@ class Repository:
     async def batch_get_configs(
         self,
         keys: list[tuple[str, str]],
-        disabled_out: dict[tuple[str, str], bool | None] | None = None,
-        cascade_out: dict[tuple[str, str], bool | None] | None = None,
+        disabled_out: dict[tuple[str, str], bool | str | None] | None = None,
+        cascade_out: dict[tuple[str, str], bool | str | None] | None = None,
     ) -> dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]:
         """
         Batch get config items in a single DynamoDB call.
@@ -2720,6 +2726,7 @@ class Repository:
         shard_count: int = 1,
         vu: int | None = None,
         rf_ms: int | None = None,
+        bypass: bool = False,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -2743,6 +2750,8 @@ class Repository:
             rf_ms: The ``rf`` to stamp, when the caller has clamped it above
                 ``now_ms`` so that ``rf`` never sits below a window start the
                 item carries (ADR-140). ``None`` stamps ``now_ms``.
+            bypass: Stamp the item ``bypass`` (#311): created by a bypassed
+                acquire, from config read uncached on that pass.
         """
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
@@ -2769,6 +2778,8 @@ class Repository:
 
         if vu is not None:
             item[schema.BUCKET_FIELD_VU] = {"N": str(vu)}
+        if bypass:
+            item[schema.BUCKET_FIELD_BYPASS] = {"BOOL": True}
 
         # Both schedules are stamped at bucket creation and re-stamped by the
         # `set_limits` fan-out (§2.2). Without it here, a bucket first seen by
@@ -3309,6 +3320,9 @@ class Repository:
         resource: str,
         deltas: dict[str, int],
         shard_id: int = 0,
+        *,
+        tokens: bool = True,
+        counter: bool = True,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
@@ -3319,6 +3333,11 @@ class Repository:
         Every refund, release, rollback and speculative compensation is built
         here, so the shard's cached state is forgotten here (ADR-147): tokens
         this process gives back must not be hidden by its own cache.
+
+        ``tokens=False`` writes ``tc`` only — a bypassed lease's adjustment,
+        release or rollback, which never debited ``tk`` (#311).
+        ``counter=False`` writes ``tk`` only — the refund of an enforce-shaped
+        write that landed on a bypassed bucket, whose consumption stays counted.
         """
         self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
         add_parts: list[str] = []
@@ -3335,14 +3354,15 @@ class Repository:
             tk_val = f":bd{i}"
             tc_val = f":bcd{i}"
 
-            attr_names[tk_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
-            attr_names[tc_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
             # delta > 0 means consumed more: subtract from tk, add to tc
-            attr_values[tk_val] = {"N": str(-delta)}
-            attr_values[tc_val] = {"N": str(delta)}
-
-            add_parts.append(f"{tk_alias} {tk_val}")
-            add_parts.append(f"{tc_alias} {tc_val}")
+            if tokens:
+                attr_names[tk_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+                attr_values[tk_val] = {"N": str(-delta)}
+                add_parts.append(f"{tk_alias} {tk_val}")
+            if counter:
+                attr_names[tc_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
+                attr_values[tc_val] = {"N": str(delta)}
+                add_parts.append(f"{tc_alias} {tc_val}")
 
         if not add_parts:
             # Nothing to adjust
@@ -3393,6 +3413,50 @@ class Repository:
                 "ExpressionAttributeValues": {":zero": {"N": "0"}},
             }
         }
+
+    def build_bypass_consume(
+        self,
+        entity_id: str,
+        resource: str,
+        consumed: dict[str, int],
+        shard_id: int = 0,
+    ) -> dict[str, Any]:
+        """The slow path's write for a bypassed existing bucket (#311, ADR-151 §4).
+
+        ``ADD tc`` per limit and nothing else: no ``tk`` debit, no refill, no
+        ``rf`` advance, no reset or window roll, so lifting the bypass needs no
+        reset and leaves no debt. Conditioned on the item's ``bypass`` stamp:
+        a bypass cleared since this pass read config fails here, and the
+        acquire is planned again, enforced. Positional tokens (``#bc{i}``).
+
+        Args:
+            consumed: Limit name -> consumption, millitokens.
+        """
+        add_parts: list[str] = []
+        names: dict[str, str] = {"#byp": schema.BUCKET_FIELD_BYPASS}
+        values: dict[str, Any] = {}
+        for i, (name, amount) in enumerate(consumed.items()):
+            names[f"#bc{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
+            values[f":bcd{i}"] = {"N": str(amount)}
+            add_parts.append(f"#bc{i} :bcd{i}")
+        update: dict[str, Any] = {
+            "TableName": self.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            "ConditionExpression": "attribute_exists(PK) AND attribute_exists(#byp)",
+            "ExpressionAttributeNames": names,
+        }
+        if add_parts:
+            update["UpdateExpression"] = f"ADD {', '.join(add_parts)}"
+            update["ExpressionAttributeValues"] = values
+        else:
+            # Nothing declared: re-assert the stamp the condition already
+            # requires, so the write still proves the bypass stands.
+            update["UpdateExpression"] = "SET #byp = :byp"
+            update["ExpressionAttributeValues"] = {":byp": {"BOOL": True}}
+        return {"Update": update}
 
     async def transact_write(self, items: list[dict[str, Any]]) -> None:
         """Execute a write, using single-item API when possible to halve WCU cost."""
@@ -3623,6 +3687,79 @@ class Repository:
         shard_id: int = 0,
         now_ms: int | None = None,
     ) -> SpeculativeResult:
+        """One speculative write on one shard, in the shape bypass calls for (#311).
+
+        A pair this process has seen stamped ``bypass`` is written in the
+        bypass shape (``tc`` and ``wcu`` only, conditioned on the stamp). If
+        that write finds the stamp gone, the bypass was cleared: the cache
+        forgets the pair and the request is written again in the enforce
+        shape (one failed write, once). An enforce-shaped write that lands on a
+        bypassed bucket is admitted by the stamp, refunded (``tk`` only, 1
+        WCU, once per process per pair) and the pair is learned (ADR-151
+        §3.2). Every other case is exactly today's single write.
+        """
+        if now_ms is None:
+            now_ms = self._now_ms()
+        key = (self._namespace_id, entity_id, resource)
+        if key in self._bypass_cache:
+            result = await self._speculative_consume_once(
+                entity_id, resource, consume, ttl_seconds, shard_id, now_ms, bypass_shape=True
+            )
+            if (
+                result.success
+                or result.bypassed
+                or result.failure_reason is SpeculativeFailureReason.BUCKET_MISSING
+            ):
+                return result
+        result = await self._speculative_consume_once(
+            entity_id, resource, consume, ttl_seconds, shard_id, now_ms, bypass_shape=False
+        )
+        if result.success and result.bypassed:
+            await self._refund_bypassed_debit(entity_id, resource, consume, shard_id, result)
+        return result
+
+    async def _refund_bypassed_debit(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        shard_id: int,
+        result: SpeculativeResult,
+    ) -> None:
+        """Give back the ``tk`` an enforce-shaped write debited from a bypassed bucket.
+
+        ``tk`` only: the consumption was real and stays counted in ``tc``. The
+        balance returns to what it was, so no ceiling clamp is needed. A failed
+        refund is logged and leaves the debit (under-admission, never over).
+        """
+        deltas = {name: -(amount * 1000) for name, amount in consume.items()}
+        item = self.build_composite_adjust(
+            entity_id, resource, deltas, shard_id=shard_id, counter=False
+        )
+        if not item:
+            return
+        try:
+            await self.write_each([item])
+        except Exception:
+            # The entity id is routinely an API key; never log it.
+            logger.warning(
+                "bypass refund failed for resource=%s shard=%d", resource, shard_id, exc_info=True
+            )
+            return
+        for state in result.buckets:
+            state.tokens_milli += consume.get(state.limit_name, 0) * 1000
+
+    async def _speculative_consume_once(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        ttl_seconds: int | None,
+        shard_id: int,
+        now_ms: int,
+        *,
+        bypass_shape: bool,
+    ) -> SpeculativeResult:
         """Issue a single speculative UpdateItem on a bucket shard.
 
         In addition to consuming the application-level limits, this method
@@ -3638,16 +3775,19 @@ class Repository:
             now_ms: The caller's "now" (issue #430). Every clock-derived part
                 of the write — the ``ttl`` stamp, the ``#ttl > :now_epoch``
                 expiry guard and the ``#vu > :vu_now`` schedule-window guard
-                (#222) — is derived from this one value. None reads the clock
-                once here.
+                (#222) — is derived from this one value.
+            bypass_shape: Write the bypass shape (#311): ``ADD tc`` per limit
+                and the ``wcu`` debit, no ``tk`` term and no ``vu`` guard,
+                conditioned on the item's ``bypass`` stamp. Otherwise every
+                balance term (and the ``vu`` guard) also admits on the stamp,
+                so an enforce-shaped write on a bypassed bucket never fails.
 
         Returns:
-            SpeculativeResult with shard_id and shard_count populated.
+            SpeculativeResult with shard_id and shard_count populated, and
+            ``bypassed`` when the image carries the stamp.
         """
-        if now_ms is None:
-            now_ms = self._now_ms()
-
         client = await self._get_client()
+        bypass_key = (self._namespace_id, entity_id, resource)
 
         # Build ADD expression for each limit
         add_parts: list[str] = []
@@ -3670,14 +3810,17 @@ class Repository:
             pos_val = f":p{i}"
             thresh_val = f":h{i}"
 
-            attr_names[tk_alias] = tk_attr
             attr_names[tc_alias] = tc_attr
-            attr_values[neg_val] = {"N": str(-amount_milli)}
             attr_values[pos_val] = {"N": str(amount_milli)}
-            attr_values[thresh_val] = {"N": str(amount_milli)}
-
-            add_parts.append(f"{tk_alias} {neg_val}")
             add_parts.append(f"{tc_alias} {pos_val}")
+            if bypass_shape:
+                # Nothing is spent under bypass: `tc` counts the consumption,
+                # `tk` is left exactly as it was (#311).
+                continue
+            attr_names[tk_alias] = tk_attr
+            attr_values[neg_val] = {"N": str(-amount_milli)}
+            attr_values[thresh_val] = {"N": str(amount_milli)}
+            add_parts.append(f"{tk_alias} {neg_val}")
             # A soft limit (#467, ADR-151) is decided by the server: the item's
             # own `b_{name}_soft` stamp admits it without testing the balance,
             # while the ADD above still debits it — into debt if need be. The
@@ -3687,9 +3830,16 @@ class Repository:
             # slow path, which seeds it (#633).
             soft_alias = f"#o{i}"
             attr_names[soft_alias] = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_SOFT)
+            # A bypassed bucket admits on its stamp too (#311), so an enforce
+            # shape guessed wrong is admitted and refunded, never rejected.
             condition_parts.append(
-                f"(attribute_exists({soft_alias}) OR {tk_alias} >= {thresh_val})"
+                f"(attribute_exists(#byp) OR attribute_exists({soft_alias}) "
+                f"OR {tk_alias} >= {thresh_val})"
             )
+
+        attr_names["#byp"] = schema.BUCKET_FIELD_BYPASS
+        if bypass_shape:
+            condition_parts.append("attribute_exists(#byp)")
 
         # Add wcu infrastructure limit consumption (1 WCU = 1000 millitokens per write)
         wcu_tk_attr = schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
@@ -3734,9 +3884,15 @@ class Repository:
         # Uses the bound `now_ms`; a fresh read here would re-introduce the
         # second clock reading #430 removed, and could straddle the boundary
         # the comparison is about.
-        attr_names["#vu"] = schema.BUCKET_FIELD_VU
-        attr_values[":vu_now"] = {"N": str(now_ms)}
-        condition_parts.append("(attribute_not_exists(#vu) OR #vu > :vu_now)")
+        # Bypass spends nothing, so a passed boundary is irrelevant to it: the
+        # bypass shape carries no `vu` guard, and the enforce shape's admits on
+        # the stamp (#311).
+        if not bypass_shape:
+            attr_names["#vu"] = schema.BUCKET_FIELD_VU
+            attr_values[":vu_now"] = {"N": str(now_ms)}
+            condition_parts.append(
+                "(attribute_exists(#byp) OR attribute_not_exists(#vu) OR #vu > :vu_now)"
+            )
 
         condition_expr = " AND ".join(condition_parts)
 
@@ -3763,6 +3919,7 @@ class Repository:
             cascade = item.get("cascade", {}).get("BOOL", False)
             parent_id = item.get("parent_id", {}).get("S")
             shard_count = int(item.get("shard_count", {}).get("N", "1"))
+            bypassed = self._learn_bypass(bypass_key, item)
             self._remember_bucket_image(entity_id, resource, shard_id, item, buckets, shard_count)
             return SpeculativeResult(
                 success=True,
@@ -3771,12 +3928,14 @@ class Repository:
                 parent_id=parent_id,
                 shard_id=shard_id,
                 shard_count=shard_count,
+                bypassed=bypassed,
             )
 
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 old_item = cast(dict[str, Any] | None, e.response.get("Item"))
                 if old_item:
+                    old_bypassed = self._learn_bypass(bypass_key, old_item)
                     old_buckets = self._deserialize_composite_bucket(old_item)
                     old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
                     self._remember_bucket_image(
@@ -3808,6 +3967,19 @@ class Repository:
                             failure_reason=SpeculativeFailureReason.DISABLED,
                         )
 
+                    # The bypass shape found no stamp: the bypass was cleared.
+                    # Not a rejection; the caller writes again, enforced.
+                    if bypass_shape and not old_bypassed:
+                        return SpeculativeResult(
+                            success=False,
+                            old_buckets=old_buckets,
+                            cascade=old_cascade,
+                            parent_id=old_parent_id,
+                            shard_id=shard_id,
+                            shard_count=old_shard_count,
+                            failure_reason=SpeculativeFailureReason.APP_LIMIT_EXHAUSTED,
+                        )
+
                     # A closed schedule window outranks exhaustion (#222 §2.1):
                     # the limits that rejected this write are stale, and the
                     # new window may admit it. Must precede the exhausted
@@ -3824,7 +3996,8 @@ class Repository:
                     # cost +2 reads until something was admitted).
                     vu_raw = old_item.get(schema.BUCKET_FIELD_VU, {}).get("N")
                     if (
-                        vu_raw is not None
+                        not old_bypassed
+                        and vu_raw is not None
                         and int(vu_raw) <= now_ms
                         and not vu_only_trims(int(vu_raw), old_buckets)
                     ):
@@ -3847,6 +4020,7 @@ class Repository:
                     app_exhausted = any(
                         b.limit_name != schema.WCU_LIMIT_NAME
                         and not b.soft
+                        and not b.bypass
                         and b.tokens_milli < consume.get(b.limit_name, 0) * 1000
                         for b in old_buckets
                     )
@@ -3865,14 +4039,29 @@ class Repository:
                         shard_id=shard_id,
                         shard_count=old_shard_count,
                         failure_reason=reason,
+                        bypassed=old_bypassed,
                     )
                 else:
+                    self._bypass_cache.discard(bypass_key)
                     return SpeculativeResult(
                         success=False,
                         shard_id=shard_id,
                         failure_reason=SpeculativeFailureReason.BUCKET_MISSING,
                     )
             raise
+
+    def _learn_bypass(self, key: tuple[str, str, str], item: dict[str, Any]) -> bool:
+        """Learn a pair's bypass mode from the item a write returned (#311).
+
+        The item overrules the cache in both directions: a stamp teaches it,
+        and an image without one makes it forget.
+        """
+        stamped = bool(item.get(schema.BUCKET_FIELD_BYPASS, {}).get("BOOL", False))
+        if stamped:
+            self._bypass_cache.add(key)
+        else:
+            self._bypass_cache.discard(key)
+        return stamped
 
     def _learn_shard_count(
         self,
@@ -3931,6 +4120,11 @@ class Repository:
         from a state the slow path would re-materialise, recreate or answer
         with ``ResourceDisabled``.
         """
+        if item.get(schema.BUCKET_FIELD_BYPASS, {}).get("BOOL", False):
+            # A bypassed bucket is never rejected locally (#311): its balance
+            # says nothing about admission.
+            self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
+            return
         vu_raw = item.get(schema.BUCKET_FIELD_VU, {}).get("N")
         ttl_raw = item.get("ttl", {}).get("N")
         self._rejection_cache.store(
@@ -4322,7 +4516,7 @@ class Repository:
         resource: str = schema.DEFAULT_RESOURCE,
         principal: str | None = None,
         *,
-        disabled: bool | None = _PRESERVE_DISABLED,
+        disabled: bool | str | None = _PRESERVE_DISABLED,
         cascade: bool | None = _PRESERVE_CASCADE,
     ) -> None:
         """
@@ -4342,6 +4536,8 @@ class Repository:
                 explicit value must be passed to change it; see ADR-125).
                 Passing an explicit value also fans out to existing buckets,
                 exactly as `disable_entity()`/`enable_entity()` do.
+                ``"bypass"`` bypasses the entity (#311): see
+                `bypass_entity()`; gated at 0.17.0 like a soft limit.
             cascade: Tri-state cascade policy (ADR-146), preserved the same way.
                 An explicit value is gated on the stack's version and fans out
                 like `set_entity_cascade()`.
@@ -4355,6 +4551,10 @@ class Repository:
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
         await self._require_soft_readers(limits)
+        if disabled is not _PRESERVE_DISABLED:
+            schema.encode_disabled(disabled)  # rejects an unknown value before any I/O
+            if disabled == schema.DISABLED_BYPASS:
+                await self._require_non_enforcing_readers()
         cascade_explicit = cascade is not _PRESERVE_CASCADE
         if cascade_explicit:
             await self._require_cascade_policy_readers()
@@ -4456,7 +4656,7 @@ class Repository:
         # disable_entity()/enable_entity() (ADR-125). With the preserve sentinel
         # the stored value is unchanged, so no fan-out is needed.
         if disabled_explicit:
-            effective, _level = await self.resolve_disabled(entity_id, resource)
+            effective = await self._access_stamp(entity_id, resource)
             fanout_resource = None if resource == schema.DEFAULT_RESOURCE else resource
             await self._fanout_entity(entity_id, fanout_resource, disabled=effective)
         if cascade_explicit:
@@ -4990,11 +5190,12 @@ class Repository:
 
         return self._deserialize_composite_limits(item)
 
-    async def get_entity_disabled(self, entity_id: str, resource: str) -> bool | None:
-        """Read the tri-state disabled flag from an entity config item.
+    async def get_entity_disabled(self, entity_id: str, resource: str) -> bool | str | None:
+        """Read the ``disabled`` value from an entity config item.
 
         Returns:
-            True or False when explicitly set, None when unset (inherit).
+            True or False when explicitly set, ``"bypass"`` for a bypass
+            (#311), None when unset (inherit).
         """
         disabled, _cascade = await self._get_entity_config_flags(entity_id, resource)
         return disabled
@@ -5010,13 +5211,13 @@ class Repository:
 
     async def _get_entity_config_flags(
         self, entity_id: str, resource: str
-    ) -> tuple[bool | None, bool | None]:
+    ) -> tuple[bool | str | None, bool | None]:
         """The tri-state `(disabled, cascade)` stored on an entity config item."""
         return await self._get_config_flags(
             schema.pk_entity(self._namespace_id, entity_id), schema.sk_config(resource)
         )
 
-    async def _get_config_flags(self, pk: str, sk: str) -> tuple[bool | None, bool | None]:
+    async def _get_config_flags(self, pk: str, sk: str) -> tuple[bool | str | None, bool | None]:
         """The tri-state `(disabled, cascade)` stored on one config item.
 
         One read serves both, so a full-replace setter preserving them costs what
@@ -5140,7 +5341,7 @@ class Repository:
             if resource == schema.DEFAULT_RESOURCE:
                 await self._fanout_entity(entity_id, None, disabled=False)
             else:
-                effective, _level = await self.resolve_disabled(entity_id, resource)
+                effective = await self._access_stamp(entity_id, resource)
                 await self._fanout_entity(entity_id, resource, disabled=effective)
         # Likewise for a cascade policy this level was deciding (ADR-146).
         if had_cascade:
@@ -5259,7 +5460,7 @@ class Repository:
         limits: list[Limit],
         principal: str | None = None,
         *,
-        disabled: bool | None = _PRESERVE_DISABLED,
+        disabled: bool | str | None = _PRESERVE_DISABLED,
         cascade: bool | None = _PRESERVE_CASCADE,
     ) -> None:
         """
@@ -5277,6 +5478,8 @@ class Repository:
                 explicit value must be passed to change it; see ADR-125).
                 Passing an explicit value also fans out to existing buckets,
                 exactly as `disable_resource()`/`enable_resource()` do.
+                ``"bypass"`` bypasses the resource (#311): see
+                `bypass_resource()`; gated at 0.17.0 like a soft limit.
             cascade: Tri-state cascade policy (ADR-146), preserved the same way.
                 An explicit value is gated on the stack's version and fans out
                 like `set_resource_cascade()`.
@@ -5291,6 +5494,10 @@ class Repository:
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
         await self._require_soft_readers(limits)
+        if disabled is not _PRESERVE_DISABLED:
+            schema.encode_disabled(disabled)  # rejects an unknown value before any I/O
+            if disabled == schema.DISABLED_BYPASS:
+                await self._require_non_enforcing_readers()
         cascade_explicit = cascade is not _PRESERVE_CASCADE
         if cascade_explicit:
             await self._require_cascade_policy_readers()
@@ -5358,7 +5565,9 @@ class Repository:
         # disable_resource()/enable_resource() (ADR-125). With the preserve
         # sentinel the stored value is unchanged, so no fan-out is needed.
         if disabled_explicit:
-            await self._fanout_resource(resource, disabled=bool(disabled))
+            await self._fanout_resource(
+                resource, disabled=disabled if disabled is not None else False
+            )
         if cascade_explicit:
             await self.invalidate_config_cache()
             await self._fanout_cascade(resource=resource)
@@ -5406,11 +5615,12 @@ class Repository:
 
         return self._deserialize_composite_limits(item)
 
-    async def get_resource_disabled(self, resource: str) -> bool | None:
-        """Read the tri-state disabled flag from a resource config item.
+    async def get_resource_disabled(self, resource: str) -> bool | str | None:
+        """Read the ``disabled`` value from a resource config item.
 
         Returns:
-            True or False when explicitly set, None when unset (inherit).
+            True or False when explicitly set, ``"bypass"`` for a bypass
+            (#311), None when unset (inherit).
         """
         validate_resource(resource)
         disabled, _cascade = await self._get_resource_config_flags(resource)
@@ -5426,7 +5636,9 @@ class Repository:
         _disabled, cascade = await self._get_resource_config_flags(resource)
         return cascade
 
-    async def _get_resource_config_flags(self, resource: str) -> tuple[bool | None, bool | None]:
+    async def _get_resource_config_flags(
+        self, resource: str
+    ) -> tuple[bool | str | None, bool | None]:
         """The tri-state `(disabled, cascade)` stored on a resource config item."""
         return await self._get_config_flags(
             schema.pk_resource(self._namespace_id, resource), schema.sk_config()
@@ -6602,6 +6814,7 @@ class Repository:
         shard_count = int(item.get("shard_count", {}).get("N", "1"))
         vu_raw = item.get(schema.BUCKET_FIELD_VU, {}).get("N")
         stored_vu = int(vu_raw) if vu_raw is not None else None
+        bypassed = bool(item.get(schema.BUCKET_FIELD_BYPASS, {}).get("BOOL", False))
 
         # One hoisted zone for the whole item, covering both tuples (#222
         # §4.1). Absent on every item written before scheduling existed, where
@@ -6751,6 +6964,8 @@ class Repository:
                     grant_count=grant_count,
                     stored_vu_ms=stored_vu,
                     stored_vu_read=True,
+                    # `wcu` still gates under bypass: it protects the partition.
+                    bypass=bypassed and not is_wcu,
                     # #467: `wcu` is never soft, whatever an item says.
                     soft=not is_wcu
                     and bool(
@@ -6991,8 +7206,8 @@ class Repository:
         self,
         entity_id: str,
         resource: str,
-        disabled_out: dict[tuple[str, str], bool | None] | None = None,
-        cascade_out: dict[tuple[str, str], bool | None] | None = None,
+        disabled_out: dict[tuple[str, str], bool | str | None] | None = None,
+        cascade_out: dict[tuple[str, str], bool | str | None] | None = None,
     ) -> tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]:
         """Resolve effective limits using the four-level config hierarchy.
 
@@ -7115,7 +7330,7 @@ class Repository:
         self,
         entity_id: str,
         resource: str,
-        fetched: dict[tuple[str, str], bool | None],
+        fetched: dict[tuple[str, str], bool | str | None],
     ) -> tuple[bool, str | None] | None:
         """Answer the disable walk from a config fetch, or decline (ADR-125).
 
@@ -7142,13 +7357,30 @@ class Repository:
         if walked is None:
             return None
         value, level = walked
-        return bool(value), level
+        # `"bypass"` is truthy and is the opposite of disabled (#311).
+        return value is True, level
+
+    def resolve_bypass_from_fetched(
+        self,
+        entity_id: str,
+        resource: str,
+        fetched: dict[tuple[str, str], bool | str | None],
+    ) -> bool | None:
+        """Whether the walk resolves to bypass, from a config fetch, or decline (#311).
+
+        The `resolve_disabled_from_fetched` contract: None when any level of the
+        walk was served from the config cache, which must never answer it.
+        """
+        walked = self._walk_fetched(entity_id, resource, fetched)
+        if walked is None:
+            return None
+        return walked[0] == schema.DISABLED_BYPASS
 
     def resolve_cascade_from_fetched(
         self,
         entity_id: str,
         resource: str,
-        fetched: dict[tuple[str, str], bool | None],
+        fetched: dict[tuple[str, str], bool | str | None],
     ) -> tuple[bool | None, str | None] | None:
         """Answer the cascade-policy walk from a config fetch, or decline (ADR-146).
 
@@ -7162,14 +7394,18 @@ class Repository:
             `(policy, deciding_level)`; `policy` is None when no level sets it,
             meaning the entity's own META `cascade` applies.
         """
-        return self._walk_fetched(entity_id, resource, fetched)
+        walked = self._walk_fetched(entity_id, resource, fetched)
+        if walked is None:
+            return None
+        policy, level = walked
+        return (policy if isinstance(policy, bool) else None), level
 
     def limits_read_fresh(
         self,
         entity_id: str,
         resource: str,
         source: str | None,
-        fetched: dict[tuple[str, str], bool | None],
+        fetched: dict[tuple[str, str], bool | str | None],
     ) -> bool:
         """Did one config fetch read every level that decided these limits? (#467)
 
@@ -7230,8 +7466,8 @@ class Repository:
         self,
         entity_id: str,
         resource: str,
-        fetched: dict[tuple[str, str], bool | None],
-    ) -> tuple[bool | None, str | None] | None:
+        fetched: dict[tuple[str, str], bool | str | None],
+    ) -> tuple[bool | str | None, str | None] | None:
         """First explicit value along the walk, or None when a level was not read."""
         levels = self._walk_levels(entity_id, resource)
         if any(key not in fetched for _level, key in levels):
@@ -7241,8 +7477,8 @@ class Repository:
     @staticmethod
     def _first_explicit(
         levels: list[tuple[str, tuple[str, str]]],
-        fetched: dict[tuple[str, str], bool | None],
-    ) -> tuple[bool | None, str | None]:
+        fetched: dict[tuple[str, str], bool | str | None],
+    ) -> tuple[bool | str | None, str | None]:
         """The first level with an explicit value, or `(None, None)` when none sets one."""
         for level, key in levels:
             value = fetched[key]
@@ -7303,8 +7539,8 @@ class Repository:
         the system level; without it a walk that defines no limit reads as
         all-hard, the safe direction.
         """
-        disabled_fetched: dict[tuple[str, str], bool | None] = {}
-        cascade_fetched: dict[tuple[str, str], bool | None] = {}
+        disabled_fetched: dict[tuple[str, str], bool | str | None] = {}
+        cascade_fetched: dict[tuple[str, str], bool | str | None] = {}
         levels = self._walk_levels(entity_id, resource)
         system_key = (schema.pk_system(self._namespace_id), schema.sk_config())
         read_keys = [key for _, key in levels] + (
@@ -7338,7 +7574,8 @@ class Repository:
 
         # Every level was just read, so neither walk can decline.
         disabled, disabled_level = self._first_explicit(levels, disabled_fetched)
-        cascade, cascade_level = self._first_explicit(levels, cascade_fetched)
+        cascade_value, cascade_level = self._first_explicit(levels, cascade_fetched)
+        cascade = cascade_value if isinstance(cascade_value, bool) else None
         limit_soft: dict[str, bool] | None = None
         if include_limits:
             limit_soft = {}
@@ -7349,36 +7586,55 @@ class Repository:
                     limit_soft = {limit.name: limit.soft for limit in limits}
                     break
         return ConfigAccess(
-            disabled=bool(disabled),
+            # `"bypass"` is truthy and is the opposite of disabled (#311).
+            disabled=disabled is True,
             disabled_level=disabled_level,
             cascade=cascade,
             cascade_level=cascade_level,
             limit_soft=limit_soft,
+            bypass=disabled == schema.DISABLED_BYPASS,
         )
 
-    async def _stamp_bucket_disabled(self, pk: str, disabled: bool) -> None:
-        """Set or remove the `disabled` attribute on one bucket item (ADR-125).
+    async def _access_stamp(
+        self, entity_id: str, resource: str, *, consistent_read: bool = False
+    ) -> bool | str:
+        """The bucket stamp the walk resolves to: True, False or ``"bypass"`` (#311)."""
+        access = await self.resolve_access(entity_id, resource, consistent_read=consistent_read)
+        return schema.DISABLED_BYPASS if access.bypass else access.disabled
 
-        The attribute is present only when the bucket is effectively disabled,
-        which keeps the speculative guard as a cheap attribute_not_exists check.
+    async def _stamp_bucket_disabled(self, pk: str, disabled: bool | str) -> None:
+        """Stamp one bucket item with its resolved access mode (ADR-125, #311).
+
+        ``disabled`` (ADR-125) and ``bypass`` (ADR-151) are each present only
+        while the bucket is effectively in that mode, which keeps both fast-path
+        guards cheap ``attribute_exists`` checks. One write sets the one and
+        removes the other, so a bucket going from bypass to disabled gets both
+        changes at once.
 
         Args:
             pk: Full bucket partition key (already namespace- and shard-qualified)
-            disabled: True to stamp the bucket, False to clear the stamp
+            disabled: True to stamp the bucket disabled, ``"bypass"`` to stamp
+                it bypassed, False to clear both stamps.
         """
         client = await self._get_client()
         kwargs: dict[str, Any] = {
             "TableName": self.table_name,
             "Key": {"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
-            "ExpressionAttributeNames": {"#disabled": schema.BUCKET_FIELD_DISABLED},
+            "ExpressionAttributeNames": {
+                "#disabled": schema.BUCKET_FIELD_DISABLED,
+                "#byp": schema.BUCKET_FIELD_BYPASS,
+            },
             # Never resurrect a bucket that TTL or a delete removed.
             "ConditionExpression": "attribute_exists(PK)",
         }
-        if disabled:
-            kwargs["UpdateExpression"] = "SET #disabled = :true"
+        if disabled == schema.DISABLED_BYPASS:
+            kwargs["UpdateExpression"] = "SET #byp = :true REMOVE #disabled"
+            kwargs["ExpressionAttributeValues"] = {":true": {"BOOL": True}}
+        elif disabled:
+            kwargs["UpdateExpression"] = "SET #disabled = :true REMOVE #byp"
             kwargs["ExpressionAttributeValues"] = {":true": {"BOOL": True}}
         else:
-            kwargs["UpdateExpression"] = "REMOVE #disabled"
+            kwargs["UpdateExpression"] = "REMOVE #disabled, #byp"
 
         try:
             await client.update_item(**kwargs)
@@ -8026,7 +8282,7 @@ class Repository:
                 out[name] = ws
         return out
 
-    async def _fanout_resource(self, resource: str, disabled: bool) -> int:
+    async def _fanout_resource(self, resource: str, disabled: bool | str) -> int:
         """Stamp every bucket for a resource, honoring per-entity overrides.
 
         An entity whose own config resolves to a different value than the
@@ -8040,15 +8296,14 @@ class Repository:
             Number of bucket items stamped.
         """
         stamped: set[str] = set()
-        effective_by_entity: dict[str, bool] = {}
+        effective_by_entity: dict[str, bool | str] = {}
 
         for _pass in range(2):
             for pk, entity_id in await self._discover_resource_bucket_pks(resource):
                 if pk in stamped:
                     continue
                 if entity_id not in effective_by_entity:
-                    effective, _level = await self.resolve_disabled(entity_id, resource)
-                    effective_by_entity[entity_id] = effective
+                    effective_by_entity[entity_id] = await self._access_stamp(entity_id, resource)
                 if effective_by_entity[entity_id] != disabled:
                     # This entity overrides the resource-level value; leave it alone.
                     continue
@@ -8063,7 +8318,9 @@ class Repository:
 
         return len(stamped)
 
-    async def _fanout_entity(self, entity_id: str, resource: str | None, disabled: bool) -> int:
+    async def _fanout_entity(
+        self, entity_id: str, resource: str | None, disabled: bool | str
+    ) -> int:
         """Stamp every bucket for an entity (optionally scoped to one resource).
 
         When unscoped (`resource is None`), this is applying the entity's
@@ -8088,7 +8345,7 @@ class Repository:
             Number of bucket items written.
         """
         stamped: set[str] = set()
-        effective_by_resource: dict[str, bool] = {}
+        effective_by_resource: dict[str, bool | str] = {}
 
         for _pass in range(2):
             for pk in await self._discover_entity_bucket_pks(entity_id, resource):
@@ -8098,8 +8355,9 @@ class Repository:
                 if resource is None:
                     _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
                     if bucket_resource not in effective_by_resource:
-                        effective, _level = await self.resolve_disabled(entity_id, bucket_resource)
-                        effective_by_resource[bucket_resource] = effective
+                        effective_by_resource[bucket_resource] = await self._access_stamp(
+                            entity_id, bucket_resource
+                        )
                     target = effective_by_resource[bucket_resource]
                 try:
                     await self._stamp_bucket_disabled(pk, target)
@@ -8406,8 +8664,27 @@ class Repository:
         """
         return await self._set_resource_disabled(resource, None, principal)
 
+    async def bypass_resource(self, resource: str, principal: str | None = None) -> int:
+        """Bypass a resource for every entity without an explicit override (#311).
+
+        Every request is admitted and no limit's balance is debited, while
+        consumption is still counted (``tc``, usage snapshots); only the
+        reserved ``wcu`` limit still gates. Stored as ``disabled: "bypass"``,
+        the fourth value of the ADR-125 walk, so an entity-level
+        ``disabled: true`` still blocks that entity and an entity-level
+        ``false`` still enforces it. Writes config, then stamps every existing
+        bucket (``bypass``). ``clear_resource_disabled()`` lifts it.
+
+        Raises:
+            VersionMismatchError: the stack's Lambdas predate bypass (0.17.0).
+
+        Returns:
+            Number of bucket items stamped.
+        """
+        return await self._set_resource_disabled(resource, schema.DISABLED_BYPASS, principal)
+
     async def _set_resource_disabled(
-        self, resource: str, value: bool | None, principal: str | None
+        self, resource: str, value: bool | str | None, principal: str | None
     ) -> int:
         """Write the resource-level `disabled` config, then fan out to buckets.
 
@@ -8421,6 +8698,9 @@ class Repository:
         than fabricating a stub with a bare REMOVE (ADR-125).
         """
         validate_resource(resource)
+        schema.encode_disabled(value)  # rejects an unknown value before any I/O
+        if value == schema.DISABLED_BYPASS:
+            await self._require_non_enforcing_readers()
 
         # 1. Write config first, so any acquire starting from now resolves the
         #    new value on the slow path.
@@ -8431,7 +8711,9 @@ class Repository:
         # 2. Fan out to existing buckets. For a clear, the effective value is
         #    whatever the resource now inherits, which with no system-level
         #    disable is always False.
-        count = await self._fanout_resource(resource, disabled=bool(value))
+        count = await self._fanout_resource(
+            resource, disabled=value if value is not None else False
+        )
 
         await self._log_audit_event(
             action=AuditAction.LIMITS_SET,
@@ -8444,7 +8726,7 @@ class Repository:
 
     @clears_rejection_cache
     async def _write_resource_config_flag(
-        self, resource: str, field: str, value: bool | None
+        self, resource: str, field: str, value: bool | str | None
     ) -> None:
         """Set or clear one tri-state flag on a resource config item (ADR-125, ADR-146).
 
@@ -8494,7 +8776,7 @@ class Repository:
                     "#resource": "resource",
                 },
                 ExpressionAttributeValues={
-                    ":v": {"BOOL": value},
+                    ":v": schema.encode_disabled(value),
                     ":res": {"S": resource},
                     ":gsi4pk": {"S": self._namespace_id},
                     ":gsi4sk": {"S": schema.pk_resource(self._namespace_id, resource)},
@@ -8610,6 +8892,37 @@ class Repository:
         """
         return await self._set_entity_disabled(entity_id, resource, False, principal)
 
+    async def bypass_entity(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Bypass an entity, for one resource or across all of them (#311).
+
+        Every request the entity makes is admitted and no limit's balance is
+        debited, while consumption is still counted; only the reserved ``wcu``
+        limit still gates. An entity-level value outranks the resource's, so
+        this re-admits one entity to a disabled resource as well. A bypass
+        never extends to the entity's cascade parent, which resolves its own
+        mode (ADR-151 §8). ``clear_entity_disabled()`` lifts it.
+
+        Args:
+            entity_id: Entity to bypass
+            resource: Resource to scope to. None targets the entity's
+                ``_default_`` config, bypassing it for every resource.
+            principal: Caller identity for audit logging
+
+        Raises:
+            VersionMismatchError: the stack's Lambdas predate bypass (0.17.0).
+
+        Returns:
+            Number of bucket items written, as for ``disable_entity()``.
+        """
+        return await self._set_entity_disabled(
+            entity_id, resource, schema.DISABLED_BYPASS, principal
+        )
+
     async def clear_entity_disabled(
         self,
         entity_id: str,
@@ -8627,10 +8940,13 @@ class Repository:
         self,
         entity_id: str,
         resource: str | None,
-        value: bool | None,
+        value: bool | str | None,
         principal: str | None,
     ) -> int:
         target_resource = resource if resource is not None else schema.DEFAULT_RESOURCE
+        schema.encode_disabled(value)  # rejects an unknown value before any I/O
+        if value == schema.DISABLED_BYPASS:
+            await self._require_non_enforcing_readers()
         await self._write_entity_config_flag(
             entity_id, target_resource, schema.CONFIG_FIELD_DISABLED, value
         )
@@ -8639,8 +8955,9 @@ class Repository:
 
         # For an explicit value the effective state is that value. For a clear,
         # recompute what the entity now inherits.
+        effective: bool | str
         if value is None:
-            effective, _level = await self.resolve_disabled(entity_id, target_resource)
+            effective = await self._access_stamp(entity_id, target_resource)
         else:
             effective = value
 
@@ -8657,7 +8974,7 @@ class Repository:
 
     @clears_rejection_cache
     async def _write_entity_config_flag(
-        self, entity_id: str, target_resource: str, field: str, value: bool | None
+        self, entity_id: str, target_resource: str, field: str, value: bool | str | None
     ) -> None:
         """Set or clear one tri-state flag on an entity config item (ADR-125, ADR-146)."""
         client = await self._get_client()
@@ -8709,7 +9026,7 @@ class Repository:
                 "#resource": "resource",
             }
             values = {
-                ":v": {"BOOL": value},
+                ":v": schema.encode_disabled(value),
                 ":eid": {"S": entity_id},
                 ":res": {"S": target_resource},
                 ":gsi3pk": {"S": schema.gsi3_pk_entity_config(self._namespace_id, target_resource)},

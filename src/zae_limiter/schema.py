@@ -190,6 +190,16 @@ OVERDRAWN_COUNTER_SUFFIX = "#od"
 CONFIG_FIELD_DISABLED = "disabled"
 BUCKET_FIELD_DISABLED = "disabled"
 
+# Bypass (#311, ADR-151): the fourth value of the ADR-125 `disabled` config
+# attribute, stored as `S "bypass"` beside `BOOL true` (disabled) and
+# `BOOL false` (explicit enforce), so one walk and one precedence decide all
+# three. A pre-0.17 reader decodes the string as explicit `false` and enforces.
+# Buckets are stamped with a separate `bypass` attribute, never `disabled`,
+# which every client since v0.12 rejects on: an old client simply ignores it
+# and enforces.
+DISABLED_BYPASS = "bypass"
+BUCKET_FIELD_BYPASS = "bypass"
+
 # Cascade policy (ADR-146). Tri-state on resource and entity config items:
 # absent = inherit, True/False = explicit; resolved by the ADR-125 walk and,
 # when nothing sets it, falls back to the entity's own META `cascade`. Bucket
@@ -247,31 +257,45 @@ LIMIT_FIELD_SOFT = "soft"
 CONFIG_FIELD_SCHED_TZ = "sched_tz"
 
 
-def encode_disabled(value: bool | None) -> dict[str, Any] | None:
-    """Encode a tri-state disabled value as a DynamoDB attribute.
+def encode_disabled(value: bool | str | None) -> dict[str, Any] | None:
+    """Encode a ``disabled`` config value as a DynamoDB attribute.
 
     Args:
-        value: True, False, or None (meaning "inherit from the level above").
+        value: True (disabled), False (explicit enforce), ``"bypass"``
+            (#311), or None (meaning "inherit from the level above").
 
     Returns:
-        A DynamoDB BOOL attribute, or None when the value is "inherit"
-        (the caller should omit the attribute entirely).
+        A DynamoDB attribute (``BOOL``, or ``S "bypass"``), or None when the
+        value is "inherit" (the caller should omit the attribute entirely).
+
+    Raises:
+        ValueError: any other string.
     """
     if value is None:
         return None
+    if isinstance(value, str):
+        if value != DISABLED_BYPASS:
+            raise ValueError(
+                f"disabled must be True, False, None or {DISABLED_BYPASS!r}, got {value!r}"
+            )
+        return {"S": value}
     return {"BOOL": value}
 
 
-def decode_disabled(item: dict[str, Any]) -> bool | None:
-    """Decode the tri-state disabled attribute from a DynamoDB item.
+def decode_disabled(item: dict[str, Any]) -> bool | str | None:
+    """Decode the ``disabled`` attribute from a DynamoDB item.
 
     Returns:
-        True or False when explicitly set, None when the attribute is
-        absent (meaning "inherit from the level above").
+        True or False when explicitly set, ``"bypass"`` for a bypass (#311),
+        None when the attribute is absent (meaning "inherit from the level
+        above"). A string this build does not know reads as explicit False,
+        the way a pre-0.17 reader reads ``"bypass"``: it enforces.
     """
     attr = item.get(CONFIG_FIELD_DISABLED)
     if not attr:
         return None
+    if attr.get("S") == DISABLED_BYPASS:
+        return DISABLED_BYPASS
     return bool(attr.get("BOOL", False))
 
 

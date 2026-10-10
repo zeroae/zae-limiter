@@ -12970,6 +12970,27 @@ class TestAdjustmentCommitFailure:
         assert await self._consumed(repo, "org") == 10
 
 
+class TestBypass:
+    """Bypass admits, debits nothing and keeps counting (#311); sync twin generated."""
+
+    async def test_bypass_admits_without_debiting(self, limiter):
+        repo = limiter._repository
+        await limiter.set_resource_defaults("llm", [Limit.per_minute("rpm", 1)])
+        await repo.bypass_resource("llm")
+        for _ in range(4):  # create, refund-and-learn, then bypass-shaped
+            async with limiter.acquire("user-1", "llm", {"rpm": 1}) as lease:
+                assert lease.bypassed
+        (bucket,) = [b for b in await repo.get_buckets("user-1", "llm") if b.limit_name == "rpm"]
+        assert bucket.tokens_milli == 1000
+        assert bucket.total_consumed_milli == 4000
+        await repo.clear_resource_disabled("llm")
+        async with limiter.acquire("user-1", "llm", {"rpm": 1}) as lease:
+            assert not lease.bypassed
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("user-1", "llm", {"rpm": 1}):
+                pass
+
+
 class TestSoftLimits:
     """Soft limits are metered, never enforced (#467, ADR-151); sync twin generated."""
 

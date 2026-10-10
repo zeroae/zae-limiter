@@ -1132,6 +1132,9 @@ class Availability:
     checked_at_ms: int
     # One entry per resolved limit, in resolution order
     statuses: list[LimitStatus]
+    # Whether the bucket read carries the bypass stamp (#311): every request
+    # is admitted and nothing is debited, whatever the statuses say.
+    bypassed: bool = False
 
     def status(self, limit_name: str) -> LimitStatus | None:
         """The status for one limit, or None if it was not resolved."""
@@ -1251,6 +1254,11 @@ class BucketState:
     stored_vu_ms: int | None = None
     # True only for a state read off an item, where `stored_vu_ms` is known.
     stored_vu_read: bool = False
+    # The item's `bypass` stamp (#311, ADR-151): item-level, copied onto each
+    # state read off it. `try_consume` admits a bypassed state, so no image of
+    # a bypassed bucket is ever read as a rejection; the slow path clears it on
+    # a state whose (uncached) config no longer says bypass.
+    bypass: bool = False
     # `b_{name}_soft` (#467, ADR-151): the limit is metered but never rejects.
     # Read off the item on every image (speculative, rejection cache, slow
     # path); the slow path overrides it from config only when that config was
@@ -2208,6 +2216,10 @@ class ConfigAccess:
     disabled_level: str | None
     cascade: bool | None
     cascade_level: str | None
+    # The walk's first explicit value was `"bypass"` (#311, ADR-151): every
+    # request is admitted, nothing debits a limit's balance, consumption is
+    # still counted. Never true together with `disabled`.
+    bypass: bool = False
     # Each resolved limit's soft-ness, read in the same uncached batch, or None
     # when the caller did not ask for it (#467, ADR-151 §6.2).
     limit_soft: dict[str, bool] | None = None
