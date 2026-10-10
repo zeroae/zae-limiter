@@ -39,6 +39,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
+    BUCKET_FIELD_TU,
     BUCKET_FIELD_VU,
     BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
@@ -154,6 +155,9 @@ class LimitRefillInfo:
     # `b_{name}_gc` (ADR-145): the shard count this shard's current-period
     # quota grant was sized at. None on an item written before ADR-145.
     grant_count: int | None = None
+    # `b_{name}_tu` (ADR-149): allowance topped up above the grant this
+    # period, millitokens. Raises a quota's ceiling; a reset or roll removes it.
+    topped_up_milli: int | None = None
 
 
 @dataclass
@@ -365,6 +369,7 @@ class ParsedBucketLimit:
     tc_milli: int | None = None  # b_{name}_tc from NewImage, absolute (#640)
     window_consumed_mark_milli: int | None = None  # b_{name}_wtc (#640)
     grant_count: int | None = None  # b_{name}_gc, shard's grant sizing (ADR-145)
+    topped_up_milli: int | None = None  # b_{name}_tu, top-up above the grant (ADR-149)
 
 
 @dataclass
@@ -578,6 +583,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         wa_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WA), {}).get("N")
         wtc_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WTC), {}).get("N")
         gc_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_GC), {}).get("N")
+        tu_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_TU), {}).get("N")
 
         limits[limit_name] = ParsedBucketLimit(
             tc_delta=tc_delta,
@@ -593,6 +599,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
             tc_milli=int(new_tc_raw),
             window_consumed_mark_milli=int(wtc_raw) if wtc_raw is not None else None,
             grant_count=int(gc_raw) if gc_raw is not None else None,
+            topped_up_milli=int(tu_raw) if tu_raw is not None else None,
         )
 
     if not limits:
@@ -749,6 +756,7 @@ def aggregate_bucket_states(
                 existing.tc_milli = parsed_limit.tc_milli
                 existing.window_consumed_mark_milli = parsed_limit.window_consumed_mark_milli
                 existing.grant_count = parsed_limit.grant_count
+                existing.topped_up_milli = parsed_limit.topped_up_milli
             else:
                 state.limits[limit_name] = LimitRefillInfo(
                     tc_delta=parsed_limit.tc_delta,
@@ -764,6 +772,7 @@ def aggregate_bucket_states(
                     tc_milli=parsed_limit.tc_milli,
                     window_consumed_mark_milli=parsed_limit.window_consumed_mark_milli,
                     grant_count=parsed_limit.grant_count,
+                    topped_up_milli=parsed_limit.topped_up_milli,
                 )
 
     return bucket_states
@@ -1009,6 +1018,10 @@ def try_refill_bucket(
             if not is_quota or grant_count is None or grant_count < 1:
                 grant_count = state.shard_count
             ceiling_cp = scaled_cp // grant_count
+            # ADR-149: a quota shard topped up above its grant this period holds
+            # that allowance too, until the next reset or roll removes it.
+            if is_quota and info.topped_up_milli:
+                ceiling_cp += info.topped_up_milli
 
         # A duration window rolled since this item was last refilled sets the
         # balance to the effective capacity (ADR-140), which as an `ADD` is
@@ -1247,6 +1260,12 @@ def try_refill_bucket(
         expr_names["#gqsc"] = "shard_count"
         expr_values[":gqpin"] = state.shard_count
         condition += " AND (attribute_not_exists(#gqsc) OR #gqsc <= :gqpin)"
+    # ADR-149: a reset or roll ends the period a top-up was bought in, so its
+    # `b_{name}_tu` goes with it. Positional tokens (#634), `#tq*` disjoint.
+    remove_parts: list[str] = []
+    for idx, name in enumerate(n for n in granted if state.limits[n].topped_up_milli is not None):
+        expr_names[f"#tq{idx}"] = bucket_attr(name, BUCKET_FIELD_TU)
+        remove_parts.append(f"#tq{idx}")
 
     # An expired `vu` means this pass is the materialisation the fast path is
     # waiting on: stamp the next boundary so it can resume. A `vu` still in the
@@ -1288,6 +1307,8 @@ def try_refill_bucket(
                 condition += f" AND #vq{idx} <= :vq{idx}"
 
     update_expr = f"SET {', '.join(set_parts)} ADD {', '.join(add_parts)}"
+    if remove_parts:
+        update_expr += f" REMOVE {', '.join(remove_parts)}"
 
     update_kwargs: dict[str, Any] = {
         "Key": {
@@ -2102,6 +2123,9 @@ def propagate_shard_count(
             grant = plan_quota_grant(siblings[limit_name], target_shard, new_count, share)
             grants[limit_name] = grant.tokens_milli
             item[bucket_attr(limit_name, BUCKET_FIELD_GC)] = new_count
+            # ADR-149: a top-up stays with the shard it was credited to; the
+            # clone is funded by a move of at most one share.
+            item.pop(bucket_attr(limit_name, BUCKET_FIELD_TU), None)
             if grant.donor_shard is not None and limit_name in stale_on_image:
                 stale_move = True
             if (
