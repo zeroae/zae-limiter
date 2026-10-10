@@ -117,6 +117,7 @@ nav:
       - Configuration Hierarchy: guide/config-hierarchy.md
       - Scheduled (Cron) Limits: guide/scheduled-limits.md
       - Session Quotas: guide/session-quotas.md
+      - Soft Limits and Bypass: guide/soft-limits-and-bypass.md
       - Hierarchical Limits: guide/hierarchical.md
       - LLM Integration: guide/llm-integration.md
       - Usage Snapshots: guide/usage-snapshots.md

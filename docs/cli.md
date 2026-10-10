@@ -182,14 +182,32 @@ limits:
 
 `reset_after_seconds` round trips through `Custom::ZaeLimiterLimits` as `ResetAfterSeconds`.
 
+### Soft Limits
+
+Any `limits.<name>` mapping, at every level, may set `soft: true`: the limit is metered and
+debited but never rejects a request ([Soft Limits and Bypass](guide/soft-limits-and-bypass.md)).
+Omitting it makes the limit hard — the manifest owns it like every other field of the limit.
+
+```yaml
+resources:
+  gpt-4:
+    limits:
+      rpm: {capacity: 500}
+      tpm: {capacity: 50000, soft: true}
+```
+
+`soft` must be a boolean. It round trips through `Custom::ZaeLimiterLimits` as a `Soft`
+property on each limit. A resource- or system-level change of soft-ness restamps the existing
+buckets of that level on `apply`; a routine apply that changes none writes no buckets for it.
+
 ### Cascade and Disabled
 
 Entries under `resources.<name>` and `entities.<id>.resources.<name>` may also set two flags,
-each `true`, `false`, or omitted:
+each `true`, `false`, or omitted; `disabled` also takes `bypass`:
 
 | Field | Meaning | See |
 |-------|---------|-----|
-| `disabled` | Turn the resource off (or re-admit one entity) | [Disabling Resources and Entities](#disabling-resources-and-entities) |
+| `disabled` | Turn the resource off (or re-admit one entity); `bypass` admits without debiting | [Disabling Resources and Entities](#disabling-resources-and-entities), [Bypass](#bypass) |
 | `cascade` | Whether acquires on this resource also debit the parent | [Cascade Policy per Resource](#cascade-policy-per-resource) |
 
 ```yaml
@@ -223,7 +241,9 @@ entities:
   `Cascade` properties on `Resources` and `Entities` entries. Either one under `System` fails
   the stack operation.
 - **Version:** a manifest that sets `cascade` needs a stack whose Lambdas are 0.16.0 or later,
-  and raises the stack's minimum client version to 0.16.0.
+  and raises the stack's minimum client version to 0.16.0. One that sets `soft: true` or
+  `disabled: bypass` needs 0.17.0 or later and raises the minimum to 0.17.0.
+- **`disabled` must be `true`, `false` or `bypass`**; CloudFormation also accepts `"Bypass"`.
 
 `limits plan` warns when a resource sets `cascade: true` and no entity in the manifest has its
 own limits for it, because parents would then be limited by the per-user resource defaults:
@@ -436,7 +456,47 @@ Status: enabled (explicit override)
 ```
 
 No `Status:` line is printed when the level has no explicit `disabled` value (i.e. it
-inherits from elsewhere in the resolution walk).
+inherits from elsewhere in the resolution walk). A level set to bypass prints
+`Status: BYPASSED` (see [Bypass](#bypass)).
+
+## Soft Limits
+
+`system set-defaults`, `resource set-defaults` and `entity set-limits` take a repeatable
+`--soft NAME`, which makes the named `-l` limit soft: metered and debited, but never a reason to
+reject. See [Soft Limits and Bypass](guide/soft-limits-and-bypass.md).
+
+```bash
+# Hard rpm, soft (metered-only) tpm
+zae-limiter resource set-defaults gpt-4 -l rpm:500 -l tpm:50000 --soft tpm
+```
+
+`--soft` must name a limit given with `-l`. A set is a full replace, so a `set-*` without
+`--soft tpm` turns a soft `tpm` hard again. `get-defaults` and `get-limits` mark a soft limit
+`(soft)`:
+
+```
+Defaults for resource 'gpt-4':
+  rpm: 500/min
+  tpm: 50,000/min (soft)
+```
+
+## Bypass
+
+`resource bypass` and `entity bypass` admit every request without debiting any limit, while
+still counting consumption; only the reserved `wcu` write limit still gates. Bypass is the third
+value of `disabled`, so it resolves by the same walk and is lifted with `clear-disabled`.
+
+```bash
+zae-limiter resource bypass gpt-4
+zae-limiter entity bypass vip-1                   # every resource
+zae-limiter entity bypass vip-1 --resource gpt-4  # one resource
+
+zae-limiter resource clear-disabled gpt-4         # lift it
+```
+
+`get-defaults` and `get-limits` print `Status: BYPASSED` for a level that sets it. Storing a soft
+limit or a bypass needs a stack whose Lambdas are 0.17.0 or later and raises the stack's minimum
+client version to 0.17.0.
 
 ## Cascade Policy per Resource
 

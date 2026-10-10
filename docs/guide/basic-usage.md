@@ -408,6 +408,11 @@ wins regardless of which level supplies the limits. System-level disable is
 not supported; disabling always targets a specific resource, or an entity's
 access to one.
 
+The same setting has a third value, **bypass**: admit every request without
+debiting any limit, while still counting consumption — see
+[Soft Limits and Bypass](soft-limits-and-bypass.md#bypass). To meter one limit
+without enforcing it, make it [soft](soft-limits-and-bypass.md#soft-limits).
+
 ## Config Cache
 
 zae-limiter caches config data (system defaults, resource defaults, entity limits) to reduce DynamoDB reads. The cache has a 60-second TTL by default.
