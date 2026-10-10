@@ -475,6 +475,10 @@ class Lease:
         # Quota shards N>0 this commit creates: (entity, resource, shard,
         # created count, quota names), repaired after the write (ADR-145).
         quota_creates: list[tuple[str, str, int, int, list[str]]] = []
+        # Bucket items this commit creates with an owner stamp read from META:
+        # (entity, resource, shard, the parent generation stamped), checked
+        # against META after the write (ADR-150).
+        owner_creates: list[tuple[str, str, int, int]] = []
         # Bucket items the rf-locked write leaves in a state the rejection
         # cache can record once it lands: (key, states, shard count, ttl
         # epoch, owner stamps). See `_record_written_states`.
@@ -544,6 +548,10 @@ class Lease:
                     )
                 # ADR-145: a quota shard N>0 created at a count a racing
                 # doubling may already have overtaken; checked after the write.
+                if owner_entry is not None and owner_entry._parent_generation is not None:
+                    owner_creates.append(
+                        (entity_id, resource, shard_id, owner_entry._parent_generation)
+                    )
                 created_quotas = [e.limit.name for e in group_entries if e.limit.is_quota]
                 if shard_id != 0 and created_quotas:
                     quota_creates.append(
@@ -985,10 +993,14 @@ class Lease:
         )
         if not condition_failed:
             await self._repair_created_quota_shards(quota_creates)
+            await self._repair_created_owner_stamps(owner_creates)
             await self._fan_out_windows(window_fanouts)
         elif reissued_creates:
             await self._repair_created_quota_shards(
                 [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
+            )
+            await self._repair_created_owner_stamps(
+                [c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates]
             )
 
     def _record_written_states(
@@ -1077,6 +1089,42 @@ class Lease:
                 logger.warning(
                     "quota shard count repair failed for resource=%s shard=%d; the "
                     "shard keeps its created count until a doubling reaches it",
+                    resource,
+                    shard_id,
+                    exc_info=True,
+                )
+
+    async def _repair_created_owner_stamps(
+        self, owner_creates: list[tuple[str, str, int, int]]
+    ) -> None:
+        """Re-check each owner stamp this commit created against its META (ADR-150).
+
+        A create ``Put`` cannot pin the parent generation the way the
+        rf-locked write does: there is no item to compare with. One that read
+        META before a move and lands after the move's fan-out would keep the
+        old parent, and the next process to touch the bucket would learn it
+        from the item. So after the write, one strongly consistent read of the
+        owner's META per created bucket (1 RCU, once per shard created), and
+        a pinned restamp only when a move landed in between
+        (:meth:`Repository.repair_created_owner_stamp`). A move whose META
+        write comes after this read runs its fan-out after the create, which
+        finds the bucket like any other.
+
+        After the commit, like the quota repair: the caller was admitted and
+        the write landed, so a failure is logged — without the entity id,
+        routinely an API key — and swallowed. A backend without the method
+        stamps no generation worth checking.
+        """
+        repair = getattr(self.repository, "repair_created_owner_stamp", None)
+        if repair is None:
+            return
+        for entity_id, resource, shard_id, stamped in owner_creates:
+            try:
+                await repair(entity_id, resource, shard_id, stamped)
+            except Exception:
+                logger.warning(
+                    "owner stamp check failed for resource=%s shard=%d; the next slow "
+                    "pass or a re-run of set_parent restamps it",
                     resource,
                     shard_id,
                     exc_info=True,

@@ -8195,6 +8195,35 @@ class Repository:
             # Bucket vanished between discovery and stamp, or a newer move
             # already stamped it — nothing to restamp either way.
 
+    async def repair_created_owner_stamp(
+        self, entity_id: str, resource: str, shard_id: int, stamped_pgen: int
+    ) -> bool:
+        """Restamp a bucket just created from a META read a move has overtaken (ADR-150).
+
+        One strongly consistent read of the owner's META (1 RCU). When its
+        parent generation still equals the one the create stamped, nothing is
+        written. Otherwise the bucket gets the move's stamp — the policy
+        resolved for this resource (3 consistent reads) and the new parent —
+        through the fan-out's own pinned write, so a newer stamp is never
+        lowered.
+
+        Returns:
+            Whether the bucket was restamped.
+        """
+        owner = await self.get_entity(entity_id, consistent_read=True)
+        if owner is None or owner.parent_generation == stamped_pgen:
+            return False
+        access = await self.resolve_access(entity_id, resource, consistent_read=True)
+        cascade = effective_cascade(access.cascade, owner)
+        await self._stamp_bucket_cascade(
+            schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id),
+            cascade,
+            owner.parent_id,
+            owner.parent_generation,
+        )
+        self._cascade_cache[(self._namespace_id, entity_id, resource)] = cascade
+        return True
+
     async def _fanout_cascade(
         self, *, resource: str | None = None, entity_id: str | None = None
     ) -> int:

@@ -404,6 +404,54 @@ class TestStaleWriters:
         assert created.parent_generation == 1_800_000_000_000
         assert (await repo.get_entity("user")).parent_generation == 1_800_000_000_000
 
+    async def test_a_create_that_read_before_the_move_is_restamped(self, repo, other):
+        """Review of #716, finding 2: a create Put can carry no pin, so it is checked."""
+        mover = other._repository
+        await _hierarchy(other)  # user has gpt-4 and llm buckets; none on "chat" yet
+        await mover.set_resource_defaults("chat", [RPM])
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        real = repo.batch_get_entity_and_buckets
+        moved = []
+
+        async def read_then_move(*args, **kwargs):
+            result = await real(*args, **kwargs)
+            if not moved:  # META read (org-a); the move's fan-out finds no chat bucket
+                moved.append(await mover.set_parent("user", "org-b"))
+            return result
+
+        with patch.object(repo, "batch_get_entity_and_buckets", read_then_move):
+            async with slow.acquire("user", "chat", consume={"rpm": 1}) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user", "org-a"}  # in flight
+
+        assert moved == [2]
+        assert _stamp(await _item(repo, "user", "chat")) == (True, "org-b", 1)
+        third_repo = await _open_repo()
+        async with RateLimiter(repository=third_repo) as third:
+            org_a, org_b = (
+                await _consumed(repo, "org-a", "chat"),
+                await _consumed(repo, "org-b", "chat"),
+            )
+            for _ in range(3):
+                async with third.acquire("user", "chat", consume={"rpm": 1}):
+                    pass
+        await third_repo.close()
+        assert await _consumed(repo, "org-a", "chat") == org_a
+        assert await _consumed(repo, "org-b", "chat") == org_b + 3
+
+    async def test_a_create_with_a_current_stamp_writes_nothing_more(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        assert await repo.repair_created_owner_stamp("user", "gpt-4", 0, 0) is False
+        assert await repo.repair_created_owner_stamp("nobody", "gpt-4", 0, 0) is False
+
+    async def test_a_failed_owner_check_never_fails_the_acquire(self, limiter):
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [RPM])
+        await repo.create_entity("user")
+        with patch.object(repo, "repair_created_owner_stamp", side_effect=RuntimeError("x")):
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
+                assert lease.consumed == {"rpm": 1}
+
     async def test_a_stale_fanout_stamp_is_skipped(self, limiter):
         repo = limiter._repository
         await _hierarchy(limiter)
