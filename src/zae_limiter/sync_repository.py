@@ -72,6 +72,18 @@ _BATCH_GET_MAX_RETRIES = 3
 _CLIENT_MIN_RATCHET_ATTEMPTS = 3
 _BATCH_GET_RETRY_BASE_DELAY = 0.05
 _OPERATION_MAX_ATTEMPTS = 4
+
+
+def _validate_principal(principal: str | None) -> None:
+    """The check ``_log_audit_event`` applies, run before any write (ADR-149).
+
+    A reset or top-up audits *after* it commits, so an invalid principal found
+    there would raise for an operation that already happened.
+    """
+    if principal is not None and (not principal.startswith("arn:")):
+        validate_identifier(principal, "principal")
+
+
 _OPERATION_RETRY_BASE_DELAY = 0.05
 _OPERATION_RETRY_CODES = frozenset(
     {
@@ -7047,6 +7059,7 @@ class SyncRepository:
         """
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
+        _validate_principal(principal)
         requested = None if limits is None else dict.fromkeys(limits, 0)
         return self._operate_on_bucket(bucket_ops.RESET, entity_id, resource, requested, principal)
 
@@ -7099,6 +7112,7 @@ class SyncRepository:
         """
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
+        _validate_principal(principal)
         if not amounts:
             raise ValidationError("amounts", "{}", "name at least one limit to top up")
         for name, amount in amounts.items():
@@ -7204,15 +7218,22 @@ class SyncRepository:
                     pending = result
                     continue
             if result.shards:
-                self._log_audit_event(
-                    action=AuditAction.BUCKET_RESET
-                    if operation == bucket_ops.RESET
-                    else AuditAction.BUCKET_TOPPED_UP,
-                    entity_id=entity_id,
-                    principal=principal,
-                    resource=resource,
-                    details={"amounts": dict(result.amounts), "shards": result.shards},
-                )
+                try:
+                    self._log_audit_event(
+                        action=AuditAction.BUCKET_RESET
+                        if operation == bucket_ops.RESET
+                        else AuditAction.BUCKET_TOPPED_UP,
+                        entity_id=entity_id,
+                        principal=principal,
+                        resource=resource,
+                        details={"amounts": dict(result.amounts), "shards": result.shards},
+                    )
+                except Exception:
+                    logger.warning(
+                        "%s landed but its audit event could not be written",
+                        operation,
+                        exc_info=True,
+                    )
             return result
         raise RateLimiterUnavailable(
             f"Could not {operation.replace('_', ' ')} the bucket: it kept changing through {_OPERATION_MAX_ATTEMPTS} attempts",

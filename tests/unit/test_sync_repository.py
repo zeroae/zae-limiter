@@ -7558,6 +7558,27 @@ class TestResetAndTopUp:
         with patch.object(repo, "transact_write", side_effect=boom), pytest.raises(ClientError):
             repo.top_up("e", "r", {"cal": 1})
 
+    def test_an_audit_failure_after_the_commit_does_not_raise(self, repo, caplog):
+        repo.set_limits("e", [_OP_RPM], resource="r")
+        _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        repo._now_ms = lambda: _OP_T0
+        with patch.object(repo, "_log_audit_event", side_effect=RuntimeError("throttled")):
+            result = repo.reset_bucket("e", "r")
+        assert result.shards == 1
+        assert "audit event could not be written" in caplog.text
+
+    def test_an_invalid_principal_is_refused_before_any_io(self, repo):
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(InvalidIdentifierError),
+        ):
+            repo.reset_bucket("e", "r", principal="ops team!")
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(InvalidIdentifierError),
+        ):
+            repo.top_up("e", "r", {"rpm": 1}, principal="ops team!")
+
     def test_reset_and_top_up_clear_the_rejection_cache(self, repo):
         repo.set_limits("e", [_OP_RPM], resource="r")
         _op_put_shard(repo, "e", "r", [_OP_RPM])

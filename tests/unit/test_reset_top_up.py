@@ -255,3 +255,22 @@ class TestIdempotency:
         assert await _tu(repo, "e", "cal") == 5_000
         clock[0] += 1
         assert await _drain(limiter, "e", "cal") == 15
+
+
+class TestNothingFailsAfterTheCommit:
+    """PR #720 review, finding 2: an error raised after the write landed makes
+    the caller retry an operation that already happened."""
+
+    async def test_an_invalid_principal_is_refused_before_anything_is_written(self, limiter, clock):
+        from zae_limiter.exceptions import ValidationError
+
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        assert await _try(limiter, "e", {"cal": 10})
+        clock[0] += 1
+        with pytest.raises(ValidationError):
+            await repo.top_up("e", "r", {"cal": 5}, principal="ops team!")
+        assert await _tu(repo, "e", "cal") is None  # nothing was granted
+        await repo.top_up("e", "r", {"cal": 5}, principal="ops-team")  # the caller's retry
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 5  # one purchase of 5, once
