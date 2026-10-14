@@ -55,14 +55,14 @@ async def set_limits(
         # Calculate refill parameters from rate
         # rate = refill_amount / refill_period_seconds
         # For simplicity, use per-minute limits
-        refill_period = 60  # 1 minute
-        refill_amount = int(lc.refill_rate * refill_period)
+        refill_period_seconds = 60  # 1 minute
+        refill_amount = int(lc.refill_rate * refill_period_seconds)
 
         limit = Limit(
             name=lc.name,
             capacity=lc.capacity,
             refill_amount=refill_amount,
-            refill_period_seconds=refill_period,
+            refill_period_seconds=refill_period_seconds,
         )
         limits.append(limit)
 

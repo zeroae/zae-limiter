@@ -255,17 +255,24 @@ print("Limits updated successfully")
 !!! warning "Advanced"
     Direct DynamoDB updates bypass validation. Use programmatic API when possible.
 
+All of an entity's limits for one resource live on a single config item, one
+`l_<limit_name>_<field>` attribute per field: `cp` (capacity), `ra` (refill_amount) and `rp`
+(refill_period_seconds), in whole tokens and seconds. Update the fields in place rather than
+replacing the item, which would drop its other limits and index keys:
+
 ```bash
 # Update a stored limit
-aws dynamodb put-item --table-name <name> \
-  --item '{
-    "PK": {"S": "ENTITY#<entity_id>"},
-    "SK": {"S": "#LIMIT#<resource>#<limit_name>"},
-    "capacity": {"N": "1000000"},
-    "refill_amount": {"N": "1000000"},
-    "refill_period": {"N": "60"}
-  }'
+aws dynamodb update-item --table-name <name> \
+  --key '{"PK": {"S": "<namespace_id>/ENTITY#<entity_id>"}, "SK": {"S": "#CONFIG#<resource>"}}' \
+  --condition-expression "attribute_exists(PK)" \
+  --update-expression "SET #cp = :cp, #ra = :ra, #rp = :rp" \
+  --expression-attribute-names '{"#cp": "l_<limit_name>_cp", "#ra": "l_<limit_name>_ra", "#rp": "l_<limit_name>_rp"}' \
+  --expression-attribute-values '{":cp": {"N": "1000000"}, ":ra": {"N": "1000000"}, ":rp": {"N": "60"}}'
 ```
+
+Clients pick the change up when their config cache expires (60 s by default). Existing bucket
+items keep the old parameters until the next `set_limits()` or their TTL; the programmatic API
+updates both.
 
 ### Reset Bucket State
 
