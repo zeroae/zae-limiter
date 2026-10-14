@@ -583,15 +583,31 @@ class TestInvokeProvisioner:
                     ],
                 )
                 assert result.exit_code == 0
-                mock_boto3_client.assert_called_once_with(
-                    "lambda",
-                    region_name="us-east-1",
-                    endpoint_url="http://localhost:4566",
-                )
+                mock_boto3_client.assert_called_once()
+                client_args = mock_boto3_client.call_args
+                assert client_args.args == ("lambda",)
+                assert client_args.kwargs["region_name"] == "us-east-1"
+                assert client_args.kwargs["endpoint_url"] == "http://localhost:4566"
+                # The invoke is synchronous, so the read timeout must outlast the
+                # provisioner Lambda's own 300 s timeout, and a timeout must not
+                # trigger a second invocation.
+                config = client_args.kwargs["config"]
+                assert config.read_timeout > 300
+                assert config.retries["total_max_attempts"] == 1
                 call_args = mock_lambda.invoke.call_args
                 payload = json.loads(call_args[1]["Payload"])
                 assert payload["action"] == "plan"
                 assert payload["table_name"] == "test-app"
+
+    def test_provisioner_timeout_matches_template(self):
+        """The CLI's assumed Lambda timeout tracks cfn_template.yaml."""
+        from pathlib import Path
+
+        import zae_limiter.limits_cli as limits_cli
+
+        template = (Path(limits_cli.__file__).parent / "infra" / "cfn_template.yaml").read_text()
+        block = template.split("  ProvisionerFunction:\n", 1)[1].split("\n\n", 1)[0]
+        assert f"Timeout: {limits_cli.PROVISIONER_LAMBDA_TIMEOUT_SECONDS}" in block
 
     def test_invoke_provisioner_resolves_namespace(self):
         """A preview resolves namespace_id read-only, requiring current Lambdas (#648)."""

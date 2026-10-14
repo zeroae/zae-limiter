@@ -9,6 +9,14 @@ from typing import Any
 import boto3
 import click
 import yaml
+from botocore.config import Config
+
+# The provisioner's `Timeout` in cfn_template.yaml. botocore's default read_timeout
+# is 60 s, so a synchronous invoke of a long apply gave up while the Lambda was still
+# working. Keep this equal to the template value.
+PROVISIONER_LAMBDA_TIMEOUT_SECONDS = 300
+# Headroom over the Lambda timeout so the Lambda's own timeout error is what we see.
+_INVOKE_READ_TIMEOUT_SECONDS = PROVISIONER_LAMBDA_TIMEOUT_SECONDS + 30
 
 
 @click.group()
@@ -449,6 +457,12 @@ def _invoke_provisioner(
     if endpoint_url:
         kwargs["endpoint_url"] = endpoint_url
 
+    # No retries: botocore retries a read timeout, which would invoke `apply` a
+    # second time while the first is still running.
+    kwargs["config"] = Config(
+        read_timeout=_INVOKE_READ_TIMEOUT_SECONDS,
+        retries={"total_max_attempts": 1},
+    )
     lambda_client = boto3.client("lambda", **kwargs)
 
     payload = {
