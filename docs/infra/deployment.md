@@ -580,14 +580,14 @@ entities:
             capacity: 100000
 ```
 
-**Limit fields:** Only `capacity` is required. When omitted, `refill_amount` defaults to `capacity` — or to `0` when the limit carries a `reset_schedule`, where a positive `refill_amount` is rejected — and `refill_period` defaults to `60` seconds. `capacity` is the bucket ceiling (max tokens). To customize:
+**Limit fields:** Only `capacity` is required. When omitted, `refill_amount` defaults to `capacity` — or to `0` when the limit carries a `reset_schedule`, where a positive `refill_amount` is rejected — and `refill_period_seconds` defaults to `60`. `capacity` is the bucket ceiling (max tokens). To customize:
 
 ```yaml
 limits:
   rpm:
-    capacity: 1000       # Max tokens (bucket ceiling)
-    refill_amount: 100   # Refill 100 tokens per period
-    refill_period: 6     # Every 6 seconds (= 1000/min)
+    capacity: 1000             # Max tokens (bucket ceiling)
+    refill_amount: 100         # Refill 100 tokens per period
+    refill_period_seconds: 6   # Every 6 seconds (= 1000/min)
 ```
 
 A limit may also carry a `schedule` (change the parameters while a cron pattern matches) or a

@@ -708,7 +708,11 @@ class TestSyncBucketParamChanges:
                 action="update",
                 level="entity",
                 target="user-1/gpt-4",
-                data={"limits": {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}},
+                data={
+                    "limits": {
+                        "rpm": {"capacity": 5, "refill_amount": 5, "refill_period_seconds": 60}
+                    }
+                },
             )
         ]
         with patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync:
@@ -725,20 +729,28 @@ class TestSyncBucketParamChanges:
                 action="delete",
                 level="entity",
                 target="user-1/gpt-4",
-                data={"limits": {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}},
+                data={
+                    "limits": {
+                        "rpm": {"capacity": 5, "refill_amount": 5, "refill_period_seconds": 60}
+                    }
+                },
             )
         ]
         with (
             patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync,
             patch(
                 "zae_limiter_provisioner.handler.resolve_effective_limits",
-                return_value={"rpm": {"capacity": 1, "refill_amount": 1, "refill_period": 60}},
+                return_value={
+                    "rpm": {"capacity": 1, "refill_amount": 1, "refill_period_seconds": 60}
+                },
             ),
         ):
             _sync_bucket_param_changes("tbl", "ns123", changes)
         kwargs = sync.call_args.kwargs
         assert kwargs["ttl_multiplier"] == 7
-        assert kwargs["limits"] == {"rpm": {"capacity": 1, "refill_amount": 1, "refill_period": 60}}
+        assert kwargs["limits"] == {
+            "rpm": {"capacity": 1, "refill_amount": 1, "refill_period_seconds": 60}
+        }
 
     def test_delete_strips_limits_absent_from_the_new_effective_config(self, mock_handler_boto3):
         changes = [
@@ -748,8 +760,8 @@ class TestSyncBucketParamChanges:
                 target="user-1/gpt-4",
                 data={
                     "limits": {
-                        "rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60},
-                        "tpm": {"capacity": 9, "refill_amount": 9, "refill_period": 60},
+                        "rpm": {"capacity": 5, "refill_amount": 5, "refill_period_seconds": 60},
+                        "tpm": {"capacity": 9, "refill_amount": 9, "refill_period_seconds": 60},
                     }
                 },
             )
@@ -758,7 +770,9 @@ class TestSyncBucketParamChanges:
             patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync,
             patch(
                 "zae_limiter_provisioner.handler.resolve_effective_limits",
-                return_value={"rpm": {"capacity": 1, "refill_amount": 1, "refill_period": 60}},
+                return_value={
+                    "rpm": {"capacity": 1, "refill_amount": 1, "refill_period_seconds": 60}
+                },
             ),
         ):
             _sync_bucket_param_changes("tbl", "ns123", changes)
@@ -799,7 +813,11 @@ class TestSyncBucketParamChanges:
                 action="update",
                 level="entity",
                 target="org/team/gpt-4",
-                data={"limits": {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}},
+                data={
+                    "limits": {
+                        "rpm": {"capacity": 5, "refill_amount": 5, "refill_period_seconds": 60}
+                    }
+                },
             )
         ]
         with patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync:
@@ -860,7 +878,7 @@ class TestCfnPropertiesToManifestSchedules:
             {
                 "rpd": {
                     "Capacity": 10000,
-                    "RefillPeriod": 86400,
+                    "RefillPeriodSeconds": 86400,
                     "Schedule": [{"Cron": "* * * * SAT,SUN", "Scale": 0.5}],
                     "ResetSchedule": [{"Cron": "0 0 * * *", "Tz": "UTC"}],
                 }
@@ -952,7 +970,7 @@ class TestCfnPropertiesToManifestSchedules:
                         "Limits": {
                             "rpd": {
                                 "Capacity": 10,
-                                "RefillPeriod": 86400,
+                                "RefillPeriodSeconds": 86400,
                                 "ResetSchedule": [{"Cron": "0 0 * * *", "Tz": "UTC"}],
                             }
                         }
@@ -1012,6 +1030,19 @@ class TestCfnPropertiesToManifestSchedules:
             LimitsManifest.from_dict(
                 {"namespace": "n", "resources": {"gpt-4": {"limits": bad_entry}}}
             )
+
+    def test_refill_period_seconds_reaches_the_manifest_shape(self):
+        """#735: the limit level uses the schedule entry's spelling."""
+        result = _cfn_limits_to_manifest(
+            {"rph": {"Capacity": "100", "RefillPeriodSeconds": "3600"}}
+        )
+        assert result == {"rph": {"capacity": 100, "refill_period_seconds": 3600}}
+
+    def test_the_old_refill_period_property_is_rejected(self):
+        with pytest.raises(
+            ValueError, match="Limits.rph.RefillPeriod was renamed to RefillPeriodSeconds"
+        ):
+            _cfn_limits_to_manifest({"rph": {"Capacity": "100", "RefillPeriod": "3600"}})
 
     def test_key_tables_are_exact_inverses(self):
         """The generator and the consumer keep independent tables; a silent
@@ -1080,6 +1111,10 @@ class TestCfnScalarCoercion:
         assert isinstance(system_rpm["capacity"], int)
         assert system_rpm["refill_amount"] == 1000
         assert isinstance(system_rpm["refill_amount"], int)
+        # The probe template spelled the limit-level period as a schedule entry
+        # does, which is the canonical spelling since #735.
+        assert system_rpm["refill_period_seconds"] == 60
+        assert isinstance(system_rpm["refill_period_seconds"], int)
 
         entry = manifest["resources"]["gpt-4"]["limits"]["rpm"]["schedule"][0]
         assert entry["scale"] == 0.5
@@ -1259,7 +1294,7 @@ class TestCfnScalarCoercion:
                         "rpm": {
                             "Capacity": 500,
                             "RefillAmount": 250,
-                            "RefillPeriod": 60,
+                            "RefillPeriodSeconds": 60,
                             "Schedule": [{"Cron": "0 9 * * *", "Scale": 0.5}],
                         }
                     },
@@ -1271,7 +1306,7 @@ class TestCfnScalarCoercion:
         assert manifest["resources"]["gpt-4"]["disabled"] is False
         assert limit["capacity"] == 500 and isinstance(limit["capacity"], int)
         assert limit["refill_amount"] == 250
-        assert limit["refill_period"] == 60
+        assert limit["refill_period_seconds"] == 60
         assert limit["schedule"] == [{"cron": "0 9 * * *", "scale": 0.5}]
 
         # Idempotent in the strict sense: running the CFN conversion over its own
@@ -1353,7 +1388,7 @@ class TestCfnScalarCoercion:
         absent for numeric targets. Dropping the key lets `LimitDecl`'s
         documented default apply."""
         result = _cfn_limits_to_manifest(
-            {"rpm": {"Capacity": "500", "RefillAmount": "", "RefillPeriod": ""}}
+            {"rpm": {"Capacity": "500", "RefillAmount": "", "RefillPeriodSeconds": ""}}
         )
         assert result == {"rpm": {"capacity": 500}}
 
@@ -1425,7 +1460,7 @@ class TestCfnScalarCoercion:
 class TestCfnDurationWindow:
     """`ResetAfterSeconds` (ADR-139, plan Task 13) — the third recovery
     spelling's CloudFormation round trip, mirroring the `RefillAmount`/
-    `RefillPeriod` coverage above."""
+    `RefillPeriodSeconds` coverage above."""
 
     def test_cfn_round_trip_of_a_duration_window(self):
         """CloudFormation delivers EVERY property as a string (#554), so the
@@ -1447,7 +1482,7 @@ class TestCfnDurationWindow:
         assert result["session"]["reset_after_seconds"] == 18_000
 
     def test_empty_string_drops_reset_after_seconds(self):
-        """Same optional-property rule as `RefillAmount`/`RefillPeriod`."""
+        """Same optional-property rule as `RefillAmount`/`RefillPeriodSeconds`."""
         result = _cfn_limits_to_manifest({"rpm": {"Capacity": "500", "ResetAfterSeconds": ""}})
         assert result == {"rpm": {"capacity": 500}}
 
@@ -1572,7 +1607,7 @@ class TestCfnScalarCoercionEndToEnd:
                 "NamespaceId": "ns123",
                 "System": {
                     "OnUnavailable": "block",
-                    "Limits": {"rpm": {"Capacity": "1000", "RefillPeriod": "60"}},
+                    "Limits": {"rpm": {"Capacity": "1000", "RefillPeriodSeconds": "60"}},
                 },
                 "Resources": {
                     "gpt-4": {

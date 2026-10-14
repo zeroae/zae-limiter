@@ -27,9 +27,10 @@ What the recording established, and what any test built on it inherits:
 Two quirks of the probe template itself are preserved deliberately, because
 trimming them would make the fixture synthetic again:
 
-1. ``System.Limits.rpm`` carries ``RefillPeriodSeconds``, which is the
-   *schedule-entry* spelling; the limit level takes ``RefillPeriod``. The
-   handler drops unrecognised properties by design, so it is silently ignored.
+1. ``System.Limits.rpm`` carries ``RefillPeriodSeconds``. When this was
+   recorded the limit level took ``RefillPeriod`` and the handler silently
+   dropped the property; since #735 ``RefillPeriodSeconds`` is the spelling at
+   every level, so it now parses.
 2. ``Resources."gpt-4".Limits.rpm.Schedule[0]`` sets both ``Scale`` and
    ``Capacity``, which ``ScheduleEntry`` forbids (exactly-one-of). So the
    recorded payload does **not** parse all the way through even once the types

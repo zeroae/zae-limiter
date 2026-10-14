@@ -245,9 +245,6 @@ def limits_cfn_template(name: str, file_path: str) -> None:
 # absent — it is private, and a reset entry smuggled into the parameter tuple
 # would win its window and then supply nothing.
 #
-# Note `refill_period_seconds` -> `RefillPeriodSeconds`, which is *not* the
-# limit-level `refill_period` -> `RefillPeriod` pair a few lines below.
-#
 # `zae_limiter_provisioner.handler._CFN_SCHEDULE_KEYS` is the inverse. The two
 # cannot share a module: the provisioner Lambda zip carries only a four-file
 # `zae_limiter` stub, so it can never import this one. A unit test pins them as
@@ -294,11 +291,18 @@ def _limits_to_cfn(limits: dict[str, Any]) -> dict[str, Any]:
     """Convert manifest limits dict to CFN PascalCase format."""
     result = {}
     for name, limit in limits.items():
+        if "refill_period" in limit:
+            # Renamed (#735); left in place it would be dropped from the
+            # template and the limit applied with the 60-second default.
+            raise click.ClickException(
+                f"limit {name!r}: `refill_period` was renamed to `refill_period_seconds`; "
+                "rename the key."
+            )
         cfn_limit: dict[str, Any] = {"Capacity": limit["capacity"]}
         if "refill_amount" in limit:
             cfn_limit["RefillAmount"] = limit["refill_amount"]
-        if "refill_period" in limit:
-            cfn_limit["RefillPeriod"] = limit["refill_period"]
+        if "refill_period_seconds" in limit:
+            cfn_limit["RefillPeriodSeconds"] = limit["refill_period_seconds"]
         # ADR-139: the third recovery spelling, mirroring
         # `zae_limiter_provisioner.handler._CFN_LIMIT_OPTIONAL_KEYS`'s
         # `"ResetAfterSeconds": ("reset_after_seconds", _coerce_int)`.

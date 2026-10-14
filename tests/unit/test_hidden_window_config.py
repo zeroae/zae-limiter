@@ -103,11 +103,11 @@ def _applier_item(level, target):
         "session": {
             "capacity": 10_000,
             "refill_amount": 0,
-            "refill_period": 1,
+            "refill_period_seconds": 1,
             "reset_after_seconds": 18_000,
             "schedule": [{"cron": "* 0-6 * * *", "tz": "UTC", "scale": 0.5}],
         },
-        "rpm": {"capacity": 100, "refill_amount": 100, "refill_period": 60},
+        "rpm": {"capacity": 100, "refill_amount": 100, "refill_period_seconds": 60},
     }
     result = apply_changes(
         [Change(action="update", level=level, target=target, data={"limits": decl})],

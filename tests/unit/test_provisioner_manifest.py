@@ -6,20 +6,48 @@ from zae_limiter_provisioner.manifest import LimitDecl, LimitsManifest
 
 
 class TestLimitDeclValidation:
-    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period"])
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
     @pytest.mark.parametrize("bad", [0, -1])
     def test_rejects_non_positive(self, field, bad):
-        decl = {"capacity": 100, "refill_amount": 100, "refill_period": 60, field: bad}
+        decl = {"capacity": 100, "refill_amount": 100, "refill_period_seconds": 60, field: bad}
         with pytest.raises(ValueError, match=field):
             LimitDecl.from_dict(decl)
 
     def test_accepts_positive(self):
         decl = LimitDecl.from_dict({"capacity": 100})
-        assert (decl.capacity, decl.refill_amount, decl.refill_period) == (100, 100, 60)
+        assert (decl.capacity, decl.refill_amount, decl.refill_period_seconds) == (100, 100, 60)
 
     def test_burst_backcompat_still_validated(self):
         with pytest.raises(ValueError, match="capacity"):
             LimitDecl.from_dict({"capacity": 100, "burst": 0})
+
+
+class TestRefillPeriodSeconds:
+    """The base limit's period is spelled with its unit, like a schedule
+    entry's and the Python API's (#735)."""
+
+    def test_refill_period_seconds_is_read(self):
+        decl = LimitDecl.from_dict({"capacity": 100, "refill_period_seconds": 3600})
+        assert decl.refill_period_seconds == 3600
+        assert decl.to_dict()["refill_period_seconds"] == 3600
+
+    def test_the_old_key_is_rejected_naming_the_new_one(self):
+        """Not dropped: dropping it applied the 60-second default, 60x the
+        rate an author writing `refill_period: 3600` meant."""
+        with pytest.raises(
+            ValueError, match="`refill_period` was renamed to `refill_period_seconds`"
+        ):
+            LimitDecl.from_dict({"capacity": 100, "refill_period": 3600})
+
+    def test_python_api_spelling_round_trips(self):
+        """`Limit.to_dict()` emits this key, so its output pastes into a manifest."""
+        from zae_limiter import Limit
+
+        d = Limit.per_hour("rph", 100).to_dict()
+        decl = LimitDecl.from_dict(
+            {k: d[k] for k in ("capacity", "refill_amount", "refill_period_seconds")}
+        )
+        assert decl.refill_period_seconds == 3600
 
 
 class TestManifestCascade:
@@ -262,7 +290,7 @@ class TestManifestSchedules:
         assert decl.refill_amount == 0
 
     def test_rejects_a_zero_rate_without_a_reset(self):
-        """ADR-137: never neither. capacity and refill_period stay strictly
+        """ADR-137: never neither. capacity and refill_period_seconds stay strictly
         positive; only refill_amount gained the conditional zero."""
         with pytest.raises(ValueError, match="reset_schedule"):
             LimitDecl.from_dict({"capacity": 10_000, "refill_amount": 0})
@@ -273,8 +301,10 @@ class TestManifestSchedules:
         reset = [{"cron": "0 0 * * *"}]
         with pytest.raises(ValueError, match="capacity"):
             LimitDecl.from_dict({"capacity": 0, "reset_schedule": reset})
-        with pytest.raises(ValueError, match="refill_period"):
-            LimitDecl.from_dict({"capacity": 10, "refill_period": 0, "reset_schedule": reset})
+        with pytest.raises(ValueError, match="refill_period_seconds"):
+            LimitDecl.from_dict(
+                {"capacity": 10, "refill_period_seconds": 0, "reset_schedule": reset}
+            )
 
     def test_absent_schedule_is_an_empty_tuple(self):
         manifest = LimitsManifest.from_yaml(

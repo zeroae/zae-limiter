@@ -377,8 +377,8 @@ class TestParamSyncBuilders:
 
     def test_provisioner_param_sync(self) -> None:
         limits = {
-            DOTTED: {"capacity": 100, "refill_amount": 100, "refill_period": 60},
-            HYPHENATED: {"capacity": 10, "refill_amount": 10, "refill_period": 1},
+            DOTTED: {"capacity": 100, "refill_amount": 100, "refill_period_seconds": 60},
+            HYPHENATED: {"capacity": 10, "refill_amount": 10, "refill_period_seconds": 1},
         }
         expr, names, values = build_bucket_param_update(limits, 7, {"old.x-y"}, 1_000)
         assert_expression_safe(

@@ -102,7 +102,7 @@ def _build_limit_item(
 
         item[attr("cp")] = {"N": str(decl["capacity"])}
         item[attr("ra")] = {"N": str(decl["refill_amount"])}
-        item[attr("rp")] = {"N": str(decl["refill_period"])}
+        item[attr("rp")] = {"N": str(decl["refill_period_seconds"])}
         # #222: manifests learned to express schedules in #543, and without
         # this leg the schedule reached the bucket fan-out but never the config
         # item — so it survived only until a bucket expired and was recreated
