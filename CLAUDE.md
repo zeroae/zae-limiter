@@ -290,7 +290,7 @@ entities:
             capacity: 100
 ```
 
-**Limit shorthand defaults:** Only `capacity` is required. When omitted: `burst` defaults to `capacity`, `refill_amount` defaults to `capacity`, `refill_period_seconds` defaults to `60`. The period is spelled with its unit at every level, as on a schedule entry and in the Python API (`Limit.refill_period_seconds`); the old `refill_period` / CFN `RefillPeriod` is rejected with a message naming the new key (#735).
+**Limit shorthand defaults:** Only `capacity` is required. When omitted: `burst` defaults to `capacity`, `refill_amount` defaults to `capacity`, `refill_period_seconds` defaults to `60`. The period is spelled with its unit at every level, as on a schedule entry and in the Python API (`Limit.refill_period_seconds`); the old `refill_period` / CFN `RefillPeriod` is rejected with a message naming the new key (#735). A limit's keys are a strict allowlist (`manifest._LIMIT_FIELDS`, CFN `handler._CFN_LIMIT_PROPERTIES`, `limits_cli._LIMIT_FIELDS`), like a schedule entry's: an unknown key fails the parse instead of being dropped and replaced by its shorthand default.
 
 **`schedule` / `reset_schedule` (#222, ADR-135):** Optional lists of entries on any
 `limits.<name>` mapping, at every level. `schedule` entries carry `cron`, `tz` and exactly one

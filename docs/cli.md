@@ -135,7 +135,7 @@ entities:
             capacity: 100000
 ```
 
-Only `capacity` is required per limit. Defaults: `refill_amount` = `capacity`, `refill_period_seconds` = `60`.
+Only `capacity` is required per limit. Defaults: `refill_amount` = `capacity`, `refill_period_seconds` = `60`. An unknown key on a limit is an error.
 
 A limit may also carry a `schedule`, which changes its parameters while the current minute
 matches a cron pattern, and a `reset_schedule`, which restores the balance to the full

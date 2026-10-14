@@ -287,27 +287,51 @@ def _schedule_to_cfn(raw: Any, *, key: str, limit_name: str) -> list[dict[str, A
     return entries
 
 
+# Manifest limit field -> CloudFormation property name, for the optional
+# scalars. `zae_limiter_provisioner.handler._CFN_LIMIT_OPTIONAL_KEYS` is the
+# inverse, pinned by a unit test exactly as `_SCHEDULE_KEYS` is.
+_LIMIT_KEYS: tuple[tuple[str, str], ...] = (
+    ("refill_amount", "RefillAmount"),
+    ("refill_period_seconds", "RefillPeriodSeconds"),
+    # ADR-139: the third recovery spelling.
+    ("reset_after_seconds", "ResetAfterSeconds"),
+)
+
+# Every key a manifest limit may carry: `manifest._LIMIT_FIELDS`, pinned by a
+# unit test. A key outside it fails here rather than being left out of the
+# template, which would apply the limit with a shorthand default in its place
+# (#735).
+_LIMIT_FIELDS: tuple[str, ...] = (
+    "capacity",
+    "burst",
+    *(snake for snake, _ in _LIMIT_KEYS),
+    "schedule",
+    "reset_schedule",
+)
+
+
 def _limits_to_cfn(limits: dict[str, Any]) -> dict[str, Any]:
     """Convert manifest limits dict to CFN PascalCase format."""
     result = {}
     for name, limit in limits.items():
         if "refill_period" in limit:
-            # Renamed (#735); left in place it would be dropped from the
-            # template and the limit applied with the 60-second default.
+            # Renamed (#735): named here, rather than reported as an unknown
+            # field, so the message says what to write instead.
             raise click.ClickException(
                 f"limit {name!r}: `refill_period` was renamed to `refill_period_seconds`; "
                 "rename the key."
             )
-        cfn_limit: dict[str, Any] = {"Capacity": limit["capacity"]}
-        if "refill_amount" in limit:
-            cfn_limit["RefillAmount"] = limit["refill_amount"]
-        if "refill_period_seconds" in limit:
-            cfn_limit["RefillPeriodSeconds"] = limit["refill_period_seconds"]
-        # ADR-139: the third recovery spelling, mirroring
-        # `zae_limiter_provisioner.handler._CFN_LIMIT_OPTIONAL_KEYS`'s
-        # `"ResetAfterSeconds": ("reset_after_seconds", _coerce_int)`.
-        if "reset_after_seconds" in limit:
-            cfn_limit["ResetAfterSeconds"] = limit["reset_after_seconds"]
+        unknown = sorted(str(k) for k in limit if k not in _LIMIT_FIELDS)
+        if unknown:
+            raise click.ClickException(
+                f"limit {name!r} has unknown field(s) {unknown}; allowed: {list(_LIMIT_FIELDS)}."
+            )
+        # `burst` is the legacy spelling of the ceiling, and `LimitDecl.from_dict`
+        # reads it in place of `capacity`; so must the template.
+        cfn_limit: dict[str, Any] = {"Capacity": limit.get("burst", limit["capacity"])}
+        for snake, pascal in _LIMIT_KEYS:
+            if snake in limit:
+                cfn_limit[pascal] = limit[snake]
         # Emitted only when non-empty, matching `LimitDecl.to_dict()`: an
         # unscheduled limit's template is byte-identical to what it was before
         # schedules existed, and an empty list never stands in for "absent".

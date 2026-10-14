@@ -19,6 +19,22 @@ _RESET_ENTRY_FIELDS = ("cron", "tz")
 _RENAMED_LIMIT_FIELDS = {"refill_period": "refill_period_seconds"}
 
 
+# The keys a `limits.<name>` mapping may carry. Strict for the same reason
+# `_ENTRY_FIELDS` is: a key outside it is a typo or a spelling from somewhere
+# else, and dropping it silently applies the shorthand default in its place —
+# `refill_period_secs: 3600` would land as a 60-second period, 60x the intended
+# rate, with `limits plan` reporting a clean create (#735).
+_LIMIT_FIELDS = (
+    "capacity",
+    "burst",
+    "refill_amount",
+    "refill_period_seconds",
+    "schedule",
+    "reset_schedule",
+    "reset_after_seconds",
+)
+
+
 def _check_renamed(d: dict[str, Any], renamed: dict[str, str]) -> None:
     for old, new in renamed.items():
         if old in d:
@@ -151,6 +167,13 @@ class LimitDecl:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> LimitDecl:
         _check_renamed(d, _RENAMED_LIMIT_FIELDS)
+        unknown = sorted(str(k) for k in d if k not in _LIMIT_FIELDS)
+        if unknown:
+            raise ValueError(
+                f"limit has unknown field(s) {unknown}; allowed: {list(_LIMIT_FIELDS)}. "
+                "Limits are rejected at parse time so `limits plan` surfaces the "
+                "problem before anything is written."
+            )
         capacity = d["capacity"]
         # Accept "burst" from YAML for backwards-compat: use it as capacity
         if "burst" in d:

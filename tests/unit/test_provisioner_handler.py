@@ -1052,6 +1052,22 @@ class TestCfnPropertiesToManifestSchedules:
 
         assert _CFN_SCHEDULE_KEYS == {pascal: snake for snake, pascal in _SCHEDULE_KEYS}
 
+    def test_limit_key_tables_are_exact_inverses(self):
+        """The same pin for the limit-level scalars (#735)."""
+        from zae_limiter.limits_cli import _LIMIT_KEYS
+        from zae_limiter_provisioner.handler import _CFN_LIMIT_OPTIONAL_KEYS
+
+        assert {p: snake for p, (snake, _) in _CFN_LIMIT_OPTIONAL_KEYS.items()} == {
+            pascal: snake for snake, pascal in _LIMIT_KEYS
+        }
+
+    @pytest.mark.parametrize("prop", ["RefillPeriodSecs", "Burst", "refill_amount"])
+    def test_unknown_limit_property_is_rejected(self, prop):
+        """An unrecognised property used to be dropped and the limit applied
+        with the shorthand default in its place (#735)."""
+        with pytest.raises(ValueError, match=rf"Limits\.rpm has unknown property \['{prop}'\]"):
+            _cfn_limits_to_manifest({"rpm": {"Capacity": "100", prop: "3600"}})
+
 
 class TestCfnScalarCoercion:
     """CloudFormation stringifies every scalar in `ResourceProperties` (#554).

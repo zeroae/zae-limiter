@@ -50,6 +50,40 @@ class TestRefillPeriodSeconds:
         assert decl.refill_period_seconds == 3600
 
 
+class TestLimitDeclUnknownFields:
+    """A base limit's keys are an allowlist, like a schedule entry's (#735).
+
+    An unknown key used to be dropped and the shorthand default applied in its
+    place, so a typo in the period silently multiplied the admitted rate.
+    """
+
+    @pytest.mark.parametrize("key", ["refill_period_secs", "reset_after", "period", "rate"])
+    def test_unknown_key_is_rejected_naming_it_and_the_allowlist(self, key):
+        with pytest.raises(ValueError, match=rf"unknown field\(s\) \['{key}'\]") as exc:
+            LimitDecl.from_dict({"capacity": 100, key: 3600})
+        assert "allowed: ['capacity'" in str(exc.value)
+
+    def test_the_allowlist(self):
+        from zae_limiter_provisioner.manifest import _LIMIT_FIELDS
+
+        assert set(_LIMIT_FIELDS) == {
+            "capacity",
+            "burst",
+            "refill_amount",
+            "refill_period_seconds",
+            "schedule",
+            "reset_schedule",
+            "reset_after_seconds",
+        }
+
+    def test_unknown_key_fails_the_whole_manifest(self):
+        limit = {"capacity": 1, "refill_period_secs": 3600}
+        with pytest.raises(ValueError, match="refill_period_secs"):
+            LimitsManifest.from_dict(
+                {"namespace": "n", "resources": {"gpt-4": {"limits": {"rpm": limit}}}}
+            )
+
+
 class TestManifestCascade:
     """The tri-state cascade policy on resource and entity decls (ADR-146)."""
 

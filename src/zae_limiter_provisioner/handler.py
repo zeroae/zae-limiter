@@ -707,6 +707,15 @@ _CFN_LIMIT_OPTIONAL_KEYS: dict[str, tuple[str, Any]] = {
     "ResetAfterSeconds": ("reset_after_seconds", _coerce_int),
 }
 
+# Every property a CFN limit may carry: `Capacity`, the optional scalars above
+# and the two schedule lists.
+_CFN_LIMIT_PROPERTIES: tuple[str, ...] = (
+    "Capacity",
+    *_CFN_LIMIT_OPTIONAL_KEYS,
+    "Schedule",
+    "ResetSchedule",
+)
+
 # Limit properties that were renamed, old -> new (#735).
 _RENAMED_CFN_LIMIT_PROPERTIES = {"RefillPeriod": "RefillPeriodSeconds"}
 
@@ -762,6 +771,16 @@ def _cfn_limits_to_manifest(cfn_limits: dict[str, Any], *, where: str = "Limits"
         for old, new in _RENAMED_CFN_LIMIT_PROPERTIES.items():
             if old in cfn_limit:
                 raise ValueError(f"{where}.{name}.{old} was renamed to {new}; rename the property.")
+        # Strict, like `manifest._LIMIT_FIELDS` (#735): an unrecognised
+        # property would otherwise be dropped here and the limit applied with
+        # the shorthand default in its place, reported to CloudFormation as
+        # SUCCESS.
+        unknown = sorted(str(k) for k in cfn_limit if k not in _CFN_LIMIT_PROPERTIES)
+        if unknown:
+            raise ValueError(
+                f"{where}.{name} has unknown propert{'y' if len(unknown) == 1 else 'ies'} "
+                f"{unknown}; allowed: {list(_CFN_LIMIT_PROPERTIES)}."
+            )
         limit: dict[str, Any] = {}
         capacity = _coerce_int(cfn_limit["Capacity"], f"{where}.{name}.Capacity")
         if capacity is _ABSENT:

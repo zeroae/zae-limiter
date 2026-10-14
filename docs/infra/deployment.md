@@ -580,7 +580,7 @@ entities:
             capacity: 100000
 ```
 
-**Limit fields:** Only `capacity` is required. When omitted, `refill_amount` defaults to `capacity` — or to `0` when the limit carries a `reset_schedule`, where a positive `refill_amount` is rejected — and `refill_period_seconds` defaults to `60`. `capacity` is the bucket ceiling (max tokens). To customize:
+**Limit fields:** Only `capacity` is required. When omitted, `refill_amount` defaults to `capacity` — or to `0` when the limit carries a `reset_schedule`, where a positive `refill_amount` is rejected — and `refill_period_seconds` defaults to `60`. `capacity` is the bucket ceiling (max tokens). Any other key on a limit is rejected, so a misspelled field fails `limits plan` rather than silently taking its default. To customize:
 
 ```yaml
 limits:
