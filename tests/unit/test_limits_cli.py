@@ -601,13 +601,11 @@ class TestInvokeProvisioner:
 
     def test_provisioner_timeout_matches_template(self):
         """The CLI's assumed Lambda timeout tracks cfn_template.yaml."""
-        from pathlib import Path
+        from zae_limiter.infra import PROVISIONER_LAMBDA_TIMEOUT_SECONDS, get_cfn_template
 
-        import zae_limiter.limits_cli as limits_cli
-
-        template = (Path(limits_cli.__file__).parent / "infra" / "cfn_template.yaml").read_text()
+        template = get_cfn_template()
         block = template.split("  ProvisionerFunction:\n", 1)[1].split("\n\n", 1)[0]
-        assert f"Timeout: {limits_cli.PROVISIONER_LAMBDA_TIMEOUT_SECONDS}" in block
+        assert f"Timeout: {PROVISIONER_LAMBDA_TIMEOUT_SECONDS}" in block
 
     def test_invoke_provisioner_resolves_namespace(self):
         """A preview resolves namespace_id read-only, requiring current Lambdas (#648)."""

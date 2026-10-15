@@ -11,11 +11,11 @@ import click
 import yaml
 from botocore.config import Config
 
-# The provisioner's `Timeout` in cfn_template.yaml. botocore's default read_timeout
-# is 60 s, so a synchronous invoke of a long apply gave up while the Lambda was still
-# working. Keep this equal to the template value.
-PROVISIONER_LAMBDA_TIMEOUT_SECONDS = 300
-# Headroom over the Lambda timeout so the Lambda's own timeout error is what we see.
+from .infra import PROVISIONER_LAMBDA_TIMEOUT_SECONDS
+
+# botocore's default read_timeout is 60 s, so a synchronous invoke of a long apply
+# gave up while the Lambda was still working. The extra 30 s of headroom lets the
+# Lambda's own timeout error surface instead of ours.
 _INVOKE_READ_TIMEOUT_SECONDS = PROVISIONER_LAMBDA_TIMEOUT_SECONDS + 30
 
 
