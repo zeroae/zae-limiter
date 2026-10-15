@@ -33,12 +33,19 @@ def limits() -> None:
     type=click.Path(exists=True),
     help="YAML limits file.",
 )
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    help="Print only the summary, not a line per changed entry.",
+)
 def limits_plan(
     name: str,
     region: str | None,
     endpoint_url: str | None,
     namespace: str,
     file_path: str,
+    quiet: bool,
 ) -> None:
     """Preview changes without applying (like terraform plan).
 
@@ -58,7 +65,10 @@ def limits_plan(
         click.echo("No changes. Infrastructure is up-to-date.")
         return
 
-    click.echo(f"Plan: {len(changes)} change(s){_unchanged_suffix(result)}\n")
+    click.echo(f"Plan: {len(changes)} change(s){_unchanged_suffix(result)}")
+    if quiet:
+        return
+    click.echo()
     for change in changes:
         symbol = {"create": "+", "update": "~", "delete": "-"}.get(change["action"], "?")
         target = change.get("target") or "(system defaults)"
@@ -78,12 +88,19 @@ def limits_plan(
     type=click.Path(exists=True),
     help="YAML limits file.",
 )
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    help="Print only the summary, not a line per changed entry.",
+)
 def limits_apply(
     name: str,
     region: str | None,
     endpoint_url: str | None,
     namespace: str,
     file_path: str,
+    quiet: bool,
 ) -> None:
     """Apply limits from YAML file (like terraform apply)."""
     manifest_data = _load_yaml(file_path)
@@ -94,11 +111,12 @@ def limits_apply(
     if not changes:
         click.echo("No changes. Infrastructure is up-to-date.")
     else:
-        for change in changes:
-            symbol = {"create": "+", "update": "~", "delete": "-"}.get(change["action"], "?")
-            target = change.get("target") or "(system defaults)"
-            click.echo(f"  {symbol} {change['action']} {change['level']}: {target}")
-        click.echo()
+        if not quiet:
+            for change in changes:
+                symbol = {"create": "+", "update": "~", "delete": "-"}.get(change["action"], "?")
+                target = change.get("target") or "(system defaults)"
+                click.echo(f"  {symbol} {change['action']} {change['level']}: {target}")
+            click.echo()
 
         click.echo(
             f"Applied: {result.get('created', 0)} created, "
@@ -129,12 +147,19 @@ def limits_apply(
     type=click.Path(exists=True),
     help="YAML limits file.",
 )
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    help="Print only the summary, not a line per changed entry.",
+)
 def limits_diff(
     name: str,
     region: str | None,
     endpoint_url: str | None,
     namespace: str,
     file_path: str,
+    quiet: bool,
 ) -> None:
     """Show drift between YAML and live DynamoDB state.
 
@@ -149,7 +174,10 @@ def limits_diff(
         click.echo("No drift detected. Live state matches YAML.")
         return
 
-    click.echo(f"Drift detected: {len(changes)} difference(s){_unchanged_suffix(result)}\n")
+    click.echo(f"Drift detected: {len(changes)} difference(s){_unchanged_suffix(result)}")
+    if quiet:
+        return
+    click.echo()
     for change in changes:
         symbol = {"create": "+", "update": "~", "delete": "-"}.get(change["action"], "?")
         target = change.get("target") or "(system defaults)"

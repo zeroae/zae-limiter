@@ -1268,7 +1268,7 @@ class TestCfnTemplateFromYamlAnchors:
 
 
 class TestLimitsQuietAndUnchanged:
-    """The summary counts the declared entries that needed no change."""
+    """`--quiet` prints only the summary; the summary counts unchanged entries."""
 
     _APPLIED = {
         "status": "applied",
@@ -1299,6 +1299,19 @@ class TestLimitsQuietAndUnchanged:
         assert "~ update resource: gpt-4" in result.output
         assert "Applied: 1 created, 1 updated, 0 deleted (1177 unchanged)." in result.output
 
+    @pytest.mark.parametrize("flag", ["--quiet", "-q"])
+    def test_apply_quiet_prints_only_the_summary(self, flag):
+        result = self._run("apply", self._APPLIED, flag)
+        assert result.exit_code == 0
+        assert result.output == "Applied: 1 created, 1 updated, 0 deleted (1177 unchanged).\n"
+
+    def test_apply_quiet_still_reports_errors(self):
+        response = {**self._APPLIED, "errors": ["disable fan-out resource gpt-4: boom"]}
+        result = self._run("apply", response, "-q")
+        assert result.exit_code == 1
+        assert "user-new/gpt-4" not in result.output
+        assert "disable fan-out resource gpt-4: boom" in result.output
+
     def test_apply_with_no_changes_still_reports_a_failed_retry(self):
         """A retried fan-out can fail on an apply that changes nothing."""
         response = {"status": "applied", "changes": [], "errors": ["bucket param sync: boom"]}
@@ -1306,3 +1319,21 @@ class TestLimitsQuietAndUnchanged:
         assert result.exit_code == 1
         assert "up-to-date" in result.output
         assert "bucket param sync: boom" in result.output
+
+    def test_plan_quiet_prints_only_the_summary(self):
+        response = {**self._APPLIED, "status": "planned"}
+        result = self._run("plan", response, "--quiet")
+        assert result.exit_code == 0
+        assert result.output == "Plan: 2 change(s) (1177 unchanged)\n"
+
+    def test_diff_quiet_prints_only_the_summary(self):
+        response = {**self._APPLIED, "status": "planned"}
+        result = self._run("diff", response, "-q")
+        assert result.exit_code == 0
+        assert result.output == "Drift detected: 2 difference(s) (1177 unchanged)\n"
+
+    def test_a_response_without_an_unchanged_count_prints_no_suffix(self):
+        """A provisioner predating the count still renders cleanly."""
+        response = {k: v for k, v in self._APPLIED.items() if k != "unchanged"}
+        result = self._run("apply", response, "-q")
+        assert result.output == "Applied: 1 created, 1 updated, 0 deleted.\n"

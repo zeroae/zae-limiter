@@ -290,6 +290,9 @@ changed out of band (for example with `entity set-limits`) still differs and is 
 next apply. `plan` and `diff` make the same comparison, so they list only what an apply would
 change.
 
+Pass `--quiet` / `-q` to `plan`, `apply` or `diff` to print only the summary line, without a
+line per changed entry. Errors are still printed.
+
 ### Detect Drift
 
 ```bash
@@ -329,6 +332,7 @@ The generated template uses `Custom::ZaeLimiterLimits` backed by the provisioner
 | `--region` | | AWS region |
 | `--endpoint-url` | | Custom endpoint URL (e.g., LocalStack) |
 | `--namespace` | `-N` | Namespace (default: `"default"`) |
+| `--quiet` | `-q` | Print only the summary, not a line per changed entry (`plan`, `apply`, `diff`) |
 
 ### Partial Failures
 
