@@ -274,6 +274,22 @@ Applied: 4 created, 0 updated, 0 deleted.
 
 Subsequent applies with a modified YAML file will show `~` for updates and `-` for deletions (items removed from the manifest are deleted from DynamoDB).
 
+Only entries that differ from what is stored are applied. The provisioner reads each declared
+config item first (one strongly consistent `GetItem` per entry, run concurrently) and skips any
+whose stored item is already identical — no write, no bucket fan-out. Adding one entry to a
+manifest of a thousand therefore writes one config item and fans out one entry:
+
+```
+  + create entity: user-1001/gpt-4
+
+Applied: 1 created, 0 updated, 0 deleted (1000 unchanged).
+```
+
+Because the comparison is against the live table rather than the previous manifest, an entry
+changed out of band (for example with `entity set-limits`) still differs and is restored on the
+next apply. `plan` and `diff` make the same comparison, so they list only what an apply would
+change.
+
 ### Detect Drift
 
 ```bash
@@ -327,9 +343,10 @@ Errors (1):
   - bucket param sync entity user-123: <reason>
 ```
 
-Every write is idempotent, so re-running the same manifest reconciles the remainder. The
-`#PROVISIONER` record is written either way, so it always describes the config that is actually
-in the table.
+Every write is idempotent, so re-running the same manifest reconciles the remainder. A fan-out
+that failed is recorded in the `#PROVISIONER` record and retried by the next apply even when the
+manifest has not changed (unchanged entries are otherwise skipped). The record is written either
+way, so it always describes the config that is actually in the table.
 
 !!! note "Provisioner Lambda"
     The `plan`, `apply`, and `diff` subcommands invoke the `{name}-limits-provisioner` Lambda function. This function must be deployed as part of the main stack before using these commands. It is deployed by default; `zae-limiter deploy --no-provisioner` (or `--no-iam`, which leaves no role for it) skips it.

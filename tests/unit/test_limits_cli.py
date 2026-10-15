@@ -1265,3 +1265,44 @@ class TestCfnTemplateFromYamlAnchors:
         premium = props["Entities"]["user-premium"]["Resources"]["gpt-4"]["Limits"]
         assert premium["rpm"]["Capacity"] == 1000
         assert premium["tpm"]["Capacity"] == 10000
+
+
+class TestLimitsQuietAndUnchanged:
+    """The summary counts the declared entries that needed no change."""
+
+    _APPLIED = {
+        "status": "applied",
+        "changes": [
+            {"action": "create", "level": "entity", "target": "user-new/gpt-4"},
+            {"action": "update", "level": "resource", "target": "gpt-4"},
+        ],
+        "created": 1,
+        "updated": 1,
+        "deleted": 0,
+        "unchanged": 1177,
+        "errors": [],
+    }
+
+    def _run(self, command, response, *flags):
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+            with patch("zae_limiter.limits_cli._invoke_provisioner", return_value=response):
+                return CliRunner().invoke(
+                    cli, ["limits", command, "--name", "test-app", "-f", f.name, *flags]
+                )
+
+    def test_apply_lists_each_change_and_the_unchanged_count(self):
+        result = self._run("apply", self._APPLIED)
+        assert result.exit_code == 0
+        assert "+ create entity: user-new/gpt-4" in result.output
+        assert "~ update resource: gpt-4" in result.output
+        assert "Applied: 1 created, 1 updated, 0 deleted (1177 unchanged)." in result.output
+
+    def test_apply_with_no_changes_still_reports_a_failed_retry(self):
+        """A retried fan-out can fail on an apply that changes nothing."""
+        response = {"status": "applied", "changes": [], "errors": ["bucket param sync: boom"]}
+        result = self._run("apply", response)
+        assert result.exit_code == 1
+        assert "up-to-date" in result.output
+        assert "bucket param sync: boom" in result.output

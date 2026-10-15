@@ -112,10 +112,9 @@ def fanout_resource(
     Mirrors ``Repository._fanout_resource``: an entity whose own config
     resolves to a different value than the resource-level directive is
     skipped, which is what makes an entity-level `disabled: false` a
-    carve-out from a disabled resource (ADR-125). Without this check every
-    apply would clobber out-of-band per-entity state on manifest-managed
-    resources, because `differ.py` emits a change for every resource in the
-    manifest on every apply whether or not anything changed.
+    carve-out from a disabled resource (ADR-125). Without this check an apply
+    that changes a resource's `disabled` would clobber out-of-band per-entity
+    state on that resource.
 
     Returns the number of buckets stamped.
     """

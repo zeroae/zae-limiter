@@ -58,7 +58,7 @@ def limits_plan(
         click.echo("No changes. Infrastructure is up-to-date.")
         return
 
-    click.echo(f"Plan: {len(changes)} change(s)\n")
+    click.echo(f"Plan: {len(changes)} change(s){_unchanged_suffix(result)}\n")
     for change in changes:
         symbol = {"create": "+", "update": "~", "delete": "-"}.get(change["action"], "?")
         target = change.get("target") or "(system defaults)"
@@ -90,22 +90,25 @@ def limits_apply(
     result = _invoke_provisioner(name, region, endpoint_url, "apply", manifest_data)
 
     changes = result.get("changes", [])
+    errors = result.get("errors", [])
     if not changes:
         click.echo("No changes. Infrastructure is up-to-date.")
-        return
+    else:
+        for change in changes:
+            symbol = {"create": "+", "update": "~", "delete": "-"}.get(change["action"], "?")
+            target = change.get("target") or "(system defaults)"
+            click.echo(f"  {symbol} {change['action']} {change['level']}: {target}")
+        click.echo()
 
-    for change in changes:
-        symbol = {"create": "+", "update": "~", "delete": "-"}.get(change["action"], "?")
-        target = change.get("target") or "(system defaults)"
-        click.echo(f"  {symbol} {change['action']} {change['level']}: {target}")
+        click.echo(
+            f"Applied: {result.get('created', 0)} created, "
+            f"{result.get('updated', 0)} updated, "
+            f"{result.get('deleted', 0)} deleted"
+            f"{_unchanged_suffix(result)}."
+        )
 
-    click.echo(
-        f"\nApplied: {result.get('created', 0)} created, "
-        f"{result.get('updated', 0)} updated, "
-        f"{result.get('deleted', 0)} deleted."
-    )
-
-    errors = result.get("errors", [])
+    # Reported even with no changes: an apply also retries the bucket
+    # fan-outs an earlier apply left unfinished, and those can fail again.
     if errors:
         click.echo(f"\nErrors ({len(errors)}):", err=True)
         for err in errors:
@@ -146,7 +149,7 @@ def limits_diff(
         click.echo("No drift detected. Live state matches YAML.")
         return
 
-    click.echo(f"Drift detected: {len(changes)} difference(s)\n")
+    click.echo(f"Drift detected: {len(changes)} difference(s){_unchanged_suffix(result)}\n")
     for change in changes:
         symbol = {"create": "+", "update": "~", "delete": "-"}.get(change["action"], "?")
         target = change.get("target") or "(system defaults)"
@@ -341,6 +344,15 @@ def _cascade_warnings(manifest_data: dict[str, Any]) -> list[str]:
         for name, resource in (manifest_data.get("resources") or {}).items()
         if (resource or {}).get("cascade") is True and name not in covered
     ]
+
+
+def _unchanged_suffix(result: dict[str, Any]) -> str:
+    """`` (N unchanged)`` for the declared levels already matching the table.
+
+    Empty when the provisioner reports none, or predates the count.
+    """
+    unchanged = result.get("unchanged") or 0
+    return f" ({unchanged} unchanged)" if unchanged else ""
 
 
 def _load_yaml(file_path: str) -> dict[str, Any]:

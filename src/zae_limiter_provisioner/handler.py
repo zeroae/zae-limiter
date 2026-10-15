@@ -30,6 +30,7 @@ from zae_limiter.schema import (
 from .applier import (
     ApplyResult,
     apply_changes,
+    drop_unchanged,
     require_cascade_policy_readers,
     require_reset_after_readers,
 )
@@ -92,16 +93,21 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     manifest = LimitsManifest.from_dict(manifest_data)
     previous = _read_provisioner_state(table_name, namespace_id)
-    changes = compute_diff(manifest, previous)
+    changes, unchanged = _plan_changes(manifest, previous, table_name, namespace_id)
 
     change_dicts = [{"action": c.action, "level": c.level, "target": c.target} for c in changes]
 
     if action == "plan":
-        return {"status": "planned", "changes": change_dicts}
+        return {"status": "planned", "changes": change_dicts, "unchanged": unchanged}
 
     # Apply
     result = _apply_and_record(
-        manifest, changes, table_name, namespace_id, previous.get("cascade_pending", [])
+        manifest,
+        changes,
+        table_name,
+        namespace_id,
+        previous.get("cascade_pending", []),
+        previous.get("fanout_pending", []),
     )
 
     return {
@@ -110,6 +116,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "created": result.created,
         "updated": result.updated,
         "deleted": result.deleted,
+        "unchanged": unchanged,
         "errors": result.errors,
     }
 
@@ -136,10 +143,15 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     manifest = LimitsManifest.from_dict(manifest_data)
     previous = _read_provisioner_state(table_name, namespace_id)
-    changes = compute_diff(manifest, previous)
+    changes, unchanged = _plan_changes(manifest, previous, table_name, namespace_id)
 
     result = _apply_and_record(
-        manifest, changes, table_name, namespace_id, previous.get("cascade_pending", [])
+        manifest,
+        changes,
+        table_name,
+        namespace_id,
+        previous.get("cascade_pending", []),
+        previous.get("fanout_pending", []),
     )
 
     return {
@@ -149,8 +161,27 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "created": result.created,
         "updated": result.updated,
         "deleted": result.deleted,
+        "unchanged": unchanged,
         "errors": result.errors,
     }
+
+
+def _plan_changes(
+    manifest: LimitsManifest,
+    previous: dict[str, Any],
+    table_name: str,
+    namespace_id: str,
+) -> tuple[list[Change], int]:
+    """The changes an apply would make, and how many declared levels need none.
+
+    ``compute_diff`` alone lists every declared level as a create or update;
+    ``drop_unchanged`` removes the ones whose stored config item already
+    matches, so ``plan``, ``diff`` and ``apply`` all report — and ``apply``
+    only writes and fans out — what actually differs from the table.
+    """
+    declared = compute_diff(manifest, previous)
+    changes = drop_unchanged(declared, table_name, namespace_id)
+    return changes, len(declared) - len(changes)
 
 
 def _apply_and_record(
@@ -159,14 +190,23 @@ def _apply_and_record(
     table_name: str,
     namespace_id: str,
     cascade_pending: list[tuple[str, str]] | None = None,
+    fanout_pending: list[dict[str, str]] | None = None,
 ) -> ApplyResult:
     """Commit the config writes, fan out, then record the managed state (#563).
 
-    ``cascade_pending`` are the levels whose cascade fan-out failed on an
-    earlier apply (ADR-146): the cascade fan-out is change-only, so without
-    them re-running the same apply would restamp nothing and never reconcile.
-    They are retried here with this apply's own changes, and whatever still
-    fails is recorded for the next one.
+    Every fan-out is **change-only**: it runs for a level only when that
+    level's write changed what it fans out — the stored cascade policy, the
+    stored `disabled`, or (entity level) the stored limits — read off each
+    write's own ``ALL_OLD`` image (``ApplyResult``). Unchanged levels never
+    reach here at all (``_plan_changes``). So an apply costs what changed, not
+    what the manifest declares.
+
+    ``cascade_pending`` and ``fanout_pending`` are the levels whose fan-out
+    failed on an earlier apply: being change-only, re-running the same apply
+    would otherwise see no change and never reconcile. They are retried here
+    with this apply's own changes, and whatever still fails is recorded for
+    the next one. ``cascade_pending`` keeps its own list because records
+    written before ``fanout_pending`` existed carry it.
 
     The single place both entry points run an apply, so the ordering contract
     below cannot drift between the CFN and CLI paths again — which is exactly
@@ -204,7 +244,13 @@ def _apply_and_record(
     require_reset_after_readers(changes, table_name)
     require_cascade_policy_readers(changes, table_name)
     result = apply_changes(changes, table_name, namespace_id)
-    result.errors.extend(_fanout_disabled_changes(table_name, namespace_id, changes))
+    pending = fanout_pending or []
+    disabled_errors, disabled_failed = _fanout_disabled_changes(
+        table_name,
+        namespace_id,
+        _with_pending(manifest, result.disabled_changed, pending, "disabled"),
+    )
+    result.errors.extend(disabled_errors)
     cascade_targets: list[tuple[str, str]] = list(
         dict.fromkeys([*(cascade_pending or []), *result.cascade_changed])
     )
@@ -212,7 +258,12 @@ def _apply_and_record(
         table_name, namespace_id, cascade_targets
     )
     result.errors.extend(cascade_errors)
-    result.errors.extend(_sync_bucket_param_changes(table_name, namespace_id, changes))
+    sync_errors, sync_failed = _sync_bucket_param_changes(
+        table_name,
+        namespace_id,
+        _with_pending(manifest, result.limits_changed, pending, "sync"),
+    )
+    result.errors.extend(sync_errors)
 
     manifest_hash = hashlib.sha256(
         json.dumps(manifest.to_dict(), sort_keys=True).encode()
@@ -222,30 +273,81 @@ def _apply_and_record(
     new_state["last_applied"] = datetime.now(UTC).isoformat()
     new_state["applied_hash"] = f"sha256:{manifest_hash}"
     new_state["cascade_pending"] = cascade_failed
+    new_state["fanout_pending"] = [
+        *(_pending_entry("disabled", c) for c in disabled_failed),
+        *(_pending_entry("sync", c) for c in sync_failed),
+    ]
     _write_provisioner_state(table_name, namespace_id, new_state)
 
     return result
+
+
+def _pending_entry(kind: str, change: Change) -> dict[str, str]:
+    """A failed fan-out, as the ``#PROVISIONER`` record stores it."""
+    return {"kind": kind, "level": change.level, "target": change.target or ""}
+
+
+def _with_pending(
+    manifest: LimitsManifest,
+    changed: list[Change],
+    pending: list[dict[str, str]],
+    kind: str,
+) -> list[Change]:
+    """This apply's changes for one fan-out, plus the ones an earlier apply left.
+
+    A pending level is retried against what the manifest now says about it: its
+    current declaration when it still declares one, otherwise a delete — both
+    fan-outs then resolve what applies from the table, exactly as they do for a
+    delete this apply made. A level this apply changed is fanned out once, from
+    this apply's change.
+    """
+    seen = {(c.level, c.target) for c in changed}
+    retried: list[Change] = []
+    for entry in pending:
+        if entry.get("kind") != kind:
+            continue
+        level, target = entry["level"], entry["target"]
+        if (level, target) in seen:
+            continue
+        seen.add((level, target))
+        retried.append(_manifest_change(manifest, level, target))
+    return [*retried, *changed]
+
+
+def _manifest_change(manifest: LimitsManifest, level: str, target: str) -> Change:
+    """The change re-asserting what the manifest declares for one level."""
+    if level == "resource" and target in manifest.resources:
+        return Change("update", level, target, manifest.resources[target].to_dict())
+    if level == "entity":
+        entity_id, resource = target.split("/", 1)
+        entity = manifest.entities.get(entity_id)
+        if entity is not None and resource in entity.resources:
+            return Change("update", level, target, entity.resources[resource].to_dict())
+    return Change("delete", level, target)
 
 
 def _fanout_disabled_changes(
     table_name: str,
     namespace_id: str,
     changes: list[Change],
-) -> list[str]:
-    """Eagerly stamp bucket items for every resource/entity change (ADR-125).
+) -> tuple[list[str], list[Change]]:
+    """Eagerly stamp bucket items for every resource/entity change given (ADR-125).
 
     Runs AFTER `apply_changes`, so every level it resolves already reflects
     this apply's writes and deletes.
 
-    Fans out unconditionally for every create/update at the resource and
-    entity levels — NOT only when the change's data happens to carry a
-    `disabled` key. `ResourceDecl.to_dict()` / `EntityResourceDecl.to_dict()`
-    omit `disabled` entirely when it is `None` ("inherit"), so an operator
-    deleting a `disabled: true` line and re-applying produces a change with
-    no `disabled` key at all. Filtering on key presence would skip that
-    change's fan-out, leaving existing buckets stamped `disabled: true`
-    forever (until TTL) even though the config item correctly lost the
-    attribute.
+    The caller passes the changes whose stored `disabled` changed
+    (`ApplyResult.disabled_changed`, compared off each write's `ALL_OLD`
+    image), plus any whose fan-out failed on an earlier apply. That is NOT
+    the same as "the change's data carries a `disabled` key":
+    `ResourceDecl.to_dict()` / `EntityResourceDecl.to_dict()` omit `disabled`
+    entirely when it is `None` ("inherit"), so an operator deleting a
+    `disabled: true` line and re-applying produces a change with no
+    `disabled` key at all — and the old image's explicit `true` against the
+    new item's absence is exactly a change. Filtering on key presence would
+    skip that change's fan-out, leaving existing buckets stamped
+    `disabled: true` forever (until TTL) even though the config item
+    correctly lost the attribute.
 
     For a resource-level change, the effective value is simply the
     resource's own (possibly absent -> False) `disabled` value — there is no
@@ -253,9 +355,8 @@ def _fanout_disabled_changes(
     per ADR-125), mirroring ``Repository._set_resource_disabled``'s
     ``disabled=bool(value)``. ``fanout_resource`` then re-resolves each
     bucket's entity and skips the ones with their own overriding value, so a
-    per-entity carve-out made out of band survives an apply that merely
-    re-asserts the resource's unchanged state (``differ.py`` emits a change
-    for every manifest resource on every apply).
+    per-entity carve-out made out of band survives an apply that changes the
+    resource's `disabled`.
 
     For an entity-level change, the effective value is NOT `data.get(
     "disabled", False)` — that would be wrong whenever the entity's own
@@ -294,17 +395,19 @@ def _fanout_disabled_changes(
     every existing bucket un-stamped despite the config being written
     correctly and the apply reporting success.
 
-    Returns a list of human-readable failures, one per change that could not be
-    stamped, rather than raising on the first (#563). Guarding is per change so
-    one unreadable config item cannot abandon every *other* change's fan-out —
-    the direct analogue of ``FanoutIncomplete.stamped`` reporting how far the
-    async fan-out got. See ``_apply_and_record``.
+    Returns ``(errors, failed)``: a human-readable failure and the change for
+    each one that could not be stamped, rather than raising on the first
+    (#563). ``failed`` is recorded so the next apply retries it. Guarding is
+    per change so one unreadable config item cannot abandon every *other*
+    change's fan-out — the direct analogue of ``FanoutIncomplete.stamped``
+    reporting how far the async fan-out got. See ``_apply_and_record``.
     """
     candidates = [c for c in changes if c.level in ("resource", "entity") and c.target]
     if not candidates:
-        return []
+        return [], []
 
     errors: list[str] = []
+    failed: list[Change] = []
     client = boto3.client("dynamodb")
     for change in sorted(candidates, key=lambda c: 0 if c.level == "resource" else 1):
         data = change.data or {}
@@ -321,8 +424,11 @@ def _fanout_disabled_changes(
                 )
         except Exception as e:
             logger.warning("disable fan-out failed for %s %s: %s", change.level, change.target, e)
-            errors.append(f"disable fan-out {change.level} {change.target}: {e}")
-    return errors
+            errors.append(
+                f"disable fan-out {change.level} {change.target}: {e} (retried on the next apply)"
+            )
+            failed.append(change)
+    return errors, failed
 
 
 def _fanout_cascade_changes(
@@ -368,19 +474,22 @@ def _sync_bucket_param_changes(
     table_name: str,
     namespace_id: str,
     changes: list[Change],
-) -> list[str]:
+) -> tuple[list[str], list[Change]]:
     """Push entity-level limit changes out to existing bucket items (#481).
 
     Runs AFTER ``apply_changes``, so ``resolve_effective_limits`` sees the
     config this apply has already written — the same ordering contract
-    ``_fanout_disabled_changes`` relies on.
+    ``_fanout_disabled_changes`` relies on. The caller passes the changes whose
+    stored limits changed (``ApplyResult.limits_changed``) plus any whose sync
+    failed on an earlier apply.
 
     **Entity level only.** Resource and system defaults deliberately never
     touch buckets: a bucket on defaults carries a TTL and is recreated with
     current params when it expires (#271, #296).
 
-    Returns a list of human-readable failures, one per entity change that could
-    not be synced, rather than raising on the first (#563). ``_decode_limits``
+    Returns ``(errors, failed)``: a human-readable failure and the change for
+    each entity change that could not be synced, rather than raising on the
+    first (#563); ``failed`` is recorded so the next apply retries it. ``_decode_limits``
     raises on a stored compact schedule this provisioner cannot read (PR #549,
     deliberately — silently dropping the limit was the bug class that change
     removed), and a config item written by a newer client is a realistic source
@@ -391,6 +500,7 @@ def _sync_bucket_param_changes(
     client = boto3.client("dynamodb")
     now_ms = int(time.time() * 1000)
     errors: list[str] = []
+    failed: list[Change] = []
 
     for change in changes:
         if change.level != "entity" or change.target is None:
@@ -431,8 +541,11 @@ def _sync_bucket_param_changes(
             )
         except Exception as e:
             logger.warning("bucket param sync failed for entity %s: %s", change.target, e)
-            errors.append(f"bucket param sync entity {change.target}: {e}")
-    return errors
+            errors.append(
+                f"bucket param sync entity {change.target}: {e} (retried on the next apply)"
+            )
+            failed.append(change)
+    return errors, failed
 
 
 # ---------------------------------------------------------------------------
@@ -805,6 +918,7 @@ def _read_provisioner_state(table_name: str, namespace_id: str) -> dict[str, Any
             "managed_resources": [],
             "managed_entities": {},
             "cascade_pending": [],
+            "fanout_pending": [],
         }
 
     managed_entities: dict[str, list[str]] = {}
@@ -819,6 +933,10 @@ def _read_provisioner_state(table_name: str, namespace_id: str) -> dict[str, Any
         "cascade_pending": [
             (entry["M"]["level"]["S"], entry["M"]["target"]["S"])
             for entry in item.get("cascade_pending", {}).get("L", [])
+        ],
+        "fanout_pending": [
+            {field: entry["M"][field]["S"] for field in ("kind", "level", "target")}
+            for entry in item.get("fanout_pending", {}).get("L", [])
         ],
     }
 
@@ -850,6 +968,14 @@ def _write_provisioner_state(
             "L": [
                 {"M": {"level": {"S": level}, "target": {"S": target}}}
                 for level, target in state.get("cascade_pending", [])
+            ]
+        },
+        # Disable fan-outs and bucket param syncs that failed: retried by the
+        # next apply, which (being change-only) would otherwise skip them.
+        "fanout_pending": {
+            "L": [
+                {"M": {field: {"S": entry[field]} for field in ("kind", "level", "target")}}
+                for entry in state.get("fanout_pending", [])
             ]
         },
     }

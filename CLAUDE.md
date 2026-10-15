@@ -360,6 +360,7 @@ never reconcile.
 - Handles CLI invocations (action + manifest payload) and CloudFormation custom resource events (`Custom::ZaeLimiterLimits`)
 - Tracks managed items in `PK={ns}/SYSTEM#, SK=#PROVISIONER` with `managed_system`, `managed_resources`, `managed_entities` fields
 - Computes diff between manifest and previous state, then applies create/update/delete via PutItem/DeleteItem
+- **An apply costs what changed, not what the manifest declares.** `compute_diff` still lists every declared level (the record holds only *which* levels are managed), so `applier.drop_unchanged` reads each one's live config item first — strongly consistent `GetItem`s on a small thread pool, not `BatchGetItem`, which the provisioner role does not grant (a code-only upgrade must not need a stack update) — and drops any whose stored item is byte-identical to the one it would write. Comparing against the live item, not the last manifest, keeps drift reconciliation: a level edited out of band differs and is rewritten. Every fan-out is then change-only, off each write's `ALL_OLD` image (`ApplyResult.disabled_changed` / `limits_changed` / `cascade_changed`): the disable fan-out only when the level's stored tri-state `disabled` changed, the bucket param sync only when an entity level's stored limits changed. A fan-out that fails is recorded in the record's `fanout_pending` (disable / sync; cascade keeps its own `cascade_pending`) and retried by the next apply, which would otherwise see no change. Responses carry an `unchanged` count
 - On delete (CFN Delete), uses an empty manifest to remove all managed items
 
 **CloudFormation integration:** The `cfn-template` subcommand generates a CFN template with a `Custom::ZaeLimiterLimits` resource that uses `Fn::ImportValue` to reference the provisioner Lambda ARN from the main stack.
@@ -1756,9 +1757,9 @@ zae-limiter entity disable|enable|clear-disabled ENTITY_ID [--resource R]
 and carried through the CloudFormation `Custom::ZaeLimiterLimits` round trip in both directions
 via a `Disabled` property. The Lambda-side provisioner fan-out (`src/zae_limiter_provisioner/fanout.py`) mirrors
 the async `Repository` fan-out and consults per-entity overrides the same way, so a manifest
-apply that merely re-asserts an unchanged resource-level `disabled` (as every apply does —
-`differ.py` emits a change for every manifest resource regardless of whether anything changed)
-never clobbers a carve-out made out of band directly against the table.
+apply that changes a resource-level `disabled` never clobbers a carve-out made out of band
+directly against the table. An apply that leaves a level's `disabled` unchanged does not fan it
+out at all (`applier.drop_unchanged`, `ApplyResult.disabled_changed`).
 
 **Known limitations:**
 - Disabling is O(buckets for the resource) writes, not O(1).

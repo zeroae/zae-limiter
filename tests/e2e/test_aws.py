@@ -1312,12 +1312,12 @@ class TestE2EAWSProvisioner:
         entity_limits = await repo.get_limits("user-premium", "gpt-4")
         assert any(lim.name == "rpm" and lim.capacity == 2000 for lim in entity_limits)
 
-        # Step 2: Plan (should show updates, not creates)
+        # Step 2: Plan the same manifest: everything matches the table
         plan_event = {**event_v1, "action": "plan"}
         plan_result = _handle_cli(plan_event, None)
         assert plan_result["status"] == "planned"
-        actions = {c["action"] for c in plan_result["changes"]}
-        assert actions == {"update"}
+        assert plan_result["changes"] == []
+        assert plan_result["unchanged"] == 4
 
         # Step 3: Modify manifest (update gpt-4, remove claude-3, add entity)
         manifest_v2 = {

@@ -329,16 +329,16 @@ class TestProvisionerHandler:
             "S": "ns123/BUCKET#user-1#gpt-4#0"
         }
 
-    def test_apply_without_disabled_key_still_fans_out_as_not_disabled(
+    def test_a_level_whose_disabled_did_not_change_is_not_fanned_out(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
     ):
-        """A manifest with no `disabled` key still fans out (as `disabled=False`).
+        """A resource that neither had nor has `disabled` runs no disable fan-out.
 
-        Fan-out is unconditional on every create/update now (not gated on the
-        `disabled` key being present) — see `_fanout_disabled_changes`'s
-        docstring for why gating on key presence was the Finding 1 bug. With
-        no buckets discovered (the default empty query response), the fan-out
-        is a no-op: no `update_item` call, but the discovery `query` still runs.
+        The fan-out is change-only: it runs when the write's `ALL_OLD` image and
+        the new item disagree on `disabled` (`ApplyResult.disabled_changed`).
+        Absent before and absent after cannot change any bucket's resolution,
+        so not even the discovery query runs — that query, and the per-entity
+        resolution behind it, was most of an apply's cost on a large manifest.
         """
         mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
 
@@ -353,7 +353,7 @@ class TestProvisionerHandler:
         }
         on_event(event, MagicMock())
 
-        mock_client.query.assert_called()
+        mock_client.query.assert_not_called()
         mock_client.update_item.assert_not_called()
 
     def test_reapply_without_disabled_line_unstamps_previously_disabled_buckets(
@@ -393,6 +393,19 @@ class TestProvisionerHandler:
             return {}
 
         mock_client.get_item.side_effect = _get_item
+
+        # The disable fan-out is change-only, decided off each write's ALL_OLD
+        # image, so the PutItem must return what it replaced, as DynamoDB does.
+        stored: dict[tuple[str, str], dict] = {}
+
+        def _put_item(*_args, **kwargs):
+            item = kwargs["Item"]
+            key = (item["PK"]["S"], item["SK"]["S"])
+            old = stored.get(key)
+            stored[key] = item
+            return {"Attributes": old} if old else {}
+
+        mock_client.put_item.side_effect = _put_item
 
         # First apply: `disabled: true` stamps the bucket.
         disable_event = {
@@ -619,15 +632,13 @@ class TestProvisionerHandler:
         update_expr = mock_client.update_item.call_args.kwargs["UpdateExpression"]
         assert update_expr == "SET #disabled = :true"
 
-    def test_cfn_create_with_disabled_absent_key_still_fans_out_as_not_disabled(
+    def test_cfn_create_with_disabled_absent_key_is_not_fanned_out(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
     ):
-        """CFN Create with no `Disabled` property still fans out (as `disabled=False`).
+        """CFN Create with no `Disabled` property runs no disable fan-out.
 
-        Mirrors `test_apply_without_disabled_key_still_fans_out_as_not_disabled`
-        for the CFN entry point: fan-out is unconditional on create/update, so
-        the discovery query always runs; with no buckets discovered it is a
-        harmless no-op (no `update_item` call).
+        Mirrors `test_a_level_whose_disabled_did_not_change_is_not_fanned_out`
+        for the CFN entry point.
         """
         mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
 
@@ -647,7 +658,7 @@ class TestProvisionerHandler:
         }
         result = on_event(event, MagicMock())
         assert result["status"] == "applied"
-        mock_client.query.assert_called()
+        mock_client.query.assert_not_called()
         mock_client.update_item.assert_not_called()
 
     def test_cfn_update_event(self, mock_handler_boto3, mock_applier_boto3, mock_urlopen):
@@ -1689,10 +1700,22 @@ def _corrupt_system_schedule_client(mock_handler_boto3, mock_applier_boto3):
         return {}
 
     mock_client.get_item.side_effect = _get_item
+    mock_client.delete_item.return_value = _DELETED_ENTITY_CONFIG
     mock_client.query.return_value = {"Items": []}
     mock_handler_boto3.client.return_value = mock_client
     mock_applier_boto3.client.return_value = mock_client
     return mock_client
+
+
+# The `ALL_OLD` image of a deleted entity config. The bucket param sync is
+# change-only, so a delete syncs only when the deleted item held limits.
+_DELETED_ENTITY_CONFIG = {
+    "Attributes": {
+        "l_rpm_cp": {"N": "5"},
+        "l_rpm_ra": {"N": "5"},
+        "l_rpm_rp": {"N": "60"},
+    }
+}
 
 
 def _provisioner_writes(mock_client):
@@ -1805,6 +1828,7 @@ class TestPostCommitFanoutFailure:
             return {}
 
         mock_client.get_item.side_effect = _get_item
+        mock_client.delete_item.return_value = _DELETED_ENTITY_CONFIG
         mock_client.query.return_value = {
             "Items": [{"PK": {"S": "ns123/BUCKET#user-2#claude-3#0"}}]
         }
@@ -1851,7 +1875,9 @@ class TestPostCommitFanoutFailure:
                 "namespace_id": "ns123",
                 "manifest": {
                     "namespace": "test-ns",
-                    "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}},
+                    "resources": {
+                        "gpt-4": {"disabled": True, "limits": {"rpm": {"capacity": 1000}}}
+                    },
                 },
             },
             MagicMock(),
@@ -1859,7 +1885,20 @@ class TestPostCommitFanoutFailure:
 
         assert result["status"] == "applied"
         assert any("gpt-4" in e and "ProvisionedThroughputExceeded" in e for e in result["errors"])
-        assert len(_provisioner_writes(mock_client)) == 1
+        writes = _provisioner_writes(mock_client)
+        assert len(writes) == 1
+        # Kept for the next apply, which would otherwise see no change.
+        assert writes[0].kwargs["Item"]["fanout_pending"] == {
+            "L": [
+                {
+                    "M": {
+                        "kind": {"S": "disabled"},
+                        "level": {"S": "resource"},
+                        "target": {"S": "gpt-4"},
+                    }
+                }
+            ]
+        }
 
 
 class TestResetAfterVersionGateThroughTheHandler:
@@ -2005,8 +2044,8 @@ class TestCascadeFanoutChanges:
         assert failed == [("resource", "llm")]
 
     @patch("zae_limiter_provisioner.handler._write_provisioner_state")
-    @patch("zae_limiter_provisioner.handler._sync_bucket_param_changes", return_value=[])
-    @patch("zae_limiter_provisioner.handler._fanout_disabled_changes", return_value=[])
+    @patch("zae_limiter_provisioner.handler._sync_bucket_param_changes", return_value=([], []))
+    @patch("zae_limiter_provisioner.handler._fanout_disabled_changes", return_value=([], []))
     @patch("zae_limiter_provisioner.handler._fanout_cascade_changes")
     @patch("zae_limiter_provisioner.handler.apply_changes")
     @patch("zae_limiter_provisioner.handler.require_cascade_policy_readers")
@@ -2136,3 +2175,200 @@ class TestSystemDisabledThroughTheHandler:
         with pytest.raises(ValueError, match="'disabled' is not supported at the system level"):
             on_event(event, MagicMock())
         assert self._keys(client) == before
+
+
+class _CountingClient:
+    """A real boto3 client that counts the calls made through it."""
+
+    def __init__(self, client):
+        self._client = client
+        self.calls: dict[str, int] = {}
+
+    def __getattr__(self, name):
+        attr = getattr(self._client, name)
+        if not callable(attr):
+            return attr
+
+        def _counted(*args, **kwargs):
+            self.calls[name] = self.calls.get(name, 0) + 1
+            return attr(*args, **kwargs)
+
+        return _counted
+
+
+class TestApplyCostsWhatChanged:
+    """A re-apply writes and fans out only the levels that changed.
+
+    The reported case: a manifest of ~1,200 entities, one entry added, logged
+    "Applied: 1 created, 1178 updated" — every declared level rewritten and
+    fanned out, serially, on every apply.
+    """
+
+    TABLE = "prov-change-only"
+    ENTITIES = 40
+
+    @pytest.fixture
+    def counting(self, mock_dynamodb):
+        import boto3
+
+        from zae_limiter.sync_repository import SyncRepository
+
+        setup = SyncRepository(name=self.TABLE, region="us-east-1", _skip_deprecation_warning=True)
+        setup.create_table()
+        setup.close()
+        client = _CountingClient(boto3.client("dynamodb", region_name="us-east-1"))
+        with patch("boto3.client", return_value=client):
+            yield client
+
+    def _manifest(self, entities: int, **resource):
+        return {
+            "namespace": "test-ns",
+            "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}, **resource}},
+            "entities": {
+                f"user-{i}": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 10}}}}}
+                for i in range(entities)
+            },
+        }
+
+    def _apply(self, manifest, action="apply"):
+        return on_event(
+            {
+                "action": action,
+                "table_name": self.TABLE,
+                "namespace_id": "ns123",
+                "manifest": manifest,
+            },
+            MagicMock(),
+        )
+
+    def test_adding_one_entry_applies_one_change(self, counting):
+        first = self._apply(self._manifest(self.ENTITIES))
+        assert first["created"] == self.ENTITIES + 1
+        assert first["unchanged"] == 0
+
+        counting.calls.clear()
+        result = self._apply(self._manifest(self.ENTITIES + 1))
+
+        assert result["changes"] == [
+            {"action": "create", "level": "entity", "target": f"user-{self.ENTITIES}/gpt-4"}
+        ]
+        assert (result["created"], result["updated"], result["deleted"]) == (1, 0, 0)
+        assert result["unchanged"] == self.ENTITIES + 1
+        assert result["errors"] == []
+        # The new config item and the #PROVISIONER record; nothing else.
+        assert counting.calls["put_item"] == 2
+        # Only the new entity's bucket sync discovers buckets (two passes).
+        assert counting.calls.get("query", 0) == 2
+        assert counting.calls.get("update_item", 0) == 0
+
+    def test_an_identical_reapply_writes_only_the_record(self, counting):
+        self._apply(self._manifest(self.ENTITIES))
+        counting.calls.clear()
+
+        result = self._apply(self._manifest(self.ENTITIES))
+
+        assert result["changes"] == []
+        assert result["unchanged"] == self.ENTITIES + 1
+        assert counting.calls["put_item"] == 1
+        assert counting.calls.get("query", 0) == 0
+
+    def test_plan_lists_only_what_would_change(self, counting):
+        self._apply(self._manifest(self.ENTITIES))
+        manifest = self._manifest(self.ENTITIES)
+        manifest["entities"]["user-3"]["resources"]["gpt-4"]["limits"]["rpm"]["capacity"] = 20
+
+        result = self._apply(manifest, action="plan")
+
+        assert result["changes"] == [
+            {"action": "update", "level": "entity", "target": "user-3/gpt-4"}
+        ]
+        assert result["unchanged"] == self.ENTITIES
+
+    def test_a_level_changed_out_of_band_is_restored(self, counting):
+        self._apply(self._manifest(2))
+        counting.update_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": pk_entity("ns123", "user-1")}, "SK": {"S": sk_config("gpt-4")}},
+            UpdateExpression="SET l_rpm_cp = :c",
+            ExpressionAttributeValues={":c": {"N": "500"}},
+        )
+
+        result = self._apply(self._manifest(2))
+
+        assert result["changes"] == [
+            {"action": "update", "level": "entity", "target": "user-1/gpt-4"}
+        ]
+        item = counting.get_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": pk_entity("ns123", "user-1")}, "SK": {"S": sk_config("gpt-4")}},
+        )["Item"]
+        assert item["l_rpm_cp"] == {"N": "10"}
+
+    def test_a_failed_fanout_is_retried_by_an_unchanged_reapply(self, counting):
+        """Change-only fan-out must not lose a fan-out that failed."""
+        manifest = self._manifest(1, disabled=True)
+        with patch(
+            "zae_limiter_provisioner.handler.fanout_resource", side_effect=RuntimeError("boom")
+        ):
+            first = self._apply(manifest)
+        assert any("disable fan-out resource gpt-4" in e for e in first["errors"])
+
+        with patch("zae_limiter_provisioner.handler.fanout_resource") as retry:
+            second = self._apply(manifest)
+        assert second["changes"] == []
+        assert second["errors"] == []
+        retry.assert_called_once()
+        assert retry.call_args.args[3:] == ("gpt-4", True)
+
+        with patch("zae_limiter_provisioner.handler.fanout_resource") as third:
+            self._apply(manifest)
+        third.assert_not_called()
+
+    def test_a_failed_sync_for_a_dropped_entity_is_retried_as_a_delete(self, counting):
+        self._apply(self._manifest(2))
+        with patch(
+            "zae_limiter_provisioner.handler.sync_bucket_params", side_effect=RuntimeError("boom")
+        ):
+            first = self._apply(self._manifest(1))
+        assert any("bucket param sync entity user-1/gpt-4" in e for e in first["errors"])
+
+        with patch("zae_limiter_provisioner.handler.sync_bucket_params") as retry:
+            self._apply(self._manifest(1))
+        retry.assert_called_once()
+        kwargs = retry.call_args.kwargs
+        assert (kwargs["entity_id"], kwargs["resource"]) == ("user-1", "gpt-4")
+        # Reconciled to the resource default, which persists with a TTL.
+        assert kwargs["limits"]["rpm"]["capacity"] == 1000
+        assert kwargs["ttl_multiplier"] == 7
+
+
+class TestFanoutPendingState:
+    """The #PROVISIONER record carries the disable and sync fan-outs left to retry."""
+
+    TABLE = "prov-fanout-pending"
+
+    @pytest.fixture
+    def table(self, mock_dynamodb):
+        from zae_limiter.sync_repository import SyncRepository
+
+        repo = SyncRepository(name=self.TABLE, region="us-east-1", _skip_deprecation_warning=True)
+        repo.create_table()
+        repo.close()
+
+    def test_round_trip(self, table):
+        from zae_limiter_provisioner.handler import (
+            _read_provisioner_state,
+            _write_provisioner_state,
+        )
+
+        pending = [
+            {"kind": "disabled", "level": "resource", "target": "gpt-4"},
+            {"kind": "sync", "level": "entity", "target": "u1/_default_"},
+        ]
+        _write_provisioner_state(self.TABLE, "ns", {"fanout_pending": pending})
+        assert _read_provisioner_state(self.TABLE, "ns")["fanout_pending"] == pending
+
+    def test_a_record_without_it_reads_as_none_pending(self, table):
+        from zae_limiter_provisioner.handler import _read_provisioner_state
+
+        assert _read_provisioner_state(self.TABLE, "ns")["fanout_pending"] == []
