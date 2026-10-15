@@ -968,3 +968,15 @@ class TestChangedFanouts:
         result = apply_changes([change], "t", "ns", client=self._client(old))
         assert result.disabled_changed == [change]
         assert result.limits_changed == []
+
+    def test_an_unknown_level_is_reported(self):
+        result = apply_changes(
+            [Change("update", "bogus", "x", _rpm(1)), Change("delete", "bogus", "x")],
+            "t",
+            "ns",
+            client=self._client({}),
+        )
+        assert result.errors == [
+            "update bogus x: Unknown level: bogus",
+            "delete bogus x: Unknown level: bogus",
+        ]

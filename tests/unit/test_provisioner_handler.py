@@ -2372,3 +2372,41 @@ class TestFanoutPendingState:
         from zae_limiter_provisioner.handler import _read_provisioner_state
 
         assert _read_provisioner_state(self.TABLE, "ns")["fanout_pending"] == []
+
+
+class TestWithPending:
+    """Pending fan-outs are retried against what the manifest now declares."""
+
+    MANIFEST = {
+        "namespace": "test-ns",
+        "resources": {"gpt-4": {"disabled": True, "limits": {"rpm": {"capacity": 10}}}},
+        "entities": {"u1": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 5}}}}}},
+    }
+
+    def _with_pending(self, changed, pending, kind):
+        from zae_limiter_provisioner.handler import _with_pending
+        from zae_limiter_provisioner.manifest import LimitsManifest
+
+        return _with_pending(LimitsManifest.from_dict(self.MANIFEST), changed, pending, kind)
+
+    def test_a_declared_level_is_retried_from_its_declaration(self):
+        pending = [
+            {"kind": "sync", "level": "entity", "target": "u1/gpt-4"},
+            {"kind": "disabled", "level": "resource", "target": "gpt-4"},
+        ]
+        (retried,) = self._with_pending([], pending, "sync")
+        assert (retried.action, retried.target) == ("update", "u1/gpt-4")
+        assert retried.data["limits"]["rpm"]["capacity"] == 5
+
+    def test_a_dropped_level_is_retried_as_a_delete(self):
+        pending = [{"kind": "sync", "level": "entity", "target": "gone/gpt-4"}]
+        (retried,) = self._with_pending([], pending, "sync")
+        assert (retried.action, retried.data) == ("delete", None)
+
+    def test_a_level_this_apply_changed_is_fanned_out_once(self):
+        changed = [Change("update", "resource", "gpt-4", {"disabled": False})]
+        pending = [
+            {"kind": "disabled", "level": "resource", "target": "gpt-4"},
+            {"kind": "disabled", "level": "resource", "target": "gpt-4"},
+        ]
+        assert self._with_pending(changed, pending, "disabled") == changed
