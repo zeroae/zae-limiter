@@ -1584,7 +1584,6 @@ class SyncRepository:
             "cascade": {"BOOL": cascade},
             "metadata": {"M": self._serialize_map(metadata or {})},
             "created_at": {"S": now},
-            "incarnation": {"S": str(ULID())},
             "GSI4PK": {"S": self._namespace_id},
             "GSI4SK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
         }
@@ -7410,9 +7409,12 @@ class SyncRepository:
                     "GSI4PK": {"S": self._namespace_id},
                     "GSI4SK": {"S": f"OP#{entity_id}#{resource}#{operation_id}"},
                 },
-                "ConditionExpression": "attribute_not_exists(PK) OR #ent <> :ent",
+                "ConditionExpression": "attribute_not_exists(PK) OR (#ent <> :ent AND #ent <> :legacy)",
                 "ExpressionAttributeNames": {"#ent": "ent"},
-                "ExpressionAttributeValues": {":ent": {"S": incarnation}},
+                "ExpressionAttributeValues": {
+                    ":ent": {"S": incarnation},
+                    ":legacy": {"S": schema.entity_incarnation(None)},
+                },
             }
         }
 
@@ -7434,7 +7436,10 @@ class SyncRepository:
             schema.pk_bucket(self._namespace_id, entity_id, resource, 0),
             schema.sk_operation(operation_id),
         )
-        if item is None or item.get("ent", {}).get("S") != incarnation:
+        if item is None:
+            return None
+        written_for = item.get("ent", {}).get("S")
+        if written_for not in (incarnation, schema.entity_incarnation(None)):
             return None
         if item["operation"]["S"] != operation:
             raise ValidationError(
@@ -7458,20 +7463,14 @@ class SyncRepository:
     def _entity_incarnation(self, entity_id: str) -> str:
         """The identity of the entity's current incarnation (ADR-149).
 
-        ``incarnation`` from META (a ULID stamped by ``create_entity``), else
-        its ``created_at`` (META written before the stamp), else ``-`` (an
-        entity with no META: buckets need none).
+        One strongly consistent read of META, interpreted by
+        ``schema.entity_incarnation`` (``pinc``, else ``created_at``, else
+        ``-``).
         """
         meta = self._get_item_consistent(
             schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
         )
-        if meta is None:
-            return "-"
-        for field in ("incarnation", "created_at"):
-            value = meta.get(field, {}).get("S")
-            if value:
-                return str(value)
-        return "-"
+        return schema.entity_incarnation(meta)
 
     def _landed_by(
         self,

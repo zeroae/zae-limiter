@@ -1873,9 +1873,6 @@ class Repository:
             "cascade": {"BOOL": cascade},
             "metadata": {"M": self._serialize_map(metadata or {})},
             "created_at": {"S": now},
-            # Unique per creation (ADR-149): an operation record written for an
-            # earlier entity of the same id is not this one's.
-            "incarnation": {"S": str(ULID())},
             # GSI4: namespace-scoped item discovery
             "GSI4PK": {"S": self._namespace_id},
             "GSI4SK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
@@ -8944,9 +8941,17 @@ class Repository:
                     "GSI4PK": {"S": self._namespace_id},
                     "GSI4SK": {"S": f"OP#{entity_id}#{resource}#{operation_id}"},
                 },
-                "ConditionExpression": "attribute_not_exists(PK) OR #ent <> :ent",
+                # Replaceable only when written for another incarnation, and
+                # never when written before the entity had META ("-"): that one
+                # matches every incarnation (see `_operation_record`).
+                "ConditionExpression": (
+                    "attribute_not_exists(PK) OR (#ent <> :ent AND #ent <> :legacy)"
+                ),
                 "ExpressionAttributeNames": {"#ent": "ent"},
-                "ExpressionAttributeValues": {":ent": {"S": incarnation}},
+                "ExpressionAttributeValues": {
+                    ":ent": {"S": incarnation},
+                    ":legacy": {"S": schema.entity_incarnation(None)},
+                },
             }
         }
 
@@ -8968,8 +8973,14 @@ class Repository:
             schema.pk_bucket(self._namespace_id, entity_id, resource, 0),
             schema.sk_operation(operation_id),
         )
-        if item is None or item.get("ent", {}).get("S") != incarnation:
-            return None  # never written, or written for an earlier incarnation
+        if item is None:
+            return None
+        written_for = item.get("ent", {}).get("S")
+        if written_for not in (incarnation, schema.entity_incarnation(None)):
+            # Written for an earlier incarnation. One written before the entity
+            # had META ("-") is this entity's: an operation retried across
+            # create_entity would otherwise be applied twice (round-4 review, F1).
+            return None
         if item["operation"]["S"] != operation:
             raise ValidationError(
                 "idempotency_key",
@@ -8992,20 +9003,14 @@ class Repository:
     async def _entity_incarnation(self, entity_id: str) -> str:
         """The identity of the entity's current incarnation (ADR-149).
 
-        ``incarnation`` from META (a ULID stamped by ``create_entity``), else
-        its ``created_at`` (META written before the stamp), else ``-`` (an
-        entity with no META: buckets need none).
+        One strongly consistent read of META, interpreted by
+        ``schema.entity_incarnation`` (``pinc``, else ``created_at``, else
+        ``-``).
         """
         meta = await self._get_item_consistent(
             schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
         )
-        if meta is None:
-            return "-"
-        for field in ("incarnation", "created_at"):
-            value = meta.get(field, {}).get("S")
-            if value:
-                return str(value)
-        return "-"
+        return schema.entity_incarnation(meta)
 
     async def _landed_by(
         self,

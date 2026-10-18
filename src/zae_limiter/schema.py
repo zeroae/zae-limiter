@@ -430,6 +430,29 @@ def sk_meta() -> str:
     return SK_META
 
 
+# `pinc` on an entity's META: its incarnation, unique per creation. Written by
+# #716 (create_entity); read here so the reset / top-up operation records of
+# ADR-149 can tell one incarnation of an entity id from the next. Defined on
+# both stacks under this exact name so they merge cleanly.
+ENTITY_FIELD_PINC = "pinc"
+
+
+def entity_incarnation(meta_item: dict[str, Any] | None) -> str:
+    """The incarnation of the entity a raw META item describes.
+
+    ``pinc`` (#716), else ``created_at`` (META written before ``pinc``), else
+    ``"-"`` — also the answer when there is no META at all (an entity can hold
+    buckets without one). Accepts the attribute as a string or a number.
+    """
+    if meta_item is not None:
+        for field in (ENTITY_FIELD_PINC, "created_at"):
+            raw = meta_item.get(field) or {}
+            value = raw.get("S", raw.get("N"))
+            if value:
+                return str(value)
+    return "-"
+
+
 def sk_bucket(resource: str) -> str:
     """Build sort key for a composite bucket (all limits for entity+resource)."""
     return f"{SK_BUCKET}{resource}"
