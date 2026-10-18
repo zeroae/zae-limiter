@@ -1183,8 +1183,9 @@ class Lease:
                     resource=resource,
                     deltas=deltas,
                     shard_id=shard_id,
-                    # The item's live `tu`, for the ceiling check (ADR-149).
-                    return_all=_read_a_top_up(group_entries),
+                    # The item's live `tu`, for the ceiling check (ADR-149);
+                    # passed only when needed, so other backends need no change.
+                    **({"return_all": True} if _read_a_top_up(group_entries) else {}),
                 )
                 if item:
                     items.append(item)
@@ -1251,8 +1252,9 @@ class Lease:
                     resource=resource,
                     deltas=deltas,
                     shard_id=shard_id,
-                    # The item's live `tu`, for the ceiling check (ADR-149).
-                    return_all=_read_a_top_up(group_entries),
+                    # The item's live `tu`, for the ceiling check (ADR-149);
+                    # passed only when needed, so other backends need no change.
+                    **({"return_all": True} if _read_a_top_up(group_entries) else {}),
                 )
                 if item:
                     items.append(item)
@@ -1347,7 +1349,10 @@ class Lease:
 
 def _read_a_top_up(entries: list[LeaseEntry]) -> bool:
     """Whether any entry's item was read carrying a quota top-up (ADR-149)."""
-    return any(entry.state.topped_up_milli for entry in entries)
+    return any(
+        isinstance(entry.state.topped_up_milli, int) and entry.state.topped_up_milli > 0
+        for entry in entries
+    )
 
 
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:
