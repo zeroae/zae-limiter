@@ -48,3 +48,23 @@ class TestGeventParallelMode:
         )
         result = repo._run_in_executor(lambda: 42, lambda: 99)
         assert result == (42, 99)
+
+
+class TestGeventSpawn:
+    """`_spawn` with real gevent monkey-patching (run with GEVENT=1, -m gevent -n 0)."""
+
+    def test_spawn_runs_in_a_greenlet_and_holds_exceptions(self):
+        from gevent import monkey
+
+        if not monkey.is_module_patched("socket"):
+            pytest.skip("gevent not monkey-patched (run with GEVENT=1)")
+        repo = SyncRepository(
+            name="test", region="us-east-1", _skip_deprecation_warning=True, parallel_mode="auto"
+        )
+        assert repo._spawn(lambda: 42).result() == 42
+
+        def fail():
+            raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            repo._spawn(fail).result()

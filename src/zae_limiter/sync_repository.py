@@ -7437,6 +7437,52 @@ class SyncRepository:
         futures = [self._thread_pool.submit(fn) for fn in funcs]
         return tuple(f.result() for f in futures)
 
+    def _spawn(self, fn: Any) -> Any:
+        from concurrent.futures import Future
+
+        executor_fn = self._executor_fn
+        if executor_fn is None:
+            if self._thread_pool is None:
+                from concurrent.futures import ThreadPoolExecutor
+
+                self._thread_pool = ThreadPoolExecutor(max_workers=2)
+            return self._thread_pool.submit(fn)
+        gevent_spawn: Any = None
+        if self._parallel_mode in ("auto", "gevent"):
+            try:
+                from gevent import monkey, spawn
+
+                if monkey.is_module_patched("socket"):
+                    gevent_spawn = spawn
+            except ImportError:
+                gevent_spawn = None
+
+        def run(future: Any) -> None:
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                future.set_result(fn())
+            except BaseException as exc:
+                future.set_exception(exc)
+
+        if gevent_spawn is None:
+            done: Future[Any] = Future()
+            run(done)
+            return done
+
+        class _GreenletFuture(Future[Any]):
+            greenlet: Any = None
+
+            def cancel(self) -> bool:
+                cancelled = super().cancel()
+                if self.greenlet is not None and (not cancelled) and (not self.done()):
+                    self.greenlet.kill(block=False)
+                return cancelled
+
+        pending = _GreenletFuture()
+        pending.greenlet = gevent_spawn(run, pending)
+        return pending
+
     def _cleanup_thread_pool(self) -> None:
         pool = getattr(self, "_thread_pool", None)
         if pool is not None:

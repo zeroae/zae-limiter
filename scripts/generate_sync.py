@@ -6,6 +6,8 @@ This script transforms async code (aiobotocore) to sync code (boto3) by:
 - Renaming classes (RateLimiter -> SyncRateLimiter)
 - Rewriting imports (aiobotocore -> boto3)
 - Converting asyncio.gather() to self._run_in_executor() with configurable parallel_mode
+- Converting asyncio.create_task(<call>) to self._spawn(lambda <names>=<names>: <call>),
+  and `await <tracked handle>` to `<handle>.result()`
 - Injecting parallel_mode parameter and executor methods into SyncRepository
 
 parallel_mode controls the execution strategy for concurrent operations (e.g., cascade):
@@ -84,6 +86,9 @@ ATTRIBUTE_NAME_REWRITES = {
 ATTRIBUTE_ACCESS_REWRITES = {
     ("asyncio", "Lock"): ("threading", "Lock"),
     ("asyncio", "sleep"): ("time", "sleep"),
+    # A spawned handle's type: `_spawn` returns a `concurrent.futures.Future`
+    # in every parallel_mode. ruff removes the import where it is unused.
+    ("asyncio", "Task"): ("concurrent.futures", "Future"),
 }
 
 # Import path rewrites (for relative imports)
@@ -207,6 +212,57 @@ def _run_in_executor(self, *funcs: Any) -> Any:
         self._thread_pool = ThreadPoolExecutor(max_workers=2)
     futures = [self._thread_pool.submit(fn) for fn in funcs]
     return tuple(f.result() for f in futures)
+
+def _spawn(self, fn: Any) -> Any:
+    # Run `fn` in the background: the sync twin of `asyncio.create_task`.
+    # Returns a `concurrent.futures.Future` in every parallel_mode: `.result()`
+    # returns `fn`'s value or re-raises the exception `fn` raised (held, never
+    # lost), and `.cancel()` cancels it. threadpool submits to the lazy
+    # executor; gevent (patched) spawns a greenlet; serial runs `fn` inline and
+    # returns a completed future.
+    from concurrent.futures import Future
+    executor_fn = self._executor_fn
+    if executor_fn is None:
+        if self._thread_pool is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self._thread_pool = ThreadPoolExecutor(max_workers=2)
+        return self._thread_pool.submit(fn)
+    gevent_spawn: Any = None
+    if self._parallel_mode in ("auto", "gevent"):
+        try:
+            from gevent import monkey, spawn
+            # Unpatched, a greenlet would never run while `.result()` blocks
+            # the thread: like the gevent executor, that runs like serial.
+            if monkey.is_module_patched("socket"):
+                gevent_spawn = spawn
+        except ImportError:
+            gevent_spawn = None
+
+    def run(future: Any) -> None:
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            future.set_result(fn())
+        except BaseException as exc:
+            future.set_exception(exc)
+
+    if gevent_spawn is None:
+        done: Future[Any] = Future()
+        run(done)
+        return done
+
+    class _GreenletFuture(Future[Any]):
+        greenlet: Any = None
+
+        def cancel(self) -> bool:
+            cancelled = super().cancel()
+            if self.greenlet is not None and not cancelled and not self.done():
+                self.greenlet.kill(block=False)
+            return cancelled
+
+    pending = _GreenletFuture()
+    pending.greenlet = gevent_spawn(run, pending)
+    return pending
 
 def _cleanup_thread_pool(self) -> None:
     pool = getattr(self, "_thread_pool", None)
@@ -350,12 +406,200 @@ discarded by design; any other keyword would be silently lost.
 """
 
 
+_CREATE_TASK_HELP = """\
+The sync generator rewrites `asyncio.create_task(f(a, b))` into
+`self._spawn(lambda f=f, a=a, b=b: f(a, b))` (a `concurrent.futures.Future` in
+every parallel_mode), and `await <handle>` into `<handle>.result()`. That needs:
+
+  - exactly one argument, a call whose callee is a (dotted) name and whose
+    arguments are names or constants (they are bound when the task is created);
+  - no keyword argument to `create_task` itself (`name=`, `context=`);
+  - the handle assigned to a local name or `self.<attr>`, or returned from a
+    function annotated `-> asyncio.Task[...]`; a handle stored elsewhere is
+    tracked only through an `asyncio.Task[...]` annotation on the field or name
+    it is awaited through.
+"""
+
+
 class AsyncToSyncTransformer(ast.NodeTransformer):
     """Transform async Python code to sync."""
 
     def __init__(self, source_file: str):
         self.source_file = source_file
+        # `asyncio.create_task` support: the handles (`name` / `self.attr`)
+        # whose `await` becomes `.result()`, and the create_task calls found
+        # where a handle can be tracked. Filled by `visit_Module`'s pre-pass.
+        self._spawned_handles: set[str] = set()
+        self._trackable_create_tasks: set[int] = set()
         super().__init__()
+
+    # -- asyncio.create_task -------------------------------------------------
+
+    @staticmethod
+    def _is_create_task(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "asyncio"
+            and node.func.attr == "create_task"
+        )
+
+    @staticmethod
+    def _names_a_task(annotation: ast.AST | None) -> bool:
+        return annotation is not None and "asyncio.Task" in ast.unparse(annotation)
+
+    def _create_task_error(self, node: ast.AST, construct: str) -> UnsupportedAsyncConstructError:
+        return UnsupportedAsyncConstructError(
+            f"{self.source_file}:{getattr(node, 'lineno', '?')}: `asyncio.create_task` cannot "
+            f"be translated faithfully: {construct}.\n\n{_CREATE_TASK_HELP}"
+        )
+
+    def _collect_spawned_handles(self, tree: ast.Module) -> None:
+        """Find every task handle the sync twin must resolve with `.result()`.
+
+        A handle is tracked by its spelling: a local name, or `self.<attr>`. It
+        is one when a `create_task` call is assigned to it, or when it is
+        annotated `asyncio.Task[...]` (a class field or a local). A
+        `create_task` anywhere else — an argument, a container element, a bare
+        expression, a target the generator cannot spell — cannot have its
+        `await` found later, so it aborts generation.
+        """
+
+        def handle_of(target: ast.expr) -> str | None:
+            if isinstance(target, ast.Name):
+                return target.id
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"
+            ):
+                return f"self.{target.attr}"
+            return None
+
+        def scan(body: list[ast.stmt], in_class: bool, returns_task: bool) -> None:
+            for stmt in body:
+                if isinstance(stmt, ast.ClassDef):
+                    scan(stmt.body, True, False)
+                    continue
+                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    scan(stmt.body, False, self._names_a_task(stmt.returns))
+                    continue
+                if isinstance(stmt, ast.AnnAssign) and self._names_a_task(stmt.annotation):
+                    name = handle_of(stmt.target)
+                    if name is not None:
+                        self._spawned_handles.add(
+                            f"self.{name}" if in_class and "." not in name else name
+                        )
+                value = getattr(stmt, "value", None)
+                if self._is_create_task(value):
+                    targets: list[ast.expr] = []
+                    if isinstance(stmt, ast.Assign):
+                        targets = stmt.targets
+                    elif isinstance(stmt, ast.AnnAssign):
+                        targets = [stmt.target]
+                    if isinstance(stmt, ast.Return):
+                        if not returns_task:
+                            raise self._create_task_error(
+                                stmt,
+                                "returned from a function not annotated to return "
+                                "`asyncio.Task[...]`",
+                            )
+                        self._trackable_create_tasks.add(id(value))
+                    elif len(targets) == 1 and handle_of(targets[0]) is not None:
+                        name = handle_of(targets[0])
+                        assert name is not None
+                        self._spawned_handles.add(name)
+                        self._trackable_create_tasks.add(id(value))
+                # Nested blocks (if / try / with / for) hold statements too.
+                for field_name in ("body", "orelse", "finalbody"):
+                    nested = getattr(stmt, field_name, None)
+                    if isinstance(nested, list) and nested and isinstance(nested[0], ast.stmt):
+                        if not isinstance(stmt, (ast.ClassDef, ast.FunctionDef)):
+                            scan(nested, in_class, returns_task)
+                for handler in getattr(stmt, "handlers", []) or []:
+                    scan(handler.body, in_class, returns_task)
+
+        scan(tree.body, False, False)
+        for node in ast.walk(tree):
+            if self._is_create_task(node) and id(node) not in self._trackable_create_tasks:
+                raise self._create_task_error(
+                    node,
+                    "its handle is not assigned to a name or `self.<attr>`, nor returned "
+                    "from a function annotated `-> asyncio.Task[...]`",
+                )
+
+    def visit_Module(self, node: ast.Module) -> ast.AST:  # noqa: N802
+        """Find the spawned-task handles before anything is rewritten."""
+        self._collect_spawned_handles(node)
+        self.generic_visit(node)
+        return node
+
+    def _rewrite_create_task(self, node: ast.Call) -> ast.AST:
+        """`asyncio.create_task(f(a, b))` -> `self._spawn(lambda f=f, a=a, b=b: f(a, b))`.
+
+        In async, the coroutine's arguments are bound when the task is
+        created. The deferred lambda captures every name the call reads as a
+        default argument, the #666 rule, so it binds them at the same moment.
+        Only names and constants may be arguments: an attribute or subscript
+        would be evaluated when the task runs, not when it was created.
+        """
+        if node.keywords:
+            raise self._create_task_error(
+                node,
+                "keyword argument(s) "
+                + ", ".join(kw.arg if kw.arg is not None else "**kwargs" for kw in node.keywords),
+            )
+        if len(node.args) != 1 or not isinstance(node.args[0], ast.Call):
+            raise self._create_task_error(node, "its argument is not a single call expression")
+        call = node.args[0]
+        names: list[str] = []
+
+        def capture(expr: ast.expr, where: str) -> None:
+            if isinstance(expr, ast.Name):
+                if expr.id not in names:
+                    names.append(expr.id)
+            elif isinstance(expr, ast.Constant):
+                return
+            else:
+                raise self._create_task_error(
+                    node, f"{where} `{ast.unparse(expr)}` is not a name or a constant"
+                )
+
+        callee: ast.expr = call.func
+        while isinstance(callee, ast.Attribute):
+            callee = callee.value
+        if not isinstance(callee, ast.Name):
+            raise self._create_task_error(
+                node, f"callee `{ast.unparse(call.func)}` is not a name or a dotted name"
+            )
+        capture(callee, "callee")
+        for arg in call.args:
+            capture(arg, "argument")
+        for kw in call.keywords:
+            if kw.arg is None:
+                raise self._create_task_error(node, "`**kwargs` in the call")
+            capture(kw.value, f"keyword `{kw.arg}`")
+        lambda_node = ast.Lambda(
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[ast.arg(arg=name) for name in names],
+                kwonlyargs=[],
+                kw_defaults=[],
+                defaults=[ast.Name(id=name, ctx=ast.Load()) for name in names],
+            ),
+            body=call,
+        )
+        return ast.copy_location(
+            ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="self", ctx=ast.Load()), attr="_spawn", ctx=ast.Load()
+                ),
+                args=[lambda_node],
+                keywords=[],
+            ),
+            node,
+        )
 
     def _reject_dropped_keywords(
         self,
@@ -491,7 +735,17 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         return ast.copy_location(new_node, node)
 
     def visit_Await(self, node: ast.Await) -> ast.AST:  # noqa: N802
-        """Remove await, keep the expression."""
+        """Remove await, keep the expression; a spawned handle's await is `.result()`."""
+        if ast.unparse(node.value) in self._spawned_handles:
+            value = self.visit(node.value)
+            return ast.copy_location(
+                ast.Call(
+                    func=ast.Attribute(value=value, attr="result", ctx=ast.Load()),
+                    args=[],
+                    keywords=[],
+                ),
+                node,
+            )
         return self.visit(node.value)
 
     def visit_Call(self, node: ast.Call) -> ast.AST:  # noqa: N802
@@ -500,6 +754,10 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         node.func = self.visit(node.func)
         node.args = [self.visit(arg) for arg in node.args]
         node.keywords = [self.visit(kw) for kw in node.keywords]
+
+        # Handle asyncio.create_task(<call>) -> self._spawn(lambda <names>=<names>: <call>)
+        if self._is_create_task(node):
+            return self._rewrite_create_task(node)
 
         # Handle asyncio.wait_for(coro, timeout) -> just coro (remove wait_for)
         if (
