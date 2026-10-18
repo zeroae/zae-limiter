@@ -78,6 +78,7 @@ class LeaseEntry:
     _shard_id: int = 0
     _shard_count: int = 1
     _image: CreditImage | None = None
+    _period_image: CreditImage | None = None
     _cascade: bool = False
     _parent_id: str | None = None
     _stamp_owner: bool = False
@@ -97,13 +98,17 @@ def credit_ceilings(
     deltas: dict[str, int],
     now_ms: int,
     image: CreditImage | None,
+    period_image: CreditImage | None,
 ) -> dict[str, CreditCeiling]:
     """The ceiling of every limit ``deltas`` credits, for a self-trimming credit (#721).
 
     ``states`` pairs each limit name with its shard's state; ``image`` is the
-    item as the caller last wrote or read it. One :func:`credit_ceiling` per
-    credited limit. A state that cannot report a ceiling leaves its limit with
-    no ceiling condition (the pre-#679 behaviour) rather than fail the refund:
+    item as of that state — what the ceiling was computed from, and so what
+    its pins must hold. ``period_image`` is the newest known view of the
+    item's quota periods, usually ``image`` itself; ``None`` when no view of
+    the periods is known. One :func:`credit_ceiling` per credited limit. A
+    state that cannot report a ceiling leaves its limit with no ceiling
+    condition (the pre-#679 behaviour) rather than fail the refund:
     a credit is never blocked by a broken check.
     """
     ceilings: dict[str, CreditCeiling] = {}
@@ -115,7 +120,8 @@ def credit_ceilings(
                 state,
                 image.limit(name) if image is not None else None,
                 now_ms,
-                image.rf if image is not None else None,
+                period_image.rf if period_image is not None else None,
+                period_image.limit(name) if period_image is not None else None,
             )
         except Exception:
             logger.warning("Could not check a credit against its ceiling", exc_info=True)
@@ -123,27 +129,46 @@ def credit_ceilings(
 
 
 def credit_ceiling(
-    state: BucketState, limit_image: CreditLimitImage | None, now_ms: int, rf_ms: int | None = None
+    state: BucketState,
+    limit_image: CreditLimitImage | None,
+    now_ms: int,
+    rf_ms: int | None = None,
+    period_limit: CreditLimitImage | None = None,
 ) -> CreditCeiling:
     """What one credited limit is checked against, and what that check pins (#721).
 
     The ceiling is ``BucketState.ceiling_milli`` at ``now_ms`` — schedule, shard
     share and quota grant (ADR-145), the refill clamp's own ceiling. The pins
-    are the stored attributes it was computed from, as the lease last wrote or
-    read them (``limit_image``); with no image there is nothing to pin, and the
-    credit is trimmed outright (``sched_raw=None``).
+    are the stored attributes **that ceiling was computed from**
+    (``limit_image``, the image of the same state): a pin taken from a newer
+    view of the item would match while the ceiling is stale, and the refund
+    would land above the real ceiling. With no image there is nothing to pin,
+    and the credit is trimmed outright (``sched_raw=None``).
 
     A quota's credit also carries its period (``QuotaPeriodPin``): a refund of
     a debit made before a reset edge or a window roll must not land in the
-    period that followed, which has its own full allowance. ``rf_ms`` is the
-    item's ``rf`` as the lease saw it; without it, or without the image, the
-    period cannot be told and the credit is dropped.
+    period that followed, which has its own full allowance. ``rf_ms`` and
+    ``period_limit`` (``ws``/``wa``) are the newest known view of the item's
+    period, which may be newer than the ceiling's state; ``period_limit``
+    defaults to ``limit_image``. Without ``rf_ms`` the period cannot be told
+    and the credit is dropped.
 
     The one place the ceiling and its pins are decided, with
     ``SyncRepository._credit_limit_terms`` the one place they become condition
     terms: a new input to the ceiling (a quota top-up, #720) extends both.
     """
     quota = state.is_quota_state is True
+    if period_limit is None:
+        period_limit = limit_image
+    period: QuotaPeriodPin | None = None
+    if quota and rf_ms is not None:
+        if state.reset_after_seconds is not None:
+            if period_limit is not None:
+                period = QuotaPeriodPin(
+                    window=(period_limit.window_start_ms, period_limit.window_applied_ms)
+                )
+        else:
+            period = QuotaPeriodPin(reset_edge_ms=next_reset_edge(state.reset_sched, now_ms=rf_ms))
     if limit_image is None:
         return CreditCeiling(
             ceiling_milli=int(state.ceiling_milli(now_ms)),
@@ -151,15 +176,8 @@ def credit_ceiling(
             grant_count=None if state.grant_count is None else int(state.grant_count),
             sched_raw=None,
             quota=quota,
+            quota_period=period,
         )
-    period: QuotaPeriodPin | None = None
-    if quota and rf_ms is not None:
-        if state.reset_after_seconds is not None:
-            period = QuotaPeriodPin(
-                window=(limit_image.window_start_ms, limit_image.window_applied_ms)
-            )
-        else:
-            period = QuotaPeriodPin(reset_edge_ms=next_reset_edge(state.reset_sched, now_ms=rf_ms))
     return CreditCeiling(
         ceiling_milli=int(state.ceiling_milli(now_ms)),
         capacity_milli=limit_image.capacity_milli,
@@ -367,9 +385,10 @@ class SyncLease:
         for entry in self.entries:
             groups.setdefault((entry.entity_id, entry.resource, entry._shard_id), []).append(entry)
         for group_entries in groups.values():
-            image = credit_image([e.state for e in group_entries])
+            read_rf = next((e._original_rf_ms for e in group_entries if e._original_rf_ms), None)
+            image = credit_image([e.state for e in group_entries], rf=read_rf)
             for entry in group_entries:
-                entry._image = image
+                entry._image = entry._period_image = image
 
     @property
     def consumed(self) -> dict[str, int]:
@@ -587,6 +606,7 @@ class SyncLease:
             tuple[tuple[str, str, int], list[BucketState], int, int | None, tuple[bool, str | None]]
         ] = []
         credit_images: dict[tuple[str, str, int], CreditImage | None] = {}
+        period_images: dict[tuple[str, str, int], CreditImage | None] = {}
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
             has_custom_config = group_entries[0]._has_custom_config
@@ -908,18 +928,22 @@ class SyncLease:
                 for item, (key, _group) in zip(retry_items, retry_groups, strict=True)
                 if isinstance(item, dict) and "Put" in item
             }
-            credit_images = {key: None for key in credit_images}
+            credit_images = {}
             for item, (key, _group) in zip(retry_items, retry_groups, strict=True):
                 if isinstance(item, dict) and "Put" in item:
                     credit_images[key] = credit_image_from_item(item["Put"].get("Item"))
                 elif len(retry_items) == 1:
-                    credit_images[key] = credit_image_from_item(retry_attrs)
+                    period_images[key] = credit_image_from_item(retry_attrs)
+                else:
+                    period_images[key] = None
         self._initial_committed = True
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
             key = (entry.entity_id, entry.resource, entry._shard_id)
             if key in credit_images:
-                entry._image = credit_images[key]
+                entry._image = entry._period_image = credit_images[key]
+            elif key in period_images:
+                entry._period_image = period_images[key]
         self._record_written_states(
             groups, [] if condition_failed else written_images, condition_failed
         )
@@ -1141,8 +1165,14 @@ class SyncLease:
                 continue
             images = {e._image for e in group_entries}
             image = images.pop() if len(images) == 1 else None
+            period_images = {e._period_image for e in group_entries}
+            period_image = period_images.pop() if len(period_images) == 1 else None
             ceilings = credit_ceilings(
-                [(e.limit.name, e.state) for e in group_entries], deltas, now_ms, image
+                [(e.limit.name, e.state) for e in group_entries],
+                deltas,
+                now_ms,
+                image,
+                period_image,
             )
             pin = image.pin if image is not None else None
             writes.append((entity_id, resource, shard_id, deltas, ceilings, pin))
@@ -1164,7 +1194,7 @@ def _limit_image(
     )
 
 
-def credit_image(states: Iterable[BucketState]) -> CreditImage | None:
+def credit_image(states: Iterable[BucketState], rf: int | None = None) -> CreditImage | None:
     """The image of the item a set of states was read off (#721).
 
     The states must all have been read off the item (or returned by a write
@@ -1187,7 +1217,7 @@ def credit_image(states: Iterable[BucketState]) -> CreditImage | None:
         shard_count=first.shard_count,
         vu=first.stored_vu_ms,
         item_sched=item_sched,
-        rf=first.last_refill_ms,
+        rf=rf if rf is not None else first.last_refill_ms,
         limits=tuple(
             (s.limit_name, _limit_image(s, None, s.window_start_ms, s.window_applied_ms))
             for s in read

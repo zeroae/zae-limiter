@@ -1208,7 +1208,11 @@ class SyncRateLimiter:
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
         image = credit_image(buckets or ())
         ceilings = credit_ceilings(
-            [(b.limit_name, b) for b in buckets or ()], deltas, self._repository._now_ms(), image
+            [(b.limit_name, b) for b in buckets or ()],
+            deltas,
+            self._repository._now_ms(),
+            image,
+            image,
         )
         pin = image.pin if image is not None else None
         write_credit(self._repository, entity_id, resource, deltas, shard_id, ceilings, pin)

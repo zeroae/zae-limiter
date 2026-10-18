@@ -1549,7 +1549,11 @@ class RateLimiter:
         # shard and would fail the pin on every sharded entity.
         image = credit_image(buckets or ())
         ceilings = credit_ceilings(
-            [(b.limit_name, b) for b in buckets or ()], deltas, self._repository._now_ms(), image
+            [(b.limit_name, b) for b in buckets or ()],
+            deltas,
+            self._repository._now_ms(),
+            image,
+            image,
         )
         pin = image.pin if image is not None else None
         await write_credit(self._repository, entity_id, resource, deltas, shard_id, ceilings, pin)

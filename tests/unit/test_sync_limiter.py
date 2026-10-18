@@ -11181,6 +11181,66 @@ class TestSelfTrimmingRefunds:
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "10000"
         assert int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) >= 99000
 
+    def test_retry_image_vs_stale_ceiling(self, two):
+        """After the consumption-only retry, the refund's ceiling is the read's, so
+        its pins must be the read's too (#730 third review). Another client doubles
+        the entity and clamps shard 0 to its 50 before this lease commits; the retry's
+        `ALL_NEW` image shows `shard_count = 2` while the ceiling was computed at 1
+        (100). Pinned from that image, the refund lifted shard 0 to 60 with no `vu`,
+        and the fast path spent 60 against 50."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        slow = SyncRateLimiter(repository=r1, speculative_writes=False)
+        r1.set_limits("dbl", [Limit.per_minute("q", 100)], resource="r")
+        with slow.acquire("dbl", "r", {"q": 1}):
+            pass
+        client = r1._get_client()
+        key = {"PK": {"S": pk_bucket(r1._namespace_id, "dbl", "r", 0)}, "SK": {"S": sk_state()}}
+        tk = bucket_attr("q", BUCKET_FIELD_TK)
+        original = r1.transact_write
+        raced: list[int] = []
+
+        def racing(items):
+            if not raced:
+                raced.append(1)
+                client.update_item(
+                    TableName=r1.table_name,
+                    Key=key,
+                    UpdateExpression="SET shard_count = :two, #tk = :half ADD rf :one",
+                    ExpressionAttributeNames={"#tk": tk},
+                    ExpressionAttributeValues={
+                        ":two": {"N": "2"},
+                        ":half": {"N": "50000"},
+                        ":one": {"N": "1"},
+                    },
+                )
+            return original(items)
+
+        r1.transact_write = racing
+        try:
+            with pytest.raises(RuntimeError):
+                with slow.acquire("dbl", "r", {"q": 10}):
+                    client.update_item(
+                        TableName=r1.table_name,
+                        Key=key,
+                        UpdateExpression="SET #tk = :half ADD rf :one",
+                        ExpressionAttributeNames={"#tk": tk},
+                        ExpressionAttributeValues={":half": {"N": "50000"}, ":one": {"N": "1"}},
+                    )
+                    raise RuntimeError("body failed")
+        finally:
+            r1.transact_write = original
+        assert raced
+        assert self._raw(r1, "dbl", resource="r")[BUCKET_FIELD_VU]["N"] == "0"
+        admitted = 0
+        while admitted <= 100:
+            result = r1.speculative_consume("dbl", "r", {"q": 1}, shard_id=0)
+            if not result.success:
+                break
+            admitted += 1
+        assert admitted <= 50
+
     def test_a_lowered_limit_clamped_before_the_refund(self, two):
         """The limit drops to 50 and another process's slow pass clamps to it (moving
         `rf`) before the refund: the in-memory ceiling is still 100."""
