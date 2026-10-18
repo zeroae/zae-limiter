@@ -775,6 +775,7 @@ class TestWriteOnEnter:
         state.stored_vu_ms = None
         state.stored_item_sched_raw = (None, None, None)
         state.stored_sched_raw = (None, None)
+        state.limit_name = "rpm"
         return LeaseEntry(
             entity_id=entity_id,
             resource="gpt-4",
@@ -10603,6 +10604,107 @@ class TestCreditAboveCapacity:
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "590000"
 
 
+class TestCreditImage:
+    """The bucket item a refund pins, as the lease last wrote or read it (#721)."""
+
+    def test_an_empty_or_missing_item_is_unknown(self):
+        from zae_limiter.sync_lease import credit_image_from_item
+
+        assert credit_image_from_item(None) is None
+        assert credit_image_from_item({}) is None
+
+    def test_a_raw_item_skips_wcu_and_a_stray_balance(self):
+        from zae_limiter.sync_lease import credit_image_from_item
+
+        image = credit_image_from_item(
+            {
+                "rf": {"N": "5"},
+                "vu": {"N": "9"},
+                "sched": {"S": "1m0h0"},
+                "sched_tz": {"S": "UTC"},
+                bucket_attr("wcu", "tk"): {"N": "1000"},
+                bucket_attr("wcu", "cp"): {"N": "1000"},
+                bucket_attr("stray", "tk"): {"N": "0"},
+                bucket_attr("q", "tk"): {"N": "1000"},
+                bucket_attr("q", "cp"): {"N": "10000"},
+                bucket_attr("q", "gc"): {"N": "2"},
+                bucket_attr("q", "sched"): {"S": "-"},
+                bucket_attr("q", "ws"): {"N": "7"},
+                bucket_attr("q", "wa"): {"N": "7"},
+            }
+        )
+        assert image is not None
+        assert (image.shard_count, image.vu, image.rf) == (1, 9, 5)
+        assert image.item_sched == ("1m0h0", None, "UTC")
+        assert [name for name, _ in image.limits] == ["q"]
+        q = image.limit("q")
+        assert q is not None
+        assert (q.capacity_milli, q.grant_count, q.sched_raw) == (10000, 2, ("-", None))
+        assert (q.window_start_ms, q.window_applied_ms) == (7, 7)
+        assert image.limit("missing") is None
+
+    def test_a_seeding_write_records_the_seed_in_full(self):
+        """A seed writes its own schedule overrides and, when it has a zone, the
+        item's `sched_tz` (#633): the image is what the write leaves."""
+        from zae_limiter.sync_lease import LeaseEntry, _written_image
+
+        def state(name, **kwargs):
+            return BucketState(
+                entity_id="e",
+                resource="r",
+                limit_name=name,
+                tokens_milli=1000,
+                last_refill_ms=1,
+                capacity_milli=10000,
+                refill_amount_milli=10000,
+                refill_period_ms=60000,
+                **kwargs,
+            )
+
+        read = state(
+            "a",
+            stored_vu_ms=None,
+            stored_vu_read=True,
+            stored_item_sched_raw=(None, None, None),
+            stored_sched_raw=(None, None),
+        )
+        sched = (ScheduleEntry(cron="* 9-17 * * *", tz="America/New_York", scale=0.5),)
+        seeded = state("b", sched=sched)
+        entries = [
+            LeaseEntry(entity_id="e", resource="r", limit=Limit.per_minute("a", 10), state=read),
+            LeaseEntry(
+                entity_id="e",
+                resource="r",
+                limit=Limit.per_minute("b", 10).with_schedule(sched),
+                state=seeded,
+                _seed=True,
+            ),
+        ]
+        image = _written_image(entries, rf=42, vu=99, windows={}, applied={})
+        assert image is not None
+        assert (image.rf, image.vu) == (42, 99)
+        assert image.item_sched == (None, None, "America/New_York")
+        b = image.limit("b")
+        assert b is not None
+        assert b.sched_raw[0] is not None and b.sched_raw[1] == "-"
+
+    def test_a_write_with_no_read_image_is_unknown(self):
+        from zae_limiter.sync_lease import LeaseEntry, _written_image
+
+        state = BucketState(
+            entity_id="e",
+            resource="r",
+            limit_name="a",
+            tokens_milli=0,
+            last_refill_ms=0,
+            capacity_milli=1000,
+            refill_amount_milli=1000,
+            refill_period_ms=60000,
+        )
+        entry = LeaseEntry(entity_id="e", resource="r", limit=Limit.per_minute("a", 1), state=state)
+        assert _written_image([entry], rf=1, vu=None, windows={}, applied={}) is None
+
+
 class TestSelfTrimmingRefunds:
     """A refund cannot be spent above the ceiling before it is trimmed (#721).
 
@@ -10871,6 +10973,86 @@ class TestSelfTrimmingRefunds:
         item = self._raw(r1, "d", resource="r")
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
         assert bucket_attr("q", BUCKET_FIELD_CP) in item
+
+    @staticmethod
+    def _update_items(repo):
+        """Every `UpdateItem` the client sends from here, and a function to stop."""
+        client = repo._get_client()
+        calls: list[dict] = []
+        original = client.update_item
+
+        def spy(**kwargs):
+            calls.append(kwargs)
+            return original(**kwargs)
+
+        client.update_item = spy
+        return (calls, lambda: setattr(client, "update_item", original))
+
+    def test_cost_rollback_after_create(self, two):
+        """A refund of the lease that created the bucket fits: one conditional write
+        and `vu` left alone (#730 review). Its pin is the create's own `Put`; before,
+        the lease knew nothing after a create and every such refund stamped `vu = 0`."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        r1.set_limits("c", [Limit.per_minute("q", 1000)], resource="r")
+        calls, stop = self._update_items(r1)
+        try:
+            with pytest.raises(RuntimeError):
+                with l1.acquire("c", "r", {"q": 1}):
+                    raise RuntimeError("body failed")
+        finally:
+            stop()
+        refunds = [c for c in calls if "#bc0" in c["ExpressionAttributeNames"]]
+        assert len(refunds) == 1
+        assert refunds[0]["UpdateExpression"].startswith("ADD")
+        assert "#bt0 <= :bm0" in refunds[0]["ConditionExpression"]
+        assert BUCKET_FIELD_VU not in self._raw(r1, "c", resource="r")
+        r1.set_limits("c2", [Limit.per_minute("q", 1000)], resource="r")
+        with l1.acquire("c2", "r", {"q": 100}) as lease:
+            lease.adjust(q=-80)
+        assert BUCKET_FIELD_VU not in self._raw(r1, "c2", resource="r")
+
+    def test_cost_retry_lease_credit_trims(self, two):
+        """A lease committed by the consumption-only retry (it lost the `rf` lock)
+        pins the retry's `ALL_NEW` image, so a credit that fits is one write and
+        leaves `vu` alone (#730 review). Before, it had no pin and stamped `vu = 0`,
+        which under contention sent the next wave to the slow path again."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        slow = SyncRateLimiter(repository=r1, speculative_writes=False)
+        r1.set_limits("rt", [Limit.per_minute("q", 10000000)], resource="r")
+        with slow.acquire("rt", "r", {"q": 1}):
+            pass
+        client = r1._get_client()
+        key = {"PK": {"S": pk_bucket(r1._namespace_id, "rt", "r", 0)}, "SK": {"S": sk_state()}}
+        original = r1.transact_write
+        raced: list[int] = []
+
+        def racing(items):
+            if not raced:
+                raced.append(1)
+                client.update_item(
+                    TableName=r1.table_name,
+                    Key=key,
+                    UpdateExpression="ADD rf :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            return original(items)
+
+        r1.transact_write = racing
+        try:
+            with slow.acquire("rt", "r", {"q": 100}) as lease:
+                assert lease.entries[0]._image is not None
+                calls, stop = self._update_items(r1)
+                lease.adjust(q=-50)
+        finally:
+            r1.transact_write = original
+        stop()
+        assert raced
+        assert len(calls) == 1
+        assert BUCKET_FIELD_VU not in self._raw(r1, "rt", resource="r")
 
     def test_a_lowered_limit_clamped_before_the_refund(self, two):
         """The limit drops to 50 and another process's slow pass clamps to it (moving

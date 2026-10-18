@@ -668,7 +668,7 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
-    def transact_write(self, items: list[dict[str, Any]]) -> None:
+    def transact_write(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
         """
         Execute a write of one or more items.
 
@@ -678,6 +678,11 @@ class SyncRepositoryProtocol(Protocol):
 
         Args:
             items: List of transaction items from build_bucket_put_item
+
+        Returns:
+            For a single-item update, the item's attributes after the write
+            (``ALL_NEW``), which a later refund pins (#721); otherwise, or when
+            a backend cannot say, ``None``.
 
         Raises:
             TransactionCanceledException: If multi-item transaction fails

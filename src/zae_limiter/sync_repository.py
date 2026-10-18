@@ -2266,19 +2266,7 @@ class SyncRepository:
             written in, or ``None`` when it has none, and one entry per field
             (``sched`` and ``rsched``).
         """
-        tz: str | None = None
-        overrides: dict[str, str] = {}
-        for field, entries, encoder in (
-            (schema.BUCKET_FIELD_SCHED, state.sched, schedule.encode),
-            (schema.BUCKET_FIELD_RSCHED, state.reset_sched, schedule.encode_reset),
-        ):
-            if entries:
-                compact, entry_tz = encoder(entries)
-                overrides[field] = compact
-                tz = tz or entry_tz
-            else:
-                overrides[field] = schema.BUCKET_SCHED_NONE
-        return (tz, overrides)
+        return schema.explicit_schedule_overrides(state.sched, state.reset_sched)
 
     def build_composite_create(
         self,
@@ -2844,23 +2832,30 @@ class SyncRepository:
         }
         return {"Update": update}
 
-    def transact_write(self, items: list[dict[str, Any]]) -> None:
-        """Execute a write, using single-item API when possible to halve WCU cost."""
+    def transact_write(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Execute a write, using single-item API when possible to halve WCU cost.
+
+        Returns the item's ``ALL_NEW`` attributes for a single-item update
+        (free on ``UpdateItem``; a refund pins the image, #721), else ``None``.
+        """
         if not items:
-            return
+            return None
         client = self._get_client()
         if len(items) == 1:
             item = items[0]
             if "Put" in item:
                 client.put_item(**item["Put"])
             elif "Update" in item:
-                client.update_item(**item["Update"])
+                response = client.update_item(**{"ReturnValues": "ALL_NEW", **item["Update"]})
+                attributes = response.get("Attributes")
+                return attributes if isinstance(attributes, dict) else None
             elif "Delete" in item:
                 client.delete_item(**item["Delete"])
             else:
                 client.transact_write_items(TransactItems=items)
         else:
             client.transact_write_items(TransactItems=items)
+        return None
 
     def write_each(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Write items independently without cross-item atomicity (1 WCU each).

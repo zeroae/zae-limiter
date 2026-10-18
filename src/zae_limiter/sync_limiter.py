@@ -62,7 +62,7 @@ from .sync_lease import (
     QuotaMoveLostError,
     SyncLease,
     credit_ceilings,
-    credit_pin,
+    credit_image,
     write_credit,
 )
 from .sync_repository import SyncRepository
@@ -1206,11 +1206,11 @@ class SyncRateLimiter:
         another process's fast path would spend it.
         """
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
+        image = credit_image(buckets or ())
         ceilings = credit_ceilings(
-            [(b.limit_name, b) for b in buckets or ()], deltas, self._repository._now_ms()
+            [(b.limit_name, b) for b in buckets or ()], deltas, self._repository._now_ms(), image
         )
-        image = next((b for b in buckets or () if b.limit_name != WCU_LIMIT_NAME), None)
-        pin = credit_pin(image) if image is not None else None
+        pin = image.pin if image is not None else None
         write_credit(self._repository, entity_id, resource, deltas, shard_id, ceilings, pin)
 
     @staticmethod

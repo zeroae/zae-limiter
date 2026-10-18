@@ -2214,6 +2214,50 @@ CreditPin = tuple[int, int | None, tuple[str | None, str | None, str | None]]
 
 
 @dataclass(frozen=True)
+class CreditLimitImage:
+    """One limit on a bucket item as a lease last wrote or read it (#721).
+
+    What a self-trimming credit pins for that limit: the stored base capacity
+    (``b_{name}_cp``), the quota grant count (``b_{name}_gc``), the schedule
+    overrides (``b_{name}_sched``, ``b_{name}_rsched``) and the session window
+    (``b_{name}_ws``, ``b_{name}_wa``), each ``None`` when absent.
+    """
+
+    capacity_milli: int
+    grant_count: int | None
+    sched_raw: tuple[str | None, str | None]
+    window_start_ms: int | None = None
+    window_applied_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class CreditImage:
+    """A bucket item as a lease last wrote or read it (#721).
+
+    Built from the item the lease read (or a speculative write returned), the
+    ``Put`` it created, the values its rf-locked write stamped, or the
+    ``ALL_NEW`` image of its consumption-only retry. A refund pins it: every
+    write that can lower the ceiling the refund is checked against moves one
+    of these attributes. ``None`` in place of an image means nothing is known.
+    """
+
+    shard_count: int
+    vu: int | None
+    item_sched: tuple[str | None, str | None, str | None]
+    rf: int
+    limits: tuple[tuple[str, CreditLimitImage], ...]
+
+    @property
+    def pin(self) -> CreditPin:
+        """The item-level part, as ``build_composite_adjust`` takes it."""
+        return (self.shard_count, self.vu, self.item_sched)
+
+    def limit(self, name: str) -> CreditLimitImage | None:
+        """The named limit's image, or ``None`` when the item does not carry it."""
+        return next((image for limit_name, image in self.limits if limit_name == name), None)
+
+
+@dataclass(frozen=True)
 class QuotaDonorDebit:
     """The donor side of one ADR-145 move: ``tokens_milli`` off ``shard_id``.
 

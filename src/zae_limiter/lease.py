@@ -16,13 +16,33 @@ from .bucket import (
     window_end_in_force,
 )
 from .exceptions import LeaseExpiredError, RateLimitExceeded
-from .models import BucketState, CreditCeiling, CreditPin, Limit, LimitStatus, QuotaDonorDebit
+from .models import (
+    BucketState,
+    CreditCeiling,
+    CreditImage,
+    CreditLimitImage,
+    CreditPin,
+    Limit,
+    LimitStatus,
+    QuotaDonorDebit,
+)
 from .schema import (
+    BUCKET_ATTR_PREFIX,
+    BUCKET_FIELD_CP,
+    BUCKET_FIELD_GC,
     BUCKET_FIELD_RF,
+    BUCKET_FIELD_RSCHED,
+    BUCKET_FIELD_SCHED,
+    BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TK,
+    BUCKET_FIELD_VU,
+    BUCKET_FIELD_WA,
+    BUCKET_FIELD_WS,
+    WCU_LIMIT_NAME,
     bucket_attr,
     calculate_bucket_ttl_seconds,
     calculate_ttl,
+    explicit_schedule_overrides,
 )
 
 # TransactionConflict retry constants (Issue #332)
@@ -68,10 +88,9 @@ class LeaseEntry:
     # Cached shard_count at acquire time; stamped on the item when
     # _commit_initial() creates a new shard bucket (issue #439).
     _shard_count: int = 1
-    # The item's (`shard_count`, `vu`) as this lease last wrote or read it
-    # (`vu` None = absent), or None when unknown (the consumption-only retry
-    # leaves the item as another writer left it). A refund pins both (#721).
-    _stored_pin: CreditPin | None = None
+    # The bucket item as this lease last wrote or read it, shared by every
+    # entry on the item, or None when nothing is known. A refund pins it (#721).
+    _image: CreditImage | None = None
     # Denormalized entity fields for speculative writes (Issue #315)
     _cascade: bool = False
     _parent_id: str | None = None
@@ -144,32 +163,60 @@ class LeaseEntry:
 
 
 def credit_ceilings(
-    states: Iterable[tuple[str, BucketState]], deltas: dict[str, int], now_ms: int
+    states: Iterable[tuple[str, BucketState]],
+    deltas: dict[str, int],
+    now_ms: int,
+    image: CreditImage | None,
 ) -> dict[str, CreditCeiling]:
     """The ceiling of every limit ``deltas`` credits, for a self-trimming credit (#721).
 
-    ``states`` pairs each limit name with its shard's state. The ceiling is
-    ``BucketState.ceiling_milli`` at ``now_ms`` — schedule, shard share and quota
-    grant (ADR-145), the refill clamp's own ceiling — beside the stored base
-    capacity and grant count it was computed from, which the write pins
-    because a limit change or a re-grant since would lower it. A state that cannot report
-    one leaves its limit unconditional (the pre-#679 behaviour) rather than fail
-    the refund: a credit is never blocked by a broken check.
+    ``states`` pairs each limit name with its shard's state; ``image`` is the
+    item as the caller last wrote or read it. One :func:`credit_ceiling` per
+    credited limit. A state that cannot report a ceiling leaves its limit with
+    no ceiling condition (the pre-#679 behaviour) rather than fail the refund:
+    a credit is never blocked by a broken check.
     """
     ceilings: dict[str, CreditCeiling] = {}
     for name, state in states:
         if deltas.get(name, 0) >= 0 or name in ceilings:
             continue  # only a credit can lift a balance
         try:
-            ceilings[name] = CreditCeiling(
-                ceiling_milli=int(state.ceiling_milli(now_ms)),
-                capacity_milli=int(state.capacity_milli),
-                grant_count=None if state.grant_count is None else int(state.grant_count),
-                sched_raw=state.stored_sched_raw,
+            ceilings[name] = credit_ceiling(
+                state, image.limit(name) if image is not None else None, now_ms
             )
         except Exception:
             logger.warning("Could not check a credit against its ceiling", exc_info=True)
     return ceilings
+
+
+def credit_ceiling(
+    state: BucketState, limit_image: CreditLimitImage | None, now_ms: int
+) -> CreditCeiling:
+    """What one credited limit is checked against, and what that check pins (#721).
+
+    The ceiling is ``BucketState.ceiling_milli`` at ``now_ms`` — schedule, shard
+    share and quota grant (ADR-145), the refill clamp's own ceiling. The pins
+    are the stored attributes it was computed from, as the lease last wrote or
+    read them (``limit_image``); with no image there is nothing to pin, and the
+    credit is trimmed outright (``sched_raw=None``).
+
+    The one place the ceiling and its pins are decided, with
+    ``Repository._credit_limit_terms`` the one place they become condition
+    terms: a new input to the ceiling (a quota top-up, #720) extends both.
+    """
+    if limit_image is None:
+        return CreditCeiling(
+            ceiling_milli=int(state.ceiling_milli(now_ms)),
+            capacity_milli=int(state.capacity_milli),
+            grant_count=None if state.grant_count is None else int(state.grant_count),
+            sched_raw=None,
+        )
+    return CreditCeiling(
+        ceiling_milli=int(state.ceiling_milli(now_ms)),
+        capacity_milli=limit_image.capacity_milli,
+        grant_count=limit_image.grant_count,
+        sched_raw=limit_image.sched_raw,
+    )
 
 
 async def write_credit(
@@ -332,11 +379,16 @@ class Lease:
             entry.limit.name for entry in self.entries if entry._declared
         )
         # Each state is the item as read or as a speculative write returned it
-        # (ALL_NEW), so its `shard_count`, `vu` and schedule strings are the
-        # item's own until `_commit_initial` writes new ones (#721). A state
-        # not read off an item knows none of them.
+        # (ALL_NEW), so together they are the item's image until
+        # `_commit_initial` writes a new one (#721). A state not read off an
+        # item makes the image unknown.
+        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in self.entries:
-            entry._stored_pin = credit_pin(entry.state)
+            groups.setdefault((entry.entity_id, entry.resource, entry._shard_id), []).append(entry)
+        for group_entries in groups.values():
+            image = credit_image([e.state for e in group_entries])
+            for entry in group_entries:
+                entry._image = image
 
     @property
     def consumed(self) -> dict[str, int]:
@@ -597,7 +649,7 @@ class Lease:
         ] = []
         # (`shard_count`, `vu`) each bucket item holds once this write lands,
         # for a later refund's pin (#721).
-        written_pins: dict[tuple[str, str, int], CreditPin | None] = {}
+        credit_images: dict[tuple[str, str, int], CreditImage | None] = {}
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
 
@@ -628,9 +680,6 @@ class Lease:
 
             if is_new:
                 first_entry = owner_entry or group_entries[0]
-                # A create writes schedule strings this lease never read off
-                # the item, so a refund of it has nothing to pin (#721).
-                written_pins[(entity_id, resource, shard_id)] = None
                 items.append(
                     repo.build_composite_create(
                         entity_id=entity_id,
@@ -645,6 +694,11 @@ class Lease:
                         vu=vu,
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
                     )
+                )
+                # The create's own `Put` is the item once it lands (#721).
+                created = items[-1].get("Put") if isinstance(items[-1], dict) else None
+                credit_images[(entity_id, resource, shard_id)] = credit_image_from_item(
+                    created.get("Item") if isinstance(created, dict) else None
                 )
                 # A create fans out only when it anchored the entity's next
                 # window: a shard N>0 whose sibling window had ended or was
@@ -810,13 +864,14 @@ class Lease:
                 # Computed after the loop above, which can anchor a window at
                 # this reading; the lock still compares the stored `expected_rf`.
                 written_rf = _monotonic_rf(now_ms, expected_rf, group_entries)
-                # The write SETs `vu` to the earliest boundary, or REMOVEs it,
-                # and leaves `shard_count` and the schedule strings as read --
-                # unless it seeds a limit, which can write `sched_tz` (#633):
-                # then a refund has nothing to pin (#721).
-                read_pin = next((credit_pin(e.state) for e in group_entries if not e._seed), None)
-                written_pins[(entity_id, resource, shard_id)] = (
-                    (read_pin[0], vu, read_pin[2]) if read_pin is not None and not seeds else None
+                # What the item holds once this write lands, for a refund's
+                # pin (#721): the read image with what this write stamps.
+                credit_images[(entity_id, resource, shard_id)] = _written_image(
+                    group_entries,
+                    rf=written_rf,
+                    vu=vu,
+                    windows={**seed_windows, **windows},
+                    applied=_applied_windows(group_entries),
                 )
                 # The `vu` this pass read, to pin when the write sets or
                 # removes it (#701): only from a state read off the item.
@@ -1044,7 +1099,7 @@ class Lease:
                 if not retry_items:
                     break
                 try:
-                    await repo.transact_write(retry_items)
+                    retry_attrs = await repo.transact_write(retry_items)
                     break
                 except Exception as retry_exc:
                     if not _is_condition_check_failure(retry_exc):
@@ -1091,17 +1146,25 @@ class Lease:
                 for item, (key, _group) in zip(retry_items, retry_groups, strict=True)
                 if isinstance(item, dict) and "Put" in item
             }
+            # What the retry left on each item, for a refund's pin (#721): a
+            # re-issued create's own `Put`, or the `ALL_NEW` image a single-item
+            # write returns. Anything else -- a multi-item retry, an item the
+            # retry did not write -- is as another writer left it: unknown.
+            credit_images = {key: None for key in credit_images}
+            for item, (key, _group) in zip(retry_items, retry_groups, strict=True):
+                if isinstance(item, dict) and "Put" in item:
+                    credit_images[key] = credit_image_from_item(item["Put"].get("Item"))
+                elif len(retry_items) == 1:
+                    credit_images[key] = credit_image_from_item(retry_attrs)
 
         # Record initial consumed amounts after successful write
         self._initial_committed = True
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
-            # What the item now holds, for a refund's pin (#721). After the
-            # consumption-only retry the item is as another writer left it:
-            # unknown, and a refund trims outright.
+            # What the item now holds, for a refund's pin (#721).
             key = (entry.entity_id, entry.resource, entry._shard_id)
-            if key in written_pins:
-                entry._stored_pin = None if condition_failed else written_pins[key]
+            if key in credit_images:
+                entry._image = credit_images[key]
 
         # The lease is committed before the repair and the fan-out run:
         # nothing either does (both swallow their own failures) can leave it
@@ -1351,23 +1414,161 @@ class Lease:
                     deltas[entry.limit.name] = delta  # millitokens
             if not deltas:
                 continue
+            images = {e._image for e in group_entries}
+            image = images.pop() if len(images) == 1 else None
             ceilings = credit_ceilings(
-                [(e.limit.name, e.state) for e in group_entries], deltas, now_ms
+                [(e.limit.name, e.state) for e in group_entries], deltas, now_ms, image
             )
-            pins = {e._stored_pin for e in group_entries}
-            pin = pins.pop() if len(pins) == 1 else None
+            pin = image.pin if image is not None else None
             writes.append((entity_id, resource, shard_id, deltas, ceilings, pin))
         return writes
 
 
-def credit_pin(state: BucketState) -> CreditPin | None:
-    """The (``shard_count``, ``vu``, item schedule strings) a state read off an item saw.
+def _limit_image(
+    state: BucketState,
+    sched_raw: tuple[str | None, str | None] | None = None,
+    window_start_ms: int | None = None,
+    window_applied_ms: int | None = None,
+) -> CreditLimitImage:
+    return CreditLimitImage(
+        capacity_milli=state.capacity_milli,
+        grant_count=state.grant_count,
+        sched_raw=sched_raw if sched_raw is not None else (state.stored_sched_raw or (None, None)),
+        window_start_ms=window_start_ms,
+        window_applied_ms=window_applied_ms,
+    )
 
-    ``None`` for a state not read off an item (#721).
+
+def credit_image(states: Iterable[BucketState]) -> CreditImage | None:
+    """The image of the item a set of states was read off (#721).
+
+    The states must all have been read off the item (or returned by a write
+    to it); one that was not makes the image unknown (``None``). The reserved
+    ``wcu`` limit is skipped: it always deserializes with ``shard_count = 1``.
     """
-    if not state.stored_vu_read or state.stored_item_sched_raw is None:
+    read = [s for s in states if s.limit_name != WCU_LIMIT_NAME]
+    if not read:
         return None
-    return (state.shard_count, state.stored_vu_ms, state.stored_item_sched_raw)
+    first = read[0]
+    item_sched = first.stored_item_sched_raw
+    if not isinstance(item_sched, tuple) or any(
+        s.stored_vu_read is not True
+        or not isinstance(s.stored_item_sched_raw, tuple)
+        or not isinstance(s.stored_sched_raw, tuple)
+        for s in read
+    ):
+        return None
+    return CreditImage(
+        shard_count=first.shard_count,
+        vu=first.stored_vu_ms,
+        item_sched=item_sched,
+        rf=first.last_refill_ms,
+        limits=tuple(
+            (s.limit_name, _limit_image(s, None, s.window_start_ms, s.window_applied_ms))
+            for s in read
+        ),
+    )
+
+
+def credit_image_from_item(item: Any) -> CreditImage | None:
+    """The image of a raw bucket item: a ``Put``'s ``Item`` or an ``ALL_NEW`` (#721)."""
+    if not isinstance(item, dict) or not item:
+        return None
+
+    def num(attr: str) -> int | None:
+        value = item.get(attr, {}).get("N")
+        return int(value) if value is not None else None
+
+    def text(attr: str) -> str | None:
+        value = item.get(attr, {}).get("S")
+        return value if isinstance(value, str) else None
+
+    suffix = f"_{BUCKET_FIELD_TK}"
+    limits: list[tuple[str, CreditLimitImage]] = []
+    for attr in item:
+        if not (attr.startswith(BUCKET_ATTR_PREFIX) and attr.endswith(suffix)):
+            continue
+        name = attr[len(BUCKET_ATTR_PREFIX) : -len(suffix)]
+        capacity = num(bucket_attr(name, BUCKET_FIELD_CP))
+        if not name or name == WCU_LIMIT_NAME or capacity is None:
+            continue
+        limits.append(
+            (
+                name,
+                CreditLimitImage(
+                    capacity_milli=capacity,
+                    grant_count=num(bucket_attr(name, BUCKET_FIELD_GC)),
+                    sched_raw=(
+                        text(bucket_attr(name, BUCKET_FIELD_SCHED)),
+                        text(bucket_attr(name, BUCKET_FIELD_RSCHED)),
+                    ),
+                    window_start_ms=num(bucket_attr(name, BUCKET_FIELD_WS)),
+                    window_applied_ms=num(bucket_attr(name, BUCKET_FIELD_WA)),
+                ),
+            )
+        )
+    return CreditImage(
+        shard_count=num("shard_count") or 1,
+        vu=num(BUCKET_FIELD_VU),
+        item_sched=(
+            text(BUCKET_FIELD_SCHED),
+            text(BUCKET_FIELD_RSCHED),
+            text(BUCKET_FIELD_SCHED_TZ),
+        ),
+        rf=num(BUCKET_FIELD_RF) or 0,
+        limits=tuple(limits),
+    )
+
+
+def _written_image(
+    group: list[LeaseEntry],
+    *,
+    rf: int,
+    vu: int | None,
+    windows: dict[str, tuple[int, int]],
+    applied: dict[str, int],
+) -> CreditImage | None:
+    """The item an rf-locked write leaves behind, from what it read and stamped (#721).
+
+    The read image with the write's own stamps: ``rf``, ``vu`` (set to the
+    earliest boundary, or removed), the windows it opened and applied, the
+    grant counts already on the states, and each seeded limit in full —
+    its explicit schedule overrides and, from the first that has one, the
+    item's ``sched_tz`` (exactly as ``build_composite_normal`` writes them).
+    """
+    base = credit_image([e.state for e in group if not e._seed])
+    if base is None:
+        return None
+    sched, rsched, tz = base.item_sched
+    seeded_tz: str | None = None
+    limits: list[tuple[str, CreditLimitImage]] = []
+    for entry in sorted(group, key=lambda e: e.limit.name):
+        state = entry.state
+        name = entry.limit.name
+        sched_raw: tuple[str | None, str | None] | None = None
+        if entry._seed:
+            entry_tz, overrides = explicit_schedule_overrides(state.sched, state.reset_sched)
+            seeded_tz = seeded_tz or entry_tz
+            sched_raw = (overrides[BUCKET_FIELD_SCHED], overrides[BUCKET_FIELD_RSCHED])
+        window = windows.get(name)
+        limits.append(
+            (
+                name,
+                _limit_image(
+                    state,
+                    sched_raw,
+                    window[0] if window is not None else state.window_start_ms,
+                    applied.get(name, state.window_applied_ms),
+                ),
+            )
+        )
+    return CreditImage(
+        shard_count=base.shard_count,
+        vu=vu,
+        item_sched=(sched, rsched, seeded_tz or tz),
+        rf=rf,
+        limits=tuple(limits),
+    )
 
 
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:
