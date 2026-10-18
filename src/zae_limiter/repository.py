@@ -8733,7 +8733,12 @@ class Repository:
         # entity — deleted and recreated, its records left behind because the
         # shard-0 bucket that delete_entity finds them through had expired —
         # is not this entity's, and is read as absent and overwritten.
-        incarnation = await self._entity_incarnation(entity_id)
+        # The same META also answers a create's cascade stamps (F4: once).
+        meta = await self._get_item_consistent(
+            schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
+        )
+        incarnation = schema.entity_incarnation(meta)
+        entity = self._deserialize_entity(meta) if meta is not None else None
         if idempotency_key is not None:
             # A caller retry: the first call's record, when it landed, is the
             # answer (1 strongly consistent read, paid only with a key).
@@ -8778,6 +8783,7 @@ class Repository:
                         operation_id,
                         token,
                         incarnation,
+                        entity,
                         # Per attempt, like the shard write: the create is
                         # re-planned at a later instant, so one token across
                         # attempts would be an IdempotentParameterMismatch on
@@ -9000,18 +9006,6 @@ class Repository:
             item.get("writer", {}).get("S"),
         )
 
-    async def _entity_incarnation(self, entity_id: str) -> str:
-        """The identity of the entity's current incarnation (ADR-149).
-
-        One strongly consistent read of META, interpreted by
-        ``schema.entity_incarnation`` (``pinc``, else ``created_at``, else
-        ``-``).
-        """
-        meta = await self._get_item_consistent(
-            schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
-        )
-        return schema.entity_incarnation(meta)
-
     async def _landed_by(
         self,
         entity_id: str,
@@ -9125,6 +9119,7 @@ class Repository:
         operation_id: str,
         token: str,
         incarnation: str,
+        entity: Entity | None,
         request_token: str,
     ) -> tuple[BucketOperationResult, bool]:
         """D5: a top-up with no bucket creates shard 0 holding its share plus the quota top-up.
@@ -9156,7 +9151,6 @@ class Repository:
                 state.tokens_milli += amount * 1000
                 state.topped_up_milli = amount * 1000
         await self._require_top_up_readers()
-        entity = await self.get_entity(entity_id)
         multiplier = self._bucket_ttl_refill_multiplier
         ttl_seconds = (
             None

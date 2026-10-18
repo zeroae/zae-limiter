@@ -7233,7 +7233,11 @@ class SyncRepository:
                 f"not a limit configured for {entity_id!r} on {resource!r} (configured: {', '.join(sorted(by_name))})",
             )
         operation_id = idempotency_key or str(ULID())
-        incarnation = self._entity_incarnation(entity_id)
+        meta = self._get_item_consistent(
+            schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
+        )
+        incarnation = schema.entity_incarnation(meta)
+        entity = self._deserialize_entity(meta) if meta is not None else None
         if idempotency_key is not None:
             recorded = self._operation_record(
                 entity_id, resource, operation_id, operation, incarnation
@@ -7268,6 +7272,7 @@ class SyncRepository:
                         operation_id,
                         token,
                         incarnation,
+                        entity,
                         f"{token}-c{attempt}",
                     )
                 except Exception:
@@ -7460,18 +7465,6 @@ class SyncRepository:
             item.get("writer", {}).get("S"),
         )
 
-    def _entity_incarnation(self, entity_id: str) -> str:
-        """The identity of the entity's current incarnation (ADR-149).
-
-        One strongly consistent read of META, interpreted by
-        ``schema.entity_incarnation`` (``pinc``, else ``created_at``, else
-        ``-``).
-        """
-        meta = self._get_item_consistent(
-            schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
-        )
-        return schema.entity_incarnation(meta)
-
     def _landed_by(
         self,
         entity_id: str,
@@ -7583,6 +7576,7 @@ class SyncRepository:
         operation_id: str,
         token: str,
         incarnation: str,
+        entity: Entity | None,
         request_token: str,
     ) -> tuple[BucketOperationResult, bool]:
         """D5: a top-up with no bucket creates shard 0 holding its share plus the quota top-up.
@@ -7614,7 +7608,6 @@ class SyncRepository:
                 state.tokens_milli += amount * 1000
                 state.topped_up_milli = amount * 1000
         self._require_top_up_readers()
-        entity = self.get_entity(entity_id)
         multiplier = self._bucket_ttl_refill_multiplier
         ttl_seconds = (
             None

@@ -942,3 +942,40 @@ class TestEntityIncarnation:
     @pytest.mark.parametrize("item", [None, {}, {"pinc": {"S": ""}}])
     def test_nothing_reads_as_none(self, item):
         assert schema.entity_incarnation(item) == "-"
+
+
+class TestCreatePathReadsMetaOnce:
+    """Round-4 review, F4: a top-up that creates the bucket read META twice
+    (once for the incarnation, once for the cascade stamps)."""
+
+    async def test_meta_is_read_once(self, limiter, clock):
+        repo = limiter._repository
+        await repo.create_entity("p")
+        await repo.create_entity("e", parent_id="p", cascade=True)
+        await limiter.set_limits("e", [CAL], resource="r")
+        client = await repo._get_client()
+        meta_pk = schema.pk_entity(repo._namespace_id, "e")
+        real_get, real_batch = client.get_item, client.batch_get_item
+        reads = []
+
+        async def get_item(**kw):
+            if kw["Key"]["PK"]["S"] == meta_pk and kw["Key"]["SK"]["S"] == schema.sk_meta():
+                reads.append("get_item")
+            return await real_get(**kw)
+
+        async def batch_get_item(**kw):
+            for spec in kw["RequestItems"].values():
+                for key in spec["Keys"]:
+                    if key["PK"]["S"] == meta_pk and key["SK"]["S"] == schema.sk_meta():
+                        reads.append("batch_get_item")
+            return await real_batch(**kw)
+
+        client.get_item, client.batch_get_item = get_item, batch_get_item
+        try:
+            result = await repo.top_up("e", "r", {"cal": 5})
+        finally:
+            client.get_item, client.batch_get_item = real_get, real_batch
+        assert result.shards == 1
+        assert reads == ["get_item"]
+        stamped = await _tu(repo, "e", "cal")
+        assert stamped == 5_000
