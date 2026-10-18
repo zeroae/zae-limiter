@@ -7,10 +7,10 @@ Changes should be made to the source file, then regenerated.
 """
 
 import functools
-import hashlib
 import logging
 import random
 import re
+import secrets
 import time
 import warnings
 from collections.abc import Callable, Sequence
@@ -81,6 +81,7 @@ _OPERATION_RETRY_CODES = frozenset(
         "TransactionCanceledException",
         "TransactionConflictException",
         "TransactionInProgressException",
+        "IdempotentParameterMismatchException",
     }
 )
 _IDEMPOTENCY_KEY = re.compile("[A-Za-z0-9._:-]{1,64}")
@@ -7213,7 +7214,7 @@ class SyncRepository:
             recorded = self._operation_record(entity_id, resource, operation_id, operation)
             if recorded is not None:
                 return recorded
-        token = hashlib.sha256(operation_id.encode()).hexdigest()[:32]
+        token = secrets.token_hex(12)
         last_error: Exception | None = None
         for attempt in range(_OPERATION_MAX_ATTEMPTS):
             if attempt:

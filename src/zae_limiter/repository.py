@@ -2,10 +2,10 @@
 
 import asyncio
 import functools
-import hashlib
 import logging
 import random
 import re
+import secrets
 import time
 import warnings
 from collections.abc import Callable, Sequence
@@ -95,7 +95,9 @@ _BATCH_GET_RETRY_BASE_DELAY = 0.05
 # with an in-flight transaction), a conflict reported on its own, and a
 # transaction still in progress under the same ClientRequestToken — the SDK's
 # retry of a write whose first attempt has not finished, which may yet land
-# (AWS recommends retrying it; the record makes a re-plan just as safe).
+# (AWS recommends retrying it; the record makes a re-plan just as safe) — and a
+# token reused with a different payload, which says nothing about whether
+# this call landed and is resolved by the record like the rest.
 _OPERATION_MAX_ATTEMPTS = 4
 _OPERATION_RETRY_BASE_DELAY = 0.05
 _OPERATION_RETRY_CODES = frozenset(
@@ -104,6 +106,7 @@ _OPERATION_RETRY_CODES = frozenset(
         "TransactionCanceledException",
         "TransactionConflictException",
         "TransactionInProgressException",
+        "IdempotentParameterMismatchException",
     }
 )
 
@@ -8702,9 +8705,13 @@ class Repository:
             recorded = await self._operation_record(entity_id, resource, operation_id, operation)
             if recorded is not None:
                 return recorded
-        # DynamoDB caps a ClientRequestToken at 36 characters; a caller's key
-        # may be longer, so the token is derived from it.
-        token = hashlib.sha256(operation_id.encode()).hexdigest()[:32]
+        # A random nonce per call, never the key: DynamoDB keeps a
+        # ClientRequestToken for ten minutes and answers the same token with a
+        # different payload with IdempotentParameterMismatchException, so a
+        # token derived from the key made every second call with that key —
+        # a caller retry, a concurrent duplicate — fail for ten minutes. The
+        # operation record, not the token, is what handles caller retries.
+        token = secrets.token_hex(12)
         last_error: Exception | None = None
         for attempt in range(_OPERATION_MAX_ATTEMPTS):
             if attempt:

@@ -569,3 +569,155 @@ class TestSessionResetOnShards:
         await repo.top_up("e", "r", {"ses": 5})
         clock[0] += 1
         assert await _drain(limiter, "e", "ses") == 15
+
+
+def _tx_error(code):
+    from botocore.exceptions import ClientError
+
+    return ClientError({"Error": {"Code": code, "Message": code}}, "TransactWriteItems")
+
+
+def _carries_record(kw):
+    return any(
+        "Put" in item and item["Put"]["Item"]["SK"]["S"].startswith("#OP#")
+        for item in kw.get("TransactItems", [])
+    )
+
+
+@pytest.fixture
+def aws_tokens(limiter):
+    """Emulate DynamoDB's ClientRequestToken rules, which moto ignores.
+
+    A token is kept once its first request completes, success or not: the same
+    token with the same payload is a no-op success, with a different payload
+    an IdempotentParameterMismatchException. ``fail_first`` cancels that many
+    record-carrying transactions before they write.
+    """
+    state = {"fail_first": 0, "client": None, "real": None}
+
+    async def install(fail_first=0):
+        client = await limiter._repository._get_client()
+        real = client.transact_write_items
+        seen: dict = {}
+        state.update(fail_first=fail_first, client=client, real=real)
+
+        async def emulated(**kw):
+            token = kw.get("ClientRequestToken")
+            payload = repr(kw.get("TransactItems"))
+            if token is not None and token in seen:
+                if seen[token][0] != payload:
+                    raise _tx_error("IdempotentParameterMismatchException")
+                if seen[token][1]:
+                    return {}
+            ok = False
+            try:
+                if state["fail_first"] > 0 and _carries_record(kw):
+                    state["fail_first"] -= 1
+                    raise _tx_error("TransactionCanceledException")
+                out = await real(**kw)
+                ok = True
+                return out
+            finally:
+                if token is not None and token not in seen:
+                    seen[token] = (payload, ok)
+
+        client.transact_write_items = emulated
+
+    yield install
+    if state["client"] is not None:
+        state["client"].transact_write_items = state["real"]
+
+
+async def _same_key_race(repo, clock, calls):
+    """Run ``calls`` with both planning before either writes."""
+    import asyncio
+
+    original = repo._read_operation_shards
+    arrived = {"n": 0}
+    both = asyncio.Event()
+
+    async def barrier(*a, **k):
+        result = await original(*a, **k)
+        arrived["n"] += 1
+        clock[0] += 1  # each caller plans at its own instant
+        if arrived["n"] == 2:
+            both.set()
+        if arrived["n"] <= 2:
+            await asyncio.wait_for(both.wait(), 5)
+        return result
+
+    repo._read_operation_shards = barrier
+    try:
+        return await asyncio.gather(*calls, return_exceptions=True)
+    finally:
+        repo._read_operation_shards = original
+
+
+class TestRequestTokens:
+    """PR #720 third review, finding 1: the ClientRequestToken came from the
+    caller's key, so a second call with the key reused a token with a new
+    payload — IdempotentParameterMismatchException, raised to the caller, for
+    ten minutes."""
+
+    async def test_key_retry_after_unavailable_hits_token_mismatch(
+        self, limiter, clock, aws_tokens
+    ):
+        """Named after the probe: the caller's retry with the same key, a
+        second after a call that gave up, succeeds and grants once."""
+        from zae_limiter.exceptions import RateLimiterUnavailable
+
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        await _drain(limiter, "e", "cal")
+        clock[0] += 1
+        await aws_tokens(fail_first=4)
+        with pytest.raises(RateLimiterUnavailable):
+            await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy-9")
+        clock[0] += 1000
+        result = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy-9")
+        assert result.amounts == {"cal": 5}
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 5
+
+    async def test_same_key_race_token_mismatch(self, limiter, clock, aws_tokens):
+        """Two callers with one key plan at once under the real token rules:
+        neither raises, and the purchase is granted once."""
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        await _drain(limiter, "e", "cal")
+        clock[0] += 1
+        await aws_tokens()
+        results = await _same_key_race(
+            repo,
+            clock,
+            [repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy-2") for _ in range(2)],
+        )
+        assert all(not isinstance(r, Exception) for r in results), results
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 5
+
+    async def test_a_token_mismatch_is_an_unclear_outcome(self, limiter, clock):
+        """Whatever reuses a token, the mismatch says nothing about this call:
+        it is resolved by the operation record, never raised."""
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        await _drain(limiter, "e", "cal")
+        clock[0] += 1
+        client = await repo._get_client()
+        real = client.transact_write_items
+        state = {"armed": True}
+
+        async def mismatch(**kw):
+            if state["armed"] and _carries_record(kw):
+                state["armed"] = False
+                raise _tx_error("IdempotentParameterMismatchException")
+            return await real(**kw)
+
+        client.transact_write_items = mismatch
+        try:
+            result = await repo.top_up("e", "r", {"cal": 5})
+        finally:
+            client.transact_write_items = real
+        assert result.amounts == {"cal": 5}
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 5
