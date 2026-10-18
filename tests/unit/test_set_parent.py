@@ -430,6 +430,86 @@ class TestStaleWriters:
         assert _stamp(await _item(repo, "user", "llm")) == (True, "org-a", 10**13)
         await repo.create_entity("user", parent_id="org-b", cascade=True)
 
+    async def test_a_stale_replica_of_the_predecessor_cannot_restamp(
+        self, repo, other, generations_from_zero
+    ):
+        """Review of #716 (3rd), finding 1: the stale-incarnation probe.
+
+        A slow pass whose eventually consistent META read returns the deleted
+        predecessor (old incarnation, org-a) must not overwrite the recreated
+        entity's stamp (org-b). Its own acquire still debits org-a once.
+        """
+        generations_from_zero.stop()
+        for resource in ("gpt-4", "llm"):
+            await repo.set_resource_defaults(resource, [RPM])
+        await repo.create_entity("org-a")
+        await repo.create_entity("org-b")
+        await repo.create_entity("user", parent_id="org-a", cascade=True)
+        old_meta = await repo.get_entity("user", consistent_read=True)
+        await repo.delete_entity("user")
+        with patch.object(repo, "_now_ms", return_value=repo._now_ms() + 10):
+            await repo.create_entity("user", parent_id="org-b", cascade=True)
+        async with RateLimiter(repository=repo, speculative_writes=False).acquire(
+            "user", "llm", consume={"rpm": 1}
+        ):
+            pass
+        current = _stamp(await _item(repo, "user", "llm"))
+        assert current[:2] == (True, "org-b")
+
+        stale = other._repository
+        real = stale.batch_get_entity_and_buckets
+
+        async def stale_meta(entity_id, bucket_keys):
+            entity, buckets = await real(entity_id, bucket_keys)
+            return (old_meta if entity_id == "user" else entity), buckets
+
+        org_a = await _consumed(repo, "org-a", "llm")
+        with patch.object(stale, "batch_get_entity_and_buckets", stale_meta):
+            async with RateLimiter(repository=stale, speculative_writes=False).acquire(
+                "user", "llm", consume={"rpm": 1}
+            ) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user", "org-a"}
+        assert await _consumed(repo, "org-a", "llm") == org_a + 1  # this lease, once
+
+        assert _stamp(await _item(repo, "user", "llm")) == current  # the stamp stands
+        third_repo = await _open_repo()
+        async with RateLimiter(repository=third_repo) as third:
+            org_a, org_b = (
+                await _consumed(repo, "org-a", "llm"),
+                await _consumed(repo, "org-b", "llm"),
+            )
+            for _ in range(5):
+                async with third.acquire("user", "llm", consume={"rpm": 1}):
+                    pass
+        await third_repo.close()
+        assert await _consumed(repo, "org-a", "llm") == org_a
+        assert await _consumed(repo, "org-b", "llm") == org_b + 5
+
+    async def test_a_claim_needs_this_incarnation_to_be_current(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        assert await repo.restamp_owner_if_current("user", "gpt-4", 0, "not-current") is False
+        assert await repo.restamp_owner_if_current("nobody", "gpt-4", 0, "x") is False
+
+    async def test_a_failed_claim_is_logged(self, repo, other, caplog):
+        await self._leftover_from_a_fast_clock(repo, other)
+        with patch.object(repo, "restamp_owner_if_current", side_effect=RuntimeError("x")):
+            async with RateLimiter(repository=repo, speculative_writes=False).acquire(
+                "user", "llm", consume={"rpm": 1}
+            ):
+                pass
+        assert "could not claim a predecessor's bucket" in caplog.text
+
+    async def test_a_backend_without_the_claim_skips_it(self):
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        lease = Lease(repository=cast(RepositoryProtocol, SimpleNamespace()))
+        await lease._claim_owner_stamps({}, RuntimeError("x"))
+
     async def test_a_predecessors_bucket_never_outranks_the_recreated_entity(self, repo, other):
         """Skew probe: its generation is higher, its incarnation is not this one."""
         await self._leftover_from_a_fast_clock(repo, other)

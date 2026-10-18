@@ -190,7 +190,7 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
         assert "#opg <= :opg" in update["ConditionExpression"]
-        assert "#opi <> :opi" in update["ConditionExpression"]
+        assert "#opi = :opi" in update["ConditionExpression"]  # same incarnation only
 
     def test_normal_owner_stamp_with_a_generation_but_no_incarnation(self) -> None:
         """A backend that tracks no incarnation keeps the generation-only pin."""

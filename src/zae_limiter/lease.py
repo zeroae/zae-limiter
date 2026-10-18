@@ -17,6 +17,7 @@ from .bucket import (
 from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus, QuotaDonorDebit
 from .schema import (
+    BUCKET_FIELD_PINC,
     BUCKET_FIELD_RF,
     BUCKET_FIELD_TK,
     bucket_attr,
@@ -859,6 +860,23 @@ class Lease:
                     raise  # exhausted retries, propagate
                 raise  # other errors propagate unchanged
 
+        if (
+            condition_failed
+            and condition_exc is not None
+            and await self._claim_owner_stamps(groups, condition_exc)
+        ):
+            # A predecessor's leftover was claimed for this incarnation
+            # (ADR-150); the claim moves no `rf`, so the same write — refill
+            # and owner stamp included — now passes the lock it lost. Once.
+            try:
+                await repo.transact_write(items)
+                condition_failed = False
+                condition_exc = None
+            except Exception as exc:
+                if not _is_condition_check_failure(exc):
+                    raise
+                condition_exc = exc
+
         if condition_failed and donor_items:
             # The whole transaction rolled back — donor untouched — and the
             # plan it carried may be stale: no consumption-only retry, which
@@ -1111,6 +1129,53 @@ class Lease:
                     shard_id,
                     exc_info=True,
                 )
+
+    async def _claim_owner_stamps(
+        self,
+        groups: dict[tuple[str, str, int], list[LeaseEntry]],
+        exc: Exception,
+    ) -> bool:
+        """Claim buckets whose owner pin was lost to another incarnation (ADR-150).
+
+        The rf-locked owner stamp only overwrites a stamp of its own
+        incarnation, since this pass's META read may be a deleted
+        predecessor's. A bucket a predecessor left behind then refuses every
+        slow pass. Each failed item whose image carries a different ``pinc``
+        is settled by one strongly consistent META read
+        (:meth:`Repository.restamp_owner_if_current`): restamped when this
+        pass's incarnation is current, left alone when this pass read a stale
+        record. When a bucket was claimed the caller re-sends its write once;
+        otherwise this acquire proceeds on the consumption-only retry with the
+        parents it planned: a pass that read a predecessor's record debits
+        that predecessor's parent once, like any lease opened before a move
+        (§7). Failures are logged without the entity id and swallowed.
+
+        Returns:
+            Whether any bucket was claimed.
+        """
+        restamp = getattr(self.repository, "restamp_owner_if_current", None)
+        if restamp is None:
+            return False
+        claimed = False
+        images = _retry_failure_images(exc, list(groups))
+        for key, group_entries in groups.items():
+            owner = next((e for e in group_entries if e._stamp_owner), None)
+            image = images.get(key)
+            if owner is None or owner._parent_incarnation is None or image is None:
+                continue
+            stored = image.get(BUCKET_FIELD_PINC, {}).get("S")
+            if stored is None or stored == owner._parent_incarnation:
+                continue
+            try:
+                claimed = await restamp(*key, owner._parent_incarnation) or claimed
+            except Exception:
+                logger.warning(
+                    "could not claim a predecessor's bucket for resource=%s shard=%d",
+                    key[1],
+                    key[2],
+                    exc_info=True,
+                )
+        return claimed
 
     async def _run_owner_checks(self) -> None:
         """Run the owner checks this lease's commit deferred (ADR-150).
