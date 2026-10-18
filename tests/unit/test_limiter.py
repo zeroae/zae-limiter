@@ -1505,6 +1505,35 @@ class TestWriteOnEnter:
         )
         mock_repo.write_each.assert_not_called()
 
+    async def test_a_quota_credit_with_no_known_period_is_dropped(self):
+        """#721: a quota credit whose period cannot be told is dropped, not landed."""
+        from zae_limiter.lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(
+            side_effect=lambda **k: {"Update": {}} if any(k["deltas"].values()) else {}
+        )
+        ceiling = CreditCeiling(10_000, 10_000, None, (None, None), quota=True)
+
+        await write_credit(
+            mock_repo, "e1", "gpt-4", {"q": -5000}, 0, {"q": ceiling}, (1, None, (None,) * 3)
+        )
+        mock_repo.write_each.assert_not_called()
+
+    async def test_a_guarded_trimmed_write_propagates_other_errors(self):
+        """Only a failed condition drops a quota credit; anything else propagates."""
+        from zae_limiter.lease import write_credit
+        from zae_limiter.models import QuotaPeriodPin
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(return_value={"Update": {}})
+        mock_repo.write_each.side_effect = RuntimeError("throttled")
+        ceiling = CreditCeiling(10_000, 10_000, None, (None, None), True, QuotaPeriodPin(9))
+
+        with pytest.raises(RuntimeError, match="throttled"):
+            await write_credit(mock_repo, "e1", "gpt-4", {"q": -5000}, 0, {"q": ceiling}, None)
+        mock_repo.write_each.assert_called_once()
+
     async def test_nothing_to_adjust_writes_nothing(self):
         from zae_limiter.lease import write_credit
 
