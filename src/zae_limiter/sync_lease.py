@@ -797,6 +797,11 @@ class SyncLease:
                         resource=resource,
                         consumed=consumed,
                         refill_amounts=refill_amounts,
+                        read_tokens={
+                            e.limit.name: e._original_tokens_milli
+                            for e in group_entries
+                            if not e._seed and e.limit.name in consumed
+                        },
                         now_ms=now_ms,
                         expected_rf=expected_rf,
                         ttl_seconds=ttl_seconds,

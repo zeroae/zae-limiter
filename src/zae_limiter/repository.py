@@ -2898,10 +2898,20 @@ class Repository:
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
+        read_tokens: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
         ADD tk:(refill - consumed), tc:consumed for each limit.
+
+        ``read_tokens`` (limit name -> ``tk`` as read, millitokens): each
+        limit whose refill delta is positive — a drip, a reset, a roll, a
+        window opened — is pinned on ``tk <= :read``. The delta was computed
+        from that read, and a credit landing in between (a refund, a release)
+        moves neither ``rf`` nor ``vu``: the refill would stack on top of it.
+        A pin that fails sends the write to the consumption-only retry, as a
+        lost ``rf`` lock does. A trim (delta <= 0) stays unpinned so it still
+        clamps.
         SET rf:now. CONDITION rf = :expected.
 
         Args:
@@ -3131,6 +3141,13 @@ class Repository:
                 floor_val = f":bf{i}"
                 attr_values[floor_val] = {"N": str(floor)}
                 condition_parts.append(f"{tk_alias} >= {floor_val}")
+
+            # A raise computed from the read must not stack on a credit that
+            # landed since: speculative debits only lower `tk`, so `tk` above
+            # the read means a refund or release moved it (#730).
+            if r > 0 and read_tokens is not None and name in read_tokens:
+                attr_values[f":bk{i}"] = {"N": str(read_tokens[name])}
+                condition_parts.append(f"{tk_alias} <= :bk{i}")
 
         # #633: limits missing from this existing item are seeded in full.
         seeded_tz: str | None = None

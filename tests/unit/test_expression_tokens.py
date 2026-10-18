@@ -135,6 +135,24 @@ class TestCompositeBuilders:
             bucket_attr(HYPHENATED, BUCKET_FIELD_TK),
         }
 
+    def test_normal_pinning_the_balance_it_raised(self) -> None:
+        """#730 R5: a limit whose refill delta is positive is pinned on `tk` as
+        read; a trim (delta <= 0) is not, so it still clamps."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000, HYPHENATED: 2000, "rpm": 0},
+            refill_amounts={DOTTED: -500, HYPHENATED: 500, "rpm": 300},
+            now_ms=2_000,
+            expected_rf=1_000,
+            read_tokens={DOTTED: 9_000, HYPHENATED: 4_000, "rpm": 7_000},
+        )["Update"]
+        assert_expression_safe(update)
+        condition = update["ConditionExpression"]
+        assert "#bt0 <= :bk0" not in condition  # the trim
+        assert "#bt1 <= :bk1" in condition and "#bt2 <= :bk2" in condition
+        assert update["ExpressionAttributeValues"][":bk1"] == {"N": "4000"}
+
     def test_normal_with_every_optional_clause(self) -> None:
         """Windows, window lengths, ttl and vu share the expression without
         colliding with the per-limit tokens."""
@@ -488,6 +506,11 @@ class TestAggregatorWrites:
             bucket_attr(DOTTED, BUCKET_FIELD_TK),
             bucket_attr(HYPHENATED, BUCKET_FIELD_TK),
         }
+        # #730 R5: each raise is pinned on the balance the image showed.
+        values = kwargs["ExpressionAttributeValues"]
+        for i in range(2):
+            if values[f":rd{i}"] > 0:
+                assert f"#rt{i} <= :rk{i}" in kwargs["ConditionExpression"]
 
     def test_window_roll_and_marker(self) -> None:
         """#640: a rolled window and a carried one each stamp `wa` through a
@@ -571,6 +594,9 @@ class TestAggregatorWrites:
         kwargs = table.update_item.call_args.kwargs
         assert_expression_safe(kwargs)
         assert kwargs["ExpressionAttributeNames"]["#gq0"] == bucket_attr(DOTTED, BUCKET_FIELD_GC)
+        # #730 R5: the roll raises the balance, so it is pinned on the image's.
+        assert "#wtk0 <= :wk0" in kwargs["ConditionExpression"]
+        assert kwargs["ExpressionAttributeValues"][":wk0"] == 0
 
     def test_clone_donor_update(self) -> None:
         """Path 2's donor debit (ADR-145): both guards, legacy branch, two

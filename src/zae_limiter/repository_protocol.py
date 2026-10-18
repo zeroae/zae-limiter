@@ -621,8 +621,14 @@ class RepositoryProtocol(Protocol):
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
+        read_tokens: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
+
+        ``read_tokens`` (limit name -> ``tk`` as read) pins every limit whose
+        refill delta is positive on ``tk <= :read``, so a credit landing
+        between the read and the write fails the write rather than having the
+        refill stack on it (#730).
 
         ``owner`` is ``(cascade, parent_id)`` from the item owner's META, read
         this pass: when given, both stamps are rewritten so the fast path's
