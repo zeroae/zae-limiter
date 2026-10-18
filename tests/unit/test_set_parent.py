@@ -1095,6 +1095,107 @@ async def _set(
     )
 
 
+class TestAStampedShardIsMaterialisedWhereItIs:
+    """A `vu = 0` on one shard of a sharded bucket is cleared on that shard.
+
+    Review of #716 (3rd), finding 3: the owner-check fallback stamps `vu = 0`,
+    but a sharded entity's slow path was sent to another shard, so the stamped
+    one kept its stale owner and failed every fast-path write that drew it.
+    """
+
+    @staticmethod
+    async def _two_shards(repo: Repository) -> None:
+        for resource in ("gpt-4", "llm"):
+            await repo.set_resource_defaults(resource, [RPM])
+        await repo.create_entity("org-a")
+        await repo.create_entity("org-b")
+        await repo.create_entity("user", parent_id="org-a", cascade=True)
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+                pass
+        await repo.bump_shard_count("user", "llm", 1)
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with RateLimiter(repository=repo) as limiter:
+                async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+                    pass
+        assert await _item(repo, "user", "llm", 1) is not None
+
+    @staticmethod
+    async def _set_shard1(repo: Repository, expression: str, values: dict) -> None:
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=TABLE,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user", "llm", 1)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression=expression,
+            ExpressionAttributeValues=values,
+        )
+
+    async def test_the_owner_fallback_restamps_a_sharded_cascading_child(self, repo):
+        """The vu0-sharded probe."""
+        await self._two_shards(repo)
+        await repo.set_parent("user", "org-b")
+        # Shard 1: a create that read META before the move, its owner check failed.
+        await self._set_shard1(
+            repo,
+            "SET parent_id = :a, pgen = :g, vu = :z",
+            {":a": {"S": "org-a"}, ":g": {"N": "0"}, ":z": {"N": "0"}},
+        )
+        fresh = await _open_repo()
+        async with RateLimiter(repository=fresh) as limiter:
+            org_a = await _consumed(repo, "org-a", "llm")
+            with patch("zae_limiter.repository.random.randrange", return_value=1):
+                for _ in range(3):  # the first learns the count; then shard 1 is drawn
+                    async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+                        pass
+        await fresh.close()
+
+        shard1 = await _item(repo, "user", "llm", 1)
+        assert _stamp(shard1)[:2] == (True, "org-b")
+        assert schema.BUCKET_FIELD_VU not in shard1
+        assert await _consumed(repo, "org-a", "llm") == org_a
+
+    async def test_a_trimming_vu_on_a_sharded_bucket_is_cleared_there(self, repo):
+        """The same route for #679's credit clamp, which main shares (not fixed there)."""
+        await self._two_shards(repo)
+        await self._set_shard1(repo, "SET vu = :z", {":z": {"N": "0"}})
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with RateLimiter(repository=repo) as limiter:
+                async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+                    pass
+        assert schema.BUCKET_FIELD_VU not in await _item(repo, "user", "llm", 1)
+
+    def test_a_short_balance_is_not_a_stamp_failure(self):
+        from zae_limiter.limiter import _failed_only_on_its_stamp
+        from zae_limiter.models import BucketState
+
+        def state(name, tokens):
+            return BucketState(
+                entity_id="user",
+                resource="llm",
+                limit_name=name,
+                tokens_milli=tokens,
+                last_refill_ms=0,
+                capacity_milli=100_000,
+                refill_amount_milli=100_000,
+                refill_period_ms=60_000,
+            )
+
+        consume = {"rpm": 1}
+        ok = [state("rpm", 5_000), state("wcu", 5_000)]
+        assert _failed_only_on_its_stamp(SpeculativeResult(success=False, old_buckets=ok), consume)
+        for buckets in (
+            [state("rpm", 500), state("wcu", 5_000)],  # rpm short
+            [state("rpm", 5_000), state("wcu", 0)],  # wcu short
+            [state("wcu", 5_000)],  # rpm missing from the item
+            None,  # no image
+        ):
+            result = SpeculativeResult(success=False, old_buckets=buckets)
+            assert not _failed_only_on_its_stamp(result, consume)
+
+
 class TestTheItemOverrulesTheDebitedParent:
     """The warm-path decision, on the result alone."""
 
