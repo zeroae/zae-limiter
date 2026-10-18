@@ -8759,20 +8759,29 @@ class Repository:
                     return BucketOperationResult(
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
                     )
-                result, landed = await self._top_up_new_bucket(
-                    entity_id,
-                    resource,
-                    resolved,
-                    source,
-                    requested,
-                    now_ms,
-                    operation_id,
-                    token,
-                    # Per attempt, like the shard write: the create is re-planned
-                    # at a later instant, so one token across attempts would be an
-                    # IdempotentParameterMismatch on every retry.
-                    f"{token}-c{attempt}",
-                )
+                try:
+                    result, landed = await self._top_up_new_bucket(
+                        entity_id,
+                        resource,
+                        resolved,
+                        source,
+                        requested,
+                        now_ms,
+                        operation_id,
+                        token,
+                        # Per attempt, like the shard write: the create is
+                        # re-planned at a later instant, so one token across
+                        # attempts would be an IdempotentParameterMismatch on
+                        # every retry.
+                        f"{token}-c{attempt}",
+                    )
+                except Exception:
+                    mine = await self._landed_by(
+                        entity_id, resource, operation_id, operation, token
+                    )
+                    if mine is None:
+                        raise
+                    return await self._audited(operation, mine, principal)
                 if not landed:
                     continue  # lost the create race (or its response): re-read
             else:
@@ -8817,10 +8826,25 @@ class Repository:
                         client_request_token=f"{token}-{attempt}",
                     )
                 except ClientError as e:
-                    if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
+                    if e.response.get("Error", {}).get("Code") in _OPERATION_RETRY_CODES:
+                        last_error = e
+                        continue
+                    mine = await self._landed_by(
+                        entity_id, resource, operation_id, operation, token
+                    )
+                    if mine is None:
                         raise
-                    last_error = e
-                    continue
+                    return await self._audited(operation, mine, principal)
+                except Exception:
+                    # Not a DynamoDB answer at all (a read timeout, a dropped
+                    # connection): the write may have landed. If this call's
+                    # own record is there, it did — audit it and return.
+                    mine = await self._landed_by(
+                        entity_id, resource, operation_id, operation, token
+                    )
+                    if mine is None:
+                        raise
+                    return await self._audited(operation, mine, principal)
             return await self._audited(operation, result, principal)
         recorded = await self._operation_record(entity_id, resource, operation_id, operation)
         if recorded is not None:
@@ -8943,6 +8967,29 @@ class Repository:
             ),
             item.get("writer", {}).get("S"),
         )
+
+    async def _landed_by(
+        self,
+        entity_id: str,
+        resource: str,
+        operation_id: str,
+        operation: bucket_ops.Operation,
+        token: str,
+    ) -> BucketOperationResult | None:
+        """This call's own recorded result, after an error that is not a lost race.
+
+        A non-retryable error (a 5xx, a read timeout, a dropped connection)
+        can follow a write that landed. Only a record this call wrote counts;
+        when it is absent, or cannot be read, the caller re-raises the error.
+        """
+        try:
+            recorded = await self._operation_record(entity_id, resource, operation_id, operation)
+        except Exception:
+            logger.debug("Could not read the operation record after an error", exc_info=True)
+            return None
+        if recorded is None or recorded[1] != token:
+            return None
+        return recorded[0]
 
     async def _audited_if_mine(
         self,

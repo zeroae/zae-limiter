@@ -8,6 +8,7 @@ reset edge or window roll removes it), and the readers that must show it.
 """
 
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 
@@ -772,3 +773,79 @@ class TestSameKeyRaceAudit:
         assert await _drain(limiter, "e", "cal") == admitted
         events = [e for e in await repo.get_audit_events("e", limit=100) if e.action == action]
         assert len(events) == 1
+
+
+class TestErrorsAfterLanding:
+    """Targeted #720 review, finding 3: a write that lands but answers with an
+    error that is not a lost race (a read timeout, a dropped connection, a
+    5xx) is this call's operation: audited once, granted once, returned."""
+
+    @staticmethod
+    def _land_then(client, error):
+        real = client.transact_write_items
+        state = {"armed": True}
+
+        async def lands(**kw):
+            out = await real(**kw)
+            if state["armed"] and _carries_record(kw):
+                state["armed"] = False
+                raise error
+            return out
+
+        client.transact_write_items = lands
+        return real
+
+    @pytest.mark.parametrize("bucket", ["existing", "created"])
+    @pytest.mark.parametrize("kind", ["timeout", "server"])
+    async def test_a_landed_write_answered_with_an_error_is_returned(
+        self, limiter, clock, bucket, kind
+    ):
+        from botocore.exceptions import ReadTimeoutError
+
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        if bucket == "existing":
+            await _drain(limiter, "e", "cal")
+            clock[0] += 1
+        client = await repo._get_client()
+        error = (
+            ReadTimeoutError(endpoint_url="https://dynamodb")
+            if kind == "timeout"
+            else _tx_error("InternalServerError")
+        )
+        real = self._land_then(client, error)
+        try:
+            result = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="k1")
+        finally:
+            client.transact_write_items = real
+        assert result.amounts == {"cal": 5}
+        again = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="k1")  # caller retry
+        assert again == result
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == (5 if bucket == "existing" else 15)
+        events = [
+            e for e in await repo.get_audit_events("e", limit=100) if e.action == "bucket_topped_up"
+        ]
+        assert len(events) == 1
+
+    async def test_an_error_whose_record_cannot_be_read_is_raised(self, limiter, clock):
+        from botocore.exceptions import ReadTimeoutError
+
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        await _drain(limiter, "e", "cal")
+        clock[0] += 1
+        client = await repo._get_client()
+        real = self._land_then(client, ReadTimeoutError(endpoint_url="https://dynamodb"))
+
+        async def unreadable(*_a, **_k):
+            raise ReadTimeoutError(endpoint_url="https://dynamodb")
+
+        try:
+            with (
+                patch.object(repo, "_operation_record", side_effect=unreadable),
+                pytest.raises(ReadTimeoutError),
+            ):
+                await repo.top_up("e", "r", {"cal": 5})
+        finally:
+            client.transact_write_items = real
