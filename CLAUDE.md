@@ -1860,8 +1860,12 @@ exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed u
   key (DynamoDB answers a reused token with a new payload with
   `IdempotentParameterMismatchException`, itself an unclear outcome resolved by the record).
   The record stores its `writer` (that nonce), and only the committing call audits, so a
-  same-key race writes one audit event. `delete_entity` deletes the entity's records (one Query
-  per shard-0 partition). The principal and key are validated before any I/O, and a
+  same-key race writes one audit event; any other error after the write (timeout, 5xx) is
+  resolved the same way. A record belongs to one **incarnation** of its entity:
+  `create_entity` stamps META `incarnation` (ULID), each call reads META once (consistent,
+  +1 RCU) and stores it as `ent`; a record of another incarnation reads as absent and is
+  replaced (`attribute_not_exists(PK) OR ent <> :ent`). `delete_entity` deletes the entity's
+  records too (one Query per shard-0 partition), best effort only. The principal and key are validated before any I/O, and a
   post-commit audit failure is logged, never raised.
 - **Top-up:** a quota gains exactly N, split by coverage `S // gc` (`split_weighted`, remainder
   to the lowest shard, D1), and **`tu += portion`** — the whole portion, not only what lands
