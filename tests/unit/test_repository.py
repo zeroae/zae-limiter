@@ -996,6 +996,39 @@ class TestCompositeWritePaths:
             assert (values[":bq0"], values[":bqw1"]) == ({"N": "500"}, {"N": "7"})
 
     @pytest.mark.asyncio
+    async def test_build_composite_adjust_pins_the_reset_schedule_of_the_period(self, repo):
+        """#721: the calendar edge came from the lease's cron, so both writes pin the
+        reset-schedule strings it came from; item-level terms appear once."""
+        from zae_limiter.models import QuotaPeriodPin
+
+        period = QuotaPeriodPin(500, reset_sched_raw=("1m0h0", "UTC", None))
+        ceilings = {
+            name: CreditCeiling(10_000, 10_000, 1, (None, None), True, period)
+            for name in ("d", "e")
+        }
+        for trim in (False, True):
+            update = repo.build_composite_adjust(
+                entity_id="entity-1",
+                resource="gpt-4",
+                deltas={"d": -1000, "e": -1000},
+                ceilings=ceilings,
+                trim=trim,
+                pin=(1, None, (None, None, None)),
+            )["Update"]
+            condition = update["ConditionExpression"]
+            assert condition.count("#bqis = :bqis") == 1
+            assert condition.count("#bqiz = :bqiz") == 1
+            assert "attribute_not_exists(#bqo0)" in condition
+            assert "attribute_not_exists(#bqo1)" in condition
+            names, values = update["ExpressionAttributeNames"], update["ExpressionAttributeValues"]
+            assert (names["#bqis"], names["#bqiz"], names["#bqo1"]) == (
+                "rsched",
+                "sched_tz",
+                "b_e_rsched",
+            )
+            assert (values[":bqis"], values[":bqiz"]) == ({"S": "1m0h0"}, {"S": "UTC"})
+
+    @pytest.mark.asyncio
     async def test_build_composite_adjust_trim_stamps_vu_in_the_same_write(self, repo):
         """The fallback (#721): the same ADD, unconditional, plus `vu = 0`."""
         update = repo.build_composite_adjust(

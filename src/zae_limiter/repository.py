@@ -168,15 +168,27 @@ def _credit_period_terms(
     """The terms that keep a quota credit in its debit's period (#721).
 
     Calendar: the item's ``rf`` is still before the first reset edge after the
-    one the lease saw (a reset pass stamps ``rf`` at or past it). Session: the
-    window start and applied marker are still the ones the lease saw.
-    Tokens are positional (#634).
+    one the lease saw (a reset pass stamps ``rf`` at or past it), and the
+    reset schedule that edge came from is still the item's (``rsched``,
+    ``sched_tz``, ``b_{name}_rsched``). Session: the window start and applied
+    marker are still the ones the lease saw. Tokens are positional (#634).
     """
     terms: list[str] = []
     if period.reset_edge_ms is not None:
         names["#bqrf"] = schema.BUCKET_FIELD_RF
         values[f":bq{i}"] = {"N": str(period.reset_edge_ms)}
         terms.append(f"#bqrf < :bq{i}")
+    if period.reset_sched_raw is not None:
+        item_rsched, item_tz, own_rsched = period.reset_sched_raw
+        for alias, token, field, raw in (
+            ("#bqis", ":bqis", schema.BUCKET_FIELD_RSCHED, item_rsched),
+            ("#bqiz", ":bqiz", schema.BUCKET_FIELD_SCHED_TZ, item_tz),
+        ):
+            if alias not in names:  # item-level: once per write, however many quotas
+                names[alias] = field
+                terms.append(_pin_string(alias, token, raw, values))
+        names[f"#bqo{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED)
+        terms.append(_pin_string(f"#bqo{i}", f":bqo{i}", own_rsched, values))
     if period.window is not None:
         for code, field, number in zip(
             ("w", "a"),

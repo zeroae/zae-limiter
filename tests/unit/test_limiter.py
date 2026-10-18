@@ -13721,6 +13721,31 @@ class TestSelfTrimmingRefunds:
         assert item[bucket_attr("d", BUCKET_FIELD_TK)]["N"] == "9000"  # day 1's: dropped
         assert item[bucket_attr("m", BUCKET_FIELD_TK)]["N"] == "98000"  # refunded
 
+    async def test_cron_change_moves_reset_before_guard_edge(self, two):
+        """The calendar guard's edge comes from the cron the lease held (#730 fourth
+        review). An entity-level change moves the reset from 06:00 to 00:00 under an
+        open lease; another client resets at 00:00:01 and spends 6; `rf < 06:00`
+        still held, so the old period's refund landed in the new one: 15 against 10.
+        The guard now also pins the reset-schedule strings, and the credit drops."""
+        l1, l2, now = two
+        now[0] = self.T0 + 59_000
+        r1, r2 = l1._repository, l2._repository
+        await r1.set_limits("cc", [Limit.quota("q", 10, cron="0 6 * * *")], resource="r")
+        async with l1.acquire("cc", "r", {"q": 1}):
+            pass  # 9
+
+        today = 0
+        with pytest.raises(RuntimeError):
+            async with l1.acquire("cc", "r", {"q": 5}):  # 4, in the old period
+                await r2.set_limits("cc", [Limit.quota("q", 10, cron="0 0 * * *")], resource="r")
+                now[0] = self.MIDNIGHT + 1000
+                async with l2.acquire("cc", "r", {"q": 6}):  # resets under the new cron
+                    today += 6
+                raise RuntimeError("body failed")
+
+        today += await self._drain(l2, "cc")
+        assert today == 10
+
     async def test_a_lowered_limit_clamped_before_the_refund(self, two):
         """The limit drops to 50 and another process's slow pass clamps to it (moving
         `rf`) before the refund: the in-memory ceiling is still 100."""

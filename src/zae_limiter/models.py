@@ -2222,10 +2222,18 @@ class QuotaPeriodPin:
     at or past the edge; ``None`` when no edge is in reach). A session quota:
     the window start and applied marker (``b_{name}_ws`` / ``b_{name}_wa``)
     are still the ones the lease saw, each ``None`` when absent.
+
+    A calendar quota's edge is computed from the reset cron the lease held, so
+    ``reset_sched_raw`` pins the stored strings that cron came from — the
+    item's ``rsched`` and ``sched_tz`` and the limit's ``b_{name}_rsched`` —
+    each ``None`` when absent. A reset-schedule change under an open lease can
+    fire a reset before the old edge; it moves one of these, and the credit is
+    dropped.
     """
 
     reset_edge_ms: int | None = None
     window: tuple[int | None, int | None] | None = None
+    reset_sched_raw: tuple[str | None, str | None, str | None] | None = None
 
 
 #: (``shard_count``, ``vu``, (``sched``, ``rsched``, ``sched_tz``)) of a bucket

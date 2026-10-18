@@ -122,6 +122,7 @@ def credit_ceilings(
                 now_ms,
                 period_image.rf if period_image is not None else None,
                 period_image.limit(name) if period_image is not None else None,
+                image.item_sched if image is not None else None,
             )
         except Exception:
             logger.warning("Could not check a credit against its ceiling", exc_info=True)
@@ -134,6 +135,7 @@ def credit_ceiling(
     now_ms: int,
     rf_ms: int | None = None,
     period_limit: CreditLimitImage | None = None,
+    item_sched: tuple[str | None, str | None, str | None] | None = None,
 ) -> CreditCeiling:
     """What one credited limit is checked against, and what that check pins (#721).
 
@@ -151,7 +153,11 @@ def credit_ceiling(
     ``period_limit`` (``ws``/``wa``) are the newest known view of the item's
     period, which may be newer than the ceiling's state; ``period_limit``
     defaults to ``limit_image``. Without ``rf_ms`` the period cannot be told
-    and the credit is dropped.
+    and the credit is dropped. A calendar quota's edge comes from the reset
+    cron the lease held, so the period also pins the stored strings that cron
+    came from (``item_sched``'s ``rsched`` / ``sched_tz`` and the limit's own
+    ``b_{name}_rsched``, from the same image as the ceiling); without them the
+    credit is dropped too.
 
     The one place the ceiling and its pins are decided, with
     ``SyncRepository._credit_limit_terms`` the one place they become condition
@@ -167,8 +173,11 @@ def credit_ceiling(
                 period = QuotaPeriodPin(
                     window=(period_limit.window_start_ms, period_limit.window_applied_ms)
                 )
-        else:
-            period = QuotaPeriodPin(reset_edge_ms=next_reset_edge(state.reset_sched, now_ms=rf_ms))
+        elif limit_image is not None and item_sched is not None:
+            period = QuotaPeriodPin(
+                reset_edge_ms=next_reset_edge(state.reset_sched, now_ms=rf_ms),
+                reset_sched_raw=(item_sched[1], item_sched[2], limit_image.sched_raw[1]),
+            )
     if limit_image is None:
         return CreditCeiling(
             ceiling_milli=int(state.ceiling_milli(now_ms)),

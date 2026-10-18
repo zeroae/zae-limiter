@@ -336,7 +336,9 @@ class TestCompositeBuilders:
         from zae_limiter.models import QuotaPeriodPin
 
         ceilings = {
-            DOTTED: CreditCeiling(5000, 10_000, 2, (None, None), True, QuotaPeriodPin(9)),
+            DOTTED: CreditCeiling(
+                5000, 10_000, 2, (None, None), True, QuotaPeriodPin(9, None, ("1m0h0", None, None))
+            ),
             HYPHENATED: CreditCeiling(
                 9000, 9000, 1, (None, "1m0h0"), True, QuotaPeriodPin(window=(3, 3))
             ),
