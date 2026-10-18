@@ -849,3 +849,71 @@ class TestErrorsAfterLanding:
                 await repo.top_up("e", "r", {"cal": 5})
         finally:
             client.transact_write_items = real
+
+
+class TestRecordsBelongToOneIncarnation:
+    """Targeted #720 review, finding 1: an operation record outlived its
+    entity when delete_entity could not find it (the shard-0 bucket had
+    expired), and the recreated entity's top-up with the same key returned
+    the old result while granting nothing."""
+
+    async def test_delete_entity_leftover_when_shard0_expired(self, limiter, clock):
+        repo = limiter._repository
+        await repo.create_entity("e")
+        await repo.set_resource_defaults("r", [CAL])
+        await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy")
+        client = await repo._get_client()
+        shard0 = {
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, "e", "r", 0)},
+            "SK": {"S": schema.sk_state()},
+        }
+        await client.delete_item(TableName=repo.table_name, Key=shard0)  # the TTL sweep
+        await repo.delete_entity("e")  # cannot find the record any more
+        await repo.create_entity("e")
+        await _drain(limiter, "e", "cal")
+        clock[0] += 1
+        result = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy")
+        assert result.amounts == {"cal": 5}
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 5  # a fresh operation, not the old one
+
+    @pytest.mark.parametrize("meta", ["legacy", "none"])
+    async def test_an_entity_without_an_incarnation_is_still_one_identity(
+        self, limiter, clock, meta
+    ):
+        """META written before the stamp is identified by created_at; an
+        entity with no META at all by a constant: a key retry still hits."""
+        repo = limiter._repository
+        if meta == "legacy":
+            await repo.create_entity("e")
+            client = await repo._get_client()
+            await client.update_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": schema.pk_entity(repo._namespace_id, "e")},
+                    "SK": {"S": schema.sk_meta()},
+                },
+                UpdateExpression="REMOVE incarnation",
+            )
+        await limiter.set_limits("e", [CAL], resource="r")
+        await _drain(limiter, "e", "cal")
+        clock[0] += 1
+        first = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="k")
+        again = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="k")
+        assert again == first
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 5
+
+    async def test_meta_without_any_identity_reads_as_none(self, limiter):
+        repo = limiter._repository
+        await repo.create_entity("e")
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(repo._namespace_id, "e")},
+                "SK": {"S": schema.sk_meta()},
+            },
+            UpdateExpression="REMOVE incarnation, created_at",
+        )
+        assert await repo._entity_incarnation("e") == "-"
