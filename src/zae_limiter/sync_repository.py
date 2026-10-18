@@ -7485,7 +7485,11 @@ class SyncRepository:
                 entity_id, resource, operation_id, operation, incarnation
             )
         except Exception:
-            logger.debug("Could not read the operation record after an error", exc_info=True)
+            logger.warning(
+                "%s may have landed but its operation record could not be read; if it did, its audit event is missing",
+                operation,
+                exc_info=True,
+            )
             return None
         if recorded is None or recorded[1] != token:
             return None

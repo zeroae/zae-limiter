@@ -828,7 +828,10 @@ class TestErrorsAfterLanding:
         ]
         assert len(events) == 1
 
-    async def test_an_error_whose_record_cannot_be_read_is_raised(self, limiter, clock):
+    async def test_an_error_whose_record_cannot_be_read_is_raised(self, limiter, clock, caplog):
+        """Round-4 review, F3: when both the write's response and the record
+        read fail, the error is raised and the possibly lost audit is logged at
+        WARNING, without the entity id."""
         from botocore.exceptions import ReadTimeoutError
 
         repo = limiter._repository
@@ -849,6 +852,9 @@ class TestErrorsAfterLanding:
                 await repo.top_up("e", "r", {"cal": 5})
         finally:
             client.transact_write_items = real
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any("audit event is missing" in r.getMessage() for r in warnings)
+        assert all("'e'" not in r.getMessage() and " e " not in r.getMessage() for r in warnings)
 
 
 class TestRecordsBelongToOneIncarnation:

@@ -9026,7 +9026,15 @@ class Repository:
                 entity_id, resource, operation_id, operation, incarnation
             )
         except Exception:
-            logger.debug("Could not read the operation record after an error", exc_info=True)
+            # The write may have landed, and only this read could tell: if it
+            # did, its audit event is lost. WARNING so an operator can look;
+            # no entity id in the message, as for a failed rejected-move commit.
+            logger.warning(
+                "%s may have landed but its operation record could not be read; "
+                "if it did, its audit event is missing",
+                operation,
+                exc_info=True,
+            )
             return None
         if recorded is None or recorded[1] != token:
             return None
