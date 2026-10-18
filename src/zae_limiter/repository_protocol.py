@@ -1481,6 +1481,7 @@ class RepositoryProtocol(Protocol):
         resource: str,
         limits: Sequence[str] | None = None,
         principal: str | None = None,
+        idempotency_key: str | None = None,
     ) -> "BucketOperationResult":
         """Restore an entity's balance on one resource to its full share, now (ADR-149).
 
@@ -1495,6 +1496,7 @@ class RepositoryProtocol(Protocol):
         resource: str,
         amounts: dict[str, int],
         principal: str | None = None,
+        idempotency_key: str | None = None,
     ) -> "BucketOperationResult":
         """Add whole tokens per limit to an entity's balance on one resource, now (ADR-149).
 

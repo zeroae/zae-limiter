@@ -2,8 +2,10 @@
 
 import asyncio
 import functools
+import hashlib
 import logging
 import random
+import re
 import time
 import warnings
 from collections.abc import Callable, Sequence
@@ -91,6 +93,23 @@ _BATCH_GET_RETRY_BASE_DELAY = 0.05
 # `UpdateItem`), a cancelled transaction (any shard's condition, or a conflict
 # with an in-flight transaction) and a conflict reported on its own.
 _OPERATION_MAX_ATTEMPTS = 4
+
+
+_IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+
+
+def _validate_idempotency_key(key: str | None) -> None:
+    """A caller's operation id (ADR-149): 1-64 of ``[A-Za-z0-9._:-]``.
+
+    It becomes a sort key (``#OP#{key}``), so ``#`` and anything unprintable
+    are refused, and the length is bounded.
+    """
+    if key is not None and (not isinstance(key, str) or not _IDEMPOTENCY_KEY.fullmatch(key)):
+        raise ValidationError(
+            "idempotency_key",
+            str(key),
+            "must be 1-64 characters of letters, digits, '.', '_', ':' or '-'",
+        )
 
 
 def _validate_principal(principal: str | None) -> None:
@@ -8500,6 +8519,7 @@ class Repository:
         resource: str,
         limits: Sequence[str] | None = None,
         principal: str | None = None,
+        idempotency_key: str | None = None,
     ) -> BucketOperationResult:
         """Restore an entity's balance on one resource to its full share, now (ADR-149).
 
@@ -8526,6 +8546,12 @@ class Repository:
             limits: Limit names to restore. ``None`` restores every limit
                 resolved for the pair.
             principal: Caller identity for audit logging.
+            idempotency_key: Names this operation (1-64 characters: letters,
+                digits, ``.``, ``_``, ``:``, ``-``). A retry with the same key
+                within three days is applied once and returns the first call's
+                result. **Without a key, an error from this call leaves the
+                outcome unknown**: the reset may or may not have landed, and
+                retrying it may apply it twice.
 
         Returns:
             The shards written and, per limit, the tokens restored.
@@ -8539,9 +8565,10 @@ class Repository:
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
         _validate_principal(principal)
+        _validate_idempotency_key(idempotency_key)
         requested = None if limits is None else dict.fromkeys(limits, 0)
         return await self._operate_on_bucket(
-            bucket_ops.RESET, entity_id, resource, requested, principal
+            bucket_ops.RESET, entity_id, resource, requested, principal, idempotency_key
         )
 
     @clears_rejection_cache
@@ -8551,6 +8578,7 @@ class Repository:
         resource: str,
         amounts: dict[str, int],
         principal: str | None = None,
+        idempotency_key: str | None = None,
     ) -> BucketOperationResult:
         """Add tokens to an entity's balance on one resource, now (ADR-149).
 
@@ -8581,6 +8609,12 @@ class Repository:
             resource: Resource to credit.
             amounts: Whole tokens to add per limit name (each > 0).
             principal: Caller identity for audit logging.
+            idempotency_key: Names this operation (1-64 characters: letters,
+                digits, ``.``, ``_``, ``:``, ``-``) — a purchase id, say. A
+                retry with the same key within three days is applied once and
+                returns the first call's result. **Without a key, an error
+                from this call leaves the outcome unknown**: the tokens may or
+                may not have been granted, and retrying may grant them twice.
 
         Returns:
             The shards written and, per limit, the tokens granted.
@@ -8598,6 +8632,7 @@ class Repository:
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
         _validate_principal(principal)
+        _validate_idempotency_key(idempotency_key)
         if not amounts:
             raise ValidationError("amounts", "{}", "name at least one limit to top up")
         for name, amount in amounts.items():
@@ -8612,7 +8647,7 @@ class Repository:
                     f"each amount must be at most {schedule.MAX_TOKENS}",
                 )
         return await self._operate_on_bucket(
-            bucket_ops.TOP_UP, entity_id, resource, dict(amounts), principal
+            bucket_ops.TOP_UP, entity_id, resource, dict(amounts), principal, idempotency_key
         )
 
     async def _operate_on_bucket(
@@ -8622,6 +8657,7 @@ class Repository:
         resource: str,
         requested: dict[str, int] | None,
         principal: str | None,
+        idempotency_key: str | None = None,
     ) -> BucketOperationResult:
         """Read, plan and write a reset or top-up, retrying on a conflict (ADR-149 §4)."""
         resolved, _on_unavailable, source = await self._config_cache._resolve_limits_uncached(
@@ -8650,12 +8686,23 @@ class Repository:
         # whether it did. A marker on the bucket items could not: a concurrent
         # reset or top-up overwrote it, a landed write read as unlanded and was
         # applied again (PR #720 review).
-        operation_id = str(ULID())
+        operation_id = idempotency_key or str(ULID())
+        if idempotency_key is not None:
+            # A caller retry: the first call's record, when it landed, is the
+            # answer (1 strongly consistent read, paid only with a key).
+            recorded = await self._operation_record(entity_id, resource, operation_id, operation)
+            if recorded is not None:
+                return recorded
+        # DynamoDB caps a ClientRequestToken at 36 characters; a caller's key
+        # may be longer, so the token is derived from it.
+        token = hashlib.sha256(operation_id.encode()).hexdigest()[:32]
         last_error: Exception | None = None
         for attempt in range(_OPERATION_MAX_ATTEMPTS):
             if attempt:
                 # A failed write may have landed: its record says so.
-                recorded = await self._operation_record(entity_id, resource, operation_id)
+                recorded = await self._operation_record(
+                    entity_id, resource, operation_id, operation
+                )
                 if recorded is not None:
                     return await self._audited(operation, recorded, principal)
                 # Full jitter, as the acquire's own transaction retry.
@@ -8668,7 +8715,7 @@ class Repository:
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
                     )
                 result, landed = await self._top_up_new_bucket(
-                    entity_id, resource, resolved, source, requested, now_ms, operation_id
+                    entity_id, resource, resolved, source, requested, now_ms, operation_id, token
                 )
                 if not landed:
                     continue  # lost the create race (or its response): re-read
@@ -8709,7 +8756,7 @@ class Repository:
                         ],
                         # Per attempt: a re-planned payload under the same token
                         # would be an IdempotentParameterMismatch.
-                        client_request_token=f"{operation_id}-{attempt}",
+                        client_request_token=f"{token}-{attempt}",
                     )
                 except ClientError as e:
                     if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
@@ -8717,7 +8764,7 @@ class Repository:
                     last_error = e
                     continue
             return await self._audited(operation, result, principal)
-        recorded = await self._operation_record(entity_id, resource, operation_id)
+        recorded = await self._operation_record(entity_id, resource, operation_id, operation)
         if recorded is not None:
             return await self._audited(operation, recorded, principal)
         raise RateLimiterUnavailable(
@@ -8798,15 +8845,30 @@ class Repository:
         }
 
     async def _operation_record(
-        self, entity_id: str, resource: str, operation_id: str
+        self,
+        entity_id: str,
+        resource: str,
+        operation_id: str,
+        operation: bucket_ops.Operation,
     ) -> BucketOperationResult | None:
-        """The result an operation recorded, or None when it has not landed (ADR-149)."""
+        """The result an operation recorded, or None when it has not landed (ADR-149).
+
+        Raises:
+            ValidationError: the id names a different kind of operation (a
+                caller reused an idempotency key for a reset and a top-up).
+        """
         item = await self._get_item_consistent(
             schema.pk_bucket(self._namespace_id, entity_id, resource, 0),
             schema.sk_operation(operation_id),
         )
         if item is None:
             return None
+        if item["operation"]["S"] != operation:
+            raise ValidationError(
+                "idempotency_key",
+                operation_id,
+                f"already used for a {item['operation']['S']} of this entity and resource",
+            )
         return BucketOperationResult(
             entity_id,
             resource,
@@ -8882,6 +8944,7 @@ class Repository:
         requested: dict[str, int],
         now_ms: int,
         operation_id: str,
+        token: str,
     ) -> tuple[BucketOperationResult, bool]:
         """D5: a top-up with no bucket creates shard 0 holding its share plus the quota top-up.
 
@@ -8939,7 +9002,7 @@ class Repository:
                     create,
                     self.build_operation_record(bucket_ops.TOP_UP, operation_id, result, now_ms),
                 ],
-                client_request_token=f"{operation_id}-create",
+                client_request_token=f"{token}-c",
             )
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:

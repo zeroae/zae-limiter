@@ -9022,6 +9022,45 @@ class TestResetAndTopUp:
         assert result.shards == 1
         assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 100_000
 
+    async def test_a_retry_with_the_same_idempotency_key_is_applied_once(self, repo):
+        """The caller saw an error and retried with the same key: the first
+        call's result comes back and nothing is granted twice."""
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
+        repo._now_ms = lambda: _OP_T0 + 1
+        key = "purchase:" + "x" * 55  # 64 characters, longer than a request token
+        first = await repo.top_up("e", "r", {"cal": 5}, idempotency_key=key)
+        again = await repo.top_up("e", "r", {"cal": 5}, idempotency_key=key)
+        assert again == first
+        assert _op_num(await _op_item(repo, "e", "r"), "cal", BUCKET_FIELD_TK) == 5_000
+        assert (
+            len([e for e in await repo.get_audit_events("e") if e.action == "bucket_topped_up"])
+            == 1
+        )
+
+    async def test_an_idempotency_key_names_one_kind_of_operation(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM])
+        repo._now_ms = lambda: _OP_T0
+        await repo.reset_bucket("e", "r", idempotency_key="k1")
+        await repo.reset_bucket("e", "r", idempotency_key="k1")  # a retry: fine
+        with pytest.raises(ValidationError, match="already used for a reset"):
+            await repo.top_up("e", "r", {"rpm": 1}, idempotency_key="k1")
+
+    @pytest.mark.parametrize("key", ["", "a#b", "x" * 65, "sp ace", 7])
+    async def test_an_idempotency_key_is_validated_before_any_io(self, repo, key):
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(ValidationError, match="idempotency_key"),
+        ):
+            await repo.reset_bucket("e", "r", idempotency_key=key)
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(ValidationError, match="idempotency_key"),
+        ):
+            await repo.top_up("e", "r", {"rpm": 1}, idempotency_key=key)
+
     async def test_an_unexpected_write_error_is_not_retried(self, repo):
         await repo.set_limits("e", [_OP_RPM], resource="r")
         await _op_put_shard(repo, "e", "r", [_OP_RPM])

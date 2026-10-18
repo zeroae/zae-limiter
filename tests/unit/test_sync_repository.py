@@ -7597,6 +7597,42 @@ class TestResetAndTopUp:
         assert result.shards == 1
         assert _op_num(_op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 100000
 
+    def test_a_retry_with_the_same_idempotency_key_is_applied_once(self, repo):
+        """The caller saw an error and retried with the same key: the first
+        call's result comes back and nothing is granted twice."""
+        _stamp_deployed(repo)
+        repo.set_limits("e", [_OP_CAL], resource="r")
+        _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
+        repo._now_ms = lambda: _OP_T0 + 1
+        key = "purchase:" + "x" * 55
+        first = repo.top_up("e", "r", {"cal": 5}, idempotency_key=key)
+        again = repo.top_up("e", "r", {"cal": 5}, idempotency_key=key)
+        assert again == first
+        assert _op_num(_op_item(repo, "e", "r"), "cal", BUCKET_FIELD_TK) == 5000
+        assert len([e for e in repo.get_audit_events("e") if e.action == "bucket_topped_up"]) == 1
+
+    def test_an_idempotency_key_names_one_kind_of_operation(self, repo):
+        repo.set_limits("e", [_OP_RPM], resource="r")
+        _op_put_shard(repo, "e", "r", [_OP_RPM])
+        repo._now_ms = lambda: _OP_T0
+        repo.reset_bucket("e", "r", idempotency_key="k1")
+        repo.reset_bucket("e", "r", idempotency_key="k1")
+        with pytest.raises(ValidationError, match="already used for a reset"):
+            repo.top_up("e", "r", {"rpm": 1}, idempotency_key="k1")
+
+    @pytest.mark.parametrize("key", ["", "a#b", "x" * 65, "sp ace", 7])
+    def test_an_idempotency_key_is_validated_before_any_io(self, repo, key):
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(ValidationError, match="idempotency_key"),
+        ):
+            repo.reset_bucket("e", "r", idempotency_key=key)
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(ValidationError, match="idempotency_key"),
+        ):
+            repo.top_up("e", "r", {"rpm": 1}, idempotency_key=key)
+
     def test_an_unexpected_write_error_is_not_retried(self, repo):
         repo.set_limits("e", [_OP_RPM], resource="r")
         _op_put_shard(repo, "e", "r", [_OP_RPM])
