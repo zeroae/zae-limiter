@@ -411,3 +411,51 @@ async def _vu(repo, entity, resource="r", shard=0):
     )["Item"]
     raw = item.get(schema.BUCKET_FIELD_VU)
     return None if raw is None else int(raw["N"])
+
+
+class TestTransactionInProgress:
+    """PR #720 second review, finding 2b: DynamoDB answers the SDK's retry of
+    a transaction still running under the same ClientRequestToken with
+    TransactionInProgressException, which botocore does not retry. The write
+    may have landed; the call must not raise it."""
+
+    async def test_transaction_in_progress_after_landing_raises(self, limiter, clock):
+        """Named after the probe that found it: it must no longer raise."""
+        import random as _r
+
+        from botocore.exceptions import ClientError
+
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await limiter.set_limits("e", [CAL], resource="r")
+        assert await _try(slow, "e", {"cal": 0})
+        await repo.bump_shard_count("e", "r", 1)
+        real_rr = _r.randrange
+        _r.randrange = lambda a, b=None: 1
+        try:
+            await _try(slow, "e", {"cal": 0})
+        finally:
+            _r.randrange = real_rr
+        clock[0] += 1
+        client = await repo._get_client()
+        real = client.transact_write_items
+        state = {"armed": True}
+
+        async def in_progress(**kw):
+            if state["armed"]:
+                state["armed"] = False
+                await real(**kw)  # landed
+                raise ClientError(
+                    {"Error": {"Code": "TransactionInProgressException", "Message": "x"}},
+                    "TransactWriteItems",
+                )
+            return await real(**kw)
+
+        client.transact_write_items = in_progress
+        try:
+            result = await repo.top_up("e", "r", {"cal": 5})
+        finally:
+            client.transact_write_items = real
+        assert result.amounts == {"cal": 5}
+        top_ups = [await _tu(repo, "e", "cal", shard=s) or 0 for s in range(2)]
+        assert sum(top_ups) == 5_000  # landed once, reported once

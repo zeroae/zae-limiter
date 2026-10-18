@@ -89,10 +89,23 @@ _BATCH_GET_RETRY_BASE_DELAY = 0.05
 
 # A reset or top-up (ADR-149) re-reads and re-plans when another writer moved a
 # shard's `rf` or `shard_count` between its read and its write: three retries,
-# full jitter, then it fails. The codes are a lost condition (single shard,
-# `UpdateItem`), a cancelled transaction (any shard's condition, or a conflict
-# with an in-flight transaction) and a conflict reported on its own.
+# full jitter, then it fails. Before each retry its operation record says
+# whether the failed write in fact landed. The codes are a lost condition, a
+# cancelled transaction (any shard's condition, the record's, or a conflict
+# with an in-flight transaction), a conflict reported on its own, and a
+# transaction still in progress under the same ClientRequestToken — the SDK's
+# retry of a write whose first attempt has not finished, which may yet land
+# (AWS recommends retrying it; the record makes a re-plan just as safe).
 _OPERATION_MAX_ATTEMPTS = 4
+_OPERATION_RETRY_BASE_DELAY = 0.05
+_OPERATION_RETRY_CODES = frozenset(
+    {
+        "ConditionalCheckFailedException",
+        "TransactionCanceledException",
+        "TransactionConflictException",
+        "TransactionInProgressException",
+    }
+)
 
 
 _IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9._:-]{1,64}")
@@ -120,16 +133,6 @@ def _validate_principal(principal: str | None) -> None:
     """
     if principal is not None and not principal.startswith("arn:"):
         validate_identifier(principal, "principal")
-
-
-_OPERATION_RETRY_BASE_DELAY = 0.05
-_OPERATION_RETRY_CODES = frozenset(
-    {
-        "ConditionalCheckFailedException",
-        "TransactionCanceledException",
-        "TransactionConflictException",
-    }
-)
 
 
 # Token codes for the fields a seed writes (#633). A seeded limit's aliases are

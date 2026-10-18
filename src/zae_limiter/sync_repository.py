@@ -74,6 +74,15 @@ _BATCH_GET_MAX_RETRIES = 3
 _CLIENT_MIN_RATCHET_ATTEMPTS = 3
 _BATCH_GET_RETRY_BASE_DELAY = 0.05
 _OPERATION_MAX_ATTEMPTS = 4
+_OPERATION_RETRY_BASE_DELAY = 0.05
+_OPERATION_RETRY_CODES = frozenset(
+    {
+        "ConditionalCheckFailedException",
+        "TransactionCanceledException",
+        "TransactionConflictException",
+        "TransactionInProgressException",
+    }
+)
 _IDEMPOTENCY_KEY = re.compile("[A-Za-z0-9._:-]{1,64}")
 
 
@@ -101,14 +110,6 @@ def _validate_principal(principal: str | None) -> None:
         validate_identifier(principal, "principal")
 
 
-_OPERATION_RETRY_BASE_DELAY = 0.05
-_OPERATION_RETRY_CODES = frozenset(
-    {
-        "ConditionalCheckFailedException",
-        "TransactionCanceledException",
-        "TransactionConflictException",
-    }
-)
 _SEED_TOKEN = {
     schema.BUCKET_FIELD_TK: "t",
     schema.BUCKET_FIELD_TC: "c",
