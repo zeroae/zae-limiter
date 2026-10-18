@@ -2,8 +2,10 @@
 
 import asyncio
 import functools
+import hashlib
 import logging
 import random
+import re
 import time
 import warnings
 from collections.abc import Callable, Sequence
@@ -87,10 +89,40 @@ _BATCH_GET_RETRY_BASE_DELAY = 0.05
 
 # A reset or top-up (ADR-149) re-reads and re-plans when another writer moved a
 # shard's `rf` or `shard_count` between its read and its write: three retries,
-# full jitter, then it fails. The codes are a lost condition (single shard,
-# `UpdateItem`), a cancelled transaction (any shard's condition, or a conflict
-# with an in-flight transaction) and a conflict reported on its own.
+# full jitter, then it fails. Before each retry its operation record says
+# whether the failed write in fact landed. The codes are a lost condition, a
+# cancelled transaction (any shard's condition, the record's, or a conflict
+# with an in-flight transaction), a conflict reported on its own, and a
+# transaction still in progress under the same ClientRequestToken — the SDK's
+# retry of a write whose first attempt has not finished, which may yet land
+# (AWS recommends retrying it; the record makes a re-plan just as safe).
 _OPERATION_MAX_ATTEMPTS = 4
+_OPERATION_RETRY_BASE_DELAY = 0.05
+_OPERATION_RETRY_CODES = frozenset(
+    {
+        "ConditionalCheckFailedException",
+        "TransactionCanceledException",
+        "TransactionConflictException",
+        "TransactionInProgressException",
+    }
+)
+
+
+_IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+
+
+def _validate_idempotency_key(key: str | None) -> None:
+    """A caller's operation id (ADR-149): 1-64 of ``[A-Za-z0-9._:-]``.
+
+    It becomes a sort key (``#OP#{key}``), so ``#`` and anything unprintable
+    are refused, and the length is bounded.
+    """
+    if key is not None and (not isinstance(key, str) or not _IDEMPOTENCY_KEY.fullmatch(key)):
+        raise ValidationError(
+            "idempotency_key",
+            str(key),
+            "must be 1-64 characters of letters, digits, '.', '_', ':' or '-'",
+        )
 
 
 def _validate_principal(principal: str | None) -> None:
@@ -101,16 +133,6 @@ def _validate_principal(principal: str | None) -> None:
     """
     if principal is not None and not principal.startswith("arn:"):
         validate_identifier(principal, "principal")
-
-
-_OPERATION_RETRY_BASE_DELAY = 0.05
-_OPERATION_RETRY_CODES = frozenset(
-    {
-        "ConditionalCheckFailedException",
-        "TransactionCanceledException",
-        "TransactionConflictException",
-    }
-)
 
 
 # Token codes for the fields a seed writes (#633). A seeded limit's aliases are
@@ -3273,12 +3295,18 @@ class Repository:
         resource: str,
         deltas: dict[str, int],
         shard_id: int = 0,
+        return_all: bool = False,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
         Unconditional ADD for post-hoc correction. Can go negative by design.
         Positive delta = consumed more (subtract tokens, add to counter).
         Negative delta = consumed less (add tokens, subtract from counter).
+
+        ``return_all`` asks for the whole new item (``ALL_NEW``, as free as
+        ``UPDATED_NEW`` on an ``UpdateItem``) instead of the balances alone, so a
+        quota's ``b_{name}_tu`` as it stands *now* is known (ADR-149): a lease
+        that read a top-up passes it.
 
         Every refund, release, rollback and speculative compensation is built
         here, so the shard's cached state is forgotten here (ADR-147): tokens
@@ -3329,7 +3357,7 @@ class Repository:
                 # Free on UpdateItem: the new balances let a credit that lifted
                 # one above its ceiling be trimmed before the fast path spends
                 # it (#679).
-                "ReturnValues": "UPDATED_NEW",
+                "ReturnValues": "ALL_NEW" if return_all else "UPDATED_NEW",
             }
         }
 
@@ -8500,6 +8528,7 @@ class Repository:
         resource: str,
         limits: Sequence[str] | None = None,
         principal: str | None = None,
+        idempotency_key: str | None = None,
     ) -> BucketOperationResult:
         """Restore an entity's balance on one resource to its full share, now (ADR-149).
 
@@ -8526,6 +8555,12 @@ class Repository:
             limits: Limit names to restore. ``None`` restores every limit
                 resolved for the pair.
             principal: Caller identity for audit logging.
+            idempotency_key: Names this operation (1-64 characters: letters,
+                digits, ``.``, ``_``, ``:``, ``-``). A retry with the same key
+                within three days is applied once and returns the first call's
+                result. **Without a key, an error from this call leaves the
+                outcome unknown**: the reset may or may not have landed, and
+                retrying it may apply it twice.
 
         Returns:
             The shards written and, per limit, the tokens restored.
@@ -8539,9 +8574,10 @@ class Repository:
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
         _validate_principal(principal)
+        _validate_idempotency_key(idempotency_key)
         requested = None if limits is None else dict.fromkeys(limits, 0)
         return await self._operate_on_bucket(
-            bucket_ops.RESET, entity_id, resource, requested, principal
+            bucket_ops.RESET, entity_id, resource, requested, principal, idempotency_key
         )
 
     @clears_rejection_cache
@@ -8551,6 +8587,7 @@ class Repository:
         resource: str,
         amounts: dict[str, int],
         principal: str | None = None,
+        idempotency_key: str | None = None,
     ) -> BucketOperationResult:
         """Add tokens to an entity's balance on one resource, now (ADR-149).
 
@@ -8581,6 +8618,12 @@ class Repository:
             resource: Resource to credit.
             amounts: Whole tokens to add per limit name (each > 0).
             principal: Caller identity for audit logging.
+            idempotency_key: Names this operation (1-64 characters: letters,
+                digits, ``.``, ``_``, ``:``, ``-``) — a purchase id, say. A
+                retry with the same key within three days is applied once and
+                returns the first call's result. **Without a key, an error
+                from this call leaves the outcome unknown**: the tokens may or
+                may not have been granted, and retrying may grant them twice.
 
         Returns:
             The shards written and, per limit, the tokens granted.
@@ -8598,6 +8641,7 @@ class Repository:
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
         _validate_principal(principal)
+        _validate_idempotency_key(idempotency_key)
         if not amounts:
             raise ValidationError("amounts", "{}", "name at least one limit to top up")
         for name, amount in amounts.items():
@@ -8612,7 +8656,7 @@ class Repository:
                     f"each amount must be at most {schedule.MAX_TOKENS}",
                 )
         return await self._operate_on_bucket(
-            bucket_ops.TOP_UP, entity_id, resource, dict(amounts), principal
+            bucket_ops.TOP_UP, entity_id, resource, dict(amounts), principal, idempotency_key
         )
 
     async def _operate_on_bucket(
@@ -8622,6 +8666,7 @@ class Repository:
         resource: str,
         requested: dict[str, int] | None,
         principal: str | None,
+        idempotency_key: str | None = None,
     ) -> BucketOperationResult:
         """Read, plan and write a reset or top-up, retrying on a conflict (ADR-149 §4)."""
         resolved, _on_unavailable, source = await self._config_cache._resolve_limits_uncached(
@@ -8643,36 +8688,45 @@ class Repository:
                 f"(configured: {', '.join(sorted(by_name))})",
             )
 
-        # One id per call, stamped on every shard the write touches. A failed
-        # write whose items carry it did land: its response was lost and the
-        # SDK's own retry then failed the rf lock. Re-planning would apply the
-        # operation twice (2N for one top-up), so the id is what tells the two
-        # apart.
-        operation_id = str(ULID())
-        # The result of the last write attempted, returned if its id is found.
-        pending: BucketOperationResult | None = None
+        # One id per call, and one operation record per id, Put under
+        # `attribute_not_exists(PK)` in the same transaction as the shard
+        # writes: at most one transaction carrying this id can ever commit,
+        # however its responses are lost or retried, and the record says
+        # whether it did. A marker on the bucket items could not: a concurrent
+        # reset or top-up overwrote it, a landed write read as unlanded and was
+        # applied again (PR #720 review).
+        operation_id = idempotency_key or str(ULID())
+        if idempotency_key is not None:
+            # A caller retry: the first call's record, when it landed, is the
+            # answer (1 strongly consistent read, paid only with a key).
+            recorded = await self._operation_record(entity_id, resource, operation_id, operation)
+            if recorded is not None:
+                return recorded
+        # DynamoDB caps a ClientRequestToken at 36 characters; a caller's key
+        # may be longer, so the token is derived from it.
+        token = hashlib.sha256(operation_id.encode()).hexdigest()[:32]
         last_error: Exception | None = None
         for attempt in range(_OPERATION_MAX_ATTEMPTS):
             if attempt:
+                # A failed write may have landed: its record says so.
+                recorded = await self._operation_record(
+                    entity_id, resource, operation_id, operation
+                )
+                if recorded is not None:
+                    return await self._audited(operation, recorded, principal)
                 # Full jitter, as the acquire's own transaction retry.
                 await asyncio.sleep(random.uniform(0, _OPERATION_RETRY_BASE_DELAY * 2**attempt))
             now_ms = self._now_ms()
             shards, raw = await self._read_operation_shards(entity_id, resource, now_ms)
-            if pending is not None and any(
-                item.get(schema.BUCKET_FIELD_OP, {}).get("S") == operation_id
-                for item in raw.values()
-            ):
-                result = pending  # the write landed; only its response was lost
-            elif not shards:
+            if not shards:
                 if operation == bucket_ops.RESET:
                     return BucketOperationResult(
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
                     )
                 result, landed = await self._top_up_new_bucket(
-                    entity_id, resource, resolved, source, requested, now_ms, operation_id
+                    entity_id, resource, resolved, source, requested, now_ms, operation_id, token
                 )
                 if not landed:
-                    pending = result
                     continue  # lost the create race (or its response): re-read
             else:
                 top = max(shard.shard_count for shard in shards)
@@ -8703,41 +8757,25 @@ class Repository:
                 try:
                     await self.transact_write(
                         [
-                            self.build_bucket_operation(entity_id, resource, write, operation_id)
-                            for write in plan.writes
+                            *(
+                                self.build_bucket_operation(entity_id, resource, write)
+                                for write in plan.writes
+                            ),
+                            self.build_operation_record(operation, operation_id, result, now_ms),
                         ],
                         # Per attempt: a re-planned payload under the same token
                         # would be an IdempotentParameterMismatch.
-                        client_request_token=f"{operation_id}-{attempt}",
+                        client_request_token=f"{token}-{attempt}",
                     )
                 except ClientError as e:
                     if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
                         raise
                     last_error = e
-                    pending = result
                     continue
-            if result.shards:
-                # The operation has landed. A failed audit write must not raise:
-                # the caller would retry a reset or top-up that already happened.
-                try:
-                    await self._log_audit_event(
-                        action=(
-                            AuditAction.BUCKET_RESET
-                            if operation == bucket_ops.RESET
-                            else AuditAction.BUCKET_TOPPED_UP
-                        ),
-                        entity_id=entity_id,
-                        principal=principal,
-                        resource=resource,
-                        details={"amounts": dict(result.amounts), "shards": result.shards},
-                    )
-                except Exception:
-                    logger.warning(
-                        "%s landed but its audit event could not be written",
-                        operation,
-                        exc_info=True,
-                    )
-            return result
+            return await self._audited(operation, result, principal)
+        recorded = await self._operation_record(entity_id, resource, operation_id, operation)
+        if recorded is not None:
+            return await self._audited(operation, recorded, principal)
         raise RateLimiterUnavailable(
             f"Could not {operation.replace('_', ' ')} the bucket: it kept changing through "
             f"{_OPERATION_MAX_ATTEMPTS} attempts",
@@ -8746,6 +8784,117 @@ class Repository:
             entity_id=entity_id,
             resource=resource,
         )
+
+    async def _audited(
+        self,
+        operation: bucket_ops.Operation,
+        result: BucketOperationResult,
+        principal: str | None,
+    ) -> BucketOperationResult:
+        """Audit an operation that landed, never failing the call (ADR-149).
+
+        The caller would retry a reset or top-up that already happened, so a
+        failed audit write is logged, not raised.
+        """
+        if result.shards:
+            try:
+                await self._log_audit_event(
+                    action=(
+                        AuditAction.BUCKET_RESET
+                        if operation == bucket_ops.RESET
+                        else AuditAction.BUCKET_TOPPED_UP
+                    ),
+                    entity_id=result.entity_id,
+                    principal=principal,
+                    resource=result.resource,
+                    details={"amounts": dict(result.amounts), "shards": result.shards},
+                )
+            except Exception:
+                logger.warning(
+                    "%s landed but its audit event could not be written",
+                    operation,
+                    exc_info=True,
+                )
+        return result
+
+    def build_operation_record(
+        self,
+        operation: bucket_ops.Operation,
+        operation_id: str,
+        result: BucketOperationResult,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """Build the ``Put`` of a reset or top-up's operation record (ADR-149).
+
+        One item per call, in the shard-0 bucket's partition, conditioned on
+        ``attribute_not_exists(PK)`` and written in the same transaction as the
+        shard writes: only one transaction carrying ``operation_id`` can ever
+        commit. It stores the result, which a retry that finds it returns.
+        """
+        entity_id, resource = result.entity_id, result.resource
+        return {
+            "Put": {
+                "TableName": self.table_name,
+                "Item": {
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                    "SK": {"S": schema.sk_operation(operation_id)},
+                    "entity_id": {"S": entity_id},
+                    "resource": {"S": resource},
+                    "operation": {"S": operation},
+                    "shards": {"N": str(result.shards)},
+                    "amounts": {"M": {name: {"N": str(n)} for name, n in result.amounts.items()}},
+                    "ttl": {
+                        "N": str(schema.calculate_ttl(now_ms, schema.OPERATION_RECORD_TTL_SECONDS))
+                    },
+                    "GSI4PK": {"S": self._namespace_id},
+                    "GSI4SK": {"S": f"OP#{entity_id}#{resource}#{operation_id}"},
+                },
+                "ConditionExpression": "attribute_not_exists(PK)",
+            }
+        }
+
+    async def _operation_record(
+        self,
+        entity_id: str,
+        resource: str,
+        operation_id: str,
+        operation: bucket_ops.Operation,
+    ) -> BucketOperationResult | None:
+        """The result an operation recorded, or None when it has not landed (ADR-149).
+
+        Raises:
+            ValidationError: the id names a different kind of operation (a
+                caller reused an idempotency key for a reset and a top-up).
+        """
+        item = await self._get_item_consistent(
+            schema.pk_bucket(self._namespace_id, entity_id, resource, 0),
+            schema.sk_operation(operation_id),
+        )
+        if item is None:
+            return None
+        if item["operation"]["S"] != operation:
+            raise ValidationError(
+                "idempotency_key",
+                operation_id,
+                f"already used for a {item['operation']['S']} of this entity and resource",
+            )
+        return BucketOperationResult(
+            entity_id,
+            resource,
+            int(item["shards"]["N"]),
+            {name: int(value["N"]) for name, value in item.get("amounts", {}).get("M", {}).items()},
+        )
+
+    async def _get_item_consistent(self, pk: str, sk: str) -> dict[str, Any] | None:
+        """One strongly consistent ``GetItem``."""
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": sk}},
+            ConsistentRead=True,
+        )
+        item: dict[str, Any] | None = response.get("Item")
+        return item
 
     async def _read_operation_shards(
         self, entity_id: str, resource: str, now_ms: int
@@ -8804,6 +8953,7 @@ class Repository:
         requested: dict[str, int],
         now_ms: int,
         operation_id: str,
+        token: str,
     ) -> tuple[BucketOperationResult, bool]:
         """D5: a top-up with no bucket creates shard 0 holding its share plus the quota top-up.
 
@@ -8854,10 +9004,15 @@ class Repository:
             vu=bucket_ops.creation_vu(resolved, states, now_ms),
             rf_ms=now_ms,
         )
-        create["Put"]["Item"][schema.BUCKET_FIELD_OP] = {"S": operation_id}
         result = BucketOperationResult(entity_id, resource, 1, amounts)
         try:
-            await self.transact_write([create])
+            await self.transact_write(
+                [
+                    create,
+                    self.build_operation_record(bucket_ops.TOP_UP, operation_id, result, now_ms),
+                ],
+                client_request_token=f"{token}-c",
+            )
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
                 raise
@@ -8887,7 +9042,6 @@ class Repository:
         entity_id: str,
         resource: str,
         write: bucket_ops.ShardWrite,
-        operation_id: str,
     ) -> dict[str, Any]:
         """Build one shard's rf-locked reset or top-up ``Update`` (ADR-149 §4.2).
 
@@ -8895,27 +9049,22 @@ class Repository:
         between the read and the write is kept), ``SET rf`` monotonic, ``vu = 0``
         to force one materialising pass that clamps anything credited in
         between, plus the grant counts, windows, applied markers and top-ups the
-        plan sets and the ``tu`` / ``wtc`` it removes, and ``op =
-        operation_id`` so a write whose response was lost is recognised as
-        landed. Conditioned on the ``rf`` and ``shard_count`` read; ``tc``,
-        ``disabled``, ``ttl`` and the owner stamps are never touched.
+        plan sets and the ``tu`` / ``wtc`` it removes. Conditioned on the
+        ``rf`` and ``shard_count`` read; ``tc``, ``disabled``, ``ttl`` and the
+        owner stamps are never touched. The call's operation record rides in
+        the same transaction (:meth:`build_operation_record`).
 
         Tokens are positional (#634): ``#ot``/``:ot`` deltas, ``#og``/``:og``
         grant counts, ``#ow``/``:ow`` + ``#or``/``:or`` windows, ``#oa``/``:oa``
         applied markers, ``#ou``/``:ou`` top-ups, ``#ox`` / ``#oy`` removals.
         """
-        names: dict[str, str] = {
-            "#rf": schema.BUCKET_FIELD_RF,
-            "#vu": schema.BUCKET_FIELD_VU,
-            "#op": schema.BUCKET_FIELD_OP,
-        }
+        names: dict[str, str] = {"#rf": schema.BUCKET_FIELD_RF, "#vu": schema.BUCKET_FIELD_VU}
         values: dict[str, Any] = {
             ":rf": {"N": str(write.written_rf)},
             ":erf": {"N": str(write.expected_rf)},
             ":vu": {"N": "0"},
-            ":op": {"S": operation_id},
         }
-        set_parts = ["#rf = :rf", "#vu = :vu", "#op = :op"]
+        set_parts = ["#rf = :rf", "#vu = :vu"]
         add_parts: list[str] = []
         remove_parts: list[str] = []
 

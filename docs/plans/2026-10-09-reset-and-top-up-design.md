@@ -15,7 +15,7 @@
   topped up this period), which raises that shard's ceiling until the next reset or roll.
   That one piece needs the ADR-141 version gate at **0.17.0**. Reset and dripping top-up need
   no gate.
-- **Cost:** about **$1.6/M** operations at one shard, **$45/M** at 32 shards, plus one
+- **Cost:** about **$3.5/M** operations at one shard, **$46/M** at 32 shards, plus one
   slow pass per shard afterwards. The fast path is unchanged.
 - `design-validator` was run on this design: **sound with changes**. All its changes are in
   here (see [Validation](#validation)).
@@ -67,9 +67,18 @@ window opened **after** the reset passes, as it should.
 | Dripping | Adds up to N, **bounded by the ceiling** (a refund of consumption). The amount actually granted is returned. No new attribute. |
 | Calendar or session quota | Adds **exactly N** for the current period, spread over the shards (§4.3), recorded in `b_{q}_tu`. Each shard's ceiling becomes `C // gc + tu`. Cleared by the next reset or roll. |
 
-- **Upgrade:** `set_limits(new plan)` then `top_up(N = new C − old C)`. The result is within the
-  new ceiling, so no `tu` is needed once the new `cp` is on the item. Open decision D3 is whether
-  to wrap these two calls into one.
+- **Upgrade:** `set_limits(new plan)` then `top_up(N = new C − old C)`. Open decision D3 is
+  whether to wrap these two calls into one. The top-up records `tu` like any other, so the
+  upgrade needs the 0.17.0 gate too. **`tu` records every purchased token** (`tu += portion`),
+  not only what lands above `C // gc`: what `tk` held when the top-up landed says nothing about
+  how many tokens are still out in leases, and an overflow-only `tu` let their later refunds
+  be clamped away — the purchase lost (design-validator, PR #720 reviews; an "overflow against
+  the period's allowance" variant fails the same way). So after a plan upgrade the ceiling is
+  at most one top-up wider than the entitlement. That can only under-clamp refunds of tokens
+  that were spent, never mint, and it ends at the next reset.
+- **A limit not yet on the bucket** (configured after the bucket existed, not yet seeded by an
+  acquire) is refused with a `ValidationError` naming it: there is no shard to hold the tokens,
+  and granting 0 silently would lose a purchase.
 - **Purchase:** `top_up(N)` alone. The allowance is above the plan for this period only.
 - **A pending reset is applied first, in the same write.** A shard whose calendar edge has passed
   gets `tk = share + portion` and `gc = S`. Older `tu` is wiped, because it belonged to the
@@ -141,12 +150,26 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
 - `SET rf = max(now, stored rf + 1, applied ws)` (ADR-140 rule, strictly past the stored
   `rf` so an aggregator refill of a stale image locked on it always loses), plus `gc`, `wa`,
   `tu` for the limits this pass resets, rolls or tops up. `REMOVE tu` / `wtc` where §2 says.
-- `SET op = :operation_id`: one id per call, on every shard. A write that committed but whose
-  response was lost is retried by the SDK with the identical request, which then fails the
-  `rf` condition; re-planning it would apply the operation twice (one `top_up(5)` recorded 10,
-  PR #720 review). After any failed write the re-read looks for its own id first: found means
-  the write landed, and its planned result is returned. A multi-shard transaction also carries
-  a `ClientRequestToken` (one per attempt), so DynamoDB's own retry succeeds.
+- **One operation record per call, in the same transaction.** `PK` = the shard-0 bucket's
+  `PK`, `SK = #OP#{id}`, `Put` under `attribute_not_exists(PK)`, holding the call's result and
+  a `ttl` three days out (GSI4 keys for `purge_namespace`, no GSI1-3 keys, so no bucket reader
+  sees it). At most one transaction carrying an id can commit. A write that committed but
+  whose response was lost is retried by the SDK with the identical request, which then fails
+  the `rf` condition; re-planning it applied the operation twice (one `top_up(5)` recorded 10,
+  PR #720 review). After any unclear failure the record (one strongly consistent `GetItem`)
+  decides: present means it landed, and its stored result is returned. A first fix put the id
+  on the bucket items instead (`op`), and a concurrent reset or top-up overwrote it between
+  the lost response and the re-read (two `top_up(5)` admitted 15 against 10, second review).
+  A multi-shard transaction also carries a `ClientRequestToken` (derived from the id, one per
+  attempt), and `TransactionInProgressException` — the SDK's retry of a transaction still
+  running — is an unclear outcome like the others, never raised to the caller.
+- **Caller idempotency key.** `reset_bucket` / `top_up(..., idempotency_key=...)` (CLI
+  `--idempotency-key`) uses the caller's key as the id: a retry within three days returns the
+  first call's result and writes nothing (+1 RCU to read the record first). A key reused for the
+  other kind of operation is a `ValidationError`; keys are 1-64 of `[A-Za-z0-9._:-]`. **Without
+  a key, an error from these calls leaves the outcome unknown.**
+- **Nothing fails after the commit.** The principal is validated with the other inputs before
+  any I/O, and a failed audit write is logged, never raised.
 - `SET vu = 0`. This forces one materialising pass per shard on the next acquire. That pass
   clamps any credit that slipped in between the read and the write, and re-stamps the correct
   `vu` (validator finding 4; the same mechanism as #679).
@@ -237,7 +260,7 @@ writes `tu` must pass `_require_readers("0.17.0", …)` and ratchet `client_min_
 | Aggregator proactive doubling / propagation | Changes `shard_count` → our pin fails → re-plan at the new `S` |
 | Quota shard create/seed (ADR-145 move) | Donor debit pinned on `gc` and period: if we changed them it fails and re-plans; else it moves post-reset tokens (a move, not a mint). A create landing after our commit sees `gc = S` siblings and plans correctly (validator finding 3, interleaving 3) |
 | Window rollover fan-out | §2.1 ended-and-applied `ws` blocks a pre-reset fan-out |
-| `adjust()` / rollback credit | `ADD`; kept; a credit above the ceiling is clamped by the forced pass (`vu = 0`) |
+| `adjust()` / rollback credit | `ADD`; kept; a credit above the ceiling is clamped by the forced pass (`vu = 0`). The ceiling it is checked against takes the `tu` the credit write returns (`ALL_NEW` when the lease read one), never the lease's in-memory `tu`: a refund under a live top-up forces nothing, one after a reset removed `tu` forces the clamp. #730's self-trimming refund computes the same ceiling |
 | Param sync (`set_limits`) | Does not move `rf`; it SETs `cp`/`vu = 0`. Ordering either way ends in one materialising pass at the newest params |
 | Disable stamp | Independent attribute; untouched |
 
@@ -280,11 +303,17 @@ Assumptions:
 - Transactional writes cost 2 WRU per item.
 - Prices are us-east-1 on-demand: $0.125/M RRU, $0.625/M WRU.
 
+Every write is one transaction of the shard updates plus the operation record (§4.2), so a
+one-shard operation is a 2-item transaction: 4 WRU where a bare `UpdateItem` was 1.
+
 | Shards | Round trips | RCU | WCU (incl. 1 audit) | $/M operations | Afterwards (one slow pass per shard) |
 |-------:|------------:|----:|-----:|----:|----:|
-| 1 | 4 (config, query, get, update) + audit | 3 | 2 | **$1.63** | +1 RCU +1 WCU ≈ +$0.75 |
-| 4 | 4 + audit | 6 | 9 | **$6.38** | ≈ +$3.00 |
-| 32 | 4 + audit | 34 | 65 | **$44.88** | ≈ +$24.00 |
+| 1 | 4 (config, query, get, transaction) + audit | 3 | 5 | **$3.50** | +1 RCU +1 WCU ≈ +$0.75 |
+| 4 | 4 + audit | 6 | 11 | **$7.63** | ≈ +$3.00 |
+| 32 | 4 + audit | 34 | 67 | **$46.13** | ≈ +$24.00 |
+
+- **Idempotency key:** +1 RCU (the record is read first).
+- **After an unclear failure:** +1 RCU per retry to read the record.
 
 - **Gated top-up:** +1 RCU on the first call per repository (the version read, strongly
   consistent; cached after that).

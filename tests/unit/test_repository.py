@@ -8745,12 +8745,13 @@ class TestResetAndTopUp:
         assert _op_num(item, "cal", BUCKET_FIELD_TK) == 400_000
         assert _op_num(item, "cal", "tu") == 300_000
 
-    async def test_a_quota_never_seeded_on_the_bucket_is_granted_nothing(self, repo):
+    async def test_a_limit_not_yet_on_the_bucket_is_refused_by_name(self, repo):
+        """PR #720 second review, finding 5: never a silent grant of 0."""
         await repo.set_limits("e", [_OP_RPM], resource="r")
         await _op_put_shard(repo, "e", "r", [_OP_RPM])
         await repo.set_limits("e", [_OP_RPM, _OP_CAL], resource="r")
-        result = await repo.top_up("e", "r", {"cal": 5})
-        assert result.amounts == {"cal": 0}
+        with pytest.raises(ValidationError, match="'cal' is configured but not yet on"):
+            await repo.top_up("e", "r", {"cal": 5})
 
     async def test_a_shard_the_index_has_not_listed_is_read_by_key(self, repo):
         await repo.set_limits("e", [_OP_RPM], resource="r")
@@ -8967,6 +8968,99 @@ class TestResetAndTopUp:
             pytest.raises(RateLimiterUnavailable, match="kept changing"),
         ):
             await repo.reset_bucket("e", "r")
+
+    async def test_each_call_leaves_one_operation_record(self, repo):
+        """ADR-149: the record rides in the same transaction, expires, and
+        carries the GSI4 keys `purge_namespace` uses."""
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM])
+        repo._now_ms = lambda: _OP_T0
+        result = await repo.reset_bucket("e", "r")
+        client = await repo._get_client()
+        records = (
+            await client.query(
+                TableName=repo.table_name,
+                KeyConditionExpression="PK = :pk AND begins_with(SK, :op)",
+                ExpressionAttributeValues={
+                    ":pk": {"S": pk_bucket(repo._namespace_id, "e", "r", 0)},
+                    ":op": {"S": "#OP#"},
+                },
+                ConsistentRead=True,
+            )
+        )["Items"]
+        assert len(records) == 1
+        record = records[0]
+        assert record["operation"] == {"S": "reset"}
+        assert int(record["shards"]["N"]) == result.shards
+        assert int(record["ttl"]["N"]) == _OP_T0 // 1000 + 3 * 86_400
+        assert record["GSI4PK"] == {"S": repo._namespace_id}
+        assert "GSI3PK" not in record  # invisible to bucket discovery
+
+    async def test_a_write_that_landed_on_the_last_attempt_is_found(self, repo):
+        """Every attempt reports a conflict, but the last one had landed: the
+        operation record says so, and the call returns rather than raising."""
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        repo._now_ms = lambda: _OP_T0
+        real = repo.transact_write
+        calls = []
+        lost = ClientError(
+            {"Error": {"Code": "TransactionCanceledException", "Message": "x"}}, "Tx"
+        )
+
+        async def unlucky(items, **kwargs):
+            calls.append(1)
+            if len(calls) == 4:
+                await real(items, **kwargs)  # the last attempt lands
+            raise lost
+
+        with (
+            patch.object(repo, "transact_write", side_effect=unlucky),
+            patch("zae_limiter.repository._OPERATION_RETRY_BASE_DELAY", 0),
+        ):
+            result = await repo.reset_bucket("e", "r")
+        assert len(calls) == 4
+        assert result.shards == 1
+        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 100_000
+
+    async def test_a_retry_with_the_same_idempotency_key_is_applied_once(self, repo):
+        """The caller saw an error and retried with the same key: the first
+        call's result comes back and nothing is granted twice."""
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
+        repo._now_ms = lambda: _OP_T0 + 1
+        key = "purchase:" + "x" * 55  # 64 characters, longer than a request token
+        first = await repo.top_up("e", "r", {"cal": 5}, idempotency_key=key)
+        again = await repo.top_up("e", "r", {"cal": 5}, idempotency_key=key)
+        assert again == first
+        assert _op_num(await _op_item(repo, "e", "r"), "cal", BUCKET_FIELD_TK) == 5_000
+        assert (
+            len([e for e in await repo.get_audit_events("e") if e.action == "bucket_topped_up"])
+            == 1
+        )
+
+    async def test_an_idempotency_key_names_one_kind_of_operation(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM])
+        repo._now_ms = lambda: _OP_T0
+        await repo.reset_bucket("e", "r", idempotency_key="k1")
+        await repo.reset_bucket("e", "r", idempotency_key="k1")  # a retry: fine
+        with pytest.raises(ValidationError, match="already used for a reset"):
+            await repo.top_up("e", "r", {"rpm": 1}, idempotency_key="k1")
+
+    @pytest.mark.parametrize("key", ["", "a#b", "x" * 65, "sp ace", 7])
+    async def test_an_idempotency_key_is_validated_before_any_io(self, repo, key):
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(ValidationError, match="idempotency_key"),
+        ):
+            await repo.reset_bucket("e", "r", idempotency_key=key)
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(ValidationError, match="idempotency_key"),
+        ):
+            await repo.top_up("e", "r", {"rpm": 1}, idempotency_key=key)
 
     async def test_an_unexpected_write_error_is_not_retried(self, repo):
         await repo.set_limits("e", [_OP_RPM], resource="r")

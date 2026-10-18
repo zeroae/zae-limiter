@@ -633,7 +633,12 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def build_composite_adjust(
-        self, entity_id: str, resource: str, deltas: dict[str, int], shard_id: int = 0
+        self,
+        entity_id: str,
+        resource: str,
+        deltas: dict[str, int],
+        shard_id: int = 0,
+        return_all: bool = False,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
@@ -1336,6 +1341,7 @@ class SyncRepositoryProtocol(Protocol):
         resource: str,
         limits: Sequence[str] | None = None,
         principal: str | None = None,
+        idempotency_key: str | None = None,
     ) -> "BucketOperationResult":
         """Restore an entity's balance on one resource to its full share, now (ADR-149).
 
@@ -1345,7 +1351,12 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def top_up(
-        self, entity_id: str, resource: str, amounts: dict[str, int], principal: str | None = None
+        self,
+        entity_id: str,
+        resource: str,
+        amounts: dict[str, int],
+        principal: str | None = None,
+        idempotency_key: str | None = None,
     ) -> "BucketOperationResult":
         """Add whole tokens per limit to an entity's balance on one resource, now (ADR-149).
 

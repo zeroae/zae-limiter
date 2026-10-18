@@ -58,6 +58,7 @@ from tests.fixtures.quota_model import QuotaModel
 from tests.fixtures.sharding import RESOURCE
 from tests.fixtures.windows import T0
 from zae_limiter import Limit, RateLimiter, RateLimitExceeded, schema
+from zae_limiter.exceptions import ValidationError
 from zae_limiter.models import quota_grant_is_current
 
 C = 1024
@@ -208,10 +209,13 @@ async def run_fuzz(limiter, seed: int, kind: str) -> None:
         elif roll < 0.33 and quota_on:
             amount = rng.choice([1, 7, 64, 300])
             # A quota configured after the shards existed and not yet seeded
-            # on any of them is granted nothing (the result says so).
-            granted = (await repo.top_up(eid, RESOURCE, {quota.name: amount})).amounts
-            topped_up += granted[quota.name]
-            trace.append(f"top_up({amount})")
+            # on any of them is refused, and nothing is written.
+            try:
+                await repo.top_up(eid, RESOURCE, {quota.name: amount})
+                topped_up += amount
+                trace.append(f"top_up({amount})")
+            except ValidationError:
+                trace.append(f"top_up({amount})=refused")
         elif roll < 0.36 and quota_on:
             await repo.reset_bucket(eid, RESOURCE, limits=[quota.name])
             admitted = 0
