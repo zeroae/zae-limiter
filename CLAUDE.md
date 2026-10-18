@@ -1856,8 +1856,13 @@ exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed u
   (API and CLI `--idempotency-key`, 1-64 of `[A-Za-z0-9._:-]`) is the id when given: the record
   is read first (+1 RCU) and a hit returns its result; reused for the other operation kind it
   is a `ValidationError`. Without a key an error leaves the outcome unknown. The
-  `ClientRequestToken` is derived from the id's digest (36-character cap). The principal and
-  key are validated before any I/O, and a post-commit audit failure is logged, never raised.
+  `ClientRequestToken` is a random per-call nonce plus the attempt, **never** derived from the
+  key (DynamoDB answers a reused token with a new payload with
+  `IdempotentParameterMismatchException`, itself an unclear outcome resolved by the record).
+  The record stores its `writer` (that nonce), and only the committing call audits, so a
+  same-key race writes one audit event. `delete_entity` deletes the entity's records (one Query
+  per shard-0 partition). The principal and key are validated before any I/O, and a
+  post-commit audit failure is logged, never raised.
 - **Top-up:** a quota gains exactly N, split by coverage `S // gc` (`split_weighted`, remainder
   to the lowest shard, D1), and **`tu += portion`** — the whole portion, not only what lands
   above the ceiling, or a refund of spent room is clamped away (design-validator). A dripping
