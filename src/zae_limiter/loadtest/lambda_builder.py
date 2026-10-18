@@ -8,6 +8,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from ..infra.lambda_builder import write_lambda_zip
+
 
 def _generate_requirements(
     zae_limiter_source: Path | str,
@@ -127,8 +129,6 @@ def build_load_lambda_package(
         # Create zip
         zip_path = output_dir / "load-lambda.zip"
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for file in artifacts_dir.rglob("*"):
-                if file.is_file():
-                    zf.write(file, file.relative_to(artifacts_dir))
+            write_lambda_zip(zf, artifacts_dir)
 
         return zip_path

@@ -275,3 +275,23 @@ class TestVendoredSchedule:
         reqs = _get_runtime_requirements()
         assert any(r.startswith("cronsim") for r in reqs), reqs
         assert any(r.startswith("tzdata") for r in reqs), reqs
+
+
+class TestZipPermissions:
+    """The provisioner runs as a non-root user; a ``0600`` entry fails its cold start."""
+
+    def test_package_built_under_umask_077_is_world_readable(self, restrictive_umask: None):
+        from zae_limiter.infra.provisioner_builder import build_provisioner_package
+
+        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
+            mock_builder_cls.return_value.build.side_effect = _mock_builder_build
+            zip_bytes = build_provisioner_package()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            modes = {i.filename: (i.external_attr >> 16) & 0o777 for i in zf.infolist()}
+
+        # Generated under the umask: these were 0600 before the fix.
+        assert modes["zae_limiter/__init__.py"] == 0o644
+        assert modes["zae_limiter/_version.py"] == 0o644
+        assert modes["aws_lambda_powertools/__init__.py"] == 0o644
+        assert {name for name, mode in modes.items() if mode & 0o444 != 0o444} == set()
