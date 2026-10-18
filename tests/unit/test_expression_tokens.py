@@ -191,6 +191,22 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "#opg <= :opg" in update["ConditionExpression"]
         assert "#opi <> :opi" in update["ConditionExpression"]
+
+    def test_normal_owner_stamp_with_a_generation_but_no_incarnation(self) -> None:
+        """A backend that tracks no incarnation keeps the generation-only pin."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            owner=(True, "org-1"),
+            owner_pgen=3,
+        )["Update"]
+        assert_expression_safe(update)
+        assert "(attribute_not_exists(#opg) OR #opg <= :opg)" in update["ConditionExpression"]
+        assert "#opi" not in update["ExpressionAttributeNames"]
         assert update["ExpressionAttributeValues"][":opg"] == {"N": "3"}
 
     def test_normal_removing_ttl_and_vu(self) -> None:
