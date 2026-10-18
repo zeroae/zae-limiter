@@ -4397,6 +4397,12 @@ Examples:
     help="Limit to reset (repeatable). Omit to reset every limit on the resource.",
 )
 @click.option(
+    "--idempotency-key",
+    default=None,
+    help="Name this operation (1-64 of letters, digits, . _ : -) so a retry with the same "
+    "key within three days is applied once. Without one, an error leaves the outcome unknown.",
+)
+@click.option(
     "--name",
     "-n",
     default=DEFAULT_STACK_NAME,
@@ -4413,6 +4419,7 @@ def entity_reset(
     entity_id: str,
     resource: str,
     limit_names: tuple[str, ...],
+    idempotency_key: str | None,
     name: str,
     region: str | None,
     endpoint_url: str | None,
@@ -4439,7 +4446,12 @@ def entity_reset(
     async def _run() -> None:
         repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            result = await repo.reset_bucket(entity_id, resource, limits=list(limit_names) or None)
+            result = await repo.reset_bucket(
+                entity_id,
+                resource,
+                limits=list(limit_names) or None,
+                idempotency_key=idempotency_key,
+            )
             if not result.shards:
                 click.echo(f"Nothing to reset: '{entity_id}' has no bucket for '{resource}'")
                 return
@@ -4492,6 +4504,12 @@ Examples:
     help="LIMIT:N — add N whole tokens to LIMIT (repeatable).",
 )
 @click.option(
+    "--idempotency-key",
+    default=None,
+    help="Name this operation (1-64 of letters, digits, . _ : -) so a retry with the same "
+    "key within three days is applied once. Without one, an error leaves the outcome unknown.",
+)
+@click.option(
     "--name",
     "-n",
     default=DEFAULT_STACK_NAME,
@@ -4508,6 +4526,7 @@ def entity_top_up(
     entity_id: str,
     resource: str,
     additions: tuple[str, ...],
+    idempotency_key: str | None,
     name: str,
     region: str | None,
     endpoint_url: str | None,
@@ -4537,7 +4556,9 @@ def entity_top_up(
     async def _run() -> None:
         repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            result = await repo.top_up(entity_id, resource, amounts)
+            result = await repo.top_up(
+                entity_id, resource, amounts, idempotency_key=idempotency_key
+            )
             granted = ", ".join(f"{k}: +{v:,}" for k, v in sorted(result.amounts.items()))
             click.echo(
                 f"Topped up '{entity_id}' on '{resource}' ({result.shards} shards; {granted})"
@@ -4546,8 +4567,7 @@ def entity_top_up(
             if short:
                 click.echo(
                     f"Note: {', '.join(short)} granted less than asked: a dripping limit "
-                    "is never topped up past its ceiling, and a limit not yet on the "
-                    "bucket is granted nothing.",
+                    "is never topped up past its ceiling.",
                     err=True,
                 )
         except Exception as e:

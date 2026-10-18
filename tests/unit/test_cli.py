@@ -8274,7 +8274,9 @@ class TestResetAndTopUpCommands:
         result = runner.invoke(cli, ["entity", "reset", "user-123", "-r", "gpt-4"])
         assert result.exit_code == 0, result.output
         assert "Reset 'user-123' on 'gpt-4' (2 shards; rpm: +40)" in result.output
-        repo.reset_bucket.assert_called_once_with("user-123", "gpt-4", limits=None)
+        repo.reset_bucket.assert_called_once_with(
+            "user-123", "gpt-4", limits=None, idempotency_key=None
+        )
 
     @patch("zae_limiter.repository.Repository")
     def test_reset_named_limits(self, mock_repo_class: Mock, runner: CliRunner) -> None:
@@ -8282,10 +8284,16 @@ class TestResetAndTopUpCommands:
             mock_repo_class, reset_bucket={"return_value": self._result(1, {"session": 9})}
         )
         result = runner.invoke(
-            cli, ["entity", "reset", "user-123", "-r", "gpt-4", "-l", "session", "-l", "rpm"]
+            cli,
+            [
+                *("entity", "reset", "user-123", "-r", "gpt-4", "-l", "session", "-l", "rpm"),
+                *("--idempotency-key", "ticket-42"),
+            ],
         )
         assert result.exit_code == 0, result.output
-        repo.reset_bucket.assert_called_once_with("user-123", "gpt-4", limits=["session", "rpm"])
+        repo.reset_bucket.assert_called_once_with(
+            "user-123", "gpt-4", limits=["session", "rpm"], idempotency_key="ticket-42"
+        )
 
     @patch("zae_limiter.repository.Repository")
     def test_reset_of_a_missing_bucket(self, mock_repo_class: Mock, runner: CliRunner) -> None:
@@ -8322,7 +8330,26 @@ class TestResetAndTopUpCommands:
         assert result.exit_code == 0, result.output
         assert "rpd: +7, session: +5,000" in result.output
         assert "less than asked" not in result.output
-        repo.top_up.assert_called_once_with("user-123", "gpt-4", {"session": 5000, "rpd": 7})
+        repo.top_up.assert_called_once_with(
+            "user-123", "gpt-4", {"session": 5000, "rpd": 7}, idempotency_key=None
+        )
+
+    @patch("zae_limiter.repository.Repository")
+    def test_top_up_passes_the_idempotency_key(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        repo = self._writable(mock_repo_class, top_up={"return_value": self._result(1, {"rpd": 1})})
+        result = runner.invoke(
+            cli,
+            [
+                *("entity", "top-up", "user-123", "-r", "gpt-4", "--add", "rpd:1"),
+                *("--idempotency-key", "order-9"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        repo.top_up.assert_called_once_with(
+            "user-123", "gpt-4", {"rpd": 1}, idempotency_key="order-9"
+        )
 
     @patch("zae_limiter.repository.Repository")
     def test_top_up_granted_less_says_so(self, mock_repo_class: Mock, runner: CliRunner) -> None:
