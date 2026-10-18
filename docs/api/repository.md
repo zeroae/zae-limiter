@@ -85,8 +85,10 @@ Implement this protocol to use a different storage backend (e.g., for testing).
       rejects the entity forever.
     - **A quota credit stays in its debit's period.** For each credited limit
       whose `CreditCeiling.quota_period` is set, fail the write unless the period
-      still holds — calendar: the item's `rf` is before `reset_edge_ms`; session:
-      the limit's window start and applied marker equal `window`. An
+      still holds — calendar: the item's `rf` is before `reset_edge_ms` and the
+      reset-schedule strings in `reset_sched_raw` (item `rsched`, `sched_tz`, the
+      limit's `rsched`) are still the item's; session: the limit's window start
+      and applied marker equal `window`. An
       unconditional credit lands a refund of one period's debit in the next,
       which then admits more than its allowance. Applies to the `trim=True`
       write too.
@@ -109,6 +111,15 @@ Implement this protocol to use a different storage backend (e.g., for testing).
     takes its quota period from that image; a backend that returns `None`
     makes it fall back to the period the lease read, which can drop a refund
     after a reset raced the retry but never lands one in the wrong period.
+
+    **Known gaps (not a backend's to close).** A resource- or system-level
+    change never reaches the bucket item (it propagates through the TTL). A
+    lowered schedule there lets a refund land above the new ceiling until the
+    next slow pass clamps it; a reset-schedule change there leaves the period
+    guard following the lease's cron, so a reset under the new cron before
+    the old edge can let the old period's refund land. An entity-level change
+    reaches the item, and any reset-schedule change on the item drops the
+    in-flight quota refunds (one per open lease per change).
 
 ::: zae_limiter.repository_protocol.RepositoryProtocol
     options:
