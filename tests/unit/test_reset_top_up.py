@@ -721,3 +721,28 @@ class TestRequestTokens:
         assert result.amounts == {"cal": 5}
         clock[0] += 1
         assert await _drain(limiter, "e", "cal") == 5
+
+
+class TestSameKeyRaceAudit:
+    """PR #720 third review, finding 2: two callers racing with one key write
+    one operation, so they write one audit event."""
+
+    @pytest.mark.parametrize("op", ["top_up", "reset"])
+    async def test_same_key_race(self, limiter, clock, op):
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        await _drain(limiter, "e", "cal")
+        clock[0] += 1
+        if op == "top_up":
+            calls = [repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy-1") for _ in range(2)]
+            action, admitted = "bucket_topped_up", 5
+        else:
+            calls = [repo.reset_bucket("e", "r", idempotency_key="rst-1") for _ in range(2)]
+            action, admitted = "bucket_reset", 10
+        results = await _same_key_race(repo, clock, calls)
+        assert all(not isinstance(r, Exception) for r in results), results
+        assert results[0] == results[1]
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == admitted
+        events = [e for e in await repo.get_audit_events("e", limit=100) if e.action == action]
+        assert len(events) == 1

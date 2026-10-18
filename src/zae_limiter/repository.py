@@ -8704,7 +8704,7 @@ class Repository:
             # answer (1 strongly consistent read, paid only with a key).
             recorded = await self._operation_record(entity_id, resource, operation_id, operation)
             if recorded is not None:
-                return recorded
+                return recorded[0]  # audited by the call that wrote it
         # A random nonce per call, never the key: DynamoDB keeps a
         # ClientRequestToken for ten minutes and answers the same token with a
         # different payload with IdempotentParameterMismatchException, so a
@@ -8720,7 +8720,7 @@ class Repository:
                     entity_id, resource, operation_id, operation
                 )
                 if recorded is not None:
-                    return await self._audited(operation, recorded, principal)
+                    return await self._audited_if_mine(operation, recorded, token, principal)
                 # Full jitter, as the acquire's own transaction retry.
                 await asyncio.sleep(random.uniform(0, _OPERATION_RETRY_BASE_DELAY * 2**attempt))
             now_ms = self._now_ms()
@@ -8768,7 +8768,9 @@ class Repository:
                                 self.build_bucket_operation(entity_id, resource, write)
                                 for write in plan.writes
                             ),
-                            self.build_operation_record(operation, operation_id, result, now_ms),
+                            self.build_operation_record(
+                                operation, operation_id, result, now_ms, token
+                            ),
                         ],
                         # Per attempt: a re-planned payload under the same token
                         # would be an IdempotentParameterMismatch.
@@ -8782,7 +8784,7 @@ class Repository:
             return await self._audited(operation, result, principal)
         recorded = await self._operation_record(entity_id, resource, operation_id, operation)
         if recorded is not None:
-            return await self._audited(operation, recorded, principal)
+            return await self._audited_if_mine(operation, recorded, token, principal)
         raise RateLimiterUnavailable(
             f"Could not {operation.replace('_', ' ')} the bucket: it kept changing through "
             f"{_OPERATION_MAX_ATTEMPTS} attempts",
@@ -8830,13 +8832,16 @@ class Repository:
         operation_id: str,
         result: BucketOperationResult,
         now_ms: int,
+        writer: str,
     ) -> dict[str, Any]:
         """Build the ``Put`` of a reset or top-up's operation record (ADR-149).
 
         One item per call, in the shard-0 bucket's partition, conditioned on
         ``attribute_not_exists(PK)`` and written in the same transaction as the
         shard writes: only one transaction carrying ``operation_id`` can ever
-        commit. It stores the result, which a retry that finds it returns.
+        commit. It stores the result, which a retry that finds it returns, and
+        ``writer``, the writing call's nonce: a call audits only an operation
+        its own transaction committed, never one a same-key duplicate did.
         """
         entity_id, resource = result.entity_id, result.resource
         return {
@@ -8848,6 +8853,7 @@ class Repository:
                     "entity_id": {"S": entity_id},
                     "resource": {"S": resource},
                     "operation": {"S": operation},
+                    "writer": {"S": writer},
                     "shards": {"N": str(result.shards)},
                     "amounts": {"M": {name: {"N": str(n)} for name, n in result.amounts.items()}},
                     "ttl": {
@@ -8866,8 +8872,8 @@ class Repository:
         resource: str,
         operation_id: str,
         operation: bucket_ops.Operation,
-    ) -> BucketOperationResult | None:
-        """The result an operation recorded, or None when it has not landed (ADR-149).
+    ) -> tuple[BucketOperationResult, str | None] | None:
+        """An operation's recorded result and writer, or None when it has not landed (ADR-149).
 
         Raises:
             ValidationError: the id names a different kind of operation (a
@@ -8885,12 +8891,35 @@ class Repository:
                 operation_id,
                 f"already used for a {item['operation']['S']} of this entity and resource",
             )
-        return BucketOperationResult(
-            entity_id,
-            resource,
-            int(item["shards"]["N"]),
-            {name: int(value["N"]) for name, value in item.get("amounts", {}).get("M", {}).items()},
+        return (
+            BucketOperationResult(
+                entity_id,
+                resource,
+                int(item["shards"]["N"]),
+                {
+                    name: int(value["N"])
+                    for name, value in item.get("amounts", {}).get("M", {}).items()
+                },
+            ),
+            item.get("writer", {}).get("S"),
         )
+
+    async def _audited_if_mine(
+        self,
+        operation: bucket_ops.Operation,
+        recorded: tuple[BucketOperationResult, str | None],
+        token: str,
+        principal: str | None,
+    ) -> BucketOperationResult:
+        """Return a recorded result, auditing it only if this call wrote it.
+
+        Two calls with one idempotency key can race; only one transaction
+        commits, and only that call writes the audit event.
+        """
+        result, writer = recorded
+        if writer == token:
+            return await self._audited(operation, result, principal)
+        return result
 
     async def _get_item_consistent(self, pk: str, sk: str) -> dict[str, Any] | None:
         """One strongly consistent ``GetItem``."""
@@ -9016,7 +9045,9 @@ class Repository:
             await self.transact_write(
                 [
                     create,
-                    self.build_operation_record(bucket_ops.TOP_UP, operation_id, result, now_ms),
+                    self.build_operation_record(
+                        bucket_ops.TOP_UP, operation_id, result, now_ms, token
+                    ),
                 ],
                 client_request_token=f"{token}-c",
             )
