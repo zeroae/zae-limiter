@@ -696,6 +696,32 @@ class TestRequestTokens:
         clock[0] += 1
         assert await _drain(limiter, "e", "cal") == 5
 
+    async def test_create_path_token_reused_across_attempts(self, limiter, clock, aws_tokens):
+        """Targeted review, finding 2: with no bucket, a cancelled create is
+        re-planned at a later instant under a fresh token, not the same `-c`
+        token with a new payload (a mismatch on every retry)."""
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        await aws_tokens(fail_first=1)
+        client = await repo._get_client()
+        emulated = client.transact_write_items
+        tokens = []
+
+        async def ticking(**kw):
+            tokens.append(kw.get("ClientRequestToken"))
+            clock[0] += 1  # each attempt plans at its own instant
+            return await emulated(**kw)
+
+        client.transact_write_items = ticking
+        try:
+            result = await repo.top_up("e", "r", {"cal": 5})
+        finally:
+            client.transact_write_items = emulated
+        assert result.amounts == {"cal": 5}
+        assert len(tokens) == 2 and tokens[0] != tokens[1]
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 15
+
     async def test_a_token_mismatch_is_an_unclear_outcome(self, limiter, clock):
         """Whatever reuses a token, the mismatch says nothing about this call:
         it is resolved by the operation record, never raised."""

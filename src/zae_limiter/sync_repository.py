@@ -7253,7 +7253,15 @@ class SyncRepository:
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
                     )
                 result, landed = self._top_up_new_bucket(
-                    entity_id, resource, resolved, source, requested, now_ms, operation_id, token
+                    entity_id,
+                    resource,
+                    resolved,
+                    source,
+                    requested,
+                    now_ms,
+                    operation_id,
+                    token,
+                    f"{token}-c{attempt}",
                 )
                 if not landed:
                     continue
@@ -7493,6 +7501,7 @@ class SyncRepository:
         now_ms: int,
         operation_id: str,
         token: str,
+        request_token: str,
     ) -> tuple[BucketOperationResult, bool]:
         """D5: a top-up with no bucket creates shard 0 holding its share plus the quota top-up.
 
@@ -7552,7 +7561,7 @@ class SyncRepository:
                         bucket_ops.TOP_UP, operation_id, result, now_ms, token
                     ),
                 ],
-                client_request_token=f"{token}-c",
+                client_request_token=request_token,
             )
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
