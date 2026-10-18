@@ -8,6 +8,7 @@ reset edge or window roll removes it), and the readers that must show it.
 """
 
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 
@@ -696,6 +697,32 @@ class TestRequestTokens:
         clock[0] += 1
         assert await _drain(limiter, "e", "cal") == 5
 
+    async def test_create_path_token_reused_across_attempts(self, limiter, clock, aws_tokens):
+        """Targeted review, finding 2: with no bucket, a cancelled create is
+        re-planned at a later instant under a fresh token, not the same `-c`
+        token with a new payload (a mismatch on every retry)."""
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        await aws_tokens(fail_first=1)
+        client = await repo._get_client()
+        emulated = client.transact_write_items
+        tokens = []
+
+        async def ticking(**kw):
+            tokens.append(kw.get("ClientRequestToken"))
+            clock[0] += 1  # each attempt plans at its own instant
+            return await emulated(**kw)
+
+        client.transact_write_items = ticking
+        try:
+            result = await repo.top_up("e", "r", {"cal": 5})
+        finally:
+            client.transact_write_items = emulated
+        assert result.amounts == {"cal": 5}
+        assert len(tokens) == 2 and tokens[0] != tokens[1]
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 15
+
     async def test_a_token_mismatch_is_an_unclear_outcome(self, limiter, clock):
         """Whatever reuses a token, the mismatch says nothing about this call:
         it is resolved by the operation record, never raised."""
@@ -746,3 +773,147 @@ class TestSameKeyRaceAudit:
         assert await _drain(limiter, "e", "cal") == admitted
         events = [e for e in await repo.get_audit_events("e", limit=100) if e.action == action]
         assert len(events) == 1
+
+
+class TestErrorsAfterLanding:
+    """Targeted #720 review, finding 3: a write that lands but answers with an
+    error that is not a lost race (a read timeout, a dropped connection, a
+    5xx) is this call's operation: audited once, granted once, returned."""
+
+    @staticmethod
+    def _land_then(client, error):
+        real = client.transact_write_items
+        state = {"armed": True}
+
+        async def lands(**kw):
+            out = await real(**kw)
+            if state["armed"] and _carries_record(kw):
+                state["armed"] = False
+                raise error
+            return out
+
+        client.transact_write_items = lands
+        return real
+
+    @pytest.mark.parametrize("bucket", ["existing", "created"])
+    @pytest.mark.parametrize("kind", ["timeout", "server"])
+    async def test_a_landed_write_answered_with_an_error_is_returned(
+        self, limiter, clock, bucket, kind
+    ):
+        from botocore.exceptions import ReadTimeoutError
+
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        if bucket == "existing":
+            await _drain(limiter, "e", "cal")
+            clock[0] += 1
+        client = await repo._get_client()
+        error = (
+            ReadTimeoutError(endpoint_url="https://dynamodb")
+            if kind == "timeout"
+            else _tx_error("InternalServerError")
+        )
+        real = self._land_then(client, error)
+        try:
+            result = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="k1")
+        finally:
+            client.transact_write_items = real
+        assert result.amounts == {"cal": 5}
+        again = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="k1")  # caller retry
+        assert again == result
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == (5 if bucket == "existing" else 15)
+        events = [
+            e for e in await repo.get_audit_events("e", limit=100) if e.action == "bucket_topped_up"
+        ]
+        assert len(events) == 1
+
+    async def test_an_error_whose_record_cannot_be_read_is_raised(self, limiter, clock):
+        from botocore.exceptions import ReadTimeoutError
+
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        await _drain(limiter, "e", "cal")
+        clock[0] += 1
+        client = await repo._get_client()
+        real = self._land_then(client, ReadTimeoutError(endpoint_url="https://dynamodb"))
+
+        async def unreadable(*_a, **_k):
+            raise ReadTimeoutError(endpoint_url="https://dynamodb")
+
+        try:
+            with (
+                patch.object(repo, "_operation_record", side_effect=unreadable),
+                pytest.raises(ReadTimeoutError),
+            ):
+                await repo.top_up("e", "r", {"cal": 5})
+        finally:
+            client.transact_write_items = real
+
+
+class TestRecordsBelongToOneIncarnation:
+    """Targeted #720 review, finding 1: an operation record outlived its
+    entity when delete_entity could not find it (the shard-0 bucket had
+    expired), and the recreated entity's top-up with the same key returned
+    the old result while granting nothing."""
+
+    async def test_delete_entity_leftover_when_shard0_expired(self, limiter, clock):
+        repo = limiter._repository
+        await repo.create_entity("e")
+        await repo.set_resource_defaults("r", [CAL])
+        await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy")
+        client = await repo._get_client()
+        shard0 = {
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, "e", "r", 0)},
+            "SK": {"S": schema.sk_state()},
+        }
+        await client.delete_item(TableName=repo.table_name, Key=shard0)  # the TTL sweep
+        await repo.delete_entity("e")  # cannot find the record any more
+        await repo.create_entity("e")
+        await _drain(limiter, "e", "cal")
+        clock[0] += 1
+        result = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy")
+        assert result.amounts == {"cal": 5}
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 5  # a fresh operation, not the old one
+
+    @pytest.mark.parametrize("meta", ["legacy", "none"])
+    async def test_an_entity_without_an_incarnation_is_still_one_identity(
+        self, limiter, clock, meta
+    ):
+        """META written before the stamp is identified by created_at; an
+        entity with no META at all by a constant: a key retry still hits."""
+        repo = limiter._repository
+        if meta == "legacy":
+            await repo.create_entity("e")
+            client = await repo._get_client()
+            await client.update_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": schema.pk_entity(repo._namespace_id, "e")},
+                    "SK": {"S": schema.sk_meta()},
+                },
+                UpdateExpression="REMOVE incarnation",
+            )
+        await limiter.set_limits("e", [CAL], resource="r")
+        await _drain(limiter, "e", "cal")
+        clock[0] += 1
+        first = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="k")
+        again = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="k")
+        assert again == first
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 5
+
+    async def test_meta_without_any_identity_reads_as_none(self, limiter):
+        repo = limiter._repository
+        await repo.create_entity("e")
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(repo._namespace_id, "e")},
+                "SK": {"S": schema.sk_meta()},
+            },
+            UpdateExpression="REMOVE incarnation, created_at",
+        )
+        assert await repo._entity_incarnation("e") == "-"

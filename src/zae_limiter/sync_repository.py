@@ -1584,6 +1584,7 @@ class SyncRepository:
             "cascade": {"BOOL": cascade},
             "metadata": {"M": self._serialize_map(metadata or {})},
             "created_at": {"S": now},
+            "incarnation": {"S": str(ULID())},
             "GSI4PK": {"S": self._namespace_id},
             "GSI4SK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
         }
@@ -7233,15 +7234,20 @@ class SyncRepository:
                 f"not a limit configured for {entity_id!r} on {resource!r} (configured: {', '.join(sorted(by_name))})",
             )
         operation_id = idempotency_key or str(ULID())
+        incarnation = self._entity_incarnation(entity_id)
         if idempotency_key is not None:
-            recorded = self._operation_record(entity_id, resource, operation_id, operation)
+            recorded = self._operation_record(
+                entity_id, resource, operation_id, operation, incarnation
+            )
             if recorded is not None:
                 return recorded[0]
         token = secrets.token_hex(12)
         last_error: Exception | None = None
         for attempt in range(_OPERATION_MAX_ATTEMPTS):
             if attempt:
-                recorded = self._operation_record(entity_id, resource, operation_id, operation)
+                recorded = self._operation_record(
+                    entity_id, resource, operation_id, operation, incarnation
+                )
                 if recorded is not None:
                     return self._audited_if_mine(operation, recorded, token, principal)
                 time.sleep(random.uniform(0, _OPERATION_RETRY_BASE_DELAY * 2**attempt))
@@ -7252,9 +7258,26 @@ class SyncRepository:
                     return BucketOperationResult(
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
                     )
-                result, landed = self._top_up_new_bucket(
-                    entity_id, resource, resolved, source, requested, now_ms, operation_id, token
-                )
+                try:
+                    result, landed = self._top_up_new_bucket(
+                        entity_id,
+                        resource,
+                        resolved,
+                        source,
+                        requested,
+                        now_ms,
+                        operation_id,
+                        token,
+                        incarnation,
+                        f"{token}-c{attempt}",
+                    )
+                except Exception:
+                    mine = self._landed_by(
+                        entity_id, resource, operation_id, operation, token, incarnation
+                    )
+                    if mine is None:
+                        raise
+                    return self._audited(operation, mine, principal)
                 if not landed:
                     continue
             else:
@@ -7288,18 +7311,30 @@ class SyncRepository:
                                 for write in plan.writes
                             ),
                             self.build_operation_record(
-                                operation, operation_id, result, now_ms, token
+                                operation, operation_id, result, now_ms, token, incarnation
                             ),
                         ],
                         client_request_token=f"{token}-{attempt}",
                     )
                 except ClientError as e:
-                    if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
+                    if e.response.get("Error", {}).get("Code") in _OPERATION_RETRY_CODES:
+                        last_error = e
+                        continue
+                    mine = self._landed_by(
+                        entity_id, resource, operation_id, operation, token, incarnation
+                    )
+                    if mine is None:
                         raise
-                    last_error = e
-                    continue
+                    return self._audited(operation, mine, principal)
+                except Exception:
+                    mine = self._landed_by(
+                        entity_id, resource, operation_id, operation, token, incarnation
+                    )
+                    if mine is None:
+                        raise
+                    return self._audited(operation, mine, principal)
             return self._audited(operation, result, principal)
-        recorded = self._operation_record(entity_id, resource, operation_id, operation)
+        recorded = self._operation_record(entity_id, resource, operation_id, operation, incarnation)
         if recorded is not None:
             return self._audited_if_mine(operation, recorded, token, principal)
         raise RateLimiterUnavailable(
@@ -7342,6 +7377,7 @@ class SyncRepository:
         result: BucketOperationResult,
         now_ms: int,
         writer: str,
+        incarnation: str,
     ) -> dict[str, Any]:
         """Build the ``Put`` of a reset or top-up's operation record (ADR-149).
 
@@ -7350,7 +7386,9 @@ class SyncRepository:
         shard writes: only one transaction carrying ``operation_id`` can ever
         commit. It stores the result, which a retry that finds it returns, and
         ``writer``, the writing call's nonce: a call audits only an operation
-        its own transaction committed, never one a same-key duplicate did.
+        its own transaction committed, never one a same-key duplicate did. It
+        stores the entity's ``incarnation`` too, and may replace a record of
+        an earlier incarnation (``ent`` differs), which reads as absent.
         """
         entity_id, resource = (result.entity_id, result.resource)
         return {
@@ -7363,6 +7401,7 @@ class SyncRepository:
                     "resource": {"S": resource},
                     "operation": {"S": operation},
                     "writer": {"S": writer},
+                    "ent": {"S": incarnation},
                     "shards": {"N": str(result.shards)},
                     "amounts": {"M": {name: {"N": str(n)} for name, n in result.amounts.items()}},
                     "ttl": {
@@ -7371,12 +7410,19 @@ class SyncRepository:
                     "GSI4PK": {"S": self._namespace_id},
                     "GSI4SK": {"S": f"OP#{entity_id}#{resource}#{operation_id}"},
                 },
-                "ConditionExpression": "attribute_not_exists(PK)",
+                "ConditionExpression": "attribute_not_exists(PK) OR #ent <> :ent",
+                "ExpressionAttributeNames": {"#ent": "ent"},
+                "ExpressionAttributeValues": {":ent": {"S": incarnation}},
             }
         }
 
     def _operation_record(
-        self, entity_id: str, resource: str, operation_id: str, operation: bucket_ops.Operation
+        self,
+        entity_id: str,
+        resource: str,
+        operation_id: str,
+        operation: bucket_ops.Operation,
+        incarnation: str,
     ) -> tuple[BucketOperationResult, str | None] | None:
         """An operation's recorded result and writer, or None when it has not landed (ADR-149).
 
@@ -7388,7 +7434,7 @@ class SyncRepository:
             schema.pk_bucket(self._namespace_id, entity_id, resource, 0),
             schema.sk_operation(operation_id),
         )
-        if item is None:
+        if item is None or item.get("ent", {}).get("S") != incarnation:
             return None
         if item["operation"]["S"] != operation:
             raise ValidationError(
@@ -7408,6 +7454,50 @@ class SyncRepository:
             ),
             item.get("writer", {}).get("S"),
         )
+
+    def _entity_incarnation(self, entity_id: str) -> str:
+        """The identity of the entity's current incarnation (ADR-149).
+
+        ``incarnation`` from META (a ULID stamped by ``create_entity``), else
+        its ``created_at`` (META written before the stamp), else ``-`` (an
+        entity with no META: buckets need none).
+        """
+        meta = self._get_item_consistent(
+            schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
+        )
+        if meta is None:
+            return "-"
+        for field in ("incarnation", "created_at"):
+            value = meta.get(field, {}).get("S")
+            if value:
+                return str(value)
+        return "-"
+
+    def _landed_by(
+        self,
+        entity_id: str,
+        resource: str,
+        operation_id: str,
+        operation: bucket_ops.Operation,
+        token: str,
+        incarnation: str,
+    ) -> BucketOperationResult | None:
+        """This call's own recorded result, after an error that is not a lost race.
+
+        A non-retryable error (a 5xx, a read timeout, a dropped connection)
+        can follow a write that landed. Only a record this call wrote counts;
+        when it is absent, or cannot be read, the caller re-raises the error.
+        """
+        try:
+            recorded = self._operation_record(
+                entity_id, resource, operation_id, operation, incarnation
+            )
+        except Exception:
+            logger.debug("Could not read the operation record after an error", exc_info=True)
+            return None
+        if recorded is None or recorded[1] != token:
+            return None
+        return recorded[0]
 
     def _audited_if_mine(
         self,
@@ -7493,6 +7583,8 @@ class SyncRepository:
         now_ms: int,
         operation_id: str,
         token: str,
+        incarnation: str,
+        request_token: str,
     ) -> tuple[BucketOperationResult, bool]:
         """D5: a top-up with no bucket creates shard 0 holding its share plus the quota top-up.
 
@@ -7549,10 +7641,10 @@ class SyncRepository:
                 [
                     create,
                     self.build_operation_record(
-                        bucket_ops.TOP_UP, operation_id, result, now_ms, token
+                        bucket_ops.TOP_UP, operation_id, result, now_ms, token, incarnation
                     ),
                 ],
-                client_request_token=f"{token}-c",
+                client_request_token=request_token,
             )
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:

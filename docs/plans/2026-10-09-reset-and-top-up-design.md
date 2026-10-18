@@ -167,9 +167,22 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
   `TransactionInProgressException` (the SDK's retry of a transaction still running) are unclear
   outcomes like the others, resolved by the record, never raised to the caller. The record
   also stores its **writer** (that nonce): a call audits only an operation its own transaction
-  committed, so two callers racing with one key write one audit event. `delete_entity` deletes
-  the entity's records (one Query per resource's shard-0 partition), so a recreated entity
-  reusing a key gets a fresh operation.
+  committed, so two callers racing with one key write one audit event. Any other error after
+  the write (a read timeout, a dropped connection, a non-retryable 5xx) also reads the record:
+  if this call wrote it, the result is audited and returned, else the error is raised.
+- **A record belongs to one incarnation of its entity.** `create_entity` stamps META with
+  `incarnation` (a ULID); each call reads META once, strongly consistent (**+1 RCU per call**),
+  and stores it on the record as `ent`. A record of another incarnation reads as absent and the
+  Put condition (`attribute_not_exists(PK) OR ent <> :ent`) lets the new operation replace it.
+  META without the stamp falls back to `created_at`, no META to a constant. `delete_entity`
+  also deletes the entity's records (one Query per resource's shard-0 partition), but only as
+  best effort: it finds them through a live shard-0 bucket, so a record whose bucket had
+  expired survives the delete (targeted review), and so can one written by a top-up racing
+  the delete. Either is harmless, because the next incarnation never reads it. A GSI4 sweep
+  is not an option: ns-full's `LeadingKeys` (`{ns}/*`) does not match `GSI4PK = {ns}`.
+- **Known, out of scope (pre-existing in `delete_entity`):** `BatchWriteItem`'s
+  `UnprocessedItems` is ignored, its META and GSI3 queries are not paginated, and the ns-full
+  policy lacks `BatchWriteItem`. None is introduced by #470; each predates it.
 - **Caller idempotency key.** `reset_bucket` / `top_up(..., idempotency_key=...)` (CLI
   `--idempotency-key`) uses the caller's key as the id: a retry within three days returns the
   first call's result and writes nothing (+1 RCU to read the record first). A key reused for the
@@ -319,6 +332,7 @@ one-shard operation is a 2-item transaction: 4 WRU where a bare `UpdateItem` was
 | 4 | 4 + audit | 6 | 11 | **$7.63** | ≈ +$3.00 |
 | 32 | 4 + audit | 34 | 67 | **$46.13** | ≈ +$24.00 |
 
+- **Entity identity:** +1 RCU on every call (the META read above).
 - **Idempotency key:** +1 RCU (the record is read first).
 - **After an unclear failure:** +1 RCU per retry to read the record.
 

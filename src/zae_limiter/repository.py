@@ -1873,6 +1873,9 @@ class Repository:
             "cascade": {"BOOL": cascade},
             "metadata": {"M": self._serialize_map(metadata or {})},
             "created_at": {"S": now},
+            # Unique per creation (ADR-149): an operation record written for an
+            # earlier entity of the same id is not this one's.
+            "incarnation": {"S": str(ULID())},
             # GSI4: namespace-scoped item discovery
             "GSI4PK": {"S": self._namespace_id},
             "GSI4SK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
@@ -8728,10 +8731,18 @@ class Repository:
         # reset or top-up overwrote it, a landed write read as unlanded and was
         # applied again (PR #720 review).
         operation_id = idempotency_key or str(ULID())
+        # The entity's identity this operation belongs to (1 strongly consistent
+        # read of META). A record written for an earlier incarnation of the
+        # entity — deleted and recreated, its records left behind because the
+        # shard-0 bucket that delete_entity finds them through had expired —
+        # is not this entity's, and is read as absent and overwritten.
+        incarnation = await self._entity_incarnation(entity_id)
         if idempotency_key is not None:
             # A caller retry: the first call's record, when it landed, is the
             # answer (1 strongly consistent read, paid only with a key).
-            recorded = await self._operation_record(entity_id, resource, operation_id, operation)
+            recorded = await self._operation_record(
+                entity_id, resource, operation_id, operation, incarnation
+            )
             if recorded is not None:
                 return recorded[0]  # audited by the call that wrote it
         # A random nonce per call, never the key: DynamoDB keeps a
@@ -8746,7 +8757,7 @@ class Repository:
             if attempt:
                 # A failed write may have landed: its record says so.
                 recorded = await self._operation_record(
-                    entity_id, resource, operation_id, operation
+                    entity_id, resource, operation_id, operation, incarnation
                 )
                 if recorded is not None:
                     return await self._audited_if_mine(operation, recorded, token, principal)
@@ -8759,9 +8770,30 @@ class Repository:
                     return BucketOperationResult(
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
                     )
-                result, landed = await self._top_up_new_bucket(
-                    entity_id, resource, resolved, source, requested, now_ms, operation_id, token
-                )
+                try:
+                    result, landed = await self._top_up_new_bucket(
+                        entity_id,
+                        resource,
+                        resolved,
+                        source,
+                        requested,
+                        now_ms,
+                        operation_id,
+                        token,
+                        incarnation,
+                        # Per attempt, like the shard write: the create is
+                        # re-planned at a later instant, so one token across
+                        # attempts would be an IdempotentParameterMismatch on
+                        # every retry.
+                        f"{token}-c{attempt}",
+                    )
+                except Exception:
+                    mine = await self._landed_by(
+                        entity_id, resource, operation_id, operation, token, incarnation
+                    )
+                    if mine is None:
+                        raise
+                    return await self._audited(operation, mine, principal)
                 if not landed:
                     continue  # lost the create race (or its response): re-read
             else:
@@ -8798,7 +8830,7 @@ class Repository:
                                 for write in plan.writes
                             ),
                             self.build_operation_record(
-                                operation, operation_id, result, now_ms, token
+                                operation, operation_id, result, now_ms, token, incarnation
                             ),
                         ],
                         # Per attempt: a re-planned payload under the same token
@@ -8806,12 +8838,29 @@ class Repository:
                         client_request_token=f"{token}-{attempt}",
                     )
                 except ClientError as e:
-                    if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
+                    if e.response.get("Error", {}).get("Code") in _OPERATION_RETRY_CODES:
+                        last_error = e
+                        continue
+                    mine = await self._landed_by(
+                        entity_id, resource, operation_id, operation, token, incarnation
+                    )
+                    if mine is None:
                         raise
-                    last_error = e
-                    continue
+                    return await self._audited(operation, mine, principal)
+                except Exception:
+                    # Not a DynamoDB answer at all (a read timeout, a dropped
+                    # connection): the write may have landed. If this call's
+                    # own record is there, it did — audit it and return.
+                    mine = await self._landed_by(
+                        entity_id, resource, operation_id, operation, token, incarnation
+                    )
+                    if mine is None:
+                        raise
+                    return await self._audited(operation, mine, principal)
             return await self._audited(operation, result, principal)
-        recorded = await self._operation_record(entity_id, resource, operation_id, operation)
+        recorded = await self._operation_record(
+            entity_id, resource, operation_id, operation, incarnation
+        )
         if recorded is not None:
             return await self._audited_if_mine(operation, recorded, token, principal)
         raise RateLimiterUnavailable(
@@ -8862,6 +8911,7 @@ class Repository:
         result: BucketOperationResult,
         now_ms: int,
         writer: str,
+        incarnation: str,
     ) -> dict[str, Any]:
         """Build the ``Put`` of a reset or top-up's operation record (ADR-149).
 
@@ -8870,7 +8920,9 @@ class Repository:
         shard writes: only one transaction carrying ``operation_id`` can ever
         commit. It stores the result, which a retry that finds it returns, and
         ``writer``, the writing call's nonce: a call audits only an operation
-        its own transaction committed, never one a same-key duplicate did.
+        its own transaction committed, never one a same-key duplicate did. It
+        stores the entity's ``incarnation`` too, and may replace a record of
+        an earlier incarnation (``ent`` differs), which reads as absent.
         """
         entity_id, resource = result.entity_id, result.resource
         return {
@@ -8883,6 +8935,7 @@ class Repository:
                     "resource": {"S": resource},
                     "operation": {"S": operation},
                     "writer": {"S": writer},
+                    "ent": {"S": incarnation},
                     "shards": {"N": str(result.shards)},
                     "amounts": {"M": {name: {"N": str(n)} for name, n in result.amounts.items()}},
                     "ttl": {
@@ -8891,7 +8944,9 @@ class Repository:
                     "GSI4PK": {"S": self._namespace_id},
                     "GSI4SK": {"S": f"OP#{entity_id}#{resource}#{operation_id}"},
                 },
-                "ConditionExpression": "attribute_not_exists(PK)",
+                "ConditionExpression": "attribute_not_exists(PK) OR #ent <> :ent",
+                "ExpressionAttributeNames": {"#ent": "ent"},
+                "ExpressionAttributeValues": {":ent": {"S": incarnation}},
             }
         }
 
@@ -8901,6 +8956,7 @@ class Repository:
         resource: str,
         operation_id: str,
         operation: bucket_ops.Operation,
+        incarnation: str,
     ) -> tuple[BucketOperationResult, str | None] | None:
         """An operation's recorded result and writer, or None when it has not landed (ADR-149).
 
@@ -8912,8 +8968,8 @@ class Repository:
             schema.pk_bucket(self._namespace_id, entity_id, resource, 0),
             schema.sk_operation(operation_id),
         )
-        if item is None:
-            return None
+        if item is None or item.get("ent", {}).get("S") != incarnation:
+            return None  # never written, or written for an earlier incarnation
         if item["operation"]["S"] != operation:
             raise ValidationError(
                 "idempotency_key",
@@ -8932,6 +8988,50 @@ class Repository:
             ),
             item.get("writer", {}).get("S"),
         )
+
+    async def _entity_incarnation(self, entity_id: str) -> str:
+        """The identity of the entity's current incarnation (ADR-149).
+
+        ``incarnation`` from META (a ULID stamped by ``create_entity``), else
+        its ``created_at`` (META written before the stamp), else ``-`` (an
+        entity with no META: buckets need none).
+        """
+        meta = await self._get_item_consistent(
+            schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
+        )
+        if meta is None:
+            return "-"
+        for field in ("incarnation", "created_at"):
+            value = meta.get(field, {}).get("S")
+            if value:
+                return str(value)
+        return "-"
+
+    async def _landed_by(
+        self,
+        entity_id: str,
+        resource: str,
+        operation_id: str,
+        operation: bucket_ops.Operation,
+        token: str,
+        incarnation: str,
+    ) -> BucketOperationResult | None:
+        """This call's own recorded result, after an error that is not a lost race.
+
+        A non-retryable error (a 5xx, a read timeout, a dropped connection)
+        can follow a write that landed. Only a record this call wrote counts;
+        when it is absent, or cannot be read, the caller re-raises the error.
+        """
+        try:
+            recorded = await self._operation_record(
+                entity_id, resource, operation_id, operation, incarnation
+            )
+        except Exception:
+            logger.debug("Could not read the operation record after an error", exc_info=True)
+            return None
+        if recorded is None or recorded[1] != token:
+            return None
+        return recorded[0]
 
     async def _audited_if_mine(
         self,
@@ -9019,6 +9119,8 @@ class Repository:
         now_ms: int,
         operation_id: str,
         token: str,
+        incarnation: str,
+        request_token: str,
     ) -> tuple[BucketOperationResult, bool]:
         """D5: a top-up with no bucket creates shard 0 holding its share plus the quota top-up.
 
@@ -9075,10 +9177,10 @@ class Repository:
                 [
                     create,
                     self.build_operation_record(
-                        bucket_ops.TOP_UP, operation_id, result, now_ms, token
+                        bucket_ops.TOP_UP, operation_id, result, now_ms, token, incarnation
                     ),
                 ],
-                client_request_token=f"{token}-c",
+                client_request_token=request_token,
             )
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
