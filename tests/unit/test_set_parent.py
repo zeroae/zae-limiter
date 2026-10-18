@@ -605,6 +605,28 @@ class TestStaleWriters:
         assert _stamp(await _item(repo, "user", "chat"))[1] == "org-b"
         assert await _consumed(repo, "org-a", "chat") == org_a
 
+    async def test_the_owner_check_runs_after_the_callers_block(self, limiter):
+        """Review of #716 (2nd), finding 3: its round trip is off the acquire's latency."""
+        repo = limiter._repository
+        for resource in ("gpt-4", "llm"):
+            await repo.set_resource_defaults(resource, [RPM])
+        await repo.create_entity("user")
+        checked = []
+
+        async def check(*args):
+            checked.append(args[:3])
+            return False
+
+        with patch.object(repo, "repair_created_owner_stamp", check):
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                assert checked == []  # handed back before the check
+            assert checked == [("user", "gpt-4", 0)]
+
+            with pytest.raises(RuntimeError):
+                async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+                    raise RuntimeError("the caller's work failed")
+            assert checked[-1] == ("user", "llm", 0)  # the bucket exists all the same
+
     async def test_a_failed_slow_pass_stamp_is_logged(self, limiter, caplog):
         repo = limiter._repository
         await repo.set_resource_defaults("gpt-4", [RPM])

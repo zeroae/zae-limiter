@@ -870,6 +870,12 @@ class RateLimiter:
         except Exception:
             await lease._rollback()
             raise
+        finally:
+            # The owner check of any bucket the commit created (ADR-150), after
+            # the caller's block rather than before handing the lease back: it
+            # is not needed for this acquire's correctness, only for the next
+            # one's, so its round trip stays off the acquire's latency.
+            await lease._run_owner_checks()
 
     async def _try_speculative_acquire(
         self,
@@ -2907,9 +2913,9 @@ class RateLimiter:
                     entry.state.total_consumed_milli -= entry.consumed * 1000
                 entry.consumed = 0
         try:
-            await Lease(
-                repository=self._repository, entries=entries, _carriers=carriers
-            )._commit_initial()
+            lease = Lease(repository=self._repository, entries=entries, _carriers=carriers)
+            await lease._commit_initial()
+            await lease._run_owner_checks()
         except Exception as exc:
             # Never the entity id: it is routinely an API key
             # (py/clear-text-logging-sensitive-data).

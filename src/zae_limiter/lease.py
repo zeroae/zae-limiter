@@ -212,6 +212,11 @@ class Lease:
     # shard of its bucket was forgotten since — a refund landed in between is
     # on the item but not in the state. None: never recorded, only forgotten.
     _cache_mark: int | None = None
+    # Owner stamps this lease's commit created, to check against META once the
+    # caller's block is done (ADR-150): (entity, resource, shard, generation,
+    # incarnation). Not needed before the lease is handed back, so the extra
+    # round trip stays off the acquire's latency. `_run_owner_checks` drains it.
+    _owner_checks: list[tuple[str, str, int, int, str | None]] = field(default_factory=list)
     # Names of the declared limits, computed once at construction so the hot
     # path (adjust/consume/release on every request) allocates nothing to
     # answer "is this key declared?". Entries are never appended after the
@@ -1006,14 +1011,14 @@ class Lease:
         )
         if not condition_failed:
             await self._repair_created_quota_shards(quota_creates)
-            await self._repair_created_owner_stamps(owner_creates)
+            self._owner_checks.extend(owner_creates)
             await self._fan_out_windows(window_fanouts)
         elif reissued_creates:
             await self._repair_created_quota_shards(
                 [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
             )
-            await self._repair_created_owner_stamps(
-                [c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates]
+            self._owner_checks.extend(
+                c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates
             )
 
     def _record_written_states(
@@ -1106,6 +1111,17 @@ class Lease:
                     shard_id,
                     exc_info=True,
                 )
+
+    async def _run_owner_checks(self) -> None:
+        """Run the owner checks this lease's commit deferred (ADR-150).
+
+        Called by ``RateLimiter.acquire`` once the caller's block has finished,
+        whether it succeeded or raised: the buckets were created either way.
+        Never raises (each check logs its own failure).
+        """
+        checks, self._owner_checks = self._owner_checks, []
+        if checks:
+            await self._repair_created_owner_stamps(checks)
 
     async def _repair_created_owner_stamps(
         self, owner_creates: list[tuple[str, str, int, int, str | None]]

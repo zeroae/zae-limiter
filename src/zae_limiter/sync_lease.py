@@ -115,6 +115,7 @@ class SyncLease:
     _unknown_keys: frozenset[str] = frozenset()
     _carriers: list[LeaseEntry] = field(default_factory=list)
     _cache_mark: int | None = None
+    _owner_checks: list[tuple[str, str, int, int, str | None]] = field(default_factory=list)
     _declared_names: frozenset[str] = field(init=False, default=frozenset())
 
     def __post_init__(self) -> None:
@@ -677,14 +678,14 @@ class SyncLease:
         )
         if not condition_failed:
             self._repair_created_quota_shards(quota_creates)
-            self._repair_created_owner_stamps(owner_creates)
+            self._owner_checks.extend(owner_creates)
             self._fan_out_windows(window_fanouts)
         elif reissued_creates:
             self._repair_created_quota_shards(
                 [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
             )
-            self._repair_created_owner_stamps(
-                [c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates]
+            self._owner_checks.extend(
+                c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates
             )
 
     def _record_written_states(
@@ -774,6 +775,17 @@ class SyncLease:
                     shard_id,
                     exc_info=True,
                 )
+
+    def _run_owner_checks(self) -> None:
+        """Run the owner checks this lease's commit deferred (ADR-150).
+
+        Called by ``SyncRateLimiter.acquire`` once the caller's block has finished,
+        whether it succeeded or raised: the buckets were created either way.
+        Never raises (each check logs its own failure).
+        """
+        checks, self._owner_checks = (self._owner_checks, [])
+        if checks:
+            self._repair_created_owner_stamps(checks)
 
     def _repair_created_owner_stamps(
         self, owner_creates: list[tuple[str, str, int, int, str | None]]
