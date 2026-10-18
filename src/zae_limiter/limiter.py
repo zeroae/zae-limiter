@@ -98,6 +98,29 @@ def _item_overrules_debited_parent(result: "SpeculativeResult") -> bool:
     return result.debited_parent_id is not None and result.debited_parent_id != result.parent_id
 
 
+def _failed_only_on_its_stamp(result: "SpeculativeResult", consume: dict[str, int]) -> bool:
+    """Whether a speculative failure image shows the request would have fit.
+
+    The write lost a condition other than its balances: in practice a
+    ``vu = 0`` that only trims (#679, and the ADR-150 owner-check fallback),
+    which the repository classifies as exhausted so a rejection stays one
+    write. The bucket needs a slow pass on **this** shard to clear the stamp;
+    another shard cannot do it.
+    """
+    if not result.old_buckets:
+        return False
+    for bucket in result.old_buckets:
+        needed = (
+            1000
+            if bucket.limit_name == WCU_LIMIT_NAME
+            else consume.get(bucket.limit_name, 0) * 1000
+        )
+        if bucket.tokens_milli < needed:
+            return False
+    names = {b.limit_name for b in result.old_buckets}
+    return all(name in names for name in consume)
+
+
 def _reader_window_end(limit: Limit, bucket: BucketState) -> int | None:
     """When a read-only view should treat ``bucket``'s duration window as over (ADR-139).
 
@@ -1033,6 +1056,18 @@ class RateLimiter:
                     entity_id, resource, result, now_ms
                 )
                 return None, new_shard, new_count, parent_hint
+
+            # A sharded bucket whose write failed only on its stamp (a trimming
+            # `vu = 0`: #679, or the ADR-150 owner-check fallback) needs the
+            # slow path on this same shard, the only pass that clears it. The
+            # retry below would send it elsewhere, and the stamped shard would
+            # keep failing every fast-path write that draws it.
+            if (
+                result.shard_count > 1
+                and result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
+                and _failed_only_on_its_stamp(result, consume)
+            ):
+                return None, result.shard_id, result.shard_count, parent_hint
 
             # Shard retry: if multi-shard and app limit exhausted, try another shard
             if (

@@ -110,10 +110,30 @@ consistent META read does not help: S can read before t1 and write after t2.
   clock, so a leftover bucket from a process whose clock ran ahead could still carry a
   higher `pgen` than the recreated entity, and then win every pin forever (old parent
   debited, `rf` frozen, `set_parent` counting a stamp it never wrote). `create_entity` writes
-  a random token on META; every owner stamp copies it beside `pgen`, and every pin is
-  `attribute_not_exists(pinc) OR pinc <> :inc OR attribute_not_exists(pgen) OR pgen <= :pg`:
-  a generation compares only within one incarnation. META without `pinc` (created before
-  this) is the legacy incarnation `-`. A fan-out counts only buckets it actually stamped.
+  a random token on META; every owner stamp copies it beside `pgen`: a generation compares
+  only within one incarnation. META without `pinc` (created before this) is the legacy
+  incarnation `-`. A fan-out counts only buckets it actually stamped. Two pins, by how the
+  writer read META (third review of #716):
+  - **strongly consistent** writers — the fan-out, the provisioner fan-out, the post-create
+    owner check, the aggregator's clone repair — use `attribute_not_exists(pinc) OR pinc <>
+    :inc OR attribute_not_exists(pgen) OR pgen <= :pg`: they read the current record, so
+    another incarnation's stamp is a predecessor's and loses;
+  - the **slow path's rf-locked owner stamp** read META eventually consistently, and after a
+    delete and recreate that read can be the predecessor's. It uses `attribute_not_exists(pinc)
+    OR (pinc = :inc AND (attribute_not_exists(pgen) OR pgen <= :pg))` and asks for the failure
+    image. Losing to another `pinc`, the lease reads META once, strongly consistent
+    (`Repository.restamp_owner_if_current`): if its incarnation is current the bucket is a
+    leftover, restamped through the fan-out's write, and the original write is re-sent once
+    (the claim moves no `rf`); if not, the bucket is left alone and the acquire commits on the
+    consumption-only retry, debiting the parent it planned (the predecessor's) once — the
+    same bound as a lease opened before a move. Without this split, a stale replica put the
+    old parent back over the current stamp (org-a debited 10 of 10 afterwards).
+- **A stamped shard is cleared where it is** (third review, finding 3): a trimming `vu = 0`
+  (the owner-check fallback, or #679's credit clamp) fails a fast-path write whose balances
+  fit, which the repository classifies as exhausted. On a sharded bucket the shard retry then
+  sent the slow path to another shard, so the stamped one was never cleared. When the image
+  shows the request would have fit, the slow path now goes to that same shard. main's #679
+  stamp has the same problem on any sharded bucket.
 - Every writer of `parent_id`/`cascade` onto a bucket writes the `pgen` it read beside them and
   adds `attribute_not_exists(pgen) OR pgen <= :pgen` to its condition:
   - **owner stamp** in `build_composite_normal` — a lost pin fails the transaction like a lost

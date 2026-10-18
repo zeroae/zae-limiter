@@ -430,6 +430,139 @@ class TestStaleWriters:
         assert _stamp(await _item(repo, "user", "llm")) == (True, "org-a", 10**13)
         await repo.create_entity("user", parent_id="org-b", cascade=True)
 
+    async def test_a_stale_replica_of_the_predecessor_cannot_restamp(
+        self, repo, other, generations_from_zero
+    ):
+        """Review of #716 (3rd), finding 1: the stale-incarnation probe.
+
+        A slow pass whose eventually consistent META read returns the deleted
+        predecessor (old incarnation, org-a) must not overwrite the recreated
+        entity's stamp (org-b). Its own acquire still debits org-a once.
+        """
+        generations_from_zero.stop()
+        for resource in ("gpt-4", "llm"):
+            await repo.set_resource_defaults(resource, [RPM])
+        await repo.create_entity("org-a")
+        await repo.create_entity("org-b")
+        await repo.create_entity("user", parent_id="org-a", cascade=True)
+        old_meta = await repo.get_entity("user", consistent_read=True)
+        await repo.delete_entity("user")
+        with patch.object(repo, "_now_ms", return_value=repo._now_ms() + 10):
+            await repo.create_entity("user", parent_id="org-b", cascade=True)
+        async with RateLimiter(repository=repo, speculative_writes=False).acquire(
+            "user", "llm", consume={"rpm": 1}
+        ):
+            pass
+        current = _stamp(await _item(repo, "user", "llm"))
+        assert current[:2] == (True, "org-b")
+
+        stale = other._repository
+        real = stale.batch_get_entity_and_buckets
+
+        async def stale_meta(entity_id, bucket_keys):
+            entity, buckets = await real(entity_id, bucket_keys)
+            return (old_meta if entity_id == "user" else entity), buckets
+
+        org_a = await _consumed(repo, "org-a", "llm")
+        with patch.object(stale, "batch_get_entity_and_buckets", stale_meta):
+            async with RateLimiter(repository=stale, speculative_writes=False).acquire(
+                "user", "llm", consume={"rpm": 1}
+            ) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user", "org-a"}
+        assert await _consumed(repo, "org-a", "llm") == org_a + 1  # this lease, once
+
+        assert _stamp(await _item(repo, "user", "llm")) == current  # the stamp stands
+        third_repo = await _open_repo()
+        async with RateLimiter(repository=third_repo) as third:
+            org_a, org_b = (
+                await _consumed(repo, "org-a", "llm"),
+                await _consumed(repo, "org-b", "llm"),
+            )
+            for _ in range(5):
+                async with third.acquire("user", "llm", consume={"rpm": 1}):
+                    pass
+        await third_repo.close()
+        assert await _consumed(repo, "org-a", "llm") == org_a
+        assert await _consumed(repo, "org-b", "llm") == org_b + 5
+
+    async def test_a_claim_needs_this_incarnation_to_be_current(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        assert await repo.restamp_owner_if_current("user", "gpt-4", 0, "not-current") is False
+        assert await repo.restamp_owner_if_current("nobody", "gpt-4", 0, "x") is False
+
+    async def test_a_failed_claim_is_logged(self, repo, other, caplog):
+        await self._leftover_from_a_fast_clock(repo, other)
+        with patch.object(repo, "restamp_owner_if_current", side_effect=RuntimeError("x")):
+            async with RateLimiter(repository=repo, speculative_writes=False).acquire(
+                "user", "llm", consume={"rpm": 1}
+            ):
+                pass
+        assert "could not claim a predecessor's bucket" in caplog.text
+
+    @staticmethod
+    async def _foreign_stamp(repo: Repository) -> None:
+        """user's gpt-4 bucket carries another incarnation's stamp."""
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=TABLE,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET pinc = :other",
+            ExpressionAttributeValues={":other": {"S": "someone-else"}},
+        )
+
+    async def test_a_resent_write_that_loses_again_takes_the_retry(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._foreign_stamp(repo)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        user = await _consumed(repo, "user")
+        # A claim reported but not landed: the re-sent write loses the pin again.
+        with patch.object(repo, "restamp_owner_if_current", return_value=True):
+            async with slow.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+        assert await _consumed(repo, "user") == user + 1  # the consumption-only retry
+        assert (await _item(repo, "user", "gpt-4"))["pinc"] == {"S": "someone-else"}
+
+    async def test_a_resent_write_that_errors_surfaces(self, limiter):
+        from botocore.exceptions import ClientError
+
+        from zae_limiter.exceptions import RateLimiterUnavailable
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._foreign_stamp(repo)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        real = repo.transact_write
+        calls = []
+
+        async def flaky(items):
+            calls.append(items)
+            if len(calls) == 2:  # the re-send
+                raise ClientError({"Error": {"Code": "InternalServerError"}}, "UpdateItem")
+            return await real(items)
+
+        with (
+            patch.object(repo, "restamp_owner_if_current", return_value=True),
+            patch.object(repo, "transact_write", flaky),
+        ):
+            with pytest.raises(RateLimiterUnavailable):
+                async with slow.acquire("user", "gpt-4", consume={"rpm": 1}):
+                    pass
+
+    async def test_a_backend_without_the_claim_skips_it(self):
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        lease = Lease(repository=cast(RepositoryProtocol, SimpleNamespace()))
+        await lease._claim_owner_stamps({}, RuntimeError("x"))
+
     async def test_a_predecessors_bucket_never_outranks_the_recreated_entity(self, repo, other):
         """Skew probe: its generation is higher, its incarnation is not this one."""
         await self._leftover_from_a_fast_clock(repo, other)
@@ -1013,6 +1146,107 @@ async def _set(
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=values,
     )
+
+
+class TestAStampedShardIsMaterialisedWhereItIs:
+    """A `vu = 0` on one shard of a sharded bucket is cleared on that shard.
+
+    Review of #716 (3rd), finding 3: the owner-check fallback stamps `vu = 0`,
+    but a sharded entity's slow path was sent to another shard, so the stamped
+    one kept its stale owner and failed every fast-path write that drew it.
+    """
+
+    @staticmethod
+    async def _two_shards(repo: Repository) -> None:
+        for resource in ("gpt-4", "llm"):
+            await repo.set_resource_defaults(resource, [RPM])
+        await repo.create_entity("org-a")
+        await repo.create_entity("org-b")
+        await repo.create_entity("user", parent_id="org-a", cascade=True)
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+                pass
+        await repo.bump_shard_count("user", "llm", 1)
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with RateLimiter(repository=repo) as limiter:
+                async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+                    pass
+        assert await _item(repo, "user", "llm", 1) is not None
+
+    @staticmethod
+    async def _set_shard1(repo: Repository, expression: str, values: dict) -> None:
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=TABLE,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user", "llm", 1)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression=expression,
+            ExpressionAttributeValues=values,
+        )
+
+    async def test_the_owner_fallback_restamps_a_sharded_cascading_child(self, repo):
+        """The vu0-sharded probe."""
+        await self._two_shards(repo)
+        await repo.set_parent("user", "org-b")
+        # Shard 1: a create that read META before the move, its owner check failed.
+        await self._set_shard1(
+            repo,
+            "SET parent_id = :a, pgen = :g, vu = :z",
+            {":a": {"S": "org-a"}, ":g": {"N": "0"}, ":z": {"N": "0"}},
+        )
+        fresh = await _open_repo()
+        async with RateLimiter(repository=fresh) as limiter:
+            org_a = await _consumed(repo, "org-a", "llm")
+            with patch("zae_limiter.repository.random.randrange", return_value=1):
+                for _ in range(3):  # the first learns the count; then shard 1 is drawn
+                    async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+                        pass
+        await fresh.close()
+
+        shard1 = await _item(repo, "user", "llm", 1)
+        assert _stamp(shard1)[:2] == (True, "org-b")
+        assert schema.BUCKET_FIELD_VU not in shard1
+        assert await _consumed(repo, "org-a", "llm") == org_a
+
+    async def test_a_trimming_vu_on_a_sharded_bucket_is_cleared_there(self, repo):
+        """The same route for #679's credit clamp, which main shares (not fixed there)."""
+        await self._two_shards(repo)
+        await self._set_shard1(repo, "SET vu = :z", {":z": {"N": "0"}})
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with RateLimiter(repository=repo) as limiter:
+                async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+                    pass
+        assert schema.BUCKET_FIELD_VU not in await _item(repo, "user", "llm", 1)
+
+    def test_a_short_balance_is_not_a_stamp_failure(self):
+        from zae_limiter.limiter import _failed_only_on_its_stamp
+        from zae_limiter.models import BucketState
+
+        def state(name, tokens):
+            return BucketState(
+                entity_id="user",
+                resource="llm",
+                limit_name=name,
+                tokens_milli=tokens,
+                last_refill_ms=0,
+                capacity_milli=100_000,
+                refill_amount_milli=100_000,
+                refill_period_ms=60_000,
+            )
+
+        consume = {"rpm": 1}
+        ok = [state("rpm", 5_000), state("wcu", 5_000)]
+        assert _failed_only_on_its_stamp(SpeculativeResult(success=False, old_buckets=ok), consume)
+        for buckets in (
+            [state("rpm", 500), state("wcu", 5_000)],  # rpm short
+            [state("rpm", 5_000), state("wcu", 0)],  # wcu short
+            [state("wcu", 5_000)],  # rpm missing from the item
+            None,  # no image
+        ):
+            result = SpeculativeResult(success=False, old_buckets=buckets)
+            assert not _failed_only_on_its_stamp(result, consume)
 
 
 class TestTheItemOverrulesTheDebitedParent:

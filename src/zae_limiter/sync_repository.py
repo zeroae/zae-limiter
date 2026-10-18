@@ -2788,7 +2788,9 @@ class SyncRepository:
             attr_values[f":wl{i}"] = {"N": str(rsa)}
         condition_parts: list[str] = ["#rf = :expected_rf"]
         if pgen_pinned and owner_pinc is not None:
-            condition_parts.append(_owner_pin("#opi", "#opg", ":opi", ":opg"))
+            condition_parts.append(
+                "(attribute_not_exists(#opi) OR (#opi = :opi AND (attribute_not_exists(#opg) OR #opg <= :opg)))"
+            )
         elif pgen_pinned:
             condition_parts.append("(attribute_not_exists(#opg) OR #opg <= :opg)")
         for i, name in enumerate(consumed):
@@ -2863,6 +2865,11 @@ class SyncRepository:
                 "ConditionExpression": " AND ".join(condition_parts),
                 "ExpressionAttributeNames": attr_names,
                 "ExpressionAttributeValues": attr_values,
+                **(
+                    {"ReturnValuesOnConditionCheckFailure": "ALL_OLD"}
+                    if pgen_pinned and owner_pinc is not None
+                    else {}
+                ),
             }
         }
 
@@ -6894,6 +6901,36 @@ class SyncRepository:
         )
         self._cascade_cache[self._namespace_id, entity_id, resource] = cascade
         return True
+
+    def restamp_owner_if_current(
+        self, entity_id: str, resource: str, shard_id: int, incarnation: str
+    ) -> bool:
+        """Claim a bucket stamped by another incarnation, if this one is current (ADR-150).
+
+        The slow path's owner pin refuses another incarnation's stamp, because
+        its META read is eventually consistent and may be a deleted
+        predecessor's. When that pin is lost to another incarnation, one
+        strongly consistent read of META (1 RCU) settles which is current: if
+        it is ``incarnation``, the bucket is a predecessor's leftover and is
+        restamped through the fan-out's write, which lets the current
+        incarnation overwrite any other; if not, the caller read a stale
+        record and the bucket is left alone.
+
+        Returns:
+            Whether the bucket was restamped.
+        """
+        owner = self.get_entity(entity_id, consistent_read=True)
+        if owner is None or owner.incarnation != incarnation:
+            return False
+        access = self.resolve_access(entity_id, resource, consistent_read=True)
+        cascade = effective_cascade(access.cascade, owner)
+        return self._stamp_bucket_cascade(
+            schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id),
+            cascade,
+            owner.parent_id,
+            owner.parent_generation,
+            owner.incarnation,
+        )
 
     def _fanout_cascade(self, *, resource: str | None = None, entity_id: str | None = None) -> int:
         """Restamp every bucket a cascade-policy change can reach (ADR-146).

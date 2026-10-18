@@ -3290,7 +3290,15 @@ class Repository:
 
         condition_parts: list[str] = ["#rf = :expected_rf"]
         if pgen_pinned and owner_pinc is not None:
-            condition_parts.append(_owner_pin("#opi", "#opg", ":opi", ":opg"))
+            # Same incarnation only: this pass read META eventually
+            # consistently, so it may hold a deleted predecessor's record and
+            # must never overwrite another incarnation's stamp. A bucket a
+            # predecessor left behind fails this pin; the lease then confirms
+            # with one consistent read and claims it (`restamp_owner_if_current`).
+            condition_parts.append(
+                "(attribute_not_exists(#opi) OR (#opi = :opi AND "
+                "(attribute_not_exists(#opg) OR #opg <= :opg)))"
+            )
         elif pgen_pinned:
             condition_parts.append("(attribute_not_exists(#opg) OR #opg <= :opg)")
 
@@ -3395,6 +3403,13 @@ class Repository:
                 "ConditionExpression": " AND ".join(condition_parts),
                 "ExpressionAttributeNames": attr_names,
                 "ExpressionAttributeValues": attr_values,
+                # The failure image says whether an owner pin was lost to
+                # another incarnation (ADR-150). Free: it rides on the error.
+                **(
+                    {"ReturnValuesOnConditionCheckFailure": "ALL_OLD"}
+                    if pgen_pinned and owner_pinc is not None
+                    else {}
+                ),
             }
         }
 
@@ -8288,6 +8303,36 @@ class Repository:
         )
         self._cascade_cache[(self._namespace_id, entity_id, resource)] = cascade
         return True
+
+    async def restamp_owner_if_current(
+        self, entity_id: str, resource: str, shard_id: int, incarnation: str
+    ) -> bool:
+        """Claim a bucket stamped by another incarnation, if this one is current (ADR-150).
+
+        The slow path's owner pin refuses another incarnation's stamp, because
+        its META read is eventually consistent and may be a deleted
+        predecessor's. When that pin is lost to another incarnation, one
+        strongly consistent read of META (1 RCU) settles which is current: if
+        it is ``incarnation``, the bucket is a predecessor's leftover and is
+        restamped through the fan-out's write, which lets the current
+        incarnation overwrite any other; if not, the caller read a stale
+        record and the bucket is left alone.
+
+        Returns:
+            Whether the bucket was restamped.
+        """
+        owner = await self.get_entity(entity_id, consistent_read=True)
+        if owner is None or owner.incarnation != incarnation:
+            return False
+        access = await self.resolve_access(entity_id, resource, consistent_read=True)
+        cascade = effective_cascade(access.cascade, owner)
+        return await self._stamp_bucket_cascade(
+            schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id),
+            cascade,
+            owner.parent_id,
+            owner.parent_generation,
+            owner.incarnation,
+        )
 
     async def _fanout_cascade(
         self, *, resource: str | None = None, entity_id: str | None = None
