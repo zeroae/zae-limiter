@@ -66,6 +66,10 @@ process's rejection cache (ADR-147) and are audited. Details, costs and open dec
   (4 WRU where one `UpdateItem` was 1).
 - Without an idempotency key, an error from a reset or top-up leaves its outcome unknown to the
   caller; the operation record lives three days.
+- A record is tied to the entity's incarnation (#716's `pinc`), read before the write rather
+  than checked inside it: an entity deleted and recreated during one call can see a key retry
+  applied once more. Checking it in the transaction would need `dynamodb:ConditionCheckItem`,
+  which no shipped policy grants.
 - After a plan upgrade a quota's ceiling is at most one top-up wider than the entitlement until
   the next reset; it under-clamps refunds, never mints.
 - A conflicting writer on any shard aborts the whole transaction; the operation retries a

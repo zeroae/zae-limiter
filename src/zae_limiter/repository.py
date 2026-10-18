@@ -8592,7 +8592,10 @@ class Repository:
                 within three days is applied once and returns the first call's
                 result. **Without a key, an error from this call leaves the
                 outcome unknown**: the reset may or may not have landed, and
-                retrying it may apply it twice.
+                retrying it may apply it twice. One residual: if the
+                entity is deleted and recreated *while* the call is in flight,
+                its record carries the old incarnation and a retry under the
+                new one is applied again, once.
 
         Returns:
             The shards written and, per limit, the tokens restored.
@@ -8655,7 +8658,10 @@ class Repository:
                 retry with the same key within three days is applied once and
                 returns the first call's result. **Without a key, an error
                 from this call leaves the outcome unknown**: the tokens may or
-                may not have been granted, and retrying may grant them twice.
+                may not have been granted, and retrying may grant them twice. One residual: if the
+                entity is deleted and recreated *while* the call is in flight,
+                its record carries the old incarnation and a retry under the
+                new one is applied again, once.
 
         Returns:
             The shards written and, per limit, the tokens granted.

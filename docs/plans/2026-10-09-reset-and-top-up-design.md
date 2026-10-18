@@ -180,6 +180,23 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
   expired survives the delete (targeted review), and so can one written by a top-up racing
   the delete. Either is harmless, because the next incarnation never reads it. A GSI4 sweep
   is not an option: ns-full's `LeadingKeys` (`{ns}/*`) does not match `GSI4PK = {ns}`.
+- **Identity, as built (round-4 review).** The incarnation is #716's `pinc` on META, read
+  through `schema.entity_incarnation` (`pinc` → `created_at` → `"-"`); #720 writes no META
+  field of its own. A record written before the entity had META (`ent = "-"`) matches every
+  incarnation — otherwise a top-up retried across `create_entity` was granted twice (F1) —
+  and the record's condition is `attribute_not_exists(PK) OR (ent <> :ent AND ent <> :legacy)`.
+  The create path reads META once, for both the identity and the cascade stamps (F4).
+- **Residual F2 — a delete and recreate during one call.** The call reads META, then writes;
+  if the entity is deleted and recreated in between, the record carries the old incarnation
+  and a caller retry under the new one is applied again, once. Not fixed: binding META into
+  the transaction needs a `ConditionCheck`, which needs `dynamodb:ConditionCheckItem`, and no
+  shipped policy grants it; a GSI4 cleanup sweep is blocked for ns-full by `LeadingKeys`. The
+  `"-"` rule has the same shape: a record written before META existed stays this entity id's
+  across later recreations until its three-day TTL, so a reused key there returns the old
+  result.
+- **Residual F3 — a lost audit.** When a write's response is unclear and the record read that
+  would resolve it fails too, the error is raised (the caller retries with its key); if the
+  write had landed, its audit event is not written. Logged at WARNING, without the entity id.
 - **Known, out of scope (pre-existing in `delete_entity`):** `BatchWriteItem`'s
   `UnprocessedItems` is ignored, its META and GSI3 queries are not paginated, and the ns-full
   policy lacks `BatchWriteItem`. None is introduced by #470; each predates it.
