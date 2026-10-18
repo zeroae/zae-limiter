@@ -488,3 +488,84 @@ class TestRefundsUnderALiveTopUp:
             async with limiter.acquire("e", "r", {"cal": 10}) as lease:
                 await lease.adjust(cal=-5)  # estimated 10, used 5
         assert forced == []
+
+
+async def _two_shards(limiter, entity, name):
+    import random as _r
+
+    repo = limiter._repository
+    slow = RateLimiter(repository=repo, speculative_writes=False)
+    await _try(slow, entity, {name: 0})
+    await repo.bump_shard_count(entity, "r", 1)
+    real_rr = _r.randrange
+    _r.randrange = lambda a, b=None: 1
+    try:
+        await _try(slow, entity, {name: 0})
+    finally:
+        _r.randrange = real_rr
+
+
+class TestSessionResetOnShards:
+    """PR #720 second review probes that held: a session reset never gives a
+    sharded entity more than one allowance, and readers see it at once."""
+
+    @pytest.mark.parametrize("spent_first", [True, False])
+    async def test_a_sharded_session_reset_gives_one_allowance(self, limiter, clock, spent_first):
+        repo = limiter._repository
+        await limiter.set_limits("e", [SES], resource="r")
+        await _two_shards(limiter, "e", "ses")
+        clock[0] += 1
+        if spent_first:
+            await _drain(limiter, "e", "ses")
+        clock[0] += 1
+        await repo.reset_bucket("e", "r")
+        clock[0] += 1
+        assert await _drain(limiter, "e", "ses") <= 10
+
+    async def test_check_availability_reports_the_full_allowance_after_a_reset(
+        self, limiter, clock
+    ):
+        repo = limiter._repository
+        await limiter.set_limits("e", [SES], resource="r")
+        assert await _try(limiter, "e", {"ses": 10})
+        clock[0] += 1
+        await repo.reset_bucket("e", "r")
+        assert (await limiter.check_availability("e", "r")).available == {"ses": 10}
+
+    async def test_a_reset_with_a_pending_roll_on_a_sibling_gives_one_allowance(
+        self, limiter, clock
+    ):
+        """Shard 0 opened the next window and fanned it out; shard 1 holds the
+        roll pending when the reset lands."""
+        import random as _r
+
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await limiter.set_limits("e", [SES], resource="r")
+        await _two_shards(limiter, "e", "ses")
+        for shard in (0, 1):
+            real = _r.randrange
+            _r.randrange = lambda a, b=None, s=shard: s
+            try:
+                while await _try(slow, "e", {"ses": 1}):
+                    pass
+            finally:
+                _r.randrange = real
+        clock[0] += 3_600_001  # the window ends
+        real = _r.randrange
+        _r.randrange = lambda a, b=None: 0
+        try:
+            assert await _try(slow, "e", {"ses": 1})  # shard 0 opens and fans out
+        finally:
+            _r.randrange = real
+        clock[0] += 1
+        await repo.reset_bucket("e", "r")
+        clock[0] += 1
+        assert await _drain(limiter, "e", "ses") <= 10
+
+    async def test_a_top_up_creating_a_session_bucket_keeps_the_purchase(self, limiter, clock):
+        repo = limiter._repository
+        await limiter.set_limits("e", [SES], resource="r")
+        await repo.top_up("e", "r", {"ses": 5})
+        clock[0] += 1
+        assert await _drain(limiter, "e", "ses") == 15
