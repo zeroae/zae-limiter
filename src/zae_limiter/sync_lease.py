@@ -933,9 +933,9 @@ class SyncLease:
                 if isinstance(item, dict) and "Put" in item:
                     credit_images[key] = credit_image_from_item(item["Put"].get("Item"))
                 elif len(retry_items) == 1:
-                    period_images[key] = credit_image_from_item(retry_attrs)
-                else:
-                    period_images[key] = None
+                    newer = credit_image_from_item(retry_attrs)
+                    if newer is not None:
+                        period_images[key] = newer
         self._initial_committed = True
         for entry in self.entries:
             entry._initial_consumed = entry.consumed

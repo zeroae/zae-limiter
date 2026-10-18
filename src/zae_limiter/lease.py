@@ -1272,9 +1272,15 @@ class Lease:
                 if isinstance(item, dict) and "Put" in item:
                     credit_images[key] = credit_image_from_item(item["Put"].get("Item"))
                 elif len(retry_items) == 1:
-                    period_images[key] = credit_image_from_item(retry_attrs)
-                else:
-                    period_images[key] = None
+                    newer = credit_image_from_item(retry_attrs)
+                    if newer is not None:
+                        period_images[key] = newer
+            # Otherwise -- a multi-item retry (a cascade's child and parent),
+            # or a backend that returns no image -- the read's period stands.
+            # That never over-admits: a reset after the debit stamps `rf` at
+            # or past the first edge after the read's `rf`, and a roll moves
+            # `ws`, so the guard can only drop the credit, never land it in
+            # the wrong period.
 
         # Record initial consumed amounts after successful write
         self._initial_committed = True

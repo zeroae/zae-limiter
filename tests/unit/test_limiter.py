@@ -13600,6 +13600,87 @@ class TestSelfTrimmingRefunds:
             admitted += 1
         assert admitted <= 50
 
+    async def _lose_the_rf_lock(self, repo, entity_id, *, image=True):
+        """Make the next commit lose its `rf` lock once, so it takes the retry.
+
+        ``image=False`` also hides the retry's `ALL_NEW`, as a backend whose
+        `transact_write` returns ``None`` would. Returns a function to undo.
+        """
+        client = await repo._get_client()
+        key = {
+            "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "r", 0)},
+            "SK": {"S": sk_state()},
+        }
+        original = repo.transact_write
+        raced: list[int] = []
+
+        async def racing(items):
+            if not raced:
+                raced.append(1)
+                await client.update_item(
+                    TableName=repo.table_name,
+                    Key=key,
+                    UpdateExpression="ADD rf :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            attrs = await original(items)
+            return attrs if image else None
+
+        repo.transact_write = racing
+        return lambda: setattr(repo, "transact_write", original)
+
+    async def test_cascade_retry_quota_credit(self, two):
+        """A cascade's consumption-only retry writes child and parent in one
+        transaction, which returns no image (#730 third review). Its quota credits
+        used to be dropped as having no known period: refunds lost in their own
+        period (child 94, parent 94). The read's period now stands."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        slow = RateLimiter(repository=r1, speculative_writes=False)
+        await r1.create_entity("p")
+        await r1.create_entity("c", parent_id="p", cascade=True)
+        quota = [Limit.quota("q", 100, cron="0 0 * * *")]
+        await r1.set_limits("p", quota, resource="r")
+        await r1.set_limits("c", quota, resource="r")
+        async with slow.acquire("c", "r", {"q": 1}):
+            pass  # 99 each
+
+        undo = await self._lose_the_rf_lock(r1, "c")
+        try:
+            with pytest.raises(RuntimeError):
+                async with slow.acquire("c", "r", {"q": 5}) as lease:
+                    assert {e.entity_id for e in lease.entries} == {"c", "p"}
+                    raise RuntimeError("body failed")
+        finally:
+            undo()
+
+        for entity_id in ("c", "p"):
+            item = await self._raw(r1, entity_id, resource="r")
+            assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+
+    async def test_retry_with_no_image_keeps_the_reads_period(self, two):
+        """A backend whose `transact_write` returns no image after the retry: the
+        quota credit is guarded on the read's period and lands in it."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        slow = RateLimiter(repository=r1, speculative_writes=False)
+        await r1.set_limits("n", [Limit.quota("q", 100, cron="0 0 * * *")], resource="r")
+        async with slow.acquire("n", "r", {"q": 1}):
+            pass
+
+        undo = await self._lose_the_rf_lock(r1, "n", image=False)
+        try:
+            with pytest.raises(RuntimeError):
+                async with slow.acquire("n", "r", {"q": 5}):
+                    raise RuntimeError("body failed")
+        finally:
+            undo()
+
+        item = await self._raw(r1, "n", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+
     async def test_a_lowered_limit_clamped_before_the_refund(self, two):
         """The limit drops to 50 and another process's slow pass clamps to it (moving
         `rf`) before the refund: the in-memory ceiling is still 100."""
