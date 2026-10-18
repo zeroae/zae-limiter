@@ -1670,7 +1670,30 @@ class SyncRepository:
             },
         )
         bucket_items = gsi3_response.get("Items", [])
-        all_items = items + bucket_items
+        record_items: list[dict[str, Any]] = []
+        for item in bucket_items:
+            pk = item["PK"]["S"]
+            if not pk.endswith("#0"):
+                continue
+            start_key: dict[str, Any] | None = None
+            while True:
+                params: dict[str, Any] = {
+                    "TableName": self.table_name,
+                    "KeyConditionExpression": "PK = :pk AND begins_with(SK, :op)",
+                    "ExpressionAttributeValues": {
+                        ":pk": {"S": pk},
+                        ":op": {"S": schema.SK_OPERATION_PREFIX},
+                    },
+                    "ProjectionExpression": "PK, SK",
+                }
+                if start_key:
+                    params["ExclusiveStartKey"] = start_key
+                page = client.query(**params)
+                record_items.extend(page.get("Items", []))
+                start_key = page.get("LastEvaluatedKey")
+                if not start_key:
+                    break
+        all_items = items + bucket_items + record_items
         if not all_items:
             return
         delete_requests = [

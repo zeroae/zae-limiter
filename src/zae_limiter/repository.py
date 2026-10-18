@@ -1979,7 +1979,36 @@ class Repository:
         )
         bucket_items = gsi3_response.get("Items", [])
 
-        all_items = items + bucket_items
+        # Reset and top-up operation records (ADR-149) live in each resource's
+        # shard-0 bucket partition with no GSI3 keys. Left to their three-day
+        # ttl, a recreated entity reusing an idempotency key would get the old
+        # entity's result back. One Query per resource the entity had a bucket
+        # on; an admin path.
+        record_items: list[dict[str, Any]] = []
+        for item in bucket_items:
+            pk = item["PK"]["S"]
+            if not pk.endswith("#0"):
+                continue
+            start_key: dict[str, Any] | None = None
+            while True:
+                params: dict[str, Any] = {
+                    "TableName": self.table_name,
+                    "KeyConditionExpression": "PK = :pk AND begins_with(SK, :op)",
+                    "ExpressionAttributeValues": {
+                        ":pk": {"S": pk},
+                        ":op": {"S": schema.SK_OPERATION_PREFIX},
+                    },
+                    "ProjectionExpression": "PK, SK",
+                }
+                if start_key:
+                    params["ExclusiveStartKey"] = start_key
+                page = await client.query(**params)
+                record_items.extend(page.get("Items", []))
+                start_key = page.get("LastEvaluatedKey")
+                if not start_key:
+                    break
+
+        all_items = items + bucket_items + record_items
         if not all_items:
             return
 
