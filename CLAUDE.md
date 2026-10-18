@@ -195,6 +195,7 @@ zae-limiter lambda-export --output lambda.zip
 - The CLI automatically builds a deployment package using `aws-lambda-builders` for cross-platform compatibility
 - Only `[lambda]` extra dependencies (aws-lambda-powertools) are pip-installed; `boto3` is provided by the Lambda runtime
 - The `zae_limiter_aggregator` package and a minimal `zae_limiter` stub are copied into the zip: `schema.py`, `bucket.py` (refill math for aggregator-assisted refill), `models.py` (dataclasses used by bucket.py), `exceptions.py` (exceptions used by models.py), and `schedule.py` (cron evaluation for scheduled limits, #222). The provisioner package vendors the same stub minus `bucket.py`. An unvendored module is an `ImportError` at cold start that no test importing the *installed* package can see, so both builder test modules assert the import closure of the built zip
+- Every zip entry is stored world-readable (`0644`, `0755` if executable) by `infra.lambda_builder.write_lambda_zip`, whatever the host's umask: Lambda runs the handler as a non-root user, and `ZipFile.write` copies on-disk modes, so a `umask 077` host built `0600` entries that failed at cold start with `PermissionError: [Errno 13]`. All three builders (aggregator, provisioner, loadtest) go through it
 - Lambda code is updated via AWS Lambda API after stack creation
 - No S3 bucket required - deployment package is uploaded directly
 - No Docker required - `aws-lambda-builders` handles platform-specific wheels
