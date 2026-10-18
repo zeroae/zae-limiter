@@ -568,6 +568,65 @@ class TestStaleWriters:
             async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
                 assert lease.consumed == {"rpm": 1}
 
+        assert (await _item(repo, "user", "gpt-4"))[schema.BUCKET_FIELD_VU] == {"N": "0"}
+
+    async def test_a_failed_owner_check_forces_the_next_pass_to_restamp(self, repo, other):
+        """Review of #716 (2nd), finding 2: the repairfail probe."""
+        mover = other._repository
+        await _hierarchy(other)
+        await mover.set_resource_defaults("chat", [RPM])
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        real = repo.batch_get_entity_and_buckets
+        moved = []
+
+        async def read_then_move(*args, **kwargs):
+            result = await real(*args, **kwargs)
+            if not moved:
+                moved.append(await mover.set_parent("user", "org-b"))
+            return result
+
+        with (
+            patch.object(repo, "batch_get_entity_and_buckets", read_then_move),
+            patch.object(repo, "repair_created_owner_stamp", side_effect=RuntimeError("throttled")),
+        ):
+            async with slow.acquire("user", "chat", consume={"rpm": 1}):
+                pass
+
+        item = await _item(repo, "user", "chat")
+        assert _stamp(item)[1] == "org-a"  # the stale stamp the check could not fix...
+        assert item[schema.BUCKET_FIELD_VU] == {"N": "0"}  # ...but the fast path is closed
+        third_repo = await _open_repo()
+        async with RateLimiter(repository=third_repo) as third:
+            org_a = await _consumed(repo, "org-a", "chat")
+            for _ in range(3):
+                async with third.acquire("user", "chat", consume={"rpm": 1}):
+                    pass
+        await third_repo.close()
+        assert _stamp(await _item(repo, "user", "chat"))[1] == "org-b"
+        assert await _consumed(repo, "org-a", "chat") == org_a
+
+    async def test_a_failed_slow_pass_stamp_is_logged(self, limiter, caplog):
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [RPM])
+        await repo.create_entity("user")
+        with (
+            patch.object(repo, "repair_created_owner_stamp", side_effect=RuntimeError("x")),
+            patch.object(repo, "build_vu_reset", side_effect=RuntimeError("y")),
+        ):
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+        assert "could not force a slow pass" in caplog.text
+
+    async def test_a_backend_without_vu_reset_skips_it(self):
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        lease = Lease(repository=cast(RepositoryProtocol, SimpleNamespace()))
+        await lease._force_owner_restamp("user", "gpt-4", 0)
+
     @staticmethod
     async def _doubling_record(repo: Repository) -> dict:
         """The stream record of shard 0's 1 -> 2 doubling, its image read now."""

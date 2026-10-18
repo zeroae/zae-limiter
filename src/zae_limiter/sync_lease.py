@@ -804,11 +804,35 @@ class SyncLease:
                 repair(entity_id, resource, shard_id, stamped, incarnation)
             except Exception:
                 logger.warning(
-                    "owner stamp check failed for resource=%s shard=%d; the next slow pass or a re-run of set_parent restamps it",
+                    "owner stamp check failed for resource=%s shard=%d; forcing the next acquire onto the slow path, which restamps it",
                     resource,
                     shard_id,
                     exc_info=True,
                 )
+                self._force_owner_restamp(entity_id, resource, shard_id)
+
+    def _force_owner_restamp(self, entity_id: str, resource: str, shard_id: int) -> None:
+        """Stamp ``vu = 0`` on a created bucket whose owner check failed (ADR-150).
+
+        The check could not tell whether a move overtook the create. ``vu = 0``
+        fails the fast path's condition, so the next acquire takes the slow
+        path, whose rf-locked write re-stamps the owner from META under the
+        owner pin — the same mechanism a limit change uses (#679). Conditioned
+        on the item existing. If this write fails too, it is logged and the
+        stamp waits for the bucket's next slow pass or a ``set_parent``.
+        """
+        build = getattr(self.repository, "build_vu_reset", None)
+        if build is None:
+            return
+        try:
+            self.repository.write_each([build(entity_id, resource, shard_id)])
+        except Exception:
+            logger.warning(
+                "could not force a slow pass after a failed owner check for resource=%s shard=%d",
+                resource,
+                shard_id,
+                exc_info=True,
+            )
 
     def _fan_out_windows(
         self, window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]]
