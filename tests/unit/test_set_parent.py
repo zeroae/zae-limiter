@@ -623,7 +623,7 @@ class TestStaleWriters:
         assert await repo.set_parent("user", "org-b") == 1  # llm only
 
     async def test_an_entity_from_before_incarnations_is_its_own(self, limiter):
-        """No `pinc` on META reads as the legacy incarnation, stamped and pinned as one."""
+        """No `pinc` on META reads as its `created_at`, stamped and pinned as one."""
         repo = limiter._repository
         await _hierarchy(limiter)
         client = await repo._get_client()
@@ -635,16 +635,31 @@ class TestStaleWriters:
             },
             UpdateExpression="REMOVE pinc",
         )
-        assert (await repo.get_entity("user")).incarnation == schema.LEGACY_INCARNATION
+        created_at = (await _meta(repo, "user"))["created_at"]["S"]
+        assert (await repo.get_entity("user")).incarnation == created_at
 
         await repo.set_parent("user", "org-b")
 
         item = await _item(repo, "user", "gpt-4")
-        assert item[schema.BUCKET_FIELD_PINC] == {"S": schema.LEGACY_INCARNATION}
+        assert item[schema.BUCKET_FIELD_PINC] == {"S": created_at}
         pk = schema.pk_bucket(repo._namespace_id, "user", "gpt-4", 0)
         assert not await repo._stamp_bucket_cascade(
-            pk, True, "org-a", 0, schema.LEGACY_INCARNATION
+            pk, True, "org-a", 0, created_at
         )  # same incarnation, lower generation: refused
+
+    @pytest.mark.parametrize(
+        ("meta", "expected"),
+        [
+            ({"pinc": {"S": "abc"}, "created_at": {"S": "2026-01-01T00:00:00Z"}}, "abc"),
+            ({"created_at": {"S": "2026-01-01T00:00:00Z"}}, "2026-01-01T00:00:00Z"),
+            ({}, "-"),
+            ({"pinc": {"S": ""}}, "-"),  # an empty token is no incarnation
+            ({"pinc": "abc"}, "abc"),  # the Table resource's native values (aggregator)
+            ({"created_at": "2026-01-01T00:00:00Z"}, "2026-01-01T00:00:00Z"),
+        ],
+    )
+    def test_the_shared_incarnation_rule(self, meta, expected):
+        assert schema.entity_incarnation(meta) == expected
 
     async def test_a_new_entity_starts_at_its_creation_instant(self, repo, generations_from_zero):
         generations_from_zero.stop()

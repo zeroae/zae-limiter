@@ -50,12 +50,12 @@ from zae_limiter.schema import (
     CONFIG_FIELD_CASCADE,
     DEFAULT_RESOURCE,
     ENTITY_FIELD_PGEN,
-    ENTITY_FIELD_PINC,
     LEGACY_INCARNATION,
     SK_BUCKET,
     WCU_LIMIT_NAME,
     WCU_SHARD_WARN_THRESHOLD,
     bucket_attr,
+    entity_incarnation,
     gsi2_pk_resource,
     gsi2_sk_bucket,
     gsi2_sk_usage,
@@ -1760,8 +1760,12 @@ def _stored_pgen(item: dict[str, Any]) -> int:
 
 
 def _stored_pinc(item: dict[str, Any]) -> str:
-    """An item's incarnation (ADR-150), native values; absent reads as the legacy one."""
-    return str(item.get(ENTITY_FIELD_PINC, LEGACY_INCARNATION))
+    """A bucket image's incarnation stamp (ADR-150), native values; absent is the legacy one.
+
+    A bucket item carries no ``created_at``, so this is not ``entity_incarnation``:
+    an unstamped bucket simply differs from any META that has an incarnation.
+    """
+    return str(item.get(BUCKET_FIELD_PINC, LEGACY_INCARNATION))
 
 
 def _clone_owner_stamp(
@@ -1782,7 +1786,7 @@ def _clone_owner_stamp(
         return None
     parent_id = meta.get("parent_id") or None
     generation = _stored_pgen(meta)
-    incarnation = _stored_pinc(meta)
+    incarnation = entity_incarnation(meta)
     if parent_id is None:
         return False, None, generation, incarnation
     levels = [(pk_entity(namespace_id, entity_id), sk_config(resource))]

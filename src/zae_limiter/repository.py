@@ -6662,7 +6662,7 @@ class Repository:
         )
         created_val = item.get("created_at", {}).get("S")
         pgen_val = int(item.get(schema.ENTITY_FIELD_PGEN, {}).get("N", "0"))
-        pinc_val = item.get(schema.ENTITY_FIELD_PINC, {}).get("S", schema.LEGACY_INCARNATION)
+        pinc_val = schema.entity_incarnation(item)
 
         return Entity(
             id=entity_id,
