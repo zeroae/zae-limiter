@@ -33,7 +33,7 @@ from datetime import timedelta
 from typing import Any
 
 from zae_limiter import Limit, Repository
-from zae_limiter.models import BucketState, CreditCeiling, QuotaDonorDebit
+from zae_limiter.models import BucketState, CreditCeiling, QuotaDonorDebit, QuotaPeriodPin
 from zae_limiter.schema import BUCKET_FIELD_GC
 from zae_limiter_aggregator import processor
 
@@ -244,6 +244,19 @@ def _non_gc_builds() -> dict[str, list[dict[str, Any]]]:
             repo.build_composite_adjust("e", "r", deltas={"cal": -1_000, "ses": -1_000}, trim=True)[
                 "Update"
             ],
+            # A quota credit guarded on its period (#721).
+            repo.build_composite_adjust(
+                "e",
+                "r",
+                deltas={"cal": -1_000, "ses": -1_000},
+                ceilings={
+                    "cal": CreditCeiling(5_000, 10_000, 2, (None, None), True, QuotaPeriodPin(9)),
+                    "ses": CreditCeiling(
+                        5_000, 10_000, 2, (None, None), True, QuotaPeriodPin(window=(3, 3))
+                    ),
+                },
+                trim=True,
+            )["Update"],
         ],
         "build_quota_donor_debits": [
             item["Update"]

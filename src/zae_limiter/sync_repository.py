@@ -41,6 +41,7 @@ from .models import (
     OnUnavailableAction,
     QuotaDonorDebit,
     QuotaGrant,
+    QuotaPeriodPin,
     QuotaSibling,
     StackOptions,
     UsageSnapshot,
@@ -134,6 +135,35 @@ def _credit_limit_terms(
             alias = f"#bx{code}{i}"
             names[alias] = schema.bucket_attr(name, field)
             terms.append(_pin_string(alias, f":bx{code}{i}", raw, values))
+    return terms
+
+
+def _credit_period_terms(
+    i: int, name: str, period: QuotaPeriodPin, names: dict[str, str], values: dict[str, Any]
+) -> list[str]:
+    """The terms that keep a quota credit in its debit's period (#721).
+
+    Calendar: the item's ``rf`` is still before the first reset edge after the
+    one the lease saw (a reset pass stamps ``rf`` at or past it). Session: the
+    window start and applied marker are still the ones the lease saw.
+    Tokens are positional (#634).
+    """
+    terms: list[str] = []
+    if period.reset_edge_ms is not None:
+        names["#bqrf"] = schema.BUCKET_FIELD_RF
+        values[f":bq{i}"] = {"N": str(period.reset_edge_ms)}
+        terms.append(f"#bqrf < :bq{i}")
+    if period.window is not None:
+        for code, field, number in zip(
+            ("w", "a"), (schema.BUCKET_FIELD_WS, schema.BUCKET_FIELD_WA), period.window, strict=True
+        ):
+            alias = f"#bq{code}{i}"
+            names[alias] = schema.bucket_attr(name, field)
+            if number is None:
+                terms.append(f"attribute_not_exists({alias})")
+            else:
+                values[f":bq{code}{i}"] = {"N": str(number)}
+                terms.append(f"{alias} = :bq{code}{i}")
     return terms
 
 
@@ -2811,6 +2841,9 @@ class SyncRepository:
                 condition_parts += _credit_limit_terms(
                     i, name, delta, ceilings[name], attr_names, attr_values
                 )
+            period = ceilings[name].quota_period if delta < 0 and name in ceilings else None
+            if period is not None:
+                condition_parts += _credit_period_terms(i, name, period, attr_names, attr_values)
         if not add_parts:
             return {}
         update_expr = f"ADD {', '.join(add_parts)}"

@@ -1170,6 +1170,7 @@ class TestWriteOnEnter:
             "resource": "gpt-4",
             "deltas": {"rpm": -5000},
             "shard_id": 0,
+            "ceilings": {"rpm": CreditCeiling(100000, 100000, None, (None, None))},
             "trim": True,
         }
 
@@ -1238,7 +1239,12 @@ class TestWriteOnEnter:
             None,
         )
         mock_repo.build_composite_adjust.assert_called_once_with(
-            entity_id="e1", resource="gpt-4", deltas={"rpm": -5000}, shard_id=0, trim=True
+            entity_id="e1",
+            resource="gpt-4",
+            deltas={"rpm": -5000},
+            shard_id=0,
+            ceilings={"rpm": CreditCeiling(100000, 100000, None, (None, None))},
+            trim=True,
         )
         mock_repo.write_each.assert_called_once()
 
@@ -10790,7 +10796,8 @@ class TestSelfTrimmingRefunds:
                 raise RuntimeError("user code failed")
         r1.write_each = real_write_each
         assert admitted_before_the_trim == []
-        assert self._raw(r1, "solo")[BUCKET_FIELD_VU]["N"] == "0"
+        item = self._raw(r1, "solo")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "10000"
         assert self._admitted(l2, [15, 10, 1]) == [10]
 
     def test_a_rollback_within_the_ceiling_is_one_write(self, two):
@@ -10834,8 +10841,7 @@ class TestSelfTrimmingRefunds:
             pass
         l1._compensate_speculative("solo", "budget", {"q": 5}, 0, result.buckets)
         item = self._raw(r1, "solo")
-        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "15000"
-        assert item[BUCKET_FIELD_VU]["N"] == "0"
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "10000"
         assert self._admitted(l2, [15, 10, 1]) == [10]
 
     def test_a_compensation_within_the_ceiling_leaves_vu_alone(self, two):
@@ -11053,6 +11059,100 @@ class TestSelfTrimmingRefunds:
         assert raced
         assert len(calls) == 1
         assert BUCKET_FIELD_VU not in self._raw(r1, "rt", resource="r")
+
+    def _drain(self, sync_limiter, entity_id) -> int:
+        """Admit one at a time until rejected; the total admitted."""
+        admitted = 0
+        while admitted <= 100:
+            try:
+                with sync_limiter.acquire(entity_id, "r", {"q": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                break
+        return admitted
+
+    def test_quota_refund_across_reset_spent_first(self, two):
+        """A refund of yesterday's debit lands after another process reset the quota
+        and spent from it (#730 review): today's allowance took the refund too, 15
+        admitted against a daily quota of 10. The credit is now dropped."""
+        l1, l2, now = two
+        now[0] = self.T0 + 59000
+        r1 = l1._repository
+        r1.set_limits("e", [Limit.quota("q", 10, cron="0 0 * * *")], resource="r")
+        with l1.acquire("e", "r", {"q": 1}):
+            pass
+        with l1.acquire("e", "r", {"q": 4}):
+            pass
+        today = 0
+        with pytest.raises(RuntimeError):
+            with l1.acquire("e", "r", {"q": 5}):
+                now[0] = self.MIDNIGHT + 1000
+                with l2.acquire("e", "r", {"q": 6}):
+                    today += 6
+                raise RuntimeError("body failed")
+        today += self._drain(l2, "e")
+        assert today == 10
+
+    def test_session_window_refund_across_roll(self, two):
+        """The same across a session window: debit in window 1, another process opens
+        window 2 and spends, then the refund lands. Dropped: window 2 admits 10."""
+        l1, l2, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        r1.set_limits("w", [Limit.quota("q", 10, reset_after=timedelta(hours=1))], resource="r")
+        with l1.acquire("w", "r", {"q": 5}):
+            pass
+        second = 0
+        with pytest.raises(RuntimeError):
+            with l1.acquire("w", "r", {"q": 5}):
+                now[0] = self.T10 + 3601000
+                with l2.acquire("w", "r", {"q": 6}):
+                    second += 6
+                raise RuntimeError("body failed")
+        second += self._drain(l2, "w")
+        assert second == 10
+
+    def test_a_quota_refund_within_its_period_lands(self, two):
+        """The guard costs nothing when the period has not moved: one write."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        r1.set_limits("p", [Limit.quota("q", 10, cron="0 0 * * *")], resource="r")
+        with l1.acquire("p", "r", {"q": 1}):
+            pass
+        calls, stop = self._update_items(r1)
+        try:
+            with pytest.raises(RuntimeError):
+                with l1.acquire("p", "r", {"q": 5}):
+                    raise RuntimeError("body failed")
+        finally:
+            stop()
+        refunds = [c for c in calls if "#bc0" in c["ExpressionAttributeNames"]]
+        assert len(refunds) == 1
+        assert "#bqrf < :bq0" in refunds[0]["ConditionExpression"]
+        item = self._raw(r1, "p", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "9000"
+
+    def test_a_dropped_quota_credit_keeps_the_rate_credit(self, two):
+        """Only the quota's credit is dropped; a rate limit on the same item is
+        refunded as before (#721)."""
+        l1, l2, now = two
+        now[0] = self.T0 + 59000
+        r1 = l1._repository
+        rate = Limit.custom("rpm", capacity=100, refill_amount=1, refill_period_seconds=86400)
+        quota = Limit.quota("q", 10, cron="0 0 * * *")
+        r1.set_limits("m", [quota, rate], resource="r")
+        with l1.acquire("m", "r", {"q": 1, "rpm": 1}):
+            pass
+        with pytest.raises(RuntimeError):
+            with l1.acquire("m", "r", {"q": 5, "rpm": 5}):
+                now[0] = self.MIDNIGHT + 1000
+                with l2.acquire("m", "r", {"q": 0, "rpm": 0}):
+                    pass
+                raise RuntimeError("body failed")
+        item = self._raw(r1, "m", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "10000"
+        assert int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) >= 99000
 
     def test_a_lowered_limit_clamped_before_the_refund(self, two):
         """The limit drops to 50 and another process's slow pass clamps to it (moving

@@ -963,6 +963,39 @@ class TestCompositeWritePaths:
         assert update["ConditionExpression"] == "attribute_exists(PK)"
 
     @pytest.mark.asyncio
+    async def test_build_composite_adjust_keeps_a_quota_credit_in_its_period(self, repo):
+        """#721: a calendar quota's credit lands only while `rf` is before the next
+        edge; a session quota's only while the window it saw is still on the item.
+        In both writes: the trimmed one too."""
+        from zae_limiter.models import QuotaPeriodPin
+
+        ceilings = {
+            "day": CreditCeiling(10_000, 10_000, 1, (None, None), True, QuotaPeriodPin(500)),
+            "ses": CreditCeiling(
+                10_000, 10_000, 1, (None, None), True, QuotaPeriodPin(window=(7, None))
+            ),
+        }
+        for trim in (False, True):
+            update = repo.build_composite_adjust(
+                entity_id="entity-1",
+                resource="gpt-4",
+                deltas={"day": -1000, "ses": -1000},
+                ceilings=ceilings,
+                trim=trim,
+                pin=(1, None, (None, None, None)),
+            )["Update"]
+            condition = update["ConditionExpression"]
+            assert "#bqrf < :bq0" in condition
+            assert "#bqw1 = :bqw1 AND attribute_not_exists(#bqa1)" in condition
+            names, values = update["ExpressionAttributeNames"], update["ExpressionAttributeValues"]
+            assert (names["#bqrf"], names["#bqw1"], names["#bqa1"]) == (
+                "rf",
+                "b_ses_ws",
+                "b_ses_wa",
+            )
+            assert (values[":bq0"], values[":bqw1"]) == ({"N": "500"}, {"N": "7"})
+
+    @pytest.mark.asyncio
     async def test_build_composite_adjust_trim_stamps_vu_in_the_same_write(self, repo):
         """The fallback (#721): the same ADD, unconditional, plus `vu = 0`."""
         update = repo.build_composite_adjust(

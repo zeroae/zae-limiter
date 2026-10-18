@@ -331,6 +331,27 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "ConditionExpression" in update
 
+    def test_quota_period_guards(self) -> None:
+        """#721: a quota credit's period terms, in the conditional and trimmed writes."""
+        from zae_limiter.models import QuotaPeriodPin
+
+        ceilings = {
+            DOTTED: CreditCeiling(5000, 10_000, 2, (None, None), True, QuotaPeriodPin(9)),
+            HYPHENATED: CreditCeiling(
+                9000, 9000, 1, (None, "1m0h0"), True, QuotaPeriodPin(window=(3, 3))
+            ),
+        }
+        for trim in (False, True):
+            update = _repo().build_composite_adjust(
+                "user-1",
+                "api",
+                deltas={DOTTED: -1000, HYPHENATED: -2000},
+                ceilings=ceilings,
+                trim=trim,
+                pin=(2, None, (None, None, None)),
+            )["Update"]
+            assert_expression_safe(update)
+
     def test_trimmed_credit(self) -> None:
         """#721: the fallback re-issues the credit with ``vu = 0`` in the same write."""
         update = _repo().build_composite_adjust(

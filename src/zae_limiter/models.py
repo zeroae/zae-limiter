@@ -2205,6 +2205,27 @@ class CreditCeiling:
     capacity_milli: int
     grant_count: int | None
     sched_raw: tuple[str | None, str | None] | None = None
+    # A quota's credit belongs to the period its debit was made in (#721):
+    # `quota` marks one, and `quota_period` says how to tell the period has
+    # not moved since -- `None` on a quota means it cannot be told, and the
+    # credit is dropped rather than land in a period that did not spend it.
+    quota: bool = False
+    quota_period: "QuotaPeriodPin | None" = None
+
+
+@dataclass(frozen=True)
+class QuotaPeriodPin:
+    """How a quota credit checks it still lands in its debit's period (#721).
+
+    A calendar quota: the item's ``rf`` is still before ``reset_edge_ms``, the
+    first reset edge after the ``rf`` the lease saw (a reset pass stamps ``rf``
+    at or past the edge; ``None`` when no edge is in reach). A session quota:
+    the window start and applied marker (``b_{name}_ws`` / ``b_{name}_wa``)
+    are still the ones the lease saw, each ``None`` when absent.
+    """
+
+    reset_edge_ms: int | None = None
+    window: tuple[int | None, int | None] | None = None
 
 
 #: (``shard_count``, ``vu``, (``sched``, ``rsched``, ``sched_tz``)) of a bucket

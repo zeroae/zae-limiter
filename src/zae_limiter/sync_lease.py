@@ -31,7 +31,9 @@ from .models import (
     Limit,
     LimitStatus,
     QuotaDonorDebit,
+    QuotaPeriodPin,
 )
+from .schedule import next_reset_edge
 from .schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
@@ -110,7 +112,10 @@ def credit_ceilings(
             continue
         try:
             ceilings[name] = credit_ceiling(
-                state, image.limit(name) if image is not None else None, now_ms
+                state,
+                image.limit(name) if image is not None else None,
+                now_ms,
+                image.rf if image is not None else None,
             )
         except Exception:
             logger.warning("Could not check a credit against its ceiling", exc_info=True)
@@ -118,7 +123,7 @@ def credit_ceilings(
 
 
 def credit_ceiling(
-    state: BucketState, limit_image: CreditLimitImage | None, now_ms: int
+    state: BucketState, limit_image: CreditLimitImage | None, now_ms: int, rf_ms: int | None = None
 ) -> CreditCeiling:
     """What one credited limit is checked against, and what that check pins (#721).
 
@@ -128,22 +133,40 @@ def credit_ceiling(
     read them (``limit_image``); with no image there is nothing to pin, and the
     credit is trimmed outright (``sched_raw=None``).
 
+    A quota's credit also carries its period (``QuotaPeriodPin``): a refund of
+    a debit made before a reset edge or a window roll must not land in the
+    period that followed, which has its own full allowance. ``rf_ms`` is the
+    item's ``rf`` as the lease saw it; without it, or without the image, the
+    period cannot be told and the credit is dropped.
+
     The one place the ceiling and its pins are decided, with
     ``SyncRepository._credit_limit_terms`` the one place they become condition
     terms: a new input to the ceiling (a quota top-up, #720) extends both.
     """
+    quota = state.is_quota_state is True
     if limit_image is None:
         return CreditCeiling(
             ceiling_milli=int(state.ceiling_milli(now_ms)),
             capacity_milli=int(state.capacity_milli),
             grant_count=None if state.grant_count is None else int(state.grant_count),
             sched_raw=None,
+            quota=quota,
         )
+    period: QuotaPeriodPin | None = None
+    if quota and rf_ms is not None:
+        if state.reset_after_seconds is not None:
+            period = QuotaPeriodPin(
+                window=(limit_image.window_start_ms, limit_image.window_applied_ms)
+            )
+        else:
+            period = QuotaPeriodPin(reset_edge_ms=next_reset_edge(state.reset_sched, now_ms=rf_ms))
     return CreditCeiling(
         ceiling_milli=int(state.ceiling_milli(now_ms)),
         capacity_milli=limit_image.capacity_milli,
         grant_count=limit_image.grant_count,
         sched_raw=limit_image.sched_raw,
+        quota=quota,
+        quota_period=period,
     )
 
 
@@ -176,6 +199,14 @@ def write_credit(
     fallback. With ``pin`` unknown (``None``), the credit
     goes straight to the trimmed write — one write, nothing to trust.
 
+    A quota's credit is also conditioned, in both writes, on its debit's
+    period still being current (``QuotaPeriodPin``): after a reset edge or a
+    window roll the new period has its own full allowance, and a refund of
+    the old period's debit landing there is spent twice. When the trimmed
+    write fails, the quota credits are dropped (logged at debug) and the rest
+    of the adjustment is written alone. A quota credit whose period cannot be
+    told is dropped up front. Rate limits are unaffected.
+
     A debit, or a credit with no known ceiling, is one write with no ceiling
     condition. Every write is conditioned on the item existing: an adjustment
     onto an item swept or deleted since the debit would otherwise create a
@@ -183,12 +214,17 @@ def write_credit(
     fails, the item is gone and there is nothing to adjust: logged at debug,
     not an error. Errors other than a failed condition propagate.
     """
+    unknown = {
+        name
+        for name, ceiling in ceilings.items()
+        if ceiling.quota and ceiling.quota_period is None and (deltas.get(name, 0) < 0)
+    }
+    if unknown:
+        logger.debug("quota credit dropped for resource=%s: its period cannot be told", resource)
+        deltas = {name: delta for name, delta in deltas.items() if name not in unknown}
+        ceilings = {name: c for name, c in ceilings.items() if name not in unknown}
     if ceilings and (pin is None or any(c.sched_raw is None for c in ceilings.values())):
-        trimmed = repository.build_composite_adjust(
-            entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, trim=True
-        )
-        if trimmed:
-            _write_unless_gone(repository, trimmed, resource)
+        _write_trimmed(repository, entity_id, resource, deltas, shard_id, ceilings)
         return
     kwargs: dict[str, Any] = {"ceilings": ceilings, "pin": pin} if ceilings else {}
     item = repository.build_composite_adjust(
@@ -204,10 +240,59 @@ def write_credit(
     except Exception as exc:
         if not _is_condition_check_failure(exc):
             raise
-        trimmed = repository.build_composite_adjust(
-            entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, trim=True
-        )
+        _write_trimmed(repository, entity_id, resource, deltas, shard_id, ceilings)
+
+
+def _write_trimmed(
+    repository: "SyncRepositoryProtocol",
+    entity_id: str,
+    resource: str,
+    deltas: dict[str, int],
+    shard_id: int,
+    ceilings: dict[str, CreditCeiling],
+) -> None:
+    """Step 2 of a credit: the same ``ADD`` plus ``vu = 0``, quota credits period-guarded.
+
+    A failure with no quota guard means the item is gone. With one, the
+    period may have moved (or the item is gone): the quota credits are
+    dropped and the rest of the adjustment is written alone (#721).
+    """
+    trimmed = repository.build_composite_adjust(
+        entity_id=entity_id,
+        resource=resource,
+        deltas=deltas,
+        shard_id=shard_id,
+        ceilings=ceilings,
+        trim=True,
+    )
+    if not trimmed:
+        return
+    guarded = {
+        name
+        for name, ceiling in ceilings.items()
+        if ceiling.quota_period is not None and deltas.get(name, 0) < 0
+    }
+    if not guarded:
         _write_unless_gone(repository, trimmed, resource)
+        return
+    try:
+        repository.write_each([trimmed])
+    except Exception as exc:
+        if not _is_condition_check_failure(exc):
+            raise
+        logger.debug(
+            "quota credit dropped for resource=%s: a reset or window roll landed since the debit, or the bucket is gone",
+            resource,
+        )
+        rest = repository.build_composite_adjust(
+            entity_id=entity_id,
+            resource=resource,
+            deltas={name: delta for name, delta in deltas.items() if name not in guarded},
+            shard_id=shard_id,
+            trim=True,
+        )
+        if rest:
+            _write_unless_gone(repository, rest, resource)
 
 
 def _write_unless_gone(
