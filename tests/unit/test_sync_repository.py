@@ -7642,6 +7642,7 @@ class TestResetAndTopUp:
         _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
         repo._now_ms = lambda: _OP_T0 + 1
         repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy-1")
+        _op_put_shard(repo, "e", "r", [_OP_CAL], shard_id=1, shard_count=2)
         client = repo._get_client()
         real_query = client.query
 

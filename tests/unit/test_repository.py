@@ -9070,6 +9070,8 @@ class TestResetAndTopUp:
         await _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
         repo._now_ms = lambda: _OP_T0 + 1
         await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy-1")
+        # A second shard: only shard 0's partition holds operation records.
+        await _op_put_shard(repo, "e", "r", [_OP_CAL], shard_id=1, shard_count=2)
         client = await repo._get_client()
         real_query = client.query
 
