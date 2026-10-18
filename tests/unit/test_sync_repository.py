@@ -7634,6 +7634,40 @@ class TestResetAndTopUp:
         ):
             repo.top_up("e", "r", {"rpm": 1}, idempotency_key=key)
 
+    def test_delete_entity_removes_its_operation_records(self, repo):
+        """PR #720 third review, finding 3: a recreated entity reusing an
+        idempotency key must get a fresh operation, not the old entity's."""
+        _stamp_deployed(repo)
+        repo.set_limits("e", [_OP_CAL], resource="r")
+        _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
+        repo._now_ms = lambda: _OP_T0 + 1
+        repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy-1")
+        _op_put_shard(repo, "e", "r", [_OP_CAL], shard_id=1, shard_count=2)
+        client = repo._get_client()
+        real_query = client.query
+
+        def paged(**params):
+            if ":op" in params.get("ExpressionAttributeValues", {}):
+                if "ExclusiveStartKey" in params:
+                    return {"Items": []}
+                response = real_query(**params)
+                return {**response, "LastEvaluatedKey": response["Items"][0]}
+            return real_query(**params)
+
+        with patch.object(client, "query", side_effect=paged):
+            repo.delete_entity("e")
+        remaining = client.query(
+            TableName=repo.table_name,
+            KeyConditionExpression="PK = :pk",
+            ExpressionAttributeValues={":pk": {"S": pk_bucket(repo._namespace_id, "e", "r", 0)}},
+            ConsistentRead=True,
+        )["Items"]
+        assert remaining == []
+        repo.set_limits("e", [_OP_CAL], resource="r")
+        _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
+        repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy-1")
+        assert _op_num(_op_item(repo, "e", "r"), "cal", BUCKET_FIELD_TK) == 5000
+
     def test_an_unexpected_write_error_is_not_retried(self, repo):
         repo.set_limits("e", [_OP_RPM], resource="r")
         _op_put_shard(repo, "e", "r", [_OP_RPM])
