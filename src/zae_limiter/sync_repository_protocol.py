@@ -569,6 +569,7 @@ class SyncRepositoryProtocol(Protocol):
         vu: int | None = None,
         rf_ms: int | None = None,
         pgen: int | None = None,
+        pinc: str | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -584,6 +585,7 @@ class SyncRepositoryProtocol(Protocol):
             rf_ms: The ``rf`` to stamp, or None for ``now_ms`` (ADR-140)
             pgen: The owner's parent generation read with ``cascade`` /
                 ``parent_id`` (ADR-150), or None to stamp none
+            pinc: The owner's incarnation read with ``pgen``, or None
         """
         ...
 
@@ -610,6 +612,7 @@ class SyncRepositoryProtocol(Protocol):
         pin_vu: bool = False,
         expected_vu: int | None = None,
         owner_pgen: int | None = None,
+        owner_pinc: str | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -619,6 +622,8 @@ class SyncRepositoryProtocol(Protocol):
         ``owner_pgen`` is the owner's parent generation read with them
         (ADR-150): stamped beside them, and the write is pinned on not
         lowering it, so a pass that read META before a move cannot undo it.
+        ``owner_pinc`` is the owner's incarnation: the pin passes over a stamp
+        of another incarnation, whose generation is not comparable.
 
         ``pin_vu``: when the write sets or removes ``vu``, require it to still be
         ``expected_vu`` (absent when None), the value the caller read, so a

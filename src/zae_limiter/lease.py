@@ -76,6 +76,8 @@ class LeaseEntry:
     # The owner's parent generation read with them (ADR-150), stamped beside
     # them and pinned so a pass that read META before a move cannot undo it.
     _parent_generation: int | None = None
+    # And its incarnation (ADR-150): a generation only compares within one.
+    _parent_incarnation: str | None = None
     # Whether the caller named this limit in acquire(consume=...) (Issue #455).
     # `consume` is the declared scope of a lease: only declared entries are
     # visible through `consumed` and adjustable through adjust()/consume()/
@@ -210,6 +212,11 @@ class Lease:
     # shard of its bucket was forgotten since — a refund landed in between is
     # on the item but not in the state. None: never recorded, only forgotten.
     _cache_mark: int | None = None
+    # Owner stamps this lease's commit created, to check against META once the
+    # caller's block is done (ADR-150): (entity, resource, shard, generation,
+    # incarnation). Not needed before the lease is handed back, so the extra
+    # round trip stays off the acquire's latency. `_run_owner_checks` drains it.
+    _owner_checks: list[tuple[str, str, int, int, str | None]] = field(default_factory=list)
     # Names of the declared limits, computed once at construction so the hot
     # path (adjust/consume/release on every request) allocates nothing to
     # answer "is this key declared?". Entries are never appended after the
@@ -476,9 +483,10 @@ class Lease:
         # created count, quota names), repaired after the write (ADR-145).
         quota_creates: list[tuple[str, str, int, int, list[str]]] = []
         # Bucket items this commit creates with an owner stamp read from META:
-        # (entity, resource, shard, the parent generation stamped), checked
+        # (entity, resource, shard, the parent generation and incarnation
+        # stamped), checked
         # against META after the write (ADR-150).
-        owner_creates: list[tuple[str, str, int, int]] = []
+        owner_creates: list[tuple[str, str, int, int, str | None]] = []
         # Bucket items the rf-locked write leaves in a state the rejection
         # cache can record once it lands: (key, states, shard count, ttl
         # epoch, owner stamps). See `_record_written_states`.
@@ -529,6 +537,7 @@ class Lease:
                         vu=vu,
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
                         pgen=(owner_entry._parent_generation if owner_entry is not None else None),
+                        pinc=(owner_entry._parent_incarnation if owner_entry is not None else None),
                     )
                 )
                 # A create fans out only when it anchored the entity's next
@@ -550,7 +559,13 @@ class Lease:
                 # doubling may already have overtaken; checked after the write.
                 if owner_entry is not None and owner_entry._parent_generation is not None:
                     owner_creates.append(
-                        (entity_id, resource, shard_id, owner_entry._parent_generation)
+                        (
+                            entity_id,
+                            resource,
+                            shard_id,
+                            owner_entry._parent_generation,
+                            owner_entry._parent_incarnation,
+                        )
                     )
                 created_quotas = [e.limit.name for e in group_entries if e.limit.is_quota]
                 if shard_id != 0 and created_quotas:
@@ -775,6 +790,9 @@ class Lease:
                         owner_pgen=(
                             owner_entry._parent_generation if owner_entry is not None else None
                         ),
+                        owner_pinc=(
+                            owner_entry._parent_incarnation if owner_entry is not None else None
+                        ),
                     )
                 )
                 # The rollover fan-out. A create fans out only in the one case
@@ -993,14 +1011,14 @@ class Lease:
         )
         if not condition_failed:
             await self._repair_created_quota_shards(quota_creates)
-            await self._repair_created_owner_stamps(owner_creates)
+            self._owner_checks.extend(owner_creates)
             await self._fan_out_windows(window_fanouts)
         elif reissued_creates:
             await self._repair_created_quota_shards(
                 [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
             )
-            await self._repair_created_owner_stamps(
-                [c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates]
+            self._owner_checks.extend(
+                c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates
             )
 
     def _record_written_states(
@@ -1094,8 +1112,19 @@ class Lease:
                     exc_info=True,
                 )
 
+    async def _run_owner_checks(self) -> None:
+        """Run the owner checks this lease's commit deferred (ADR-150).
+
+        Called by ``RateLimiter.acquire`` once the caller's block has finished,
+        whether it succeeded or raised: the buckets were created either way.
+        Never raises (each check logs its own failure).
+        """
+        checks, self._owner_checks = self._owner_checks, []
+        if checks:
+            await self._repair_created_owner_stamps(checks)
+
     async def _repair_created_owner_stamps(
-        self, owner_creates: list[tuple[str, str, int, int]]
+        self, owner_creates: list[tuple[str, str, int, int, str | None]]
     ) -> None:
         """Re-check each owner stamp this commit created against its META (ADR-150).
 
@@ -1118,17 +1147,41 @@ class Lease:
         repair = getattr(self.repository, "repair_created_owner_stamp", None)
         if repair is None:
             return
-        for entity_id, resource, shard_id, stamped in owner_creates:
+        for entity_id, resource, shard_id, stamped, incarnation in owner_creates:
             try:
-                await repair(entity_id, resource, shard_id, stamped)
+                await repair(entity_id, resource, shard_id, stamped, incarnation)
             except Exception:
                 logger.warning(
-                    "owner stamp check failed for resource=%s shard=%d; the next slow "
-                    "pass or a re-run of set_parent restamps it",
+                    "owner stamp check failed for resource=%s shard=%d; forcing the "
+                    "next acquire onto the slow path, which restamps it",
                     resource,
                     shard_id,
                     exc_info=True,
                 )
+                await self._force_owner_restamp(entity_id, resource, shard_id)
+
+    async def _force_owner_restamp(self, entity_id: str, resource: str, shard_id: int) -> None:
+        """Stamp ``vu = 0`` on a created bucket whose owner check failed (ADR-150).
+
+        The check could not tell whether a move overtook the create. ``vu = 0``
+        fails the fast path's condition, so the next acquire takes the slow
+        path, whose rf-locked write re-stamps the owner from META under the
+        owner pin — the same mechanism a limit change uses (#679). Conditioned
+        on the item existing. If this write fails too, it is logged and the
+        stamp waits for the bucket's next slow pass or a ``set_parent``.
+        """
+        build = getattr(self.repository, "build_vu_reset", None)
+        if build is None:
+            return
+        try:
+            await self.repository.write_each([build(entity_id, resource, shard_id)])
+        except Exception:
+            logger.warning(
+                "could not force a slow pass after a failed owner check for resource=%s shard=%d",
+                resource,
+                shard_id,
+                exc_info=True,
+            )
 
     async def _fan_out_windows(
         self, window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]]

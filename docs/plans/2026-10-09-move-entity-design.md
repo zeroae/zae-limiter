@@ -106,6 +106,14 @@ consistent META read does not help: S can read before t1 and write after t2.
   the delete) and keep the generation the old entity reached; a recreated entity
   starting at 0 would sit below it, and the owner-stamp pin would fail on that bucket
   forever, leaving the old parent on it (review of #716, finding 4).
+- **Incarnation** (`pinc`, second review of #716): a creation instant is only ordered on one
+  clock, so a leftover bucket from a process whose clock ran ahead could still carry a
+  higher `pgen` than the recreated entity, and then win every pin forever (old parent
+  debited, `rf` frozen, `set_parent` counting a stamp it never wrote). `create_entity` writes
+  a random token on META; every owner stamp copies it beside `pgen`, and every pin is
+  `attribute_not_exists(pinc) OR pinc <> :inc OR attribute_not_exists(pgen) OR pgen <= :pg`:
+  a generation compares only within one incarnation. META without `pinc` (created before
+  this) is the legacy incarnation `-`. A fan-out counts only buckets it actually stamped.
 - Every writer of `parent_id`/`cascade` onto a bucket writes the `pgen` it read beside them and
   adds `attribute_not_exists(pgen) OR pgen <= :pgen` to its condition:
   - **owner stamp** in `build_composite_normal` — a lost pin fails the transaction like a lost
@@ -116,9 +124,16 @@ consistent META read does not help: S can read before t1 and write after t2.
     the move ran. So after the write, each created bucket's owner META is read once, strongly
     consistent (`Lease._repair_created_owner_stamps` →
     `Repository.repair_created_owner_stamp`, +1 RCU per bucket created), and when its
-    generation moved the bucket is restamped through the fan-out's pinned write. A move whose
-    META write follows that read fans out after the bucket exists and finds it (the ADR-125
-    GSI3 lag residual, nothing new). Not a `ConditionCheck` on META inside the create's
+    generation or incarnation moved the bucket is restamped through the fan-out's pinned
+    write. The check runs once the acquire's caller block has finished (the lease is handed
+    back first: the check matters only to the next acquire). If it fails, the bucket gets
+    `vu = 0`, so the next acquire takes the slow path, whose pinned owner stamp restamps it;
+    if that write fails too, it is logged. A process that dies between create and check
+    leaves the stamp to the bucket's next slow pass. A move whose
+    META write follows that read fans out after the bucket exists and finds it, unless GSI3
+    still lags the create: then both passes miss it, exactly ADR-125's residual for
+    `disabled`, and the bucket keeps the old parent until its next slow pass or a repeat of
+    the move. Not a `ConditionCheck` on META inside the create's
     transaction: no shipped policy grants `dynamodb:ConditionCheckItem`, so an application
     role on the acquire-only policy would be refused on every create, and a lone `Put` would
     become a 2-item transaction (4 WCU instead of 1);
@@ -248,7 +263,8 @@ Per move, entity with R resources × S shards each, ancestor depth d, on-demand 
 
 Per acquire: **unchanged** (fast path 0 RCU + 1 WCU; `pgen` is one condition term on the
 rf-locked write). Per bucket **created** (first acquire of an entity on a resource, or a new
-shard): **+1 RCU**, the strongly consistent owner check (§4), ~$0.125/M creates; a restamp
+shard): **+1 RCU**, the strongly consistent owner check (§4), ~$0.125/M creates, after the
+lease is handed back, so no added latency; a restamp
 (+1 WCU, + 4 RCU for the policy) only when a move overtook the create. Per aggregator record
 that clones shards: +1 RCU, the same check. After a move, once per (process, entity): **+2 WCU** (refund + new-parent
 write replace a plain parent write: +1 WCU net over a normal cascade call, ~$0.625/M of those

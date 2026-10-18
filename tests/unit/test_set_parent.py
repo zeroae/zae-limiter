@@ -324,7 +324,7 @@ class TestFanout:
             calls.append(pk)
             if len(calls) == 2:
                 raise RuntimeError("throttled")
-            await real(pk, *args)
+            return await real(pk, *args)
 
         with patch.object(repo, "_stamp_bucket_cascade", flaky):
             with pytest.raises(FanoutIncomplete) as exc_info:
@@ -397,6 +397,122 @@ class TestStaleWriters:
         assert await _consumed(repo, "org-b") == org_b
         assert await _consumed(repo, "org-c") == org_c + 1
 
+    @staticmethod
+    async def _leftover_from_a_fast_clock(repo, other) -> None:
+        """A bucket outliving an entity created on a clock 60 s ahead (review of #716, 2nd).
+
+        Process A creates `user` under org-a with a generation 60 s in the
+        future; an acquire in flight across the delete lands its create `Put`
+        after it. The entity is then recreated, under org-b, by a correct clock
+        (here generation 0): its generation is below the leftover's.
+        """
+        fast = other._repository
+        for resource in ("gpt-4", "llm"):
+            await fast.set_resource_defaults(resource, [Limit.per_minute("rpm", 3)])
+        await fast.create_entity("org-a")
+        await fast.create_entity("org-b")
+        with patch.object(type(fast), "_creation_generation", return_value=10**13):
+            await fast.create_entity("user", parent_id="org-a", cascade=True)
+        slow = RateLimiter(repository=fast, speculative_writes=False)
+        real = fast.batch_get_entity_and_buckets
+        done = []
+
+        async def read_then_delete(*args, **kwargs):
+            result = await real(*args, **kwargs)
+            if not done:
+                done.append(1)
+                await repo.delete_entity("user")
+            return result
+
+        with patch.object(fast, "batch_get_entity_and_buckets", read_then_delete):
+            async with slow.acquire("user", "llm", consume={"rpm": 1}):
+                pass
+        assert _stamp(await _item(repo, "user", "llm")) == (True, "org-a", 10**13)
+        await repo.create_entity("user", parent_id="org-b", cascade=True)
+
+    async def test_a_predecessors_bucket_never_outranks_the_recreated_entity(self, repo, other):
+        """Skew probe: its generation is higher, its incarnation is not this one."""
+        await self._leftover_from_a_fast_clock(repo, other)
+
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        async with slow.acquire("user", "llm", consume={"rpm": 1}):
+            pass  # the owner stamp lands, whatever generation the leftover holds
+
+        inc = (await repo.get_entity("user")).incarnation
+        item = await _item(repo, "user", "llm")
+        assert _stamp(item)[:2] == (True, "org-b")
+        assert item[schema.BUCKET_FIELD_PINC] == {"S": inc}
+        third_repo = await _open_repo()
+        async with RateLimiter(repository=third_repo) as third:
+            org_a, org_b = (
+                await _consumed(repo, "org-a", "llm"),
+                await _consumed(repo, "org-b", "llm"),
+            )
+            async with third.acquire("user", "llm", consume={"rpm": 1}):
+                pass
+        await third_repo.close()
+        assert await _consumed(repo, "org-a", "llm") == org_a
+        assert await _consumed(repo, "org-b", "llm") == org_b + 1
+
+    async def test_set_parent_restamps_a_predecessors_bucket(self, repo, other):
+        await self._leftover_from_a_fast_clock(repo, other)
+
+        assert await repo.set_parent("user", "org-b") == 1
+
+        assert _stamp(await _item(repo, "user", "llm")) == (True, "org-b", 1)
+
+    async def test_a_predecessors_bucket_refills_again(self, repo, other):
+        """Skew-refill probe: the rf-locked write lands, so `rf` advances."""
+        await self._leftover_from_a_fast_clock(repo, other)
+        limiter = RateLimiter(repository=repo)
+        async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+            pass  # the slow pass that advances rf
+        base = repo._now_ms()
+        for minutes in (2, 5, 10):
+            with patch.object(type(repo), "_now_ms", return_value=base + minutes * 60_000):
+                async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+                    pass  # refilled: admitted
+
+    async def test_set_parent_counts_only_buckets_it_stamped(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        client = await repo._get_client()
+        await client.update_item(  # gpt-4 already carries a newer stamp of this incarnation
+            TableName=TABLE,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET pgen = :g",
+            ExpressionAttributeValues={":g": {"N": "100"}},
+        )
+
+        assert await repo.set_parent("user", "org-b") == 1  # llm only
+
+    async def test_an_entity_from_before_incarnations_is_its_own(self, limiter):
+        """No `pinc` on META reads as the legacy incarnation, stamped and pinned as one."""
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=TABLE,
+            Key={
+                "PK": {"S": schema.pk_entity(repo._namespace_id, "user")},
+                "SK": {"S": schema.sk_meta()},
+            },
+            UpdateExpression="REMOVE pinc",
+        )
+        assert (await repo.get_entity("user")).incarnation == schema.LEGACY_INCARNATION
+
+        await repo.set_parent("user", "org-b")
+
+        item = await _item(repo, "user", "gpt-4")
+        assert item[schema.BUCKET_FIELD_PINC] == {"S": schema.LEGACY_INCARNATION}
+        pk = schema.pk_bucket(repo._namespace_id, "user", "gpt-4", 0)
+        assert not await repo._stamp_bucket_cascade(
+            pk, True, "org-a", 0, schema.LEGACY_INCARNATION
+        )  # same incarnation, lower generation: refused
+
     async def test_a_new_entity_starts_at_its_creation_instant(self, repo, generations_from_zero):
         generations_from_zero.stop()
         with patch.object(repo, "_now_ms", return_value=1_800_000_000_000):
@@ -452,6 +568,87 @@ class TestStaleWriters:
             async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
                 assert lease.consumed == {"rpm": 1}
 
+        assert (await _item(repo, "user", "gpt-4"))[schema.BUCKET_FIELD_VU] == {"N": "0"}
+
+    async def test_a_failed_owner_check_forces_the_next_pass_to_restamp(self, repo, other):
+        """Review of #716 (2nd), finding 2: the repairfail probe."""
+        mover = other._repository
+        await _hierarchy(other)
+        await mover.set_resource_defaults("chat", [RPM])
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        real = repo.batch_get_entity_and_buckets
+        moved = []
+
+        async def read_then_move(*args, **kwargs):
+            result = await real(*args, **kwargs)
+            if not moved:
+                moved.append(await mover.set_parent("user", "org-b"))
+            return result
+
+        with (
+            patch.object(repo, "batch_get_entity_and_buckets", read_then_move),
+            patch.object(repo, "repair_created_owner_stamp", side_effect=RuntimeError("throttled")),
+        ):
+            async with slow.acquire("user", "chat", consume={"rpm": 1}):
+                pass
+
+        item = await _item(repo, "user", "chat")
+        assert _stamp(item)[1] == "org-a"  # the stale stamp the check could not fix...
+        assert item[schema.BUCKET_FIELD_VU] == {"N": "0"}  # ...but the fast path is closed
+        third_repo = await _open_repo()
+        async with RateLimiter(repository=third_repo) as third:
+            org_a = await _consumed(repo, "org-a", "chat")
+            for _ in range(3):
+                async with third.acquire("user", "chat", consume={"rpm": 1}):
+                    pass
+        await third_repo.close()
+        assert _stamp(await _item(repo, "user", "chat"))[1] == "org-b"
+        assert await _consumed(repo, "org-a", "chat") == org_a
+
+    async def test_the_owner_check_runs_after_the_callers_block(self, limiter):
+        """Review of #716 (2nd), finding 3: its round trip is off the acquire's latency."""
+        repo = limiter._repository
+        for resource in ("gpt-4", "llm"):
+            await repo.set_resource_defaults(resource, [RPM])
+        await repo.create_entity("user")
+        checked = []
+
+        async def check(*args):
+            checked.append(args[:3])
+            return False
+
+        with patch.object(repo, "repair_created_owner_stamp", check):
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                assert checked == []  # handed back before the check
+            assert checked == [("user", "gpt-4", 0)]
+
+            with pytest.raises(RuntimeError):
+                async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+                    raise RuntimeError("the caller's work failed")
+            assert checked[-1] == ("user", "llm", 0)  # the bucket exists all the same
+
+    async def test_a_failed_slow_pass_stamp_is_logged(self, limiter, caplog):
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [RPM])
+        await repo.create_entity("user")
+        with (
+            patch.object(repo, "repair_created_owner_stamp", side_effect=RuntimeError("x")),
+            patch.object(repo, "build_vu_reset", side_effect=RuntimeError("y")),
+        ):
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+        assert "could not force a slow pass" in caplog.text
+
+    async def test_a_backend_without_vu_reset_skips_it(self):
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        lease = Lease(repository=cast(RepositoryProtocol, SimpleNamespace()))
+        await lease._force_owner_restamp("user", "gpt-4", 0)
+
     @staticmethod
     async def _doubling_record(repo: Repository) -> dict:
         """The stream record of shard 0's 1 -> 2 doubling, its image read now."""
@@ -506,15 +703,17 @@ class TestStaleWriters:
         await repo.set_entity_cascade("user", False)  # entity-wide policy: off
         table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
         ns = repo._namespace_id
-        assert _clone_owner_stamp(table, ns, "user", "gpt-4") == (False, "org-a", 0)
+        inc = (await repo.get_entity("user")).incarnation
+        assert _clone_owner_stamp(table, ns, "user", "gpt-4") == (False, "org-a", 0, inc)
         assert _clone_owner_stamp(table, ns, "user", schema.DEFAULT_RESOURCE) == (
             False,
             "org-a",
             0,
+            inc,
         )
         await repo.clear_entity_cascade("user")
         await repo.set_resource_cascade("gpt-4", True)
-        assert _clone_owner_stamp(table, ns, "user", "gpt-4") == (True, "org-a", 0)
+        assert _clone_owner_stamp(table, ns, "user", "gpt-4") == (True, "org-a", 0, inc)
         assert _clone_owner_stamp(table, ns, "nobody", "gpt-4") is None
 
         record = await self._doubling_record(repo)
