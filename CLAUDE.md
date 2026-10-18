@@ -1535,7 +1535,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Client shard propagation (#439) | `SET shard_count = :new` | `shard_count < :new` | No |
 | Limit-change sync, per shard (#468), per resource under `_default_` (#487) | `SET cp/ra/rp, sched/rsched/sched_tz, per-limit sched/rsched (compact, or "-" for unscheduled), b_{n}_rsa for a session quota, vu = 0 (+ ttl) REMOVE stale, per-limit overrides that now match the item default, b_{n}_rsa for a limit without a window` (never writes `ws`, ADR-139) | `attribute_exists(PK)` | No |
 | Disable stamp (ADR-125) | `SET disabled = :true` / `REMOVE disabled` | `attribute_exists(PK)` | No |
-| Reset / top-up, every shard in one transaction (ADR-149) | `ADD b_{n}_tk :delta` per limit, `SET rf = max(now, rf + 1, ws), vu = 0, op = :id` (+ `gc`, `ws`/`rsa`, `wa`, `b_{q}_tu`) `REMOVE b_{q}_tu, b_{n}_wtc` | `rf = :read AND shard_count = :read` | Yes (optimistic lock) |
+| Reset / top-up, every shard in one transaction (ADR-149) | `ADD b_{n}_tk :delta` per limit, `SET rf = max(now, rf + 1, ws), vu = 0` (+ `gc`, `ws`/`rsa`, `wa`, `b_{q}_tu`) `REMOVE b_{q}_tu, b_{n}_wtc` | `rf = :read AND shard_count = :read`; the call's operation record (`SK = #OP#{id}`) is a `Put` in the same transaction under `attribute_not_exists(PK)` | Yes (optimistic lock) |
 
 **Expression tokens are positional (#634).** Every `#…` alias and `:…` placeholder in a bucket
 write is built from a loop index, never from a limit name, and the alias *value* carries the real
@@ -1845,26 +1845,37 @@ exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed u
   `ws <= :open_floor` fails), `wtc` removed, and **`tk`, `gc`, `tu` left alone** — the next
   opener restores the share (writing it here let lost-lock retries spend it twice, PR #720
   review). Not gated. Missing bucket → no-op.
-- **Exactly once:** every call stamps one operation id as `op` on every shard (and a D5 create);
-  after a failed write the re-read finds it and returns the planned result instead of
-  re-planning (an SDK retry of a landed write failed its rf lock and doubled a top-up). A
-  multi-shard write also passes a per-attempt `ClientRequestToken`
-  (`transact_write(client_request_token=)`). The principal is validated before any I/O and a
-  post-commit audit failure is logged, never raised.
+- **Exactly once — one operation record per call:** `PK` = shard 0's bucket `PK`,
+  `SK = #OP#{id}` (`schema.sk_operation`), `Put` under `attribute_not_exists(PK)` in the same
+  transaction as the shard writes (`build_operation_record`), holding the result, `ttl` three
+  days out (`OPERATION_RECORD_TTL_SECONDS`), GSI4 keys for `purge_namespace`, no GSI1-3 keys.
+  At most one transaction per id commits; after any unclear failure (`_OPERATION_RETRY_CODES`,
+  including `TransactionInProgressException`) one consistent `GetItem` of the record decides.
+  So every operation is a transaction — a one-shard one is 2 items, 4 WRU. A per-bucket `op`
+  marker was tried first and lost to a concurrent operation overwriting it. `idempotency_key`
+  (API and CLI `--idempotency-key`, 1-64 of `[A-Za-z0-9._:-]`) is the id when given: the record
+  is read first (+1 RCU) and a hit returns its result; reused for the other operation kind it
+  is a `ValidationError`. Without a key an error leaves the outcome unknown. The
+  `ClientRequestToken` is derived from the id's digest (36-character cap). The principal and
+  key are validated before any I/O, and a post-commit audit failure is logged, never raised.
 - **Top-up:** a quota gains exactly N, split by coverage `S // gc` (`split_weighted`, remainder
   to the lowest shard, D1), and **`tu += portion`** — the whole portion, not only what lands
   above the ceiling, or a refund of spent room is clamped away (design-validator). A dripping
   limit gains at most its headroom (`split_by_headroom`). A session quota with no live window
   opens one (D4). No bucket → shard 0 created holding share + N, `tu = N` (D5;
-  `ResourceDisabled` if disabled; a dripping-only top-up writes nothing). A quota never seeded on
-  the bucket is granted 0 (reported in `amounts`).
+  `ResourceDisabled` if disabled; a dripping-only top-up writes nothing). A limit not yet on any
+  shard (configured after the bucket existed) raises `ValidationError` naming it. `tu` takes the
+  whole portion even on a plan upgrade (`set_limits` then `top_up`), so the upgrade is gated too
+  and the ceiling is up to one top-up wider than the plan until the next reset — under-clamping
+  refunds only, never minting (design-validator).
 - **`b_{name}_tu`** (`schema.BUCKET_FIELD_TU`, millitokens, quotas only): the quota's ceiling is
   **`C // gc + tu`** (`BucketState.ceiling_milli`, aggregator clamp, `Limit.per_shard(...,
   topped_up_milli)` in every 429, `check_availability` clamp). Removed by every reset, roll and
   opener — client (`LeaseEntry._stored_top_up` → `build_composite_normal(cleared_top_ups=)`) and
   aggregator (`#tq{i}`) — and never copied by a Path 2 clone. The fast path never reads it.
-  A lease's #679 check after a credit compares against its in-memory ceiling **minus** `tu`
-  (`report_top_up_milli`), since a reset or period edge may have removed it since the read.
+  A lease's #679 check after a credit never trusts its in-memory `tu`: when it read one, the
+  refund write asks for `ALL_NEW` (`build_composite_adjust(return_all=True)`, free) and the
+  ceiling takes the item's live `tu`, so a refund under a live purchase forces no slow pass.
 - **Gate (D6):** a write that sets `tu` needs `lambda_version >= 0.17.0`
   (`version.MIN_READER_VERSION_FOR_TOP_UP`, `top_up_refusal`) and ratchets `client_min_version`;
   checked once per repository (`_top_up_readers_proven`). An older client or aggregator would

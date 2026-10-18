@@ -501,6 +501,10 @@ zae-limiter entity top-up user-123 -r claude --add daily:15000
 | | `--limit/-l` (repeatable) | Limits to reset; omit for every limit on the resource |
 | `entity top-up ID` | `--resource/-r` (required) | The resource to top up |
 | | `--add/-a LIMIT:N` (repeatable, required) | Add `N` whole tokens to `LIMIT`; repeats add up |
+| both | `--idempotency-key KEY` | Name the operation (1-64 of letters, digits, `.` `_` `:` `-`); a retry with the same key within three days is applied once |
+
+**Pass `--idempotency-key` when you may retry.** Without one, an error leaves the outcome
+unknown: the command may have landed before it failed, and running it again may apply it twice.
 
 **What each does**
 
@@ -514,8 +518,10 @@ Neither command touches the consumption counter, the `disabled` flag, configurat
 parent's buckets or other resources. A reset of an entity that has never acquired is a no-op;
 a quota top-up for one creates its bucket.
 
-A quota top-up needs a stack whose Lambdas are **0.17.0 or later** (an older aggregator would
-clamp the purchase away): otherwise the command exits 1 and names `zae-limiter upgrade`. The
+A top-up of a limit not yet on the bucket (configured after the bucket existed, never used
+since) exits 1 naming it. A quota top-up needs a stack whose Lambdas are **0.17.0 or later**
+(an older aggregator would clamp the purchase away): otherwise the command exits 1 and names
+`zae-limiter upgrade`. The
 first top-up raises the stack's minimum client version to 0.17.0. A reset is not gated.
 
 ## Namespace Lifecycle

@@ -67,7 +67,30 @@ await repo.set_limits(
 await repo.top_up("user-123", "claude", {"daily": 25_000 - 10_000})
 ```
 
-The gap between the two calls can only under-admit.
+The gap between the two calls can only under-admit. The top-up still records the whole
+difference as topped up (`b_{name}_tu`), so the upgrade needs the 0.17.0 Lambdas below, and
+until the next reset the quota's ceiling is up to one top-up wider than the new plan. That only
+lets refunds of tokens already spent land; it never grants extra.
+
+## Retries: pass an idempotency key
+
+**Without a key, an error from `reset_bucket()` or `top_up()` leaves the outcome unknown**: a
+timeout can arrive after the write landed, and retrying may grant twice. Name the operation
+with something unique to it — a purchase or ticket id — and retry with the same key:
+
+```python
+await repo.set_limits(
+    "user-123", [Limit.quota("daily", 10_000, cron="0 0 * * *")], resource="claude"
+)
+result = await repo.top_up("user-123", "claude", {"daily": 5_000}, idempotency_key="order-8841")
+# A retry within three days returns the same result and grants nothing again.
+again = await repo.top_up("user-123", "claude", {"daily": 5_000}, idempotency_key="order-8841")
+assert again == result
+```
+
+A key is 1-64 characters of letters, digits, `.`, `_`, `:` and `-`, and names one kind of
+operation: reusing a reset's key for a top-up is a `ValidationError`. With a key, each call
+reads its record first (+1 RCU).
 
 ## Requirements and costs
 
@@ -76,9 +99,9 @@ The gap between the two calls can only under-admit.
   version record once per repository and raises `VersionMismatchError` when it is older; it
   also raises the stack's minimum client version to 0.17.0. Run `zae-limiter upgrade` first.
   A reset, and a top-up of a dripping limit, are not gated.
-- **Cost:** about 3 RCU + 2 WCU at one shard, growing by about 1 RCU + 2 WCU per extra shard
-  (one transaction over every shard), plus one slow pass per shard on its next acquire. The
-  acquire fast path is unchanged.
+- **Cost:** about 3 RCU + 5 WCU at one shard (one transaction holding the shard write and the
+  operation's own record, plus the audit event), growing by about 1 RCU + 2 WCU per extra
+  shard, plus one slow pass per shard on its next acquire. The acquire fast path is unchanged.
 - **Another process may refuse for up to its rejection-cache TTL** (default 1 s) after a reset
   or top-up made elsewhere. The process that made the change admits at once.
 
@@ -89,12 +112,14 @@ The gap between the two calls can only under-admit.
 - A quota top-up for an entity that has never acquired creates its bucket holding the full
   share plus the top-up. If the resource is disabled for the entity, it raises
   `ResourceDisabled` instead.
-- A quota configured after the entity's bucket existed, and not yet used since, is granted
-  nothing (`result.amounts` reports 0). Acquire once, then top up.
+- A limit configured after the entity's bucket existed, and not yet used since, is not on
+  the bucket yet: a top-up of it raises a `ValidationError` naming it, and writes nothing.
+  Acquire once, then top up.
 - If another writer keeps changing the bucket, the operation retries three times and then
   raises `RateLimiterUnavailable`; nothing was written.
-- A write whose response is lost is never applied twice: each call stamps its own operation id
-  on every shard (`op`), and a retry that finds it returns the result instead of re-applying.
+- A write whose response is lost is never applied twice: each call writes its own operation
+  record in the same transaction, and a retry that finds it returns the stored result instead
+  of re-applying — even when another reset or top-up landed on the bucket in between.
 - Once the write has landed the call does not fail: an invalid `principal` is refused before
   anything is written, and an audit write that fails afterwards is logged, not raised.
 
