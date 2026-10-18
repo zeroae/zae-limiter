@@ -25,6 +25,7 @@ from .models import BucketState, Limit, LimitStatus, QuotaDonorDebit
 from .schema import (
     BUCKET_FIELD_RF,
     BUCKET_FIELD_TK,
+    BUCKET_FIELD_TU,
     bucket_attr,
     calculate_bucket_ttl_seconds,
     calculate_ttl,
@@ -841,7 +842,11 @@ class SyncLease:
                     deltas[entry.limit.name] = delta * 1000
             if deltas:
                 item = repo.build_composite_adjust(
-                    entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id
+                    entity_id=entity_id,
+                    resource=resource,
+                    deltas=deltas,
+                    shard_id=shard_id,
+                    return_all=_read_a_top_up(group_entries),
                 )
                 if item:
                     items.append(item)
@@ -885,7 +890,11 @@ class SyncLease:
                     deltas[entry.limit.name] = -entry._initial_consumed * 1000
             if deltas:
                 item = repo.build_composite_adjust(
-                    entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id
+                    entity_id=entity_id,
+                    resource=resource,
+                    deltas=deltas,
+                    shard_id=shard_id,
+                    return_all=_read_a_top_up(group_entries),
                 )
                 if item:
                     items.append(item)
@@ -953,11 +962,21 @@ class SyncLease:
                 if deltas.get(entry.limit.name, 0) >= 0:
                     continue
                 value = attrs.get(bucket_attr(entry.limit.name, BUCKET_FIELD_TK))
-                ceiling = entry.state.ceiling_milli(now_ms) - entry.state.report_top_up_milli
+                live = attrs.get(bucket_attr(entry.limit.name, BUCKET_FIELD_TU))
+                ceiling = (
+                    entry.state.ceiling_milli(now_ms)
+                    - entry.state.report_top_up_milli
+                    + (int(live["N"]) if live is not None and entry.limit.is_quota else 0)
+                )
                 if value is not None and int(value["N"]) > ceiling:
                     resets.append(build(entity_id, resource, shard_id))
                     break
         return resets
+
+
+def _read_a_top_up(entries: list[LeaseEntry]) -> bool:
+    """Whether any entry's item was read carrying a quota top-up (ADR-149)."""
+    return any(entry.state.topped_up_milli for entry in entries)
 
 
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:

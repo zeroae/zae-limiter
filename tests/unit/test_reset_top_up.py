@@ -459,3 +459,32 @@ class TestTransactionInProgress:
         assert result.amounts == {"cal": 5}
         top_ups = [await _tu(repo, "e", "cal", shard=s) or 0 for s in range(2)]
         assert sum(top_ups) == 5_000  # landed once, reported once
+
+
+class TestRefundsUnderALiveTopUp:
+    """PR #720 second review, finding 3 (cost): a refund that fits under a
+    live top-up must not force a clamping pass (`vu = 0`, then a slow pass)."""
+
+    async def test_refunds_on_topped_up_quota_force_slow_passes(self, limiter, clock):
+        """Named after the probe: ten leases refunding inside the topped-up
+        ceiling force no clamp at all."""
+        repo = limiter._repository
+        big = Limit.quota("cal", 1000, cron="0 0 * * *")
+        await limiter.set_limits("e", [big], resource="r")
+        assert await _try(limiter, "e", {"cal": 1})
+        await repo.top_up("e", "r", {"cal": 500})
+        clock[0] += 1
+        assert await _try(limiter, "e", {"cal": 1})  # the forced pass clears vu
+        forced = []
+        real = repo.build_vu_reset
+
+        def counting(*a, **k):
+            forced.append(1)
+            return real(*a, **k)
+
+        repo.build_vu_reset = counting
+        for _ in range(10):
+            clock[0] += 1
+            async with limiter.acquire("e", "r", {"cal": 10}) as lease:
+                await lease.adjust(cal=-5)  # estimated 10, used 5
+        assert forced == []

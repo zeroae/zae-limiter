@@ -700,6 +700,7 @@ class RepositoryProtocol(Protocol):
         resource: str,
         deltas: dict[str, int],
         shard_id: int = 0,
+        return_all: bool = False,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 

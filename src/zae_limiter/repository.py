@@ -3295,12 +3295,18 @@ class Repository:
         resource: str,
         deltas: dict[str, int],
         shard_id: int = 0,
+        return_all: bool = False,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
         Unconditional ADD for post-hoc correction. Can go negative by design.
         Positive delta = consumed more (subtract tokens, add to counter).
         Negative delta = consumed less (add tokens, subtract from counter).
+
+        ``return_all`` asks for the whole new item (``ALL_NEW``, as free as
+        ``UPDATED_NEW`` on an ``UpdateItem``) instead of the balances alone, so a
+        quota's ``b_{name}_tu`` as it stands *now* is known (ADR-149): a lease
+        that read a top-up passes it.
 
         Every refund, release, rollback and speculative compensation is built
         here, so the shard's cached state is forgotten here (ADR-147): tokens
@@ -3351,7 +3357,7 @@ class Repository:
                 # Free on UpdateItem: the new balances let a credit that lifted
                 # one above its ceiling be trimmed before the fast path spends
                 # it (#679).
-                "ReturnValues": "UPDATED_NEW",
+                "ReturnValues": "ALL_NEW" if return_all else "UPDATED_NEW",
             }
         }
 
