@@ -111,12 +111,14 @@ async def test_aggregator_reset_does_not_stack_on_a_refund(two):
     await r1.set_limits("a", [Limit.quota("q", 10, cron="0 0 * * *")], resource="r")
     async with l1.acquire("a", "r", {"q": 1}):
         pass  # create: 9
+    image: dict = {}
     with pytest.raises(RuntimeError):
         async with l1.acquire("a", "r", {"q": 5}):  # 4
             image = await _raw(r1, "a")  # the stream record the aggregator sees
             now[0] = MIDNIGHT + 1_000
             raise RuntimeError("body failed")  # the refund lands: 9
 
+    assert image  # captured inside the lease
     record = {"eventName": "MODIFY", "dynamodb": {"NewImage": image, "OldImage": image}}
     (state,) = aggregate_bucket_states([record]).values()
     table = boto3.resource("dynamodb", region_name="us-east-1").Table(r1.table_name)
