@@ -1534,6 +1534,23 @@ class TestWriteOnEnter:
             await write_credit(mock_repo, "e1", "gpt-4", {"q": -5000}, 0, {"q": ceiling}, None)
         mock_repo.write_each.assert_called_once()
 
+    async def test_a_single_quota_retry_propagates_other_errors(self):
+        """After the guarded trimmed write fails, each quota credit is retried on
+        its own guard; only a failed condition drops it (#721)."""
+        from zae_limiter.lease import write_credit
+        from zae_limiter.models import QuotaPeriodPin
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(
+            side_effect=lambda **k: {"Update": {}} if any(k["deltas"].values()) else {}
+        )
+        mock_repo.write_each.side_effect = [self._condition_failed(), RuntimeError("throttled")]
+        ceiling = CreditCeiling(10_000, 10_000, None, (None, None), True, QuotaPeriodPin(9))
+
+        with pytest.raises(RuntimeError, match="throttled"):
+            await write_credit(mock_repo, "e1", "gpt-4", {"q": -5000}, 0, {"q": ceiling}, None)
+        assert mock_repo.write_each.call_count == 2
+
     async def test_nothing_to_adjust_writes_nothing(self):
         from zae_limiter.lease import write_credit
 
@@ -13680,6 +13697,29 @@ class TestSelfTrimmingRefunds:
 
         item = await self._raw(r1, "n", resource="r")
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+
+    async def test_two_quotas_one_reset_drops_the_other(self, two):
+        """A daily and a monthly quota on one item; a reset of the daily one races
+        the refund (#730 third review). Only the daily credit belongs to a period
+        that ended: the monthly one is in its own period and must land (98), where
+        dropping every quota credit on the item left it at 97."""
+        l1, l2, now = two
+        now[0] = self.T0 + 59_000
+        r1 = l1._repository
+        quotas = [Limit.quota("d", 10, cron="0 0 * * *"), Limit.quota("m", 100, cron="0 0 1 * *")]
+        await r1.set_limits("mm", quotas, resource="r")
+        async with l1.acquire("mm", "r", {"d": 1, "m": 1}):
+            pass  # d 9, m 99
+        with pytest.raises(RuntimeError):
+            async with l1.acquire("mm", "r", {"d": 1, "m": 1}):
+                now[0] = self.MIDNIGHT + 1000
+                async with l2.acquire("mm", "r", {"d": 1, "m": 1}):
+                    pass  # resets d to 10 and spends 1; m goes on: 97
+                raise RuntimeError("body failed")
+
+        item = await self._raw(r1, "mm", resource="r")
+        assert item[bucket_attr("d", BUCKET_FIELD_TK)]["N"] == "9000"  # day 1's: dropped
+        assert item[bucket_attr("m", BUCKET_FIELD_TK)]["N"] == "98000"  # refunded
 
     async def test_a_lowered_limit_clamped_before_the_refund(self, two):
         """The limit drops to 50 and another process's slow pass clamps to it (moving

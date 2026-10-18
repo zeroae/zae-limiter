@@ -271,9 +271,12 @@ def _write_trimmed(
 ) -> None:
     """Step 2 of a credit: the same ``ADD`` plus ``vu = 0``, quota credits period-guarded.
 
-    A failure with no quota guard means the item is gone. With one, the
-    period may have moved (or the item is gone): the quota credits are
-    dropped and the rest of the adjustment is written alone (#721).
+    A failure with no quota guard means the item is gone. With one, some
+    quota's period moved (or the item is gone), but not necessarily every
+    quota's: the rest of the adjustment is written alone, then each quota
+    credit on its own guard, so only the ones whose period moved are dropped
+    (#721). That costs one write per quota credit on the item, on a path
+    taken only after a reset or roll raced a refund.
     """
     trimmed = repository.build_composite_adjust(
         entity_id=entity_id,
@@ -298,10 +301,6 @@ def _write_trimmed(
     except Exception as exc:
         if not _is_condition_check_failure(exc):
             raise
-        logger.debug(
-            "quota credit dropped for resource=%s: a reset or window roll landed since the debit, or the bucket is gone",
-            resource,
-        )
         rest = repository.build_composite_adjust(
             entity_id=entity_id,
             resource=resource,
@@ -311,6 +310,24 @@ def _write_trimmed(
         )
         if rest:
             _write_unless_gone(repository, rest, resource)
+        for name in sorted(guarded):
+            single = repository.build_composite_adjust(
+                entity_id=entity_id,
+                resource=resource,
+                deltas={name: deltas[name]},
+                shard_id=shard_id,
+                ceilings={name: ceilings[name]},
+                trim=True,
+            )
+            try:
+                repository.write_each([single])
+            except Exception as single_exc:
+                if not _is_condition_check_failure(single_exc):
+                    raise
+                logger.debug(
+                    "quota credit dropped for resource=%s: a reset or window roll landed since the debit, or the bucket is gone",
+                    resource,
+                )
 
 
 def _write_unless_gone(
