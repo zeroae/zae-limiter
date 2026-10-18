@@ -70,26 +70,45 @@ counterpart is available with the same signature.
 The `RepositoryProtocol` defines the interface for pluggable backends.
 Implement this protocol to use a different storage backend (e.g., for testing).
 
-!!! warning "Changed in v0.17.0: `build_composite_adjust` takes three new keywords"
+!!! warning "Changed in v0.17.0: the adjust write's contract (#721)"
     A custom backend must accept `ceilings`, `trim` and `pin` on
-    `build_composite_adjust` from v0.17.0 (#721). The lease and the limiter pass
-    them on every refund — a rollback, a `release()`, a negative `adjust()` or a
+    `build_composite_adjust` from v0.17.0. The lease and the limiter pass them on
+    every refund — a rollback, a `release()`, a negative `adjust()` or a
     speculative compensation — so a backend that does not accept them raises
     `TypeError` there.
+
+    **Required of every adjust write**, whatever the keywords:
+
+    - **The item must exist.** Fail the write (raise
+      `ConditionalCheckFailedException`) when the bucket is gone. An
+      unconditional credit onto a swept or deleted item creates a stub that
+      rejects the entity forever.
+    - **A quota credit stays in its debit's period.** For each credited limit
+      whose `CreditCeiling.quota_period` is set, fail the write unless the period
+      still holds — calendar: the item's `rf` is before `reset_edge_ms`; session:
+      the limit's window start and applied marker equal `window`. An
+      unconditional credit lands a refund of one period's debit in the next,
+      which then admits more than its allowance. Applies to the `trim=True`
+      write too.
+
+    Expected for the protection a refund relies on:
 
     - `ceilings`: limit name → `CreditCeiling`. Condition each credited limit on
       its balance staying at or below `ceiling_milli` after the credit, and on the
       stored capacity, grant count and schedule overrides it was computed from.
       Raise `ConditionalCheckFailedException` when the condition fails.
     - `trim=True`: the fallback the caller sends after that failure. Apply the
-      same credit unconditionally and, in the same write, mark the bucket so the
-      next acquire re-materialises it (`SET vu = 0` on DynamoDB).
-    - `pin`: the item's (`shard_count`, `vu`, item-level schedule strings) as
-      last seen, held beside the ceilings.
+      same credit (still subject to the two requirements above) and, in the same
+      write, mark the bucket so the next acquire re-materialises it
+      (`SET vu = 0` on DynamoDB).
+    - `pin`: the item's (`shard_count`, `vu`, item-level schedule strings) as the
+      ceiling saw them, held beside the ceilings.
 
-    A backend with no fast path that spends above a ceiling can apply the credit
-    unconditionally for every combination and never raise; that is correct, just
-    without the protection.
+    **`transact_write` now returns** the item's attributes after a single-item
+    update (`ALL_NEW`), or `None`. A refund after the consumption-only retry
+    takes its quota period from that image; a backend that returns `None`
+    makes it fall back to the period the lease read, which can drop a refund
+    after a reset raced the retry but never lands one in the wrong period.
 
 ::: zae_limiter.repository_protocol.RepositoryProtocol
     options:
