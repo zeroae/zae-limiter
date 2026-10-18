@@ -162,12 +162,22 @@ BUCKET_FIELD_GC = "gc"  # b_{name}_gc — grant count, per limit, per shard
 # in. Never read or written by the fast path.
 BUCKET_FIELD_TU = "tu"  # b_{name}_tu — topped-up allowance, millitokens
 
-# `op` (ADR-149): the id of the last reset or top-up written to this bucket item,
-# one per call, stamped on every shard by the same transaction. A write whose
-# response was lost (the SDK retries it, the retry fails the rf lock) is
-# recognised as landed by finding its own id, instead of being re-planned and
-# applied twice. Item-level, never read by any other writer.
-BUCKET_FIELD_OP = "op"
+# The operation record of a reset or top-up (ADR-149): one item per call, in the
+# shard-0 bucket's partition (`PK = pk_bucket(..., 0)`, `SK = #OP#{id}`), Put
+# under `attribute_not_exists(PK)` in the same transaction as the shard writes.
+# Exactly one transaction carrying a given id can ever commit, and after an
+# unclear failure the record says whether this call landed. It stores the
+# call's result so a retry with the same id returns it. Expires after
+# `OPERATION_RECORD_TTL_SECONDS`; carries no GSI1-3 keys, so no bucket reader
+# sees it, and the GSI4 keys so `purge_namespace` removes it.
+SK_OPERATION_PREFIX = "#OP#"
+OPERATION_RECORD_TTL_SECONDS = 3 * 86_400
+
+
+def sk_operation(operation_id: str) -> str:
+    """Sort key of a reset or top-up's operation record (ADR-149)."""
+    return f"{SK_OPERATION_PREFIX}{operation_id}"
+
 
 # The explicit spelling of "this limit has no schedule of its own" (#541).
 #

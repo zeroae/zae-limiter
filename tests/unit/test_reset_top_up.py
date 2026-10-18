@@ -186,14 +186,36 @@ async def _drain(lim, entity, name, cap=100):
 
 
 class TestIdempotency:
-    """PR #720 review, finding 1: a write that landed but whose response was
-    lost is not applied twice."""
+    """PR #720 reviews: a write that landed but whose response was lost is not
+    applied twice, whatever else happens to the bucket in between."""
+
+    @staticmethod
+    def _lose_first_response(client, fired, during=None):
+        """Every reset / top-up is one `TransactWriteItems` carrying its operation
+        record. The first one commits, its response is "lost", optionally
+        something else happens, then the SDK resends the identical request."""
+        real = client.transact_write_items
+
+        async def lossy(**kw):
+            carries_record = any(
+                "Put" in item and item["Put"]["Item"]["SK"]["S"].startswith("#OP#")
+                for item in kw["TransactItems"]
+            )
+            if carries_record and not fired:
+                fired.append(kw)
+                await real(**kw)  # commits server-side; the response is "lost"
+                if during is not None:
+                    await during()
+                return await real(**kw)  # the SDK's automatic retry
+            return await real(**kw)
+
+        client.transact_write_items = lossy
+        return real
 
     @pytest.mark.parametrize("shards", [1, 2])
     async def test_a_top_up_whose_response_was_lost_is_applied_once(self, limiter, clock, shards):
-        """The write commits but its response is lost; botocore retries the
-        identical request, whose rf condition then fails. One top_up(5) must
-        record 5 topped-up tokens, not 10."""
+        """The retry fails the rf lock and the record's condition; one
+        top_up(5) must record 5 topped-up tokens, not 10."""
         import random as _r
 
         repo = limiter._repository
@@ -210,51 +232,65 @@ class TestIdempotency:
                 _r.randrange = real_rr
         clock[0] += 1
         client = await repo._get_client()
-        method = "update_item" if shards == 1 else "transact_write_items"
-        real = getattr(client, method)
-        state = {"armed": True}
-
-        async def lossy(**kw):
-            if shards > 1:
-                # Idempotent for 10 minutes on DynamoDB (moto ignores it).
-                assert kw["ClientRequestToken"]
-            if state["armed"] and (shards > 1 or "#ot0" in str(kw.get("ExpressionAttributeNames"))):
-                state["armed"] = False
-                await real(**kw)  # commits server-side; the response is "lost"
-                return await real(**kw)  # the SDK's automatic retry of the same request
-            return await real(**kw)
-
-        setattr(client, method, lossy)
+        fired: list = []
+        real = self._lose_first_response(client, fired)
         try:
             result = await repo.top_up("e", "r", {"cal": 5})
         finally:
-            setattr(client, method, real)
+            client.transact_write_items = real
+        assert fired and fired[0]["ClientRequestToken"]
         assert result.amounts == {"cal": 5}
         top_ups = [await _tu(repo, "e", "cal", shard=s) or 0 for s in range(shards)]
         assert sum(top_ups) == 5_000
 
     async def test_a_lost_create_response_is_applied_once(self, limiter, clock):
         """D5: the create landed, its response was lost, and the retry's
-        `attribute_not_exists(PK)` failed. The re-read finds this call's own
-        operation id and returns, instead of topping up the new bucket again."""
+        `attribute_not_exists(PK)` failed. The operation record says it landed,
+        so the new bucket is not topped up again."""
         repo = limiter._repository
         await limiter.set_limits("e", [CAL], resource="r")
         client = await repo._get_client()
-        real = client.put_item
-
-        async def lossy(**kw):
-            await real(**kw)
-            return await real(**kw)
-
-        client.put_item = lossy
+        fired: list = []
+        real = self._lose_first_response(client, fired)
         try:
             result = await repo.top_up("e", "r", {"cal": 5})
         finally:
-            client.put_item = real
+            client.transact_write_items = real
+        assert fired
         assert (result.shards, result.amounts) == (1, {"cal": 5})
         assert await _tu(repo, "e", "cal") == 5_000
         clock[0] += 1
         assert await _drain(limiter, "e", "cal") == 15
+
+    @pytest.mark.parametrize("second", ["top_up", "reset"])
+    async def test_op_marker_overwritten_by_concurrent_operation(self, limiter, clock, second):
+        """A's write lands and its response is lost; before the SDK retry,
+        another operator call lands on the same bucket. A must still find that
+        it landed: two top_up(5) on a spent quota admit 10, not 15; a reset
+        after A leaves exactly the full allowance."""
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        assert await _try(limiter, "e", {"cal": 10})  # spent
+        clock[0] += 1
+        client = await repo._get_client()
+
+        async def concurrent():
+            clock[0] += 1
+            if second == "top_up":
+                await repo.top_up("e", "r", {"cal": 5})
+            else:
+                await repo.reset_bucket("e", "r")
+
+        fired: list = []
+        real = self._lose_first_response(client, fired, during=concurrent)
+        try:
+            result = await repo.top_up("e", "r", {"cal": 5})
+        finally:
+            client.transact_write_items = real
+        assert fired
+        assert result.amounts == {"cal": 5}
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 10
 
 
 class TestNothingFailsAfterTheCommit:

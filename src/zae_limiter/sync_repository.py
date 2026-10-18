@@ -7158,19 +7158,16 @@ class SyncRepository:
                 f"not a limit configured for {entity_id!r} on {resource!r} (configured: {', '.join(sorted(by_name))})",
             )
         operation_id = str(ULID())
-        pending: BucketOperationResult | None = None
         last_error: Exception | None = None
         for attempt in range(_OPERATION_MAX_ATTEMPTS):
             if attempt:
+                recorded = self._operation_record(entity_id, resource, operation_id)
+                if recorded is not None:
+                    return self._audited(operation, recorded, principal)
                 time.sleep(random.uniform(0, _OPERATION_RETRY_BASE_DELAY * 2**attempt))
             now_ms = self._now_ms()
             shards, raw = self._read_operation_shards(entity_id, resource, now_ms)
-            if pending is not None and any(
-                item.get(schema.BUCKET_FIELD_OP, {}).get("S") == operation_id
-                for item in raw.values()
-            ):
-                result = pending
-            elif not shards:
+            if not shards:
                 if operation == bucket_ops.RESET:
                     return BucketOperationResult(
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
@@ -7179,7 +7176,6 @@ class SyncRepository:
                     entity_id, resource, resolved, source, requested, now_ms, operation_id
                 )
                 if not landed:
-                    pending = result
                     continue
             else:
                 top = max(shard.shard_count for shard in shards)
@@ -7207,8 +7203,11 @@ class SyncRepository:
                 try:
                     self.transact_write(
                         [
-                            self.build_bucket_operation(entity_id, resource, write, operation_id)
-                            for write in plan.writes
+                            *(
+                                self.build_bucket_operation(entity_id, resource, write)
+                                for write in plan.writes
+                            ),
+                            self.build_operation_record(operation, operation_id, result, now_ms),
                         ],
                         client_request_token=f"{operation_id}-{attempt}",
                     )
@@ -7216,26 +7215,11 @@ class SyncRepository:
                     if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
                         raise
                     last_error = e
-                    pending = result
                     continue
-            if result.shards:
-                try:
-                    self._log_audit_event(
-                        action=AuditAction.BUCKET_RESET
-                        if operation == bucket_ops.RESET
-                        else AuditAction.BUCKET_TOPPED_UP,
-                        entity_id=entity_id,
-                        principal=principal,
-                        resource=resource,
-                        details={"amounts": dict(result.amounts), "shards": result.shards},
-                    )
-                except Exception:
-                    logger.warning(
-                        "%s landed but its audit event could not be written",
-                        operation,
-                        exc_info=True,
-                    )
-            return result
+            return self._audited(operation, result, principal)
+        recorded = self._operation_record(entity_id, resource, operation_id)
+        if recorded is not None:
+            return self._audited(operation, recorded, principal)
         raise RateLimiterUnavailable(
             f"Could not {operation.replace('_', ' ')} the bucket: it kept changing through {_OPERATION_MAX_ATTEMPTS} attempts",
             last_error,
@@ -7243,6 +7227,93 @@ class SyncRepository:
             entity_id=entity_id,
             resource=resource,
         )
+
+    def _audited(
+        self, operation: bucket_ops.Operation, result: BucketOperationResult, principal: str | None
+    ) -> BucketOperationResult:
+        """Audit an operation that landed, never failing the call (ADR-149).
+
+        The caller would retry a reset or top-up that already happened, so a
+        failed audit write is logged, not raised.
+        """
+        if result.shards:
+            try:
+                self._log_audit_event(
+                    action=AuditAction.BUCKET_RESET
+                    if operation == bucket_ops.RESET
+                    else AuditAction.BUCKET_TOPPED_UP,
+                    entity_id=result.entity_id,
+                    principal=principal,
+                    resource=result.resource,
+                    details={"amounts": dict(result.amounts), "shards": result.shards},
+                )
+            except Exception:
+                logger.warning(
+                    "%s landed but its audit event could not be written", operation, exc_info=True
+                )
+        return result
+
+    def build_operation_record(
+        self,
+        operation: bucket_ops.Operation,
+        operation_id: str,
+        result: BucketOperationResult,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """Build the ``Put`` of a reset or top-up's operation record (ADR-149).
+
+        One item per call, in the shard-0 bucket's partition, conditioned on
+        ``attribute_not_exists(PK)`` and written in the same transaction as the
+        shard writes: only one transaction carrying ``operation_id`` can ever
+        commit. It stores the result, which a retry that finds it returns.
+        """
+        entity_id, resource = (result.entity_id, result.resource)
+        return {
+            "Put": {
+                "TableName": self.table_name,
+                "Item": {
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                    "SK": {"S": schema.sk_operation(operation_id)},
+                    "entity_id": {"S": entity_id},
+                    "resource": {"S": resource},
+                    "operation": {"S": operation},
+                    "shards": {"N": str(result.shards)},
+                    "amounts": {"M": {name: {"N": str(n)} for name, n in result.amounts.items()}},
+                    "ttl": {
+                        "N": str(schema.calculate_ttl(now_ms, schema.OPERATION_RECORD_TTL_SECONDS))
+                    },
+                    "GSI4PK": {"S": self._namespace_id},
+                    "GSI4SK": {"S": f"OP#{entity_id}#{resource}#{operation_id}"},
+                },
+                "ConditionExpression": "attribute_not_exists(PK)",
+            }
+        }
+
+    def _operation_record(
+        self, entity_id: str, resource: str, operation_id: str
+    ) -> BucketOperationResult | None:
+        """The result an operation recorded, or None when it has not landed (ADR-149)."""
+        item = self._get_item_consistent(
+            schema.pk_bucket(self._namespace_id, entity_id, resource, 0),
+            schema.sk_operation(operation_id),
+        )
+        if item is None:
+            return None
+        return BucketOperationResult(
+            entity_id,
+            resource,
+            int(item["shards"]["N"]),
+            {name: int(value["N"]) for name, value in item.get("amounts", {}).get("M", {}).items()},
+        )
+
+    def _get_item_consistent(self, pk: str, sk: str) -> dict[str, Any] | None:
+        """One strongly consistent ``GetItem``."""
+        client = self._get_client()
+        response = client.get_item(
+            TableName=self.table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}}, ConsistentRead=True
+        )
+        item: dict[str, Any] | None = response.get("Item")
+        return item
 
     def _read_operation_shards(
         self, entity_id: str, resource: str, now_ms: int
@@ -7351,10 +7422,15 @@ class SyncRepository:
             vu=bucket_ops.creation_vu(resolved, states, now_ms),
             rf_ms=now_ms,
         )
-        create["Put"]["Item"][schema.BUCKET_FIELD_OP] = {"S": operation_id}
         result = BucketOperationResult(entity_id, resource, 1, amounts)
         try:
-            self.transact_write([create])
+            self.transact_write(
+                [
+                    create,
+                    self.build_operation_record(bucket_ops.TOP_UP, operation_id, result, now_ms),
+                ],
+                client_request_token=f"{operation_id}-create",
+            )
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
                 raise
@@ -7380,7 +7456,7 @@ class SyncRepository:
         self._top_up_readers_proven = True
 
     def build_bucket_operation(
-        self, entity_id: str, resource: str, write: bucket_ops.ShardWrite, operation_id: str
+        self, entity_id: str, resource: str, write: bucket_ops.ShardWrite
     ) -> dict[str, Any]:
         """Build one shard's rf-locked reset or top-up ``Update`` (ADR-149 §4.2).
 
@@ -7388,27 +7464,22 @@ class SyncRepository:
         between the read and the write is kept), ``SET rf`` monotonic, ``vu = 0``
         to force one materialising pass that clamps anything credited in
         between, plus the grant counts, windows, applied markers and top-ups the
-        plan sets and the ``tu`` / ``wtc`` it removes, and ``op =
-        operation_id`` so a write whose response was lost is recognised as
-        landed. Conditioned on the ``rf`` and ``shard_count`` read; ``tc``,
-        ``disabled``, ``ttl`` and the owner stamps are never touched.
+        plan sets and the ``tu`` / ``wtc`` it removes. Conditioned on the
+        ``rf`` and ``shard_count`` read; ``tc``, ``disabled``, ``ttl`` and the
+        owner stamps are never touched. The call's operation record rides in
+        the same transaction (:meth:`build_operation_record`).
 
         Tokens are positional (#634): ``#ot``/``:ot`` deltas, ``#og``/``:og``
         grant counts, ``#ow``/``:ow`` + ``#or``/``:or`` windows, ``#oa``/``:oa``
         applied markers, ``#ou``/``:ou`` top-ups, ``#ox`` / ``#oy`` removals.
         """
-        names: dict[str, str] = {
-            "#rf": schema.BUCKET_FIELD_RF,
-            "#vu": schema.BUCKET_FIELD_VU,
-            "#op": schema.BUCKET_FIELD_OP,
-        }
+        names: dict[str, str] = {"#rf": schema.BUCKET_FIELD_RF, "#vu": schema.BUCKET_FIELD_VU}
         values: dict[str, Any] = {
             ":rf": {"N": str(write.written_rf)},
             ":erf": {"N": str(write.expected_rf)},
             ":vu": {"N": "0"},
-            ":op": {"S": operation_id},
         }
-        set_parts = ["#rf = :rf", "#vu = :vu", "#op = :op"]
+        set_parts = ["#rf = :rf", "#vu = :vu"]
         add_parts: list[str] = []
         remove_parts: list[str] = []
 

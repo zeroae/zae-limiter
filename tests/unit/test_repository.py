@@ -8968,6 +8968,60 @@ class TestResetAndTopUp:
         ):
             await repo.reset_bucket("e", "r")
 
+    async def test_each_call_leaves_one_operation_record(self, repo):
+        """ADR-149: the record rides in the same transaction, expires, and
+        carries the GSI4 keys `purge_namespace` uses."""
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM])
+        repo._now_ms = lambda: _OP_T0
+        result = await repo.reset_bucket("e", "r")
+        client = await repo._get_client()
+        records = (
+            await client.query(
+                TableName=repo.table_name,
+                KeyConditionExpression="PK = :pk AND begins_with(SK, :op)",
+                ExpressionAttributeValues={
+                    ":pk": {"S": pk_bucket(repo._namespace_id, "e", "r", 0)},
+                    ":op": {"S": "#OP#"},
+                },
+                ConsistentRead=True,
+            )
+        )["Items"]
+        assert len(records) == 1
+        record = records[0]
+        assert record["operation"] == {"S": "reset"}
+        assert int(record["shards"]["N"]) == result.shards
+        assert int(record["ttl"]["N"]) == _OP_T0 // 1000 + 3 * 86_400
+        assert record["GSI4PK"] == {"S": repo._namespace_id}
+        assert "GSI3PK" not in record  # invisible to bucket discovery
+
+    async def test_a_write_that_landed_on_the_last_attempt_is_found(self, repo):
+        """Every attempt reports a conflict, but the last one had landed: the
+        operation record says so, and the call returns rather than raising."""
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        repo._now_ms = lambda: _OP_T0
+        real = repo.transact_write
+        calls = []
+        lost = ClientError(
+            {"Error": {"Code": "TransactionCanceledException", "Message": "x"}}, "Tx"
+        )
+
+        async def unlucky(items, **kwargs):
+            calls.append(1)
+            if len(calls) == 4:
+                await real(items, **kwargs)  # the last attempt lands
+            raise lost
+
+        with (
+            patch.object(repo, "transact_write", side_effect=unlucky),
+            patch("zae_limiter.repository._OPERATION_RETRY_BASE_DELAY", 0),
+        ):
+            result = await repo.reset_bucket("e", "r")
+        assert len(calls) == 4
+        assert result.shards == 1
+        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 100_000
+
     async def test_an_unexpected_write_error_is_not_retried(self, repo):
         await repo.set_limits("e", [_OP_RPM], resource="r")
         await _op_put_shard(repo, "e", "r", [_OP_RPM])
