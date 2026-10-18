@@ -114,6 +114,49 @@ def _pin_string(alias: str, token: str, raw: str | None, values: dict[str, Any])
     return f"{alias} = {token}"
 
 
+def _credit_limit_terms(
+    i: int,
+    name: str,
+    delta: int,
+    ceiling: CreditCeiling,
+    names: dict[str, str],
+    values: dict[str, Any],
+) -> list[str]:
+    """The condition terms of one self-trimming credit (#721).
+
+    The balance after the credit stays at or below the ceiling (debt may take
+    any credit that satisfies it), and the ceiling is still the one computed:
+    the stored base capacity (a limit change), the grant count (a re-grant)
+    and the schedule overrides (a window's capacity or scale changed under the
+    same cron) hold. With ``lease.credit_ceiling`` the one place a credited
+    limit's ceiling and pins are decided: a new input to the ceiling (a quota
+    top-up, #720) adds its term here. Tokens are positional (#634).
+    """
+    tk_alias = f"#bt{i}"
+    values[f":bm{i}"] = {"N": str(ceiling.ceiling_milli + delta)}
+    terms = [f"{tk_alias} <= :bm{i}"]
+    names[f"#bp{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
+    values[f":bp{i}"] = {"N": str(ceiling.capacity_milli)}
+    terms.append(f"#bp{i} = :bp{i}")
+    names[f"#bg{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
+    if ceiling.grant_count is None:
+        terms.append(f"attribute_not_exists(#bg{i})")
+    else:
+        values[f":bg{i}"] = {"N": str(ceiling.grant_count)}
+        terms.append(f"#bg{i} = :bg{i}")
+    if ceiling.sched_raw is not None:
+        for code, field, raw in zip(
+            ("s", "r"),
+            (schema.BUCKET_FIELD_SCHED, schema.BUCKET_FIELD_RSCHED),
+            ceiling.sched_raw,
+            strict=True,
+        ):
+            alias = f"#bx{code}{i}"
+            names[alias] = schema.bucket_attr(name, field)
+            terms.append(_pin_string(alias, f":bx{code}{i}", raw, values))
+    return terms
+
+
 class Repository:
     """Async DynamoDB repository for rate limiter data.
 
@@ -3266,6 +3309,7 @@ class Repository:
         attr_names: dict[str, str] = {}
         attr_values: dict[str, Any] = {}
         ceilings = ceilings or {}
+        ceiling_terms = False
 
         # Index-derived tokens, never the limit name (#634); see
         # `build_composite_normal`.
@@ -3287,36 +3331,10 @@ class Repository:
             add_parts.append(f"{tc_alias} {tc_val}")
 
             if delta < 0 and not trim and name in ceilings:
-                # Self-trimming credit (#721): the balance after it stays at or
-                # below the ceiling. Debt may take any credit that satisfies it.
-                ceiling = ceilings[name]
-                attr_values[f":bm{i}"] = {"N": str(ceiling.ceiling_milli + delta)}
-                condition_parts.append(f"{tk_alias} <= :bm{i}")
-                # ...and the ceiling is still the one computed: the stored base
-                # capacity (a limit change) and grant count (a re-grant) hold.
-                attr_names[f"#bp{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
-                attr_values[f":bp{i}"] = {"N": str(ceiling.capacity_milli)}
-                condition_parts.append(f"#bp{i} = :bp{i}")
-                attr_names[f"#bg{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
-                if ceiling.grant_count is None:
-                    condition_parts.append(f"attribute_not_exists(#bg{i})")
-                else:
-                    attr_values[f":bg{i}"] = {"N": str(ceiling.grant_count)}
-                    condition_parts.append(f"#bg{i} = :bg{i}")
-                # ...and so is its schedule: a window's capacity or scale
-                # changed under the same cron moves only these strings (#721).
-                if ceiling.sched_raw is not None:
-                    for code, field, raw in zip(
-                        ("s", "r"),
-                        (schema.BUCKET_FIELD_SCHED, schema.BUCKET_FIELD_RSCHED),
-                        ceiling.sched_raw,
-                        strict=True,
-                    ):
-                        alias = f"#bx{code}{i}"
-                        attr_names[alias] = schema.bucket_attr(name, field)
-                        condition_parts.append(
-                            _pin_string(alias, f":bx{code}{i}", raw, attr_values)
-                        )
+                ceiling_terms = True
+                condition_parts += _credit_limit_terms(
+                    i, name, delta, ceilings[name], attr_names, attr_values
+                )
 
         if not add_parts:
             # Nothing to adjust
@@ -3332,7 +3350,7 @@ class Repository:
             attr_values[":vuz"] = {"N": "0"}
             update_expr = f"SET #vu = :vuz {update_expr}"
 
-        if len(condition_parts) > 1 and pin is not None:
+        if ceiling_terms and pin is not None:
             # A doubling lowers every share without touching a limit's
             # attributes; a schedule change or a slow pass re-stamps `vu`
             # (a reset re-stamps a quota's next edge). Pinning `vu`, not `rf`:

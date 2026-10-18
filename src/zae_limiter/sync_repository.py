@@ -94,6 +94,49 @@ def _pin_string(alias: str, token: str, raw: str | None, values: dict[str, Any])
     return f"{alias} = {token}"
 
 
+def _credit_limit_terms(
+    i: int,
+    name: str,
+    delta: int,
+    ceiling: CreditCeiling,
+    names: dict[str, str],
+    values: dict[str, Any],
+) -> list[str]:
+    """The condition terms of one self-trimming credit (#721).
+
+    The balance after the credit stays at or below the ceiling (debt may take
+    any credit that satisfies it), and the ceiling is still the one computed:
+    the stored base capacity (a limit change), the grant count (a re-grant)
+    and the schedule overrides (a window's capacity or scale changed under the
+    same cron) hold. With ``lease.credit_ceiling`` the one place a credited
+    limit's ceiling and pins are decided: a new input to the ceiling (a quota
+    top-up, #720) adds its term here. Tokens are positional (#634).
+    """
+    tk_alias = f"#bt{i}"
+    values[f":bm{i}"] = {"N": str(ceiling.ceiling_milli + delta)}
+    terms = [f"{tk_alias} <= :bm{i}"]
+    names[f"#bp{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
+    values[f":bp{i}"] = {"N": str(ceiling.capacity_milli)}
+    terms.append(f"#bp{i} = :bp{i}")
+    names[f"#bg{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
+    if ceiling.grant_count is None:
+        terms.append(f"attribute_not_exists(#bg{i})")
+    else:
+        values[f":bg{i}"] = {"N": str(ceiling.grant_count)}
+        terms.append(f"#bg{i} = :bg{i}")
+    if ceiling.sched_raw is not None:
+        for code, field, raw in zip(
+            ("s", "r"),
+            (schema.BUCKET_FIELD_SCHED, schema.BUCKET_FIELD_RSCHED),
+            ceiling.sched_raw,
+            strict=True,
+        ):
+            alias = f"#bx{code}{i}"
+            names[alias] = schema.bucket_attr(name, field)
+            terms.append(_pin_string(alias, f":bx{code}{i}", raw, values))
+    return terms
+
+
 class SyncRepository:
     """Async DynamoDB repository for rate limiter data.
 
@@ -2749,6 +2792,7 @@ class SyncRepository:
         attr_names: dict[str, str] = {}
         attr_values: dict[str, Any] = {}
         ceilings = ceilings or {}
+        ceiling_terms = False
         for i, (name, delta) in enumerate(deltas.items()):
             if delta == 0:
                 continue
@@ -2763,30 +2807,10 @@ class SyncRepository:
             add_parts.append(f"{tk_alias} {tk_val}")
             add_parts.append(f"{tc_alias} {tc_val}")
             if delta < 0 and (not trim) and (name in ceilings):
-                ceiling = ceilings[name]
-                attr_values[f":bm{i}"] = {"N": str(ceiling.ceiling_milli + delta)}
-                condition_parts.append(f"{tk_alias} <= :bm{i}")
-                attr_names[f"#bp{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
-                attr_values[f":bp{i}"] = {"N": str(ceiling.capacity_milli)}
-                condition_parts.append(f"#bp{i} = :bp{i}")
-                attr_names[f"#bg{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
-                if ceiling.grant_count is None:
-                    condition_parts.append(f"attribute_not_exists(#bg{i})")
-                else:
-                    attr_values[f":bg{i}"] = {"N": str(ceiling.grant_count)}
-                    condition_parts.append(f"#bg{i} = :bg{i}")
-                if ceiling.sched_raw is not None:
-                    for code, field, raw in zip(
-                        ("s", "r"),
-                        (schema.BUCKET_FIELD_SCHED, schema.BUCKET_FIELD_RSCHED),
-                        ceiling.sched_raw,
-                        strict=True,
-                    ):
-                        alias = f"#bx{code}{i}"
-                        attr_names[alias] = schema.bucket_attr(name, field)
-                        condition_parts.append(
-                            _pin_string(alias, f":bx{code}{i}", raw, attr_values)
-                        )
+                ceiling_terms = True
+                condition_parts += _credit_limit_terms(
+                    i, name, delta, ceilings[name], attr_names, attr_values
+                )
         if not add_parts:
             return {}
         update_expr = f"ADD {', '.join(add_parts)}"
@@ -2794,7 +2818,7 @@ class SyncRepository:
             attr_names["#vu"] = schema.BUCKET_FIELD_VU
             attr_values[":vuz"] = {"N": "0"}
             update_expr = f"SET #vu = :vuz {update_expr}"
-        if len(condition_parts) > 1 and pin is not None:
+        if ceiling_terms and pin is not None:
             shard_count, vu, item_sched = pin
             attr_names["#bsc"] = "shard_count"
             attr_values[":bsc"] = {"N": str(shard_count)}
