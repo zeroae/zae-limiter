@@ -160,9 +160,16 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
   decides: present means it landed, and its stored result is returned. A first fix put the id
   on the bucket items instead (`op`), and a concurrent reset or top-up overwrote it between
   the lost response and the re-read (two `top_up(5)` admitted 15 against 10, second review).
-  A multi-shard transaction also carries a `ClientRequestToken` (derived from the id, one per
-  attempt), and `TransactionInProgressException` — the SDK's retry of a transaction still
-  running — is an unclear outcome like the others, never raised to the caller.
+  Every transaction carries a `ClientRequestToken`: a **random per-call nonce** plus the
+  attempt number, never derived from the id. DynamoDB keeps a token ten minutes and answers it
+  with a different payload with `IdempotentParameterMismatchException`, so a key-derived token
+  failed every second call with the same key for ten minutes (third review). That exception and
+  `TransactionInProgressException` (the SDK's retry of a transaction still running) are unclear
+  outcomes like the others, resolved by the record, never raised to the caller. The record
+  also stores its **writer** (that nonce): a call audits only an operation its own transaction
+  committed, so two callers racing with one key write one audit event. `delete_entity` deletes
+  the entity's records (one Query per resource's shard-0 partition), so a recreated entity
+  reusing a key gets a fresh operation.
 - **Caller idempotency key.** `reset_bucket` / `top_up(..., idempotency_key=...)` (CLI
   `--idempotency-key`) uses the caller's key as the id: a retry within three days returns the
   first call's result and writes nothing (+1 RCU to read the record first). A key reused for the
