@@ -862,9 +862,9 @@ class TestCompositeWritePaths:
         assert "Update" in result
         update = result["Update"]
 
-        # Should have ADD but no condition
+        # An ADD whose only condition is that the item exists (#721)
         assert "ADD" in update["UpdateExpression"]
-        assert "ConditionExpression" not in update
+        assert update["ConditionExpression"] == "attribute_exists(PK)"
 
         # Positive delta: subtract from tk, add to tc
         vals = update["ExpressionAttributeValues"]
@@ -891,7 +891,9 @@ class TestCompositeWritePaths:
         )["Update"]
 
         # Without a pin: the balance bound, plus what the ceiling came from.
-        assert update["ConditionExpression"] == "#bt1 <= :bm1 AND #bp1 = :bp1 AND #bg1 = :bg1"
+        assert update["ConditionExpression"] == (
+            "attribute_exists(PK) AND #bt1 <= :bm1 AND #bp1 = :bp1 AND #bg1 = :bg1"
+        )
         values = update["ExpressionAttributeValues"]
         assert values[":bm1"] == {"N": "9500"}
         assert (values[":bp1"], values[":bg1"]) == ({"N": "20000"}, {"N": "2"})
@@ -911,7 +913,7 @@ class TestCompositeWritePaths:
             pin=(1, None, (None, None, None)),
         )["Update"]
         assert absent["ConditionExpression"] == (
-            "#bt0 <= :bm0 AND #bp0 = :bp0 AND attribute_not_exists(#bg0)"
+            "attribute_exists(PK) AND #bt0 <= :bm0 AND #bp0 = :bp0 AND attribute_not_exists(#bg0)"
             " AND (attribute_not_exists(#bsc) OR #bsc = :bsc)"
             " AND attribute_not_exists(#bvu)"
             " AND attribute_not_exists(#bis) AND attribute_not_exists(#bir)"
@@ -958,7 +960,7 @@ class TestCompositeWritePaths:
             deltas={"rpm": 500},
             pin=(1, None, (None, None, None)),
         )["Update"]
-        assert "ConditionExpression" not in update
+        assert update["ConditionExpression"] == "attribute_exists(PK)"
 
     @pytest.mark.asyncio
     async def test_build_composite_adjust_trim_stamps_vu_in_the_same_write(self, repo):
@@ -972,7 +974,7 @@ class TestCompositeWritePaths:
             pin=(1, None, (None, None, None)),
         )["Update"]
 
-        assert "ConditionExpression" not in update
+        assert update["ConditionExpression"] == "attribute_exists(PK)"
         assert update["UpdateExpression"] == "SET #vu = :vuz ADD #bt0 :bd0, #bc0 :bcd0"
         assert update["ExpressionAttributeNames"]["#vu"] == "vu"
         assert update["ExpressionAttributeValues"][":vuz"] == {"N": "0"}

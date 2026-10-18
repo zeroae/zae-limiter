@@ -201,15 +201,19 @@ async def write_credit(
     fallback. With ``pin`` unknown (``None``), the credit
     goes straight to the trimmed write — one write, nothing to trust.
 
-    A debit, or a credit with no known ceiling, is one unconditional write.
-    Errors other than the failed ceiling condition propagate to the caller.
+    A debit, or a credit with no known ceiling, is one write with no ceiling
+    condition. Every write is conditioned on the item existing: an adjustment
+    onto an item swept or deleted since the debit would otherwise create a
+    stub that rejects the entity forever. When the last write's condition
+    fails, the item is gone and there is nothing to adjust: logged at debug,
+    not an error. Errors other than a failed condition propagate.
     """
     if ceilings and (pin is None or any(c.sched_raw is None for c in ceilings.values())):
-        item = repository.build_composite_adjust(
+        trimmed = repository.build_composite_adjust(
             entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, trim=True
         )
-        if item:
-            await repository.write_each([item])
+        if trimmed:
+            await _write_unless_gone(repository, trimmed, resource)
         return
     kwargs: dict[str, Any] = {"ceilings": ceilings, "pin": pin} if ceilings else {}
     item = repository.build_composite_adjust(
@@ -217,15 +221,35 @@ async def write_credit(
     )
     if not item:
         return
+    if not ceilings:
+        await _write_unless_gone(repository, item, resource)
+        return
     try:
         await repository.write_each([item])
     except Exception as exc:
-        if not ceilings or not _is_condition_check_failure(exc):
+        if not _is_condition_check_failure(exc):
             raise
         trimmed = repository.build_composite_adjust(
             entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, trim=True
         )
-        await repository.write_each([trimmed])
+        await _write_unless_gone(repository, trimmed, resource)
+
+
+async def _write_unless_gone(
+    repository: "RepositoryProtocol", item: dict[str, Any], resource: str
+) -> None:
+    """Write an adjust item whose only condition is that the item exists.
+
+    A failed condition means the bucket was swept or deleted since the lease
+    saw it: nothing to adjust, and a stub must not be created (#721). The
+    entity id is never logged (`py/clear-text-logging-sensitive-data`).
+    """
+    try:
+        await repository.write_each([item])
+    except Exception as exc:
+        if not _is_condition_check_failure(exc):
+            raise
+        logger.debug("adjustment skipped: the bucket for resource=%s is gone", resource)
 
 
 _CreditWrite = tuple[str, str, int, dict[str, int], dict[str, CreditCeiling], CreditPin | None]

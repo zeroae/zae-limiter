@@ -337,7 +337,7 @@ class TestCompositeBuilders:
             "user-1", "api", deltas={DOTTED: -1000, HYPHENATED: 2000}, shard_id=3, trim=True
         )["Update"]
         assert_expression_safe(update)
-        assert "ConditionExpression" not in update
+        assert update["ConditionExpression"] == "attribute_exists(PK)"
 
     def test_quota_donor_debits(self) -> None:
         for item in _repo().build_quota_donor_debits(

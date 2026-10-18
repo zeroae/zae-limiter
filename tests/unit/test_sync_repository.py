@@ -662,7 +662,7 @@ class TestCompositeWritePaths:
         assert "Update" in result
         update = result["Update"]
         assert "ADD" in update["UpdateExpression"]
-        assert "ConditionExpression" not in update
+        assert update["ConditionExpression"] == "attribute_exists(PK)"
         vals = update["ExpressionAttributeValues"]
         names = update["ExpressionAttributeNames"]
         assert (names["#bt0"], names["#bt1"]) == ("b_rpm_tk", "b_tpm_tk")
@@ -682,7 +682,10 @@ class TestCompositeWritePaths:
                 "tpm": CreditCeiling(10000, 20000, 2),
             },
         )["Update"]
-        assert update["ConditionExpression"] == "#bt1 <= :bm1 AND #bp1 = :bp1 AND #bg1 = :bg1"
+        assert (
+            update["ConditionExpression"]
+            == "attribute_exists(PK) AND #bt1 <= :bm1 AND #bp1 = :bp1 AND #bg1 = :bg1"
+        )
         values = update["ExpressionAttributeValues"]
         assert values[":bm1"] == {"N": "9500"}
         assert (values[":bp1"], values[":bg1"]) == ({"N": "20000"}, {"N": "2"})
@@ -702,7 +705,7 @@ class TestCompositeWritePaths:
         )["Update"]
         assert (
             absent["ConditionExpression"]
-            == "#bt0 <= :bm0 AND #bp0 = :bp0 AND attribute_not_exists(#bg0) AND (attribute_not_exists(#bsc) OR #bsc = :bsc) AND attribute_not_exists(#bvu) AND attribute_not_exists(#bis) AND attribute_not_exists(#bir) AND attribute_not_exists(#biz)"
+            == "attribute_exists(PK) AND #bt0 <= :bm0 AND #bp0 = :bp0 AND attribute_not_exists(#bg0) AND (attribute_not_exists(#bsc) OR #bsc = :bsc) AND attribute_not_exists(#bvu) AND attribute_not_exists(#bis) AND attribute_not_exists(#bir) AND attribute_not_exists(#biz)"
         )
         stamped = repo.build_composite_adjust(
             entity_id="entity-1",
@@ -742,7 +745,7 @@ class TestCompositeWritePaths:
             deltas={"rpm": 500},
             pin=(1, None, (None, None, None)),
         )["Update"]
-        assert "ConditionExpression" not in update
+        assert update["ConditionExpression"] == "attribute_exists(PK)"
 
     def test_build_composite_adjust_trim_stamps_vu_in_the_same_write(self, repo):
         """The fallback (#721): the same ADD, unconditional, plus `vu = 0`."""
@@ -754,7 +757,7 @@ class TestCompositeWritePaths:
             trim=True,
             pin=(1, None, (None, None, None)),
         )["Update"]
-        assert "ConditionExpression" not in update
+        assert update["ConditionExpression"] == "attribute_exists(PK)"
         assert update["UpdateExpression"] == "SET #vu = :vuz ADD #bt0 :bd0, #bc0 :bcd0"
         assert update["ExpressionAttributeNames"]["#vu"] == "vu"
         assert update["ExpressionAttributeValues"][":vuz"] == {"N": "0"}

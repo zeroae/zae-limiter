@@ -1424,16 +1424,31 @@ class TestWriteOnEnter:
             await lease._commit_adjustments()
         mock_repo.write_each.assert_called_once()
 
-    async def test_a_condition_failure_without_a_ceiling_propagates(self):
-        """A debit carries no ceiling condition, so a condition failure is not ours."""
+    async def test_a_debit_onto_a_gone_item_is_skipped(self):
+        """A debit's only condition is that the item exists: failing it means the
+        bucket is gone, so there is nothing to adjust (#721) -- not an error."""
         from zae_limiter.lease import write_credit
 
         mock_repo = self._make_mock_repo()
         mock_repo.write_each.side_effect = self._condition_failed()
 
-        with pytest.raises(ClientError):
-            await write_credit(mock_repo, "e1", "gpt-4", {"rpm": 5000}, 0, {}, None)
+        await write_credit(mock_repo, "e1", "gpt-4", {"rpm": 5000}, 0, {}, None)
         mock_repo.write_each.assert_called_once()
+
+    async def test_a_trimmed_credit_onto_a_gone_item_is_skipped(self):
+        """Step 1 and then the trimmed write both fail: the item is gone."""
+        from zae_limiter.lease import Lease
+
+        entry = self._make_entry(consumed=5, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100_000
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = [self._condition_failed(), self._condition_failed()]
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        await lease._commit_adjustments()
+
+        assert mock_repo.write_each.call_count == 2
+        assert lease._committed is True
 
     async def test_a_bucket_item_with_nothing_to_refund_gets_no_write(self):
         """Rollback writes only the bucket items the initial commit debited."""
@@ -13174,6 +13189,31 @@ class TestSelfTrimmingRefunds:
         assert len(calls) == 1
         assert "ConditionExpression" in calls[0]
         assert BUCKET_FIELD_VU not in await self._raw(r1, "s", resource="r")
+
+    async def test_refund_after_item_deleted(self, two):
+        """The bucket is swept (TTL) or deleted between the debit and the refund
+        (#730 review): the refund used to `ADD` onto nothing, creating a stub with
+        no parameters that rejected the entity forever."""
+        l1, l2, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        await r1.set_resource_defaults("r", [Limit.per_minute("q", 100)])
+        async with l1.acquire("d", "r", {"q": 1}):
+            pass
+        client = await r1._get_client()
+        key = {"PK": {"S": pk_bucket(r1._namespace_id, "d", "r", 0)}, "SK": {"S": sk_state()}}
+
+        with pytest.raises(RuntimeError):
+            async with l1.acquire("d", "r", {"q": 10}):
+                await client.delete_item(TableName=r1.table_name, Key=key)
+                raise RuntimeError("body failed")
+
+        assert "Item" not in await client.get_item(TableName=r1.table_name, Key=key)
+        async with l2.acquire("d", "r", {"q": 1}):
+            pass  # recreates a normal bucket
+        item = await self._raw(r1, "d", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+        assert bucket_attr("q", BUCKET_FIELD_CP) in item
 
     async def test_a_lowered_limit_clamped_before_the_refund(self, two):
         """The limit drops to 50 and another process's slow pass clamps to it (moving

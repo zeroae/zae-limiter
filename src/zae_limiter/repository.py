@@ -3259,8 +3259,14 @@ class Repository:
         strings (each ``None`` = absent). When the condition
         fails — a reset edge, a refill to capacity, a doubling, a re-grant, a
         changed limit — the caller re-issues the credit with ``trim=True``: the
-        same unconditional ``ADD`` plus ``SET vu = 0`` in one write. A debit,
-        or a credit with no known ceiling, stays unconditional.
+        same ``ADD`` plus ``SET vu = 0`` in one write. A debit, or a credit with
+        no known ceiling, carries no ceiling condition.
+
+        Every adjust is conditioned on ``attribute_exists(PK)``: an ``ADD`` on
+        an item that is gone (swept by TTL, deleted) would create a stub with no
+        parameters, which the speculative path then rejects forever. A failed
+        condition on a write with no other term therefore means the item is
+        gone, and the caller treats the adjustment as done.
 
         Every refund, release, rollback and speculative compensation is built
         here, so the shard's cached state is forgotten here (ADR-147): tokens
@@ -3268,7 +3274,7 @@ class Repository:
         """
         self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
         add_parts: list[str] = []
-        condition_parts: list[str] = []
+        condition_parts: list[str] = ["attribute_exists(PK)"]
         attr_names: dict[str, str] = {}
         attr_values: dict[str, Any] = {}
         ceilings = ceilings or {}
@@ -3338,7 +3344,7 @@ class Repository:
             attr_values[":vuz"] = {"N": "0"}
             update_expr = f"SET #vu = :vuz {update_expr}"
 
-        if condition_parts and pin is not None:
+        if len(condition_parts) > 1 and pin is not None:
             # A doubling lowers every share without touching a limit's
             # attributes; a schedule change or a slow pass re-stamps `vu`
             # (a reset re-stamps a quota's next edge). Pinning `vu`, not `rf`:
@@ -3381,9 +3387,8 @@ class Repository:
             "UpdateExpression": update_expr,
             "ExpressionAttributeNames": attr_names,
             "ExpressionAttributeValues": attr_values,
+            "ConditionExpression": " AND ".join(condition_parts),
         }
-        if condition_parts:
-            update["ConditionExpression"] = " AND ".join(condition_parts)
         return {"Update": update}
 
     async def transact_write(self, items: list[dict[str, Any]]) -> None:
