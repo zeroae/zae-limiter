@@ -41,10 +41,16 @@ check fails, the bucket must be forced onto the slow path (`vu = 0`), whose pinn
 stamp then restamps it. The check is not needed for the acquire that created the bucket and
 must run after its lease is handed back. Each entity must also carry an incarnation, a random
 token written at creation and copied onto every owner stamp beside the generation; a
-generation compares only within one incarnation, so a pin always lets a stamp of another
-incarnation be overwritten, and a bucket a deleted predecessor left behind never outranks the
-recreated entity, whatever the two clocks said. An entity created before the incarnation
-existed is its own legacy incarnation. A move's count reports only buckets actually stamped.
+generation compares only within one incarnation. A writer that read META strongly
+consistently (the fan-outs, the owner checks) may overwrite a stamp of another incarnation; a
+writer that read it eventually consistently (the slow path's owner stamp) may overwrite only
+its own incarnation's, because its read may be a deleted predecessor's. When the slow path
+loses that pin to another incarnation, one strongly consistent read decides: if its
+incarnation is current, the bucket is a predecessor's leftover and is claimed; if not, it is
+left alone. So a bucket a deleted predecessor left behind never outranks the recreated
+entity, whatever the two clocks said, and a stale read can never undo the current stamp. An
+entity created before the incarnation existed is its own legacy incarnation. A stamped `vu = 0`
+on one shard of a sharded bucket is cleared by a slow pass on that same shard. A move's count reports only buckets actually stamped.
 A bucket item stamped with a
 generation is authoritative for both `cascade` and `parent_id`, including when it names no
 parent. On the warm path, when the child's returned item names a different parent from the
@@ -87,10 +93,11 @@ by leases open across the move, stays where it was debited.
   create's owner check runs its fan-out after the bucket exists, but GSI3 can lag the
   create, so both discovery passes can miss it. The bucket keeps the old parent until its
   next slow pass or a repeat of the move — the same window ADR-125 accepts for `disabled`.
-- Residual: a pass that read META before a delete and lands its owner stamp after the entity
-  is recreated and stamped wins over the new incarnation's stamp (another incarnation always
-  loses the pin, in both directions). The recreated entity's next slow pass on that bucket
-  restamps it.
+- A slow pass whose eventually consistent META read returned a deleted predecessor's record
+  still commits, on the consumption-only retry: that one acquire debits the predecessor's
+  parent once, the same bound as a lease opened before a move. It never restamps the bucket.
+- A slow pass that loses its owner pin to another incarnation costs one strongly consistent
+  read (1 RCU); a predecessor's leftover is then claimed and the write re-sent once.
 
 ## Alternatives Considered
 
