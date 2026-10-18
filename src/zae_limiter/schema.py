@@ -196,6 +196,19 @@ CONFIG_FIELD_CASCADE = "cascade"
 ENTITY_FIELD_PGEN = "pgen"
 BUCKET_FIELD_PGEN = "pgen"
 
+# Incarnation (ADR-150). A random token `create_entity` writes on META, and
+# every owner stamp copies onto the bucket beside `pgen`. A generation is only
+# comparable within one incarnation: a bucket outliving its entity can carry a
+# higher `pgen` than the recreated entity (two clocks a few seconds apart), and
+# would then win every pinned write forever. So an owner-stamp pin passes when
+# the stored stamp belongs to another incarnation, whatever its generation:
+# `attribute_not_exists(pinc) OR pinc <> :inc OR attribute_not_exists(pgen) OR
+# pgen <= :pg`. An entity created before v0.17 has no `pinc`; it reads as the
+# legacy incarnation below, which is its own.
+ENTITY_FIELD_PINC = "pinc"
+BUCKET_FIELD_PINC = "pinc"
+LEGACY_INCARNATION = "-"
+
 # Infrastructure limit: DynamoDB partition write capacity ceiling (GHSA-76rv)
 # Auto-injected on every bucket to track per-partition write pressure.
 # When exhausted, the client doubles shard_count to spread writes.

@@ -76,6 +76,8 @@ class LeaseEntry:
     # The owner's parent generation read with them (ADR-150), stamped beside
     # them and pinned so a pass that read META before a move cannot undo it.
     _parent_generation: int | None = None
+    # And its incarnation (ADR-150): a generation only compares within one.
+    _parent_incarnation: str | None = None
     # Whether the caller named this limit in acquire(consume=...) (Issue #455).
     # `consume` is the declared scope of a lease: only declared entries are
     # visible through `consumed` and adjustable through adjust()/consume()/
@@ -476,9 +478,10 @@ class Lease:
         # created count, quota names), repaired after the write (ADR-145).
         quota_creates: list[tuple[str, str, int, int, list[str]]] = []
         # Bucket items this commit creates with an owner stamp read from META:
-        # (entity, resource, shard, the parent generation stamped), checked
+        # (entity, resource, shard, the parent generation and incarnation
+        # stamped), checked
         # against META after the write (ADR-150).
-        owner_creates: list[tuple[str, str, int, int]] = []
+        owner_creates: list[tuple[str, str, int, int, str | None]] = []
         # Bucket items the rf-locked write leaves in a state the rejection
         # cache can record once it lands: (key, states, shard count, ttl
         # epoch, owner stamps). See `_record_written_states`.
@@ -529,6 +532,7 @@ class Lease:
                         vu=vu,
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
                         pgen=(owner_entry._parent_generation if owner_entry is not None else None),
+                        pinc=(owner_entry._parent_incarnation if owner_entry is not None else None),
                     )
                 )
                 # A create fans out only when it anchored the entity's next
@@ -550,7 +554,13 @@ class Lease:
                 # doubling may already have overtaken; checked after the write.
                 if owner_entry is not None and owner_entry._parent_generation is not None:
                     owner_creates.append(
-                        (entity_id, resource, shard_id, owner_entry._parent_generation)
+                        (
+                            entity_id,
+                            resource,
+                            shard_id,
+                            owner_entry._parent_generation,
+                            owner_entry._parent_incarnation,
+                        )
                     )
                 created_quotas = [e.limit.name for e in group_entries if e.limit.is_quota]
                 if shard_id != 0 and created_quotas:
@@ -774,6 +784,9 @@ class Lease:
                         ),
                         owner_pgen=(
                             owner_entry._parent_generation if owner_entry is not None else None
+                        ),
+                        owner_pinc=(
+                            owner_entry._parent_incarnation if owner_entry is not None else None
                         ),
                     )
                 )
@@ -1095,7 +1108,7 @@ class Lease:
                 )
 
     async def _repair_created_owner_stamps(
-        self, owner_creates: list[tuple[str, str, int, int]]
+        self, owner_creates: list[tuple[str, str, int, int, str | None]]
     ) -> None:
         """Re-check each owner stamp this commit created against its META (ADR-150).
 
@@ -1118,9 +1131,9 @@ class Lease:
         repair = getattr(self.repository, "repair_created_owner_stamp", None)
         if repair is None:
             return
-        for entity_id, resource, shard_id, stamped in owner_creates:
+        for entity_id, resource, shard_id, stamped, incarnation in owner_creates:
             try:
-                await repair(entity_id, resource, shard_id, stamped)
+                await repair(entity_id, resource, shard_id, stamped, incarnation)
             except Exception:
                 logger.warning(
                     "owner stamp check failed for resource=%s shard=%d; the next slow "

@@ -58,6 +58,7 @@ class LeaseEntry:
     _parent_id: str | None = None
     _stamp_owner: bool = False
     _parent_generation: int | None = None
+    _parent_incarnation: str | None = None
     _declared: bool = True
     _boundary_ms: int | None = None
     _reset_edge_ms: int | None = None
@@ -336,7 +337,7 @@ class SyncLease:
         items: list[dict[str, Any]] = []
         window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]] = {}
         quota_creates: list[tuple[str, str, int, int, list[str]]] = []
-        owner_creates: list[tuple[str, str, int, int]] = []
+        owner_creates: list[tuple[str, str, int, int, str | None]] = []
         written_images: list[
             tuple[tuple[str, str, int], list[BucketState], int, int | None, tuple[bool, str | None]]
         ] = []
@@ -370,6 +371,7 @@ class SyncLease:
                         vu=vu,
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
                         pgen=owner_entry._parent_generation if owner_entry is not None else None,
+                        pinc=owner_entry._parent_incarnation if owner_entry is not None else None,
                     )
                 )
                 created = {
@@ -383,7 +385,13 @@ class SyncLease:
                     )
                 if owner_entry is not None and owner_entry._parent_generation is not None:
                     owner_creates.append(
-                        (entity_id, resource, shard_id, owner_entry._parent_generation)
+                        (
+                            entity_id,
+                            resource,
+                            shard_id,
+                            owner_entry._parent_generation,
+                            owner_entry._parent_incarnation,
+                        )
                     )
                 created_quotas = [e.limit.name for e in group_entries if e.limit.is_quota]
                 if shard_id != 0 and created_quotas:
@@ -517,6 +525,9 @@ class SyncLease:
                         if owner_entry is not None
                         else None,
                         owner_pgen=owner_entry._parent_generation
+                        if owner_entry is not None
+                        else None,
+                        owner_pinc=owner_entry._parent_incarnation
                         if owner_entry is not None
                         else None,
                     )
@@ -764,7 +775,9 @@ class SyncLease:
                     exc_info=True,
                 )
 
-    def _repair_created_owner_stamps(self, owner_creates: list[tuple[str, str, int, int]]) -> None:
+    def _repair_created_owner_stamps(
+        self, owner_creates: list[tuple[str, str, int, int, str | None]]
+    ) -> None:
         """Re-check each owner stamp this commit created against its META (ADR-150).
 
         A create ``Put`` cannot pin the parent generation the way the
@@ -786,9 +799,9 @@ class SyncLease:
         repair = getattr(self.repository, "repair_created_owner_stamp", None)
         if repair is None:
             return
-        for entity_id, resource, shard_id, stamped in owner_creates:
+        for entity_id, resource, shard_id, stamped, incarnation in owner_creates:
             try:
-                repair(entity_id, resource, shard_id, stamped)
+                repair(entity_id, resource, shard_id, stamped, incarnation)
             except Exception:
                 logger.warning(
                     "owner stamp check failed for resource=%s shard=%d; the next slow pass or a re-run of set_parent restamps it",

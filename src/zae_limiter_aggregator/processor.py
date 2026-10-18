@@ -32,6 +32,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_CP,
     BUCKET_FIELD_GC,
     BUCKET_FIELD_PGEN,
+    BUCKET_FIELD_PINC,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
     BUCKET_FIELD_RSA,
@@ -49,6 +50,8 @@ from zae_limiter.schema import (
     CONFIG_FIELD_CASCADE,
     DEFAULT_RESOURCE,
     ENTITY_FIELD_PGEN,
+    ENTITY_FIELD_PINC,
+    LEGACY_INCARNATION,
     SK_BUCKET,
     WCU_LIMIT_NAME,
     WCU_SHARD_WARN_THRESHOLD,
@@ -1756,12 +1759,17 @@ def _stored_pgen(item: dict[str, Any]) -> int:
     return int(item.get(ENTITY_FIELD_PGEN, 0))
 
 
+def _stored_pinc(item: dict[str, Any]) -> str:
+    """An item's incarnation (ADR-150), native values; absent reads as the legacy one."""
+    return str(item.get(ENTITY_FIELD_PINC, LEGACY_INCARNATION))
+
+
 def _clone_owner_stamp(
     table: Any, namespace_id: str, entity_id: str, resource: str
-) -> tuple[bool, str | None, int] | None:
+) -> tuple[bool, str | None, int, str] | None:
     """The owner stamp a bucket of ``entity_id`` on ``resource`` should carry (ADR-150).
 
-    ``(cascade, parent_id, pgen)`` from the entity's META and the ADR-146
+    ``(cascade, parent_id, pgen, pinc)`` from the entity's META and the ADR-146
     policy walk — entity(resource) -> entity(``_default_``) -> resource, the
     first explicit value winning, else META ``cascade`` — all strongly
     consistent, like the client's and the provisioner's fan-out. No parent
@@ -1774,8 +1782,9 @@ def _clone_owner_stamp(
         return None
     parent_id = meta.get("parent_id") or None
     generation = _stored_pgen(meta)
+    incarnation = _stored_pinc(meta)
     if parent_id is None:
-        return False, None, generation
+        return False, None, generation, incarnation
     levels = [(pk_entity(namespace_id, entity_id), sk_config(resource))]
     if resource != DEFAULT_RESOURCE:
         levels.append((pk_entity(namespace_id, entity_id), sk_config(DEFAULT_RESOURCE)))
@@ -1783,8 +1792,8 @@ def _clone_owner_stamp(
     for pk, sk in levels:
         item = table.get_item(Key={"PK": pk, "SK": sk}, ConsistentRead=True).get("Item")
         if item is not None and CONFIG_FIELD_CASCADE in item:
-            return bool(item[CONFIG_FIELD_CASCADE]), parent_id, generation
-    return bool(meta.get("cascade", False)), parent_id, generation
+            return bool(item[CONFIG_FIELD_CASCADE]), parent_id, generation, incarnation
+    return bool(meta.get("cascade", False)), parent_id, generation, incarnation
 
 
 def _log_owner_repair_failure(
@@ -1806,6 +1815,7 @@ def _repair_clone_owner_stamps(
     resource: str,
     clones: list[int],
     image_pgen: int,
+    image_pinc: str = LEGACY_INCARNATION,
 ) -> None:
     """Restamp clones that copied an owner stamp a move has overtaken (ADR-150).
 
@@ -1814,8 +1824,8 @@ def _repair_clone_owner_stamps(
     clone existed, so nothing else would correct it, and every process that
     touched the clone would learn the old parent from it. So, once per record
     that created a clone: one strongly consistent ``GetItem`` of the owner's
-    META (1 RCU). When its generation still equals the image's, nothing is
-    written. Otherwise each clone gets the move's stamp through the same
+    META (1 RCU). When its generation and incarnation still equal the
+    image's, nothing is written. Otherwise each clone gets the move's stamp through the same
     pinned write as the fan-out (``pgen`` never lowered); a move whose META
     write follows this read fans out after the clones exist and finds them.
 
@@ -1829,23 +1839,29 @@ def _repair_clone_owner_stamps(
     except (ClientError, BotoCoreError) as e:
         _log_owner_repair_failure(resource, 0, e)
         return
-    if stamp is None or stamp[2] == image_pgen:
+    if stamp is None or (stamp[2] == image_pgen and stamp[3] == image_pinc):
         return
-    cascade, parent_id, generation = stamp
-    names = {"#c": "cascade", "#p": "parent_id", "#pg": BUCKET_FIELD_PGEN}
-    values: dict[str, Any] = {":c": cascade, ":pg": generation}
+    cascade, parent_id, generation, incarnation = stamp
+    names = {
+        "#c": "cascade",
+        "#p": "parent_id",
+        "#pg": BUCKET_FIELD_PGEN,
+        "#pi": BUCKET_FIELD_PINC,
+    }
+    values: dict[str, Any] = {":c": cascade, ":pg": generation, ":pi": incarnation}
     if parent_id is not None:
-        update = "SET #c = :c, #p = :p, #pg = :pg"
+        update = "SET #c = :c, #p = :p, #pg = :pg, #pi = :pi"
         values[":p"] = parent_id
     else:
-        update = "SET #c = :c, #pg = :pg REMOVE #p"
+        update = "SET #c = :c, #pg = :pg, #pi = :pi REMOVE #p"
     for shard in clones:
         try:
             table.update_item(
                 Key={"PK": pk_bucket(namespace_id, entity_id, resource, shard), "SK": sk_state()},
                 UpdateExpression=update,
                 ConditionExpression="attribute_exists(PK) AND "
-                "(attribute_not_exists(#pg) OR #pg <= :pg)",
+                "(attribute_not_exists(#pi) OR #pi <> :pi "
+                "OR attribute_not_exists(#pg) OR #pg <= :pg)",
                 ExpressionAttributeNames=names,
                 ExpressionAttributeValues=values,
             )
@@ -2323,6 +2339,7 @@ def propagate_shard_count(
             resource,
             cloned,
             _stored_pgen(base_item),
+            _stored_pinc(base_item),
         )
 
     if created_clones:

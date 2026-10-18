@@ -4,6 +4,7 @@ import asyncio
 import functools
 import logging
 import random
+import secrets
 import time
 import warnings
 from collections.abc import Callable, Sequence
@@ -108,6 +109,18 @@ _SEED_TOKEN = {
 # cycle cannot loop an acquire; the walk is a guard against operator error, and
 # a chain deeper than this is refused rather than walked further.
 _MAX_ANCESTOR_HOPS = 32
+
+
+def _owner_pin(pinc: str, pgen: str, inc_value: str, gen_value: str) -> str:
+    """The owner-stamp pin (ADR-150): never lower a stamp of the same incarnation.
+
+    A stored stamp of another incarnation (or none) always loses; within one
+    incarnation, the higher generation wins.
+    """
+    return (
+        f"(attribute_not_exists({pinc}) OR {pinc} <> {inc_value} "
+        f"OR attribute_not_exists({pgen}) OR {pgen} <= {gen_value})"
+    )
 
 
 def _stamped_pgen(item: dict[str, Any]) -> int | None:
@@ -679,6 +692,10 @@ class Repository:
             self._caller_identity_arn = None
 
         return self._caller_identity_arn
+
+    def _new_incarnation(self) -> str:
+        """A fresh incarnation token for an entity being created (ADR-150)."""
+        return secrets.token_hex(8)
 
     def _creation_generation(self) -> int:
         """The parent generation a new entity starts at (ADR-150): now, in epoch ms.
@@ -1831,6 +1848,7 @@ class Repository:
         client = await self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         generation = self._creation_generation()
+        incarnation = self._new_incarnation()
 
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
@@ -1840,6 +1858,7 @@ class Repository:
             "parent_id": {"S": parent_id} if parent_id else {"NULL": True},
             "cascade": {"BOOL": cascade},
             schema.ENTITY_FIELD_PGEN: {"N": str(generation)},
+            schema.ENTITY_FIELD_PINC: {"S": incarnation},
             "metadata": {"M": self._serialize_map(metadata or {})},
             "created_at": {"S": now},
             # GSI4: namespace-scoped item discovery
@@ -1883,6 +1902,7 @@ class Repository:
             metadata=metadata or {},
             created_at=now,
             parent_generation=generation,
+            incarnation=incarnation,
         )
 
     async def get_entity(self, entity_id: str, *, consistent_read: bool = False) -> Entity | None:
@@ -2180,6 +2200,7 @@ class Repository:
             metadata=old.metadata,
             created_at=old.created_at,
             parent_generation=old.parent_generation + 1,
+            incarnation=old.incarnation,
         )
         return old.parent_id, moved
 
@@ -2909,6 +2930,7 @@ class Repository:
         vu: int | None = None,
         rf_ms: int | None = None,
         pgen: int | None = None,
+        pinc: str | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -2938,6 +2960,8 @@ class Repository:
                 (no item exists to compare with); a create that read META
                 before a move is the ADR-125 two-pass race, which the move's
                 second fan-out pass restamps with the higher generation.
+            pinc: The owner's incarnation, read with ``pgen`` (ADR-150), or
+                ``None`` to stamp none.
         """
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
@@ -2960,6 +2984,8 @@ class Repository:
             item["parent_id"] = {"S": parent_id}
         if pgen is not None:
             item[schema.BUCKET_FIELD_PGEN] = {"N": str(pgen)}
+        if pinc is not None:
+            item[schema.BUCKET_FIELD_PINC] = {"S": pinc}
         # Only add TTL if specified (None means no TTL for entity-level config)
         if ttl_seconds is not None:
             item["ttl"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
@@ -3037,6 +3063,7 @@ class Repository:
         pin_vu: bool = False,
         expected_vu: int | None = None,
         owner_pgen: int | None = None,
+        owner_pinc: str | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -3151,6 +3178,10 @@ class Repository:
                 without the pin a pass that read META before a move could land
                 its owner stamp after the fan-out and put the old parent back
                 for good. Ignored without ``owner``.
+            owner_pinc: The owner's incarnation, read with ``owner_pgen``
+                (ADR-150), stamped beside it. With it the pin passes over a
+                stamp of another incarnation, so a bucket a deleted
+                predecessor left behind cannot outrank the recreated entity.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -3220,6 +3251,10 @@ class Repository:
                 attr_names["#opg"] = schema.BUCKET_FIELD_PGEN
                 attr_values[":opg"] = {"N": str(owner_pgen)}
                 pgen_pinned = True
+                if owner_pinc is not None:
+                    set_parts.append("#opi = :opi")
+                    attr_names["#opi"] = schema.BUCKET_FIELD_PINC
+                    attr_values[":opi"] = {"S": owner_pinc}
 
         # ADR-140 duration window rollover. Monotonic counters, not the limit
         # name, mirroring the #487 stale-limit REMOVE aliases (`#stale{i}_{j}`):
@@ -3254,7 +3289,9 @@ class Repository:
             attr_values[f":wl{i}"] = {"N": str(rsa)}
 
         condition_parts: list[str] = ["#rf = :expected_rf"]
-        if pgen_pinned:
+        if pgen_pinned and owner_pinc is not None:
+            condition_parts.append(_owner_pin("#opi", "#opg", ":opi", ":opg"))
+        elif pgen_pinned:
             condition_parts.append("(attribute_not_exists(#opg) OR #opg <= :opg)")
 
         # Tokens come from the loop index, never the limit name (#634):
@@ -6610,6 +6647,7 @@ class Repository:
         )
         created_val = item.get("created_at", {}).get("S")
         pgen_val = int(item.get(schema.ENTITY_FIELD_PGEN, {}).get("N", "0"))
+        pinc_val = item.get(schema.ENTITY_FIELD_PINC, {}).get("S", schema.LEGACY_INCARNATION)
 
         return Entity(
             id=entity_id,
@@ -6619,6 +6657,7 @@ class Repository:
             metadata=metadata_val,
             created_at=created_val,
             parent_generation=pgen_val,
+            incarnation=pinc_val,
         )
 
     def _deserialize_bucket(self, item: dict[str, Any]) -> BucketState:
@@ -8154,8 +8193,13 @@ class Repository:
         return len(stamped)
 
     async def _stamp_bucket_cascade(
-        self, pk: str, cascade: bool, parent_id: str | None, pgen: int | None = None
-    ) -> None:
+        self,
+        pk: str,
+        cascade: bool,
+        parent_id: str | None,
+        pgen: int | None = None,
+        pinc: str | None = None,
+    ) -> bool:
         """Write one bucket's effective cascade policy and owner `parent_id` (ADR-146).
 
         The same pair the slow path's owner stamp writes (#684), so whichever
@@ -8163,7 +8207,12 @@ class Repository:
         (the owner's parent generation, ADR-150) the stamp carries it and is
         conditioned on not lowering it: a stamp that loses means a newer move
         already stamped this bucket, and is skipped like a vanished bucket, so
-        two concurrent moves converge on the later one on every bucket.
+        two concurrent moves converge on the later one on every bucket. With
+        ``pinc`` (the owner's incarnation) a stamp of another incarnation never
+        blocks it: a predecessor's generation is not comparable.
+
+        Returns:
+            Whether the bucket was stamped (False: gone, or a newer stamp).
         """
         client = await self._get_client()
         names = {"#c": "cascade", "#p": "parent_id"}  # `cascade` is a reserved word
@@ -8177,7 +8226,13 @@ class Repository:
             sets.append("#pg = :pg")
             names["#pg"] = schema.BUCKET_FIELD_PGEN
             values[":pg"] = {"N": str(pgen)}
-            condition += " AND (attribute_not_exists(#pg) OR #pg <= :pg)"
+            if pinc is not None:
+                sets.append("#pi = :pi")
+                names["#pi"] = schema.BUCKET_FIELD_PINC
+                values[":pi"] = {"S": pinc}
+                condition += " AND " + _owner_pin("#pi", "#pg", ":pi", ":pg")
+            else:
+                condition += " AND (attribute_not_exists(#pg) OR #pg <= :pg)"
         update = "SET " + ", ".join(sets) + ("" if parent_id is not None else " REMOVE #p")
         try:
             await client.update_item(
@@ -8194,9 +8249,16 @@ class Repository:
                 raise
             # Bucket vanished between discovery and stamp, or a newer move
             # already stamped it — nothing to restamp either way.
+            return False
+        return True
 
     async def repair_created_owner_stamp(
-        self, entity_id: str, resource: str, shard_id: int, stamped_pgen: int
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        stamped_pgen: int,
+        stamped_pinc: str | None = None,
     ) -> bool:
         """Restamp a bucket just created from a META read a move has overtaken (ADR-150).
 
@@ -8211,7 +8273,9 @@ class Repository:
             Whether the bucket was restamped.
         """
         owner = await self.get_entity(entity_id, consistent_read=True)
-        if owner is None or owner.parent_generation == stamped_pgen:
+        if owner is None or (
+            owner.parent_generation == stamped_pgen and stamped_pinc in (None, owner.incarnation)
+        ):
             return False
         access = await self.resolve_access(entity_id, resource, consistent_read=True)
         cascade = effective_cascade(access.cascade, owner)
@@ -8220,6 +8284,7 @@ class Repository:
             cascade,
             owner.parent_id,
             owner.parent_generation,
+            owner.incarnation,
         )
         self._cascade_cache[(self._namespace_id, entity_id, resource)] = cascade
         return True
@@ -8244,11 +8309,13 @@ class Repository:
                 Every write is idempotent, so re-running reconciles the rest.
 
         Returns:
-            Number of bucket items stamped.
+            Number of bucket items stamped — a bucket gone, or already carrying
+            a newer stamp, is not counted.
         """
         stamped: set[str] = set()
+        written = 0
         entities: dict[str, Entity | None] = {}
-        targets: dict[tuple[str, str], tuple[bool, str | None, int] | None] = {}
+        targets: dict[tuple[str, str], tuple[bool, str | None, int, str] | None] = {}
         scope = None if resource == schema.DEFAULT_RESOURCE else resource
 
         for _pass in range(2):
@@ -8279,6 +8346,7 @@ class Repository:
                             effective_cascade(access.cascade, owner),
                             owner.parent_id,
                             owner.parent_generation,
+                            owner.incarnation,
                         )
                     )
                 target = targets[key]
@@ -8289,13 +8357,12 @@ class Repository:
                 if target is None:
                     continue
                 try:
-                    await self._stamp_bucket_cascade(pk, *target)
+                    if await self._stamp_bucket_cascade(pk, *target):
+                        written += 1
                 except Exception as e:
-                    raise FanoutIncomplete(
-                        len(stamped), e, resource=scope, entity_id=entity_id
-                    ) from e
+                    raise FanoutIncomplete(written, e, resource=scope, entity_id=entity_id) from e
                 stamped.add(pk)
-        return len(stamped)
+        return written
 
     async def disable_resource(self, resource: str, principal: str | None = None) -> int:
         """Disable a resource for all entities without an explicit override (ADR-125).

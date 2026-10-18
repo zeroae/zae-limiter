@@ -186,9 +186,11 @@ class TestCompositeBuilders:
             expected_rf=1_000,
             owner=(True, "org-1"),
             owner_pgen=3,
+            owner_pinc="abc123",
         )["Update"]
         assert_expression_safe(update)
         assert "#opg <= :opg" in update["ConditionExpression"]
+        assert "#opi <> :opi" in update["ConditionExpression"]
         assert update["ExpressionAttributeValues"][":opg"] == {"N": "3"}
 
     def test_normal_removing_ttl_and_vu(self) -> None:
@@ -667,7 +669,8 @@ class TestClientWritesThroughMoto:
             await repo._stamp_bucket_cascade(pk, False, None)
             await repo._stamp_bucket_cascade(pk, True, "org-1", 1)  # ADR-150
             await repo._stamp_bucket_cascade(pk, False, None, 2)
-        assert spy.call_count == 4
+            await repo._stamp_bucket_cascade(pk, True, "org-1", 3, "abc123")  # incarnation
+        assert spy.call_count == 5
         for call in spy.call_args_list:
             assert_expression_safe(call.kwargs)
 
