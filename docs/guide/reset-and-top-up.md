@@ -92,6 +92,10 @@ A key is 1-64 characters of letters, digits, `.`, `_`, `:` and `-`, and names on
 operation: reusing a reset's key for a top-up is a `ValidationError`. With a key, each call
 reads its record first (+1 RCU).
 
+A key belongs to one entity, and to one *incarnation* of it: if the entity is deleted and
+created again, the same key names a new operation. One case is not covered: an entity deleted
+and recreated *while* a call is in flight can see a retry with the same key applied once more.
+
 ## Requirements and costs
 
 - **A quota top-up needs Lambdas at 0.17.0 or later.** An older aggregator would clamp the

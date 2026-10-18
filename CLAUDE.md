@@ -1862,9 +1862,15 @@ exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed u
   The record stores its `writer` (that nonce), and only the committing call audits, so a
   same-key race writes one audit event; any other error after the write (timeout, 5xx) is
   resolved the same way. A record belongs to one **incarnation** of its entity:
-  `create_entity` stamps META `incarnation` (ULID), each call reads META once (consistent,
-  +1 RCU) and stores it as `ent`; a record of another incarnation reads as absent and is
-  replaced (`attribute_not_exists(PK) OR ent <> :ent`). `delete_entity` deletes the entity's
+  `schema.entity_incarnation(meta)` (shared with #716: `pinc` -> `created_at` ->
+  `LEGACY_INCARNATION = "-"`, also for no META); each call reads META once (consistent,
+  +1 RCU, reused for a create's cascade stamps) and stores it as `ent`; a record of another
+  incarnation reads as absent and is replaced
+  (`attribute_not_exists(PK) OR (ent <> :ent AND ent <> :legacy)`), while one written before
+  META existed (`ent = "-"`) matches every incarnation. Residual: an entity deleted and
+  recreated *during* one call can see a key retry applied once more (closing it needs
+  `dynamodb:ConditionCheckItem`, which no shipped policy grants). A lost audit (write and
+  record read both unclear) is logged at WARNING without the entity id. `delete_entity` deletes the entity's
   records too (one Query per shard-0 partition), best effort only. The principal and key are validated before any I/O, and a
   post-commit audit failure is logged, never raised.
 - **Top-up:** a quota gains exactly N, split by coverage `S // gc` (`split_weighted`, remainder
