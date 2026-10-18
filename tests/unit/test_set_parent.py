@@ -500,6 +500,59 @@ class TestStaleWriters:
                 pass
         assert "could not claim a predecessor's bucket" in caplog.text
 
+    @staticmethod
+    async def _foreign_stamp(repo: Repository) -> None:
+        """user's gpt-4 bucket carries another incarnation's stamp."""
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=TABLE,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET pinc = :other",
+            ExpressionAttributeValues={":other": {"S": "someone-else"}},
+        )
+
+    async def test_a_resent_write_that_loses_again_takes_the_retry(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._foreign_stamp(repo)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        user = await _consumed(repo, "user")
+        # A claim reported but not landed: the re-sent write loses the pin again.
+        with patch.object(repo, "restamp_owner_if_current", return_value=True):
+            async with slow.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+        assert await _consumed(repo, "user") == user + 1  # the consumption-only retry
+        assert (await _item(repo, "user", "gpt-4"))["pinc"] == {"S": "someone-else"}
+
+    async def test_a_resent_write_that_errors_surfaces(self, limiter):
+        from botocore.exceptions import ClientError
+
+        from zae_limiter.exceptions import RateLimiterUnavailable
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._foreign_stamp(repo)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        real = repo.transact_write
+        calls = []
+
+        async def flaky(items):
+            calls.append(items)
+            if len(calls) == 2:  # the re-send
+                raise ClientError({"Error": {"Code": "InternalServerError"}}, "UpdateItem")
+            return await real(items)
+
+        with (
+            patch.object(repo, "restamp_owner_if_current", return_value=True),
+            patch.object(repo, "transact_write", flaky),
+        ):
+            with pytest.raises(RateLimiterUnavailable):
+                async with slow.acquire("user", "gpt-4", consume={"rpm": 1}):
+                    pass
+
     async def test_a_backend_without_the_claim_skips_it(self):
         from types import SimpleNamespace
         from typing import cast
