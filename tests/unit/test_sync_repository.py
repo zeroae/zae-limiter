@@ -7324,12 +7324,13 @@ class TestResetAndTopUp:
         assert _op_num(item, "cal", BUCKET_FIELD_TK) == 400000
         assert _op_num(item, "cal", "tu") == 300000
 
-    def test_a_quota_never_seeded_on_the_bucket_is_granted_nothing(self, repo):
+    def test_a_limit_not_yet_on_the_bucket_is_refused_by_name(self, repo):
+        """PR #720 second review, finding 5: never a silent grant of 0."""
         repo.set_limits("e", [_OP_RPM], resource="r")
         _op_put_shard(repo, "e", "r", [_OP_RPM])
         repo.set_limits("e", [_OP_RPM, _OP_CAL], resource="r")
-        result = repo.top_up("e", "r", {"cal": 5})
-        assert result.amounts == {"cal": 0}
+        with pytest.raises(ValidationError, match="'cal' is configured but not yet on"):
+            repo.top_up("e", "r", {"cal": 5})
 
     def test_a_shard_the_index_has_not_listed_is_read_by_key(self, repo):
         repo.set_limits("e", [_OP_RPM], resource="r")

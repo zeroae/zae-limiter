@@ -28,6 +28,7 @@ from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from .bucket import force_consume
+from .exceptions import ValidationError
 from .models import BucketState, Limit
 from .schema import WCU_LIMIT_NAME
 
@@ -213,6 +214,16 @@ def plan_operation(
         for name, amount in named.items():
             limit = by_name[name]
             holders = [i for i, work in enumerate(working) if name in work]
+            if not holders:
+                # Configured after the bucket existed and not yet seeded on any
+                # shard: there is nowhere to put the tokens, and granting 0
+                # silently would lose a purchase. The next acquire seeds it.
+                raise ValidationError(
+                    "amounts",
+                    name,
+                    f"limit {name!r} is configured but not yet on this bucket; "
+                    "acquire once to seed it, then top up",
+                )
             if limit.reset_after is not None:
                 for i in holders:
                     if _open_for_top_up(limit, working[i][name], writes[i], now_ms):
