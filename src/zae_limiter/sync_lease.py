@@ -6,6 +6,8 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
+import concurrent.futures
+import functools
 import logging
 import random
 import time
@@ -116,7 +118,7 @@ class SyncLease:
     _unknown_keys: frozenset[str] = frozenset()
     _carriers: list[LeaseEntry] = field(default_factory=list)
     _cache_mark: int | None = None
-    _owner_checks: list[tuple[str, str, int, int, str | None]] = field(default_factory=list)
+    _owner_task: concurrent.futures.Future[None] | None = field(default=None, repr=False)
     _declared_names: frozenset[str] = field(init=False, default=frozenset())
 
     def __post_init__(self) -> None:
@@ -692,14 +694,14 @@ class SyncLease:
         )
         if not condition_failed:
             self._repair_created_quota_shards(quota_creates)
-            self._owner_checks.extend(owner_creates)
+            self._start_owner_checks(owner_creates)
             self._fan_out_windows(window_fanouts)
         elif reissued_creates:
             self._repair_created_quota_shards(
                 [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
             )
-            self._owner_checks.extend(
-                c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates
+            self._start_owner_checks(
+                [c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates]
             )
 
     def _record_written_states(
@@ -835,16 +837,39 @@ class SyncLease:
                 )
         return claimed
 
-    def _run_owner_checks(self) -> None:
-        """Run the owner checks this lease's commit deferred (ADR-150).
+    def _start_owner_checks(self, checks: list[tuple[str, str, int, int, str | None]]) -> None:
+        """Start the owner checks of the buckets this commit created (ADR-150).
 
-        Called by ``SyncRateLimiter.acquire`` once the caller's block has finished,
-        whether it succeeded or raised: the buckets were created either way.
-        Never raises (each check logs its own failure).
+        A background task, started the moment the commit lands: the check is
+        not needed for this acquire, only for the next one on those buckets,
+        so its strongly consistent read runs while the caller's block does. A
+        backend that cannot run one in the background runs the checks here.
         """
-        checks, self._owner_checks = (self._owner_checks, [])
-        if checks:
+        if not checks:
+            return
+        start = getattr(self.repository, "start_background", None)
+        if start is None:
             self._repair_created_owner_stamps(checks)
+            return
+        self._owner_task = start(functools.partial(self._repair_created_owner_stamps, checks))
+
+    def _await_owner_checks(self) -> None:
+        """Join the owner-check task this lease started, if any (ADR-150).
+
+        Called by ``SyncRateLimiter.acquire`` on exit, whether the caller's block
+        succeeded or raised, so the task never outlives the lease. Never
+        raises: a failure is logged at WARNING without the entity id, routinely
+        an API key, and can neither fail the acquire nor mask the caller's
+        exception.
+        """
+        if self._owner_task is None:
+            return
+        try:
+            self._owner_task.result()
+        except Exception:
+            logger.warning("owner stamp checks failed", exc_info=True)
+        finally:
+            self._owner_task = None
 
     def _repair_created_owner_stamps(
         self, owner_creates: list[tuple[str, str, int, int, str | None]]

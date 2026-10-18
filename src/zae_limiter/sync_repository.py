@@ -6,6 +6,7 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
+import concurrent.futures
 import functools
 import logging
 import random
@@ -6901,6 +6902,16 @@ class SyncRepository:
         )
         self._cascade_cache[self._namespace_id, entity_id, resource] = cascade
         return True
+
+    def start_background(self, work: Callable[[], None]) -> concurrent.futures.Future[None]:
+        """Run ``work()`` as a background task and return its handle (ADR-150).
+
+        The lease's post-create owner check runs this way, overlapping the
+        caller's block. The sync twin spawns it per ``parallel_mode``
+        (``SyncRepository._spawn``). The caller must join the handle.
+        """
+        task: concurrent.futures.Future[None] = self._spawn(lambda work=work: work())
+        return task
 
     def restamp_owner_if_current(
         self, entity_id: str, resource: str, shard_id: int, incarnation: str

@@ -1,5 +1,6 @@
 """Moving an entity to a new parent (ADR-150, #677)."""
 
+import asyncio
 from unittest.mock import patch
 
 import pytest
@@ -753,8 +754,8 @@ class TestStaleWriters:
         assert _stamp(await _item(repo, "user", "chat"))[1] == "org-b"
         assert await _consumed(repo, "org-a", "chat") == org_a
 
-    async def test_the_owner_check_runs_after_the_callers_block(self, limiter):
-        """Review of #716 (2nd), finding 3: its round trip is off the acquire's latency."""
+    async def test_the_owner_check_runs_in_the_background_during_the_block(self, limiter):
+        """F2 (option B): the check starts at commit and overlaps the caller's block."""
         repo = limiter._repository
         for resource in ("gpt-4", "llm"):
             await repo.set_resource_defaults(resource, [RPM])
@@ -766,14 +767,97 @@ class TestStaleWriters:
             return False
 
         with patch.object(repo, "repair_created_owner_stamp", check):
-            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
-                assert checked == []  # handed back before the check
-            assert checked == [("user", "gpt-4", 0)]
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
+                assert lease._owner_task is not None  # started at commit
+                for _ in range(100):  # a long caller block
+                    if checked:
+                        break
+                    await asyncio.sleep(0.01)
+                assert checked == [("user", "gpt-4", 0)]  # done before the block ends
+            assert lease._owner_task is None  # joined on exit
 
-            with pytest.raises(RuntimeError):
+            with pytest.raises(RuntimeError, match="the caller's work failed"):
                 async with limiter.acquire("user", "llm", consume={"rpm": 1}):
                     raise RuntimeError("the caller's work failed")
             assert checked[-1] == ("user", "llm", 0)  # the bucket exists all the same
+
+    async def test_a_failed_background_check_is_logged_and_masks_nothing(self, limiter, caplog):
+        repo = limiter._repository
+        for resource in ("gpt-4", "llm"):
+            await repo.set_resource_defaults(resource, [RPM])
+        await repo.create_entity("user")
+        from zae_limiter.lease import Lease
+
+        with patch.object(
+            Lease, "_repair_created_owner_stamps", side_effect=RuntimeError("check broke")
+        ):
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
+                assert lease.consumed == {"rpm": 1}
+            with pytest.raises(ValueError, match="the caller's"):
+                async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+                    raise ValueError("the caller's")
+        assert "owner stamp checks failed" in caplog.text
+        assert "user" not in [r.getMessage() for r in caplog.records]
+
+    async def test_a_backend_without_background_tasks_checks_inline(self):
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        checked = []
+
+        async def repair(*args):
+            checked.append(args)
+            return False
+
+        lease = Lease(
+            repository=cast(RepositoryProtocol, SimpleNamespace(repair_created_owner_stamp=repair))
+        )
+        await lease._start_owner_checks([("user", "gpt-4", 0, 1, "abc")])
+        assert checked == [("user", "gpt-4", 0, 1, "abc")]
+        assert lease._owner_task is None
+        await lease._start_owner_checks([])  # nothing to check
+        await lease._await_owner_checks()  # nothing to join
+
+    def test_the_sync_twin_runs_the_check_in_the_background(self, mock_dynamodb):
+        """The generated SyncLease spawns the check (threadpool) during the block."""
+        import time
+
+        from zae_limiter import SyncRateLimiter
+        from zae_limiter.sync_repository import SyncRepository
+
+        repo = SyncRepository(
+            name="test-set-parent-bg",
+            region="us-east-1",
+            _skip_deprecation_warning=True,
+            parallel_mode="threadpool",
+        )
+        repo.create_table()
+        repo._register_namespace("default")
+        repo.set_version_record(schema_version=get_schema_version(), lambda_version=__version__)
+        repo.set_resource_defaults("gpt-4", [RPM])
+        repo.create_entity("user")
+        limiter = SyncRateLimiter(repository=repo)
+        checked = []
+        main_thread = __import__("threading").get_ident()
+
+        def check(*args):
+            checked.append((args[:3], __import__("threading").get_ident()))
+            return False
+
+        with patch.object(repo, "repair_created_owner_stamp", check):
+            with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
+                assert lease._owner_task is not None
+                for _ in range(100):  # a long caller block
+                    if checked:
+                        break
+                    time.sleep(0.01)
+                assert [c[0] for c in checked] == [("user", "gpt-4", 0)]
+            assert lease._owner_task is None
+        assert checked[0][1] != main_thread  # it ran on the pool, not inline
+        repo.close()
 
     async def test_a_failed_slow_pass_stamp_is_logged(self, limiter, caplog):
         repo = limiter._repository
