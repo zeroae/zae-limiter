@@ -36,9 +36,16 @@ fan-out, provisioner fan-out) must carry the generation it read and must not ove
 higher one, so a stale writer can lose but never undo a move. A write that creates a bucket
 item cannot be pinned, so every such write (the client's create, the aggregator's shard
 clone) must re-check the owner's generation against META with a strongly consistent read
-once it lands, and restamp through the pinned write when a move overtook it. An entity's
-generation must start at its creation instant, so a recreated entity outranks any bucket its
-predecessor left behind. A bucket item stamped with a
+once it lands, and restamp through the pinned write when a move overtook it; when that
+check fails, the bucket must be forced onto the slow path (`vu = 0`), whose pinned owner
+stamp then restamps it. The check is not needed for the acquire that created the bucket and
+must run after its lease is handed back. Each entity must also carry an incarnation, a random
+token written at creation and copied onto every owner stamp beside the generation; a
+generation compares only within one incarnation, so a pin always lets a stamp of another
+incarnation be overwritten, and a bucket a deleted predecessor left behind never outranks the
+recreated entity, whatever the two clocks said. An entity created before the incarnation
+existed is its own legacy incarnation. A move's count reports only buckets actually stamped.
+A bucket item stamped with a
 generation is authoritative for both `cascade` and `parent_id`, including when it names no
 parent. On the warm path, when the child's returned item names a different parent from the
 one the cache debited, the limiter must refund that debit, debit the item's parent, and
@@ -51,7 +58,8 @@ by leases open across the move, stays where it was debited.
 
 **Positive:**
 - A move takes effect on the fast path of every process after at most one call per
-  (process, entity), with no added cost on any acquire.
+  (process, entity). An acquire that only touches existing buckets costs nothing more; one
+  that creates a bucket costs one more read (see Negative).
 - One write path owns `parent_id` on bucket items, as ADR-146 item 10 asked.
 - The generation also settles the "no `parent_id` = pre-#684" ambiguity for new stamps.
 - Parents are separate entities with their own buckets: no quota allowance moves
@@ -70,7 +78,19 @@ by leases open across the move, stays where it was debited.
 - Every bucket created costs one more strongly consistent read (1 RCU, once per shard), and
   every aggregator record that clones shards one more; a restamp only when a move overtook
   the create. A `ConditionCheck` would avoid the read but needs
-  `dynamodb:ConditionCheckItem`, which no shipped policy grants.
+  `dynamodb:ConditionCheckItem`, which no shipped policy grants. The read runs after the
+  creating acquire's lease is handed back, so it adds no latency to that acquire.
+- Residual: a process that dies between a create and its owner check leaves a create that
+  read META before a move on the old parent until the bucket's next slow pass or a repeat
+  of the move. The check's own failure is covered (`vu = 0` forces that slow pass).
+- Residual (ADR-125's two-pass race, here for moves): a move whose META write lands after a
+  create's owner check runs its fan-out after the bucket exists, but GSI3 can lag the
+  create, so both discovery passes can miss it. The bucket keeps the old parent until its
+  next slow pass or a repeat of the move — the same window ADR-125 accepts for `disabled`.
+- Residual: a pass that read META before a delete and lands its owner stamp after the entity
+  is recreated and stamped wins over the new incarnation's stamp (another incarnation always
+  loses the pin, in both directions). The recreated entity's next slow pass on that bucket
+  restamps it.
 
 ## Alternatives Considered
 
