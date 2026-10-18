@@ -939,15 +939,16 @@ class TestEntityIncarnation:
         item = {"pinc": {"S": "p1"}, "created_at": {"S": "2026-01-01T00:00:00Z"}}
         assert schema.entity_incarnation(item) == "p1"
 
-    def test_a_numeric_pinc_is_read(self):
-        assert schema.entity_incarnation({"pinc": {"N": "42"}}) == "42"
+    def test_a_native_value_is_read(self):
+        """The boto3 Table resource's untyped values (the aggregator)."""
+        assert schema.entity_incarnation({"pinc": "p2", "created_at": "t"}) == "p2"
 
     def test_created_at_is_the_fallback(self):
         assert schema.entity_incarnation({"created_at": {"S": "t"}}) == "t"
 
-    @pytest.mark.parametrize("item", [None, {}, {"pinc": {"S": ""}}])
-    def test_nothing_reads_as_none(self, item):
-        assert schema.entity_incarnation(item) == "-"
+    @pytest.mark.parametrize("item", [{}, {"pinc": {"S": ""}}, {"pinc": {"N": "4"}}])
+    def test_nothing_reads_as_legacy(self, item):
+        assert schema.entity_incarnation(item) == schema.LEGACY_INCARNATION == "-"
 
 
 class TestCreatePathReadsMetaOnce:

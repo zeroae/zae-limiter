@@ -7242,7 +7242,9 @@ class SyncRepository:
         meta = self._get_item_consistent(
             schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
         )
-        incarnation = schema.entity_incarnation(meta)
+        incarnation = (
+            schema.entity_incarnation(meta) if meta is not None else schema.LEGACY_INCARNATION
+        )
         entity = self._deserialize_entity(meta) if meta is not None else None
         if idempotency_key is not None:
             recorded = self._operation_record(
@@ -7424,7 +7426,7 @@ class SyncRepository:
                 "ExpressionAttributeNames": {"#ent": "ent"},
                 "ExpressionAttributeValues": {
                     ":ent": {"S": incarnation},
-                    ":legacy": {"S": schema.entity_incarnation(None)},
+                    ":legacy": {"S": schema.LEGACY_INCARNATION},
                 },
             }
         }
@@ -7450,7 +7452,7 @@ class SyncRepository:
         if item is None:
             return None
         written_for = item.get("ent", {}).get("S")
-        if written_for not in (incarnation, schema.entity_incarnation(None)):
+        if written_for not in (incarnation, schema.LEGACY_INCARNATION):
             return None
         if item["operation"]["S"] != operation:
             raise ValidationError(

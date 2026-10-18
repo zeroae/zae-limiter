@@ -8743,7 +8743,10 @@ class Repository:
         meta = await self._get_item_consistent(
             schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
         )
-        incarnation = schema.entity_incarnation(meta)
+        # No META at all (buckets need none) is the legacy incarnation too.
+        incarnation = (
+            schema.entity_incarnation(meta) if meta is not None else schema.LEGACY_INCARNATION
+        )
         entity = self._deserialize_entity(meta) if meta is not None else None
         if idempotency_key is not None:
             # A caller retry: the first call's record, when it landed, is the
@@ -8962,7 +8965,7 @@ class Repository:
                 "ExpressionAttributeNames": {"#ent": "ent"},
                 "ExpressionAttributeValues": {
                     ":ent": {"S": incarnation},
-                    ":legacy": {"S": schema.entity_incarnation(None)},
+                    ":legacy": {"S": schema.LEGACY_INCARNATION},
                 },
             }
         }
@@ -8988,7 +8991,7 @@ class Repository:
         if item is None:
             return None
         written_for = item.get("ent", {}).get("S")
-        if written_for not in (incarnation, schema.entity_incarnation(None)):
+        if written_for not in (incarnation, schema.LEGACY_INCARNATION):
             # Written for an earlier incarnation. One written before the entity
             # had META ("-") is this entity's: an operation retried across
             # create_entity would otherwise be applied twice (round-4 review, F1).

@@ -194,6 +194,13 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
   `"-"` rule has the same shape: a record written before META existed stays this entity id's
   across later recreations until its three-day TTL, so a reused key there returns the old
   result.
+- **Across the #716 upgrade.** On a branch without #716 nothing writes `pinc`, so an entity's
+  incarnation is its `created_at`, which still differs across a delete and recreate. After
+  #716, `create_entity` writes `pinc` on new META only; existing META keeps reading
+  `created_at`, so a record stamped before the upgrade still matches its entity. It would
+  mismatch only if something wrote `pinc` onto an *existing* META (a backfill): then a caller
+  retry that straddles that write, inside the record's three-day TTL, would be applied once
+  more.
 - **Residual F3 — a lost audit.** When a write's response is unclear and the record read that
   would resolve it fails too, the error is raised (the caller retries with its key); if the
   write had landed, its audit event is not written. Logged at WARNING, without the entity id.
