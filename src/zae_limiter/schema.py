@@ -256,6 +256,35 @@ LIMIT_FIELD_RSA = "rsa"  # w_{name}_rsa — duration window length, seconds (ADR
 CONFIG_FIELD_SCHED_TZ = "sched_tz"
 
 
+# `pinc` on an entity's META: its incarnation, unique per creation (#716 writes
+# it in create_entity). #720 only reads it. Defined on both stacks with these
+# exact names and values so they merge cleanly.
+ENTITY_FIELD_PINC = "pinc"
+# The incarnation of an entity with no `pinc` and no `created_at` (and, for the
+# reset / top-up operation records of ADR-149, of an entity with no META).
+LEGACY_INCARNATION = "-"
+
+
+def entity_incarnation(meta_item: dict[str, Any]) -> str:
+    """An entity's incarnation, read off its META item (ADR-150).
+
+    ``pinc`` when present (#677 writes it in ``create_entity``); else the
+    entity's ``created_at``, which differs between an entity created before
+    incarnations existed and one recreated in its place; else
+    ``LEGACY_INCARNATION``. Accepts both the low-level client's typed values
+    (``{"S": ...}``) and the boto3 ``Table`` resource's native ones (the
+    aggregator), so every reader shares one rule. Shared with #720 under the
+    same name and signature.
+    """
+    for field in (ENTITY_FIELD_PINC, "created_at"):
+        value = meta_item.get(field)
+        if isinstance(value, dict):
+            value = value.get("S")
+        if isinstance(value, str) and value:
+            return value
+    return LEGACY_INCARNATION
+
+
 def encode_disabled(value: bool | None) -> dict[str, Any] | None:
     """Encode a tri-state disabled value as a DynamoDB attribute.
 

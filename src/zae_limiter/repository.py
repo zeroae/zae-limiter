@@ -1873,9 +1873,6 @@ class Repository:
             "cascade": {"BOOL": cascade},
             "metadata": {"M": self._serialize_map(metadata or {})},
             "created_at": {"S": now},
-            # Unique per creation (ADR-149): an operation record written for an
-            # earlier entity of the same id is not this one's.
-            "incarnation": {"S": str(ULID())},
             # GSI4: namespace-scoped item discovery
             "GSI4PK": {"S": self._namespace_id},
             "GSI4SK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
@@ -8595,7 +8592,10 @@ class Repository:
                 within three days is applied once and returns the first call's
                 result. **Without a key, an error from this call leaves the
                 outcome unknown**: the reset may or may not have landed, and
-                retrying it may apply it twice.
+                retrying it may apply it twice. One residual: if the
+                entity is deleted and recreated *while* the call is in flight,
+                its record carries the old incarnation and a retry under the
+                new one is applied again, once.
 
         Returns:
             The shards written and, per limit, the tokens restored.
@@ -8658,7 +8658,10 @@ class Repository:
                 retry with the same key within three days is applied once and
                 returns the first call's result. **Without a key, an error
                 from this call leaves the outcome unknown**: the tokens may or
-                may not have been granted, and retrying may grant them twice.
+                may not have been granted, and retrying may grant them twice. One residual: if the
+                entity is deleted and recreated *while* the call is in flight,
+                its record carries the old incarnation and a retry under the
+                new one is applied again, once.
 
         Returns:
             The shards written and, per limit, the tokens granted.
@@ -8736,7 +8739,15 @@ class Repository:
         # entity — deleted and recreated, its records left behind because the
         # shard-0 bucket that delete_entity finds them through had expired —
         # is not this entity's, and is read as absent and overwritten.
-        incarnation = await self._entity_incarnation(entity_id)
+        # The same META also answers a create's cascade stamps (F4: once).
+        meta = await self._get_item_consistent(
+            schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
+        )
+        # No META at all (buckets need none) is the legacy incarnation too.
+        incarnation = (
+            schema.entity_incarnation(meta) if meta is not None else schema.LEGACY_INCARNATION
+        )
+        entity = self._deserialize_entity(meta) if meta is not None else None
         if idempotency_key is not None:
             # A caller retry: the first call's record, when it landed, is the
             # answer (1 strongly consistent read, paid only with a key).
@@ -8781,6 +8792,7 @@ class Repository:
                         operation_id,
                         token,
                         incarnation,
+                        entity,
                         # Per attempt, like the shard write: the create is
                         # re-planned at a later instant, so one token across
                         # attempts would be an IdempotentParameterMismatch on
@@ -8944,9 +8956,17 @@ class Repository:
                     "GSI4PK": {"S": self._namespace_id},
                     "GSI4SK": {"S": f"OP#{entity_id}#{resource}#{operation_id}"},
                 },
-                "ConditionExpression": "attribute_not_exists(PK) OR #ent <> :ent",
+                # Replaceable only when written for another incarnation, and
+                # never when written before the entity had META ("-"): that one
+                # matches every incarnation (see `_operation_record`).
+                "ConditionExpression": (
+                    "attribute_not_exists(PK) OR (#ent <> :ent AND #ent <> :legacy)"
+                ),
                 "ExpressionAttributeNames": {"#ent": "ent"},
-                "ExpressionAttributeValues": {":ent": {"S": incarnation}},
+                "ExpressionAttributeValues": {
+                    ":ent": {"S": incarnation},
+                    ":legacy": {"S": schema.LEGACY_INCARNATION},
+                },
             }
         }
 
@@ -8968,8 +8988,14 @@ class Repository:
             schema.pk_bucket(self._namespace_id, entity_id, resource, 0),
             schema.sk_operation(operation_id),
         )
-        if item is None or item.get("ent", {}).get("S") != incarnation:
-            return None  # never written, or written for an earlier incarnation
+        if item is None:
+            return None
+        written_for = item.get("ent", {}).get("S")
+        if written_for not in (incarnation, schema.LEGACY_INCARNATION):
+            # Written for an earlier incarnation. One written before the entity
+            # had META ("-") is this entity's: an operation retried across
+            # create_entity would otherwise be applied twice (round-4 review, F1).
+            return None
         if item["operation"]["S"] != operation:
             raise ValidationError(
                 "idempotency_key",
@@ -8988,24 +9014,6 @@ class Repository:
             ),
             item.get("writer", {}).get("S"),
         )
-
-    async def _entity_incarnation(self, entity_id: str) -> str:
-        """The identity of the entity's current incarnation (ADR-149).
-
-        ``incarnation`` from META (a ULID stamped by ``create_entity``), else
-        its ``created_at`` (META written before the stamp), else ``-`` (an
-        entity with no META: buckets need none).
-        """
-        meta = await self._get_item_consistent(
-            schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
-        )
-        if meta is None:
-            return "-"
-        for field in ("incarnation", "created_at"):
-            value = meta.get(field, {}).get("S")
-            if value:
-                return str(value)
-        return "-"
 
     async def _landed_by(
         self,
@@ -9027,7 +9035,15 @@ class Repository:
                 entity_id, resource, operation_id, operation, incarnation
             )
         except Exception:
-            logger.debug("Could not read the operation record after an error", exc_info=True)
+            # The write may have landed, and only this read could tell: if it
+            # did, its audit event is lost. WARNING so an operator can look;
+            # no entity id in the message, as for a failed rejected-move commit.
+            logger.warning(
+                "%s may have landed but its operation record could not be read; "
+                "if it did, its audit event is missing",
+                operation,
+                exc_info=True,
+            )
             return None
         if recorded is None or recorded[1] != token:
             return None
@@ -9120,6 +9136,7 @@ class Repository:
         operation_id: str,
         token: str,
         incarnation: str,
+        entity: Entity | None,
         request_token: str,
     ) -> tuple[BucketOperationResult, bool]:
         """D5: a top-up with no bucket creates shard 0 holding its share plus the quota top-up.
@@ -9151,7 +9168,6 @@ class Repository:
                 state.tokens_milli += amount * 1000
                 state.topped_up_milli = amount * 1000
         await self._require_top_up_readers()
-        entity = await self.get_entity(entity_id)
         multiplier = self._bucket_ttl_refill_multiplier
         ttl_seconds = (
             None
