@@ -10,6 +10,7 @@ import boto3
 import click
 import yaml
 from botocore.config import Config
+from botocore.exceptions import ReadTimeoutError
 
 from .infra import PROVISIONER_LAMBDA_TIMEOUT_SECONDS
 
@@ -459,8 +460,9 @@ def _invoke_provisioner(
 
     # No retries: botocore retries a read timeout, which would invoke `apply` a
     # second time while the first is still running.
+    read_timeout = _INVOKE_READ_TIMEOUT_SECONDS
     kwargs["config"] = Config(
-        read_timeout=_INVOKE_READ_TIMEOUT_SECONDS,
+        read_timeout=read_timeout,
         retries={"total_max_attempts": 1},
     )
     lambda_client = boto3.client("lambda", **kwargs)
@@ -494,6 +496,16 @@ def _invoke_provisioner(
         click.echo(
             f"Error: Lambda function '{function_name}' is throttled; nothing was applied. "
             "Try again in a moment.",
+            err=True,
+        )
+        sys.exit(1)
+    except ReadTimeoutError:
+        # The function may still be running: Lambda keeps executing after the
+        # client stops waiting, so an apply can land after this message.
+        click.echo(
+            f"Error: no answer from '{function_name}' after {read_timeout} s. "
+            "The apply may still be running; check 'zae-limiter limits diff' "
+            "before re-running.",
             err=True,
         )
         sys.exit(1)

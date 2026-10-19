@@ -821,6 +821,44 @@ class TestInvokeProvisioner:
             "nothing was applied. Try again in a moment."
         ) in result.output
 
+    def test_invoke_provisioner_read_timeout_warns_apply_may_still_run(self):
+        """A read timeout leaves the apply running: say so and point at `limits diff`."""
+        from botocore.exceptions import ReadTimeoutError
+
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+
+            class FakeResourceNotFoundError(Exception):
+                """Stand-in for the botocore-generated client exception."""
+
+            class FakeTooManyRequestsError(Exception):
+                """Stand-in for the botocore-generated client exception."""
+
+            with (
+                patch("asyncio.run", return_value="test-ns-id"),
+                patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
+            ):
+                mock_lambda = MagicMock()
+                mock_lambda.exceptions.ResourceNotFoundException = FakeResourceNotFoundError
+                mock_lambda.exceptions.TooManyRequestsException = FakeTooManyRequestsError
+                mock_lambda.invoke.side_effect = ReadTimeoutError(
+                    endpoint_url="https://lambda.us-east-1.amazonaws.com"
+                )
+                mock_boto3_client.return_value = mock_lambda
+
+                result = CliRunner().invoke(
+                    cli, ["limits", "apply", "--name", "test-app", "-f", f.name]
+                )
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        read_timeout = mock_boto3_client.call_args.kwargs["config"].read_timeout
+        assert f"no answer from 'test-app-limits-provisioner' after {read_timeout} s" in (
+            result.output
+        )
+        assert "may still be running" in result.output
+        assert "zae-limiter limits diff" in result.output
+
     def test_invoke_provisioner_lambda_error_exits(self):
         """_invoke_provisioner exits on Lambda error response."""
         yaml_content = {"namespace": "test-ns"}
