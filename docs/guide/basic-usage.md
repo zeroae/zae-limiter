@@ -341,8 +341,10 @@ except RateLimitExceeded as e:
 A rejection can also mean "contended, retry shortly": when concurrent DynamoDB
 transactions keep colliding with the request's write, `acquire()` raises
 `RateLimitExceeded` with `e.contended == True`, nothing debited, no limit marked
-exceeded and a `retry_after_seconds` of about 0.1 s. See
-[`contended`](../api/exceptions.md#contended-retry-shortly).
+exceeded and a `retry_after_seconds` of about 0.1 s. Its `violations` list is
+therefore **empty**: never index `e.violations[0]`. Check `e.contended` first, or use
+`e.primary_violation` and `e.retry_after_seconds`, which are set on every
+rejection. See [`contended`](../api/exceptions.md#contended-retry-shortly).
 
 Each entry in `as_dict()`'s `limits` array carries a `kind` — `"rate"`, which reports
 `refill_amount` and `refill_period_seconds`, or `"quota"`, which reports `resets_at_ms` and no
