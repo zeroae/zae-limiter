@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792339368130,
+  "lastUpdate": 1792415869228,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -33428,6 +33428,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.015745411186863418",
             "extra": "mean: 1.0889251107999995 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a734975d59cbe77cac0cc76795c991ee39284b31",
+          "message": "🐛 fix(lease): make a refund trim itself in the same write (#730)\n\n## Problem\n\nA refund (rollback when the body raises, `release()` / negative\n`adjust()`, speculative and cascade compensation) was an unconditional\n`ADD`. The #680 trim (`vu = 0`) was a **separate write one round trip\nlater**. If a reset edge or a refill to capacity landed between the\ndebit and the refund, the refund lifted `tk` above the ceiling, and\nanother process's fast path spent the surplus before the trim landed.\n\n## Reproduction (on main)\n\nDaily quota `q = 10`. An acquire debits 5 at 23:59:59 and its body\nraises. Midnight passes, another process's slow pass resets `tk` to 10,\nthe refund lands (+5 → 15), and that process's fast path admits **15 of\n10**. The reviewer's probe reproduces it; it is now\n`TestSelfTrimmingRefunds::test_a_rollback_across_a_reset_is_not_spent_by_the_fast_path`,\nwhich fails on main (`assert [15] == []`) and passes here.\n\n## Fix (option A)\n\nEvery credit goes through `lease.write_credit`:\n\n| Step | Write | Condition |\n|---|---|---|\n| 1 | `ADD tk +credit, tc -credit` | for each credited limit: `tk <=\nceiling − credit` (`BucketState.ceiling_milli`, the #680 ceiling:\nschedule, shard share, quota grant) **and** its stored `b_{n}_cp` /\n`b_{n}_gc` / `b_{n}_sched` / `b_{n}_rsched` unchanged; plus the item's\n`shard_count`, `vu`, `sched`, `rsched` and `sched_tz` as the lease last\nwrote or read them (each `= value` or absent) |\n| 2, only if 1 failed its condition | the same `ADD` **plus `SET vu =\n0`**, one write (`build_composite_adjust(trim=True)`) | none |\n\n**Why the pins (from the #720 review):** the ceiling comes from the\nlease's in-memory state, which can be stale. A doubling, a re-grant, a\nlowered limit or a schedule change between the lease's read and the\nrefund lowers the real ceiling, so `tk + credit <= ceiling` alone could\npass while the item sits above it. Each of those writes moves a pinned\nattribute; a moved pin only costs the fallback. If the lease doesn't\nknow the item's state (after the consumption-only retry), the credit\ngoes straight to step 2.\n\n**`vu`, not `rf`:** `rf` moves on every refill, the aggregator's\nincluded. Pinning it would send most reconcile credits on hot buckets to\nthe fallback for nothing, since the `tk` bound already covers a refill.\nAnd a writer whose clock lags keeps `rf` unchanged (`max(now, rf)`), so\n`rf` can't prove nothing changed.\n\n**Schedule pins (#730 review):** a window's capacity or scale changed\nunder the same cron leaves `cp`, `gc`, `shard_count` and `vu` identical.\nSo the raw schedule strings the lease saw are pinned too. No new\nattribute, no counter.\n\n**`wcu` is never the pin source (#730 review):** a compensation reads\nits pin off a user limit in the debit's image. `wcu` always reads\n`shard_count = 1`, which failed the pin on every sharded entity (2\nwrites + `vu = 0` on every compensation).\n\n**Step 1's `ConditionalCheckFailed` is never retried**: it goes straight\nto step 2. This stays true alongside #729's `TransactionConflict`\nretries. A lost-response double credit is tracked in #731.\n\n## Second review (#730)\n\n| # | Commit | Change |\n|---|---|---|\n| F4 | 🐛 never let a refund create a stub bucket | Every adjust requires\n`attribute_exists(PK)`. A refund onto a swept or deleted item used to\n`ADD` a stub with no parameters, which rejected the entity forever. If\nthe condition on a write with no other term fails, the item is gone: the\nadjustment is skipped (debug log). |\n| F2 | 🐛 pin a refund from what the lease wrote | The lease keeps one\n`CreditImage` per bucket item. It comes from the item as read, the\ncreate's own `Put`, the rf-locked write's stamps (including a seeded\nlimit's explicit overrides and `sched_tz`), or the consumption-only\nretry's `ALL_NEW`. That last one is free: `transact_write` now returns\nit for a single-item update. A refund that fits after a create, a seed\nor the retry is one write and leaves `vu` alone. Only a multi-item retry\nstays unknown. |\n| hook | ♻️ build a credit's ceiling terms in one place |\n`lease.credit_ceiling` (decides the ceiling and pins) and\n`Repository._credit_limit_terms` (turns them into condition terms) are\nthe two places #720's quota top-up `b_{n}_tu` extends. `tu` does not\nexist on `main`, so nothing pins it here yet. |\n| F1 | 🐛 keep a quota refund in its debit's period | Each quota credit\nis guarded, in both writes, on its debit's period. Calendar: the item's\n`rf` is before the next reset edge after the `rf` the lease saw.\nSession: `b_{n}_ws` / `b_{n}_wa` are unchanged. If the period moved, the\nquota credit is **dropped** (debug log) and the rest of the adjustment,\nrate limits included, is written alone. A quota credit whose period\ncan't be told is dropped up front. Pre-existing bug: 15 were admitted\nagainst a daily quota of 10. |\n| F3 | 📝 docs | **Known residual:** a resource- or system-level change\nthat lowers a schedule's ceiling never reaches the bucket (no fan-out;\nit propagates through the TTL, #271/#296). A refund's pins all match, so\nit can land above the config ceiling. The next slow pass clamps it;\nuntil then the fast path can spend it, as it can any balance on such a\nbucket. |\n\n**Cost:**\n- A refund that fits: 1 WCU, now also after a create, a seed or a lost\nrf lock.\n- An overflowing refund: 1 failed write + 1 write.\n- A quota credit whose period moved: 1 failed + 1 failed, then the rest\n(1 write if any) and 1 write per quota credit on the item (the moved\nones fail).\n- A refund onto a gone item: 1 failed write (2 if it carried a ceiling).\n\n## Third review (#730)\n\n| # | Commit | Change |\n|---|---|---|\n| 1 (High) | 🐛 pin what a refund's ceiling was computed from | After the\nconsumption-only retry, the pins came from the retry's `ALL_NEW` but the\nceiling from the stale read. A doubling plus a clamp since the read\nmatched the pins: shard 0 went to 60 on a share of 50. **The ceiling\npins now always come from the image of the state the ceiling used** (the\nread, after a retry; its `rf` is `_original_rf_ms`). Only the quota\nperiod guard takes the newer image (`LeaseEntry._period_image`). |\n| 3 | 🐛 keep the read's quota period when the retry returns no image | A\nmulti-item retry (a cascade) or a backend returning `None` no longer\ndrops every quota credit. The period falls back to the read's view,\nwhich can only drop a credit, never land it in the wrong period. Child\nand parent refund to 99 each. |\n| 2 | 🐛 drop only the quota credits whose period moved | When the\nguarded trimmed write fails, the rest of the adjustment is written\nalone, then **each quota credit on its own guard**. That is writes, not\na consistent read, so the protocol is unchanged: one write per quota\ncredit, on a path taken only when a reset or roll raced a refund. Daily\nreset + monthly quota: m = 98. |\n| 4, 5 | 📝 docs | **Session fan-out residual:** a fan-out that moves\n`ws` between the read and the rf-locked write drops one refund in the\nwindow it was charged to (the safe direction). **Custom backends:**\n`attribute_exists(PK)` and the quota period guard are **required** of\nevery adjust write, in the trimmed write too. Also documents the\n`transact_write` return type, and that returning `None` falls back to\nthe read's period. |\n\n## Fourth review (#730)\n\n| # | Commit | Change |\n|---|---|---|\n| 1 (Medium) | 🐛 pin the reset schedule a quota credit's edge came from\n| The calendar guard's edge comes from the lease's cron. An entity-level\ncron change under an open lease (06:00 → 00:00), then a reset at\n00:00:01, let the old period's refund land: 15 admitted against 10.\n**The period terms now also pin the item's `rsched`, `sched_tz` and the\nlimit's `b_{n}_rsched`**, in both writes including the trimmed fallback,\nso any reset-schedule change on the item drops the quota credit. |\n| 1a, 2 | 📝 docs | **Residuals:** (1a) a resource- or system-level\nreset-schedule change never reaches the item, so the guard follows the\nlease's cron; closing it needs a period marker on the item. (2) Every\nreset-schedule change on the item drops in-flight quota refunds, even\nwhen the reset moved later and the debit's period is still open: at most\none refund per open lease per change, the safe direction. |\n\n## Fifth review (#730)\n\n| # | Commit | Change |\n|---|---|---|\n| 1 | 🐛 pin every read-based raise on the balance it read (`175f3a8b1`)\n| A write that **raises** `tk` from a read (a reset, a roll, a refill\ncredit) was locked on `rf` only. A refund landing between the read and\nthe write moved `tk` but not `rf`, so the raise was computed from a\nstale balance and stacked on top of the refund. **Every read-based raise\nis now also pinned on the `tk` it read:** the client's rf-locked write\n(`build_composite_normal(read_tokens=...)`) and the aggregator refill\n(`try_refill_bucket`). A lost pin is an ordinary lost lock. Verified\nrepros: **13 vs 10** (client) and **15 vs 10** (aggregator) before, **≤\n10** after. |\n\n## Sixth review (#730)\n\n| # | Commit | Change |\n|---|---|---|\n| 1 | 🐛 never let the consumption-only retry spend an unapplied period\n(`0debd1d90`) | The consumption-only retry (after a lost rf lock)\ndebited whatever `tk` the item held, even when the item's quota period\nhad moved on and its reset or roll had not been applied yet. It could\nspend the ended period's leftover in the new one. **The retry is now\nperiod-guarded:** calendar `rf >= edge`, session `b_{n}_wa = b_{n}_ws`.\nIf the guard fails, an internal `PeriodNotAppliedError` (a\n`RateLimitExceeded` subclass, **not exported**) triggers **one redo from\na fresh read**, which applies the reset/roll in the same acquire. A\nsecond failure is a rejection, with `retry_after_seconds` floored at 1\nms. Pre-existing on `main`: verified **15 vs 10**. Fixes #743. |\n| 2 | ✅ a failed raise pin does not spend the expired period\n(`a3a855354`) | Regression test for the race between a refund and a\nread-based raise: the raise loses its `tk` pin, falls to the retry, and\nthe retry's period guard keeps it from spending the expired period. |\n\n**Changed tests (reviewed as correct):** two tests used to expect the\nretry to apply nothing and leave the reset/roll for a later acquire.\nWith the redo, the reset/roll is applied **in the same acquire**:\n-\n`test_quota_shard_creation::test_a_reset_pass_losing_its_pin_grants_nothing`\n-\n`test_window_applied_marker::test_a_retry_that_lost_the_lock_to_an_old_write_is_charged`\n\n## Seventh review (#730)\n\nFresh-context review of `a3a855354`: **verdict mergeable**. Findings\nwere low/info only; none block the merge.\n\n## ⚠️ Protocol change for custom backends\n\n`RepositoryProtocol.build_composite_adjust` (and the sync twin) now\ntakes **`ceilings`, `trim` and `pin`** keywords. They are passed on\nevery rollback, `release()`, negative `adjust()` and speculative\ncompensation. **A custom backend must accept these keywords from\nv0.17.0**; otherwise it raises `TypeError` on refunds. Documented in\n`docs/api/repository.md` and CLAUDE.md. The docs commit carries a\n`BREAKING CHANGE:` footer (`📝 docs(repository)!:`), following the\nprecedent of 8d61bd09's `_now_ms()` protocol change, so git-cliff lists\nit.\n\nThe fifth and sixth reviews add two more keywords. **`read_tokens`**\n(the `tk` a read-based raise was computed from, pinned in the rf-locked\nwrite) and **`period_guards`** (the quota period guard on the\nconsumption-only retry) are new keywords on `build_composite_normal`\n(`read_tokens`) and `build_composite_retry` (`period_guards`), and their\nsync twins. A custom backend must accept and honour them too, or it\nraises `TypeError` (unknown keyword) or over-admits (keyword ignored).\nDocumented in `docs/api/repository.md` and CLAUDE.md (`ddcac3962`).\n\nDebt (negative `tk`) still takes any credit that satisfies the\ncondition. Debits stay unconditional. The fast path is unchanged.\n\n**Decisions**\n- **`adjust()` / `release()` credits get it too.** Same race: a reset or\nrefill can land while the body runs, before the adjustment commits.\n- **Speculative / cascade compensation gets it too**, built from the\ndebit's `ALL_NEW` image. It had no protection before.\n- **Post-hoc `_trim_credits_above_ceiling` and `build_vu_reset`\nremoved.** They checked the same ceiling, so they could only fire after\na conditional write had already failed, and the fallback had already\nstamped `vu = 0`.\n- **#682 unchanged.** The lease is committed before the first adjustment\nwrite. A failed fallback write is re-raised and never rolled back.\n- If a ceiling can't be computed, the code logs it and that limit's\ncredit is unconditional, as before #679.\n\n## Cost\n\n- Usual refund: **1 WCU**, as before. `ReturnValues=UPDATED_NEW` is\ndropped.\n- Overflowing refund: **1 failed conditional write + 1 write**. Before:\n1 write + 1 `vu = 0` write.\n\n## Tests\n\n- **Latest code run (`a3a855354`):** 6472 unit tests passed, **100% diff\ncoverage**, CI green. **Head `ddcac3962`** (docs only): Tests, Lint,\nDocs and CodeQL all green.\n- Fifth/sixth-review regressions: the read-based raise pins (client 13\nvs 10, aggregator 15 vs 10, now ≤ 10), the period-guarded retry (15 vs\n10 on `main`, now ≤ 10), and the refund-race test in `a3a855354`.\n- Regression tests (async, plus sync twins generated from them): a\nrollback across a reset, a rollback within the ceiling (one conditional\nwrite), a compensation across a reset, a compensation within the\nceiling, a `_compensate_child` after a refill to capacity, and three\nwhere **the ceiling drops between debit and refund**: a doubling\n(in-memory ceiling 100, real share 50), a lowered limit that another\nprocess clamped first, and\n`test_entity_schedule_scale_change_same_boundary` (window capacity 100 →\n50, same cron). `test_sharded_compensation_within_ceiling_cost`: a\nsharded compensation within the share is one write and leaves `vu`\nalone.\n- Fourth-review regression:\n`test_cron_change_moves_reset_before_guard_edge` (10 admitted, not 15).\nAll review probes (rounds 1–4) pass locally.\n- Third-review regressions: `test_retry_image_vs_stale_ceiling`,\n`test_two_quotas_one_reset_drops_the_other`,\n`test_cascade_retry_quota_credit`,\n`test_retry_with_no_image_keeps_the_reads_period`. All 20 review probes\n(rounds 1–3) pass locally.\n- Second-review regressions:\n`test_quota_refund_across_reset_spent_first`,\n`test_session_window_refund_across_roll`,\n`test_cost_rollback_after_create`, `test_cost_retry_lease_credit_trims`,\n`test_refund_after_item_deleted`, plus a quota refund inside its period\n(one write), a mixed item whose rate credit survives a dropped quota\ncredit, and `TestCreditImage`.\n- Unit tests:\n- condition shapes, including the `cp` / `gc` / `shard_count` / `vu` /\nschedule-string pins\n- mock tests: no overflow is one conditional write; overflow re-issues\nwith `trim=True`; any other failure, or a condition failure with no\nceiling, propagates\n  - a failed fallback is re-raised and never rolled back\n  - expression tokens, bucket-writer registry\n- `test_rejection_cache`, `test_quota_conservation_fuzz`,\n`test_limiter`, `test_sync_limiter`, `test_repository`,\n`test_sync_repository`, `test_expression_tokens`,\n`test_bucket_writer_registry`: 2172 passed. Under heavy machine load,\ntwo timing-sensitive tests failed once and passed when re-run alone:\n`TestQuotasAndWindows::test_a_calendar_quota_is_not_rejected_past_its_reset`\n(relies on the 1 s rejection-cache TTL on the wall clock) and\n`TestLocalRejection::test_a_no_wait_retry_loop_does_not_stall_other_tasks`\n(19 vs 20 ticks). Neither writes a refund.\n\nMust merge before #717.\n\nFixes #721. Refs #680.\n\n#743 is fixed by commit `0debd1d90` (its `Fixes #743` footer).\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-10-19T09:12:42-04:00",
+          "tree_id": "fe4a89d7f99d560e7c7882c79086189d30c003d5",
+          "url": "https://github.com/zeroae/zae-limiter/commit/a734975d59cbe77cac0cc76795c991ee39284b31"
+        },
+        "date": 1792415867941,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.75948737132024,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00671563608165084",
+            "extra": "mean: 40.388558333333435 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.780721638850476,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012626226668322419",
+            "extra": "mean: 59.59219284615358 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.777609226420545,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005130606801289946",
+            "extra": "mean: 27.950442235294304 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 36.03444662477166,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004182129407093971",
+            "extra": "mean: 27.75122399999772 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.4497003463384,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007519832182153436",
+            "extra": "mean: 44.544024400000616 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 80.96209415472487,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009722230449041501",
+            "extra": "mean: 12.351459166667825 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.606304226311323,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005986067873722589",
+            "extra": "mean: 39.05288288235156 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 25.11915808836917,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007596635655050843",
+            "extra": "mean: 39.81025146153391 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 26.24663986907274,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005947354264842491",
+            "extra": "mean: 38.10011510000303 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 25.007496036009435,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007383120943292233",
+            "extra": "mean: 39.98800993750251 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 23.01577241218347,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008615812715478365",
+            "extra": "mean: 43.4484657777832 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 22.839911096071404,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009646596669983503",
+            "extra": "mean: 43.78300755172404 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.41086418634674,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004825125374152221",
+            "extra": "mean: 32.8829853000021 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9265613924114302,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001972485095513391",
+            "extra": "mean: 519.0595035999991 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9267562687046047,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004911917647890338",
+            "extra": "mean: 519.0070047999995 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9386231736781652,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013372660055482693",
+            "extra": "mean: 1.0653902737999943 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9168632700549697,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011878374164651047",
+            "extra": "mean: 1.0906751668000028 sec\nrounds: 5"
           }
         ]
       }
