@@ -8595,7 +8595,11 @@ class Repository:
                 retrying it may apply it twice. One residual: if the
                 entity is deleted and recreated *while* the call is in flight,
                 its record carries the old incarnation and a retry under the
-                new one is applied again, once.
+                new one is applied again, once. And a call made while the
+                entity has no META record reuses any record for the key, so
+                right after a ``delete_entity`` it can return the deleted
+                entity's result and apply nothing (an under-grant, never an
+                over-grant).
 
         Returns:
             The shards written and, per limit, the tokens restored.
@@ -8661,7 +8665,11 @@ class Repository:
                 may not have been granted, and retrying may grant them twice. One residual: if the
                 entity is deleted and recreated *while* the call is in flight,
                 its record carries the old incarnation and a retry under the
-                new one is applied again, once.
+                new one is applied again, once. And a call made while the
+                entity has no META record reuses any record for the key, so
+                right after a ``delete_entity`` it can return the deleted
+                entity's result and apply nothing (an under-grant, never an
+                over-grant).
 
         Returns:
             The shards written and, per limit, the tokens granted.
@@ -8935,6 +8943,9 @@ class Repository:
         its own transaction committed, never one a same-key duplicate did. It
         stores the entity's ``incarnation`` too, and may replace a record of
         an earlier incarnation (``ent`` differs), which reads as absent.
+        ``"-"`` (no META) matches every incarnation on both sides: a record
+        written with it is never replaced, and a call made with it never
+        replaces one.
         """
         entity_id, resource = result.entity_id, result.resource
         return {
@@ -8956,11 +8967,16 @@ class Repository:
                     "GSI4PK": {"S": self._namespace_id},
                     "GSI4SK": {"S": f"OP#{entity_id}#{resource}#{operation_id}"},
                 },
-                # Replaceable only when written for another incarnation, and
-                # never when written before the entity had META ("-"): that one
-                # matches every incarnation (see `_operation_record`).
+                # Replaceable only when written for another incarnation. "-"
+                # (no META) matches every incarnation on BOTH sides (see
+                # `_operation_record`): a record written before the entity had
+                # META is never replaced, and a caller that read no META never
+                # replaces a record — else a same-key call that read META
+                # before a create_entity overwrote the record of one that
+                # landed after it and granted again (round-5 review).
                 "ConditionExpression": (
-                    "attribute_not_exists(PK) OR (#ent <> :ent AND #ent <> :legacy)"
+                    "attribute_not_exists(PK) OR "
+                    "(:ent <> :legacy AND #ent <> :ent AND #ent <> :legacy)"
                 ),
                 "ExpressionAttributeNames": {"#ent": "ent"},
                 "ExpressionAttributeValues": {
@@ -8991,10 +9007,15 @@ class Repository:
         if item is None:
             return None
         written_for = item.get("ent", {}).get("S")
-        if written_for not in (incarnation, schema.LEGACY_INCARNATION):
-            # Written for an earlier incarnation. One written before the entity
-            # had META ("-") is this entity's: an operation retried across
-            # create_entity would otherwise be applied twice (round-4 review, F1).
+        legacy = schema.LEGACY_INCARNATION
+        if incarnation != legacy and written_for not in (incarnation, legacy):
+            # Written for an earlier incarnation. "-" matches on both sides: a
+            # record written before the entity had META is this entity's (an
+            # operation retried across create_entity, round-4 review F1), and a
+            # caller that read no META takes any record for the key (one that
+            # read META before a concurrent create_entity, round-5 review). The
+            # cost is that a caller with no META right after a delete gets the
+            # old entity's result: an under-grant, never an over-grant.
             return None
         if item["operation"]["S"] != operation:
             raise ValidationError(
