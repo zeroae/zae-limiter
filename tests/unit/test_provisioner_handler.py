@@ -2657,3 +2657,14 @@ class TestChangeOnlyApplyStaysSafe:
 
         result = self._apply(self._manifest(entities=entities), action="plan")
         assert result["changes"] == []
+
+    def test_an_entity_carve_out_is_reasserted_too(self, counting):
+        manifest = self._manifest(disabled=False, resource_disabled=True)
+        self._apply(manifest)
+        # A bucket the earlier fan-out missed, stamped by a racing acquire
+        # that still read the resource as disabled.
+        self._put_bucket(counting, "user-0", disabled=True)
+
+        self._apply(manifest)
+
+        assert "disabled" not in self._bucket(counting, "user-0")

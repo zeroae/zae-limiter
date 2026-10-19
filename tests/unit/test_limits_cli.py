@@ -1361,3 +1361,18 @@ class TestLimitsApplyFull:
 
     def test_change_only_by_default(self):
         assert self._invoke().call_args.kwargs["full"] is False
+
+    @pytest.mark.parametrize("full", [True, False])
+    def test_full_reaches_the_payload_only_when_set(self, full):
+        from zae_limiter.limits_cli import _invoke_provisioner
+
+        with (
+            patch("asyncio.run", return_value="test-ns-id"),
+            patch("zae_limiter.limits_cli.boto3.client") as client,
+        ):
+            client.return_value.invoke.return_value = {
+                "Payload": io.BytesIO(json.dumps({"status": "applied"}).encode())
+            }
+            _invoke_provisioner("test-app", "us-east-1", None, "apply", {}, full=full)
+        payload = json.loads(client.return_value.invoke.call_args.kwargs["Payload"])
+        assert ("full" in payload) is full

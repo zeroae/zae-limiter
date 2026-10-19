@@ -1011,3 +1011,9 @@ class TestDropUnchangedNumbers:
         )
         change = Change("update", "resource", "gpt-4", _rpm(1001))
         assert drop_unchanged([change], "drop-numbers", "ns", client=table) == [change]
+
+    def test_a_number_that_does_not_parse_compares_as_written(self):
+        from zae_limiter_provisioner.applier import _normalized
+
+        assert _normalized({"N": "not-a-number"}) == {"N": "not-a-number"}
+        assert _normalized({"L": [{"N": "1.0"}]}) == _normalized({"L": [{"N": "1"}]})
