@@ -15081,3 +15081,31 @@ class TestPlanningContentionOnACascadeParent:
         with pytest.raises(RateLimitExceeded):
             async with slow.acquire("kid", "gpt-4", {"rpm": 1}, on_unavailable=mode):
                 pass
+
+    async def test_the_childs_real_violation_outranks_a_busy_parent(self, limiter):
+        """The child is exhausted: its real wait is reported, not "retry in 0.1 s"."""
+        slow = await self._setup(limiter, child_tokens=0)
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with slow.acquire("kid", "gpt-4", {"rpm": 1}):
+                pass
+
+        rejection = exc_info.value
+        assert rejection.contended is False
+        assert [v.limit_name for v in rejection.violations] == ["rpm"]
+        assert rejection.retry_after_seconds > 0.1
+
+    async def test_a_fine_child_with_a_busy_parent_is_contended_with_both(self, limiter):
+        slow = await self._setup(limiter, child_tokens=10_000)
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with slow.acquire("kid", "gpt-4", {"rpm": 1}):
+                pass
+
+        rejection = exc_info.value
+        assert rejection.contended is True
+        assert rejection.violations == []
+        assert [(s.entity_id, s.limit_name) for s in rejection.statuses] == [
+            ("kid", "rpm"),
+            ("org", "daily"),
+        ]

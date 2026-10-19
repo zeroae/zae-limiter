@@ -2602,8 +2602,15 @@ class RateLimiter:
                 # The grant-size freeze on a lagging sibling kept conflicting
                 # (#729): the table is busy, nothing was debited. A short 429,
                 # never `on_unavailable`, which under ALLOW admits unlimited.
+                # A real violation already found (the child's, when this is
+                # the parent) outranks "busy": its wait is the true one, and a
+                # 0.1 s retry would only re-pay this planning at 10 Hz.
+                if any(status.exceeded for status in statuses):
+                    if any(entry._donor_debit is not None for entry in entries):
+                        await self._commit_rejected_moves(entries, carriers)
+                    raise RateLimitExceeded(statuses) from exc
                 raise self._planning_contention(
-                    eid, resource, entity_limits[eid], consume, existing_buckets, now_ms
+                    eid, resource, entity_limits[eid], consume, existing_buckets, now_ms, statuses
                 ) from exc
             if disable_moves:
                 # Only a slot whose donor held tokens to move: one whose donor
@@ -2938,8 +2945,14 @@ class RateLimiter:
         consume: dict[str, int],
         existing: dict[tuple[str, str, str], BucketState],
         now_ms: int,
+        prior: list[LimitStatus],
     ) -> RateLimitExceeded:
         """The contended 429 for a conflict during quota planning (#729).
+
+        ``prior`` holds the statuses already gathered on this pass — the
+        child's, when the conflict is on the cascade parent — none of them a
+        violation (the caller raises the ordinary 429 otherwise). They are
+        reported first, as everywhere else, ahead of this level's.
 
         Raised before any lease entry exists, so the statuses come from the
         resolved limits: one per limit named in ``consume``, none exceeded,
@@ -2970,7 +2983,7 @@ class RateLimiter:
             )
             for limit in reported
         ]
-        return RateLimitExceeded(statuses, contended=True)
+        return RateLimitExceeded([*prior, *statuses], contended=True)
 
     async def _commit_rejected_moves(
         self, entries: list[LeaseEntry], carriers: list[LeaseEntry]
