@@ -942,6 +942,42 @@ class TestStaleWriters:
         assert cancelled == [True]
         assert lease._owner_task is None
 
+    @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+    async def test_an_interrupted_async_join_skips_the_writes_and_reraises(self, interrupt):
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        class Handle:
+            cancelled = False
+
+            def cancel(self):
+                self.cancelled = True
+
+            def __await__(self):
+                raise interrupt  # `await` calls this first, so it unwinds right there
+
+        writes: list[tuple] = []
+
+        async def write_each(items):
+            writes.extend(items)
+
+        backend = SimpleNamespace(
+            start_background=lambda _work: Handle(),
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=write_each,
+        )
+        lease = Lease(repository=cast(RepositoryProtocol, backend))
+        await lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
+        handle = lease._owner_task
+
+        with pytest.raises(interrupt):
+            await lease._await_owner_checks()
+        assert writes == []
+        assert handle.cancelled
+
     async def test_another_base_exception_in_the_join_still_forces_the_slow_pass(self):
         """Anything else that unwinds the join (a killed greenlet's GreenletExit) writes vu = 0."""
         from types import SimpleNamespace
