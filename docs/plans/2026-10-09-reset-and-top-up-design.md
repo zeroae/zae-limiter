@@ -238,6 +238,13 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
   first call's result and writes nothing (+1 RCU to read the record first). A key reused for the
   other kind of operation is a `ValidationError`; keys are 1-64 of `[A-Za-z0-9._:-]`. **Without
   a key, an error from these calls leaves the outcome unknown.**
+- **A keyed no-op is recorded too (round-6 review, P4).** A reset of a missing bucket, or a
+  top-up of dripping limits only with no bucket, writes nothing to a bucket. With a key it
+  still writes its operation record (result 0, same condition and incarnation rules) and its
+  audit event (zero amounts, so the trail shows the call happened), in one transaction; before,
+  a retry with the key after the bucket appeared applied the operation (probe:
+  `first={'rpm': 0}/0 retry={'rpm': 5}/1`). The retry now returns the first result, and the
+  key-kind check holds. Without a key a no-op still writes nothing.
 - **Nothing fails after the commit.** The principal is validated with the other inputs before
   any I/O, and the audit event is part of the commit itself.
 - `SET vu = 0`. This forces one materialising pass per shard on the next acquire. That pass
@@ -394,7 +401,9 @@ event (§4.2), so a one-shard operation is a 3-item transaction: 6 WRU where a b
 | 32 | 4 | 34 | 68 | **$46.75** | ≈ +$24.00 |
 
 - **Entity identity:** +1 RCU on every call (the META read above).
-- **Idempotency key:** +1 RCU (the record is read first).
+- **Idempotency key:** +1 RCU (the record is read first). A keyed no-op (no bucket to write)
+  costs one 2-item transaction, the record and the audit event: 4 WRU, where it wrote nothing
+  before. Without a key it still writes nothing.
 - **After an unclear failure:** +1 RCU per retry to read the record.
 
 - **Gated top-up:** +1 RCU on the first call per repository (the version read, strongly

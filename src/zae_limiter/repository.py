@@ -8605,7 +8605,8 @@ class Repository:
             idempotency_key: Names this operation (1-64 characters: letters,
                 digits, ``.``, ``_``, ``:``, ``-``). A retry with the same key
                 within three days is applied once and returns the first call's
-                result. **Without a key, an error from this call leaves the
+                result, even when that call changed nothing (no bucket yet: it
+                is recorded, result 0). **Without a key, an error from this call leaves the
                 outcome unknown**: the reset may or may not have landed, and
                 retrying it may apply it twice. One residual: if the
                 entity is deleted and recreated *while* the call is in flight,
@@ -8679,7 +8680,9 @@ class Repository:
             idempotency_key: Names this operation (1-64 characters: letters,
                 digits, ``.``, ``_``, ``:``, ``-``) — a purchase id, say. A
                 retry with the same key within three days is applied once and
-                returns the first call's result. **Without a key, an error
+                returns the first call's result, even when that call changed
+                nothing (no bucket yet, or only dripping limits: it is
+                recorded, result 0). **Without a key, an error
                 from this call leaves the outcome unknown**: the tokens may or
                 may not have been granted, and retrying may grant them twice. One residual: if the
                 entity is deleted and recreated *while* the call is in flight,
@@ -8809,37 +8812,49 @@ class Repository:
             shards, raw = await self._read_operation_shards(entity_id, resource, now_ms)
             if not shards:
                 if operation == bucket_ops.RESET:
-                    return BucketOperationResult(
+                    result = BucketOperationResult(
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
                     )
-                try:
-                    result, landed = await self._top_up_new_bucket(
-                        entity_id,
-                        resource,
-                        resolved,
-                        source,
-                        requested,
-                        now_ms,
-                        operation_id,
-                        token,
-                        incarnation,
-                        entity,
-                        principal,
-                        # Per attempt, like the shard write: the create is
-                        # re-planned at a later instant, so one token across
-                        # attempts would be an IdempotentParameterMismatch on
-                        # every retry.
-                        f"{token}-c{attempt}",
+                else:
+                    try:
+                        result, landed = await self._top_up_new_bucket(
+                            entity_id,
+                            resource,
+                            resolved,
+                            source,
+                            requested,
+                            now_ms,
+                            operation_id,
+                            token,
+                            incarnation,
+                            entity,
+                            principal,
+                            # Per attempt, like the shard write: the create is
+                            # re-planned at a later instant, so one token across
+                            # attempts would be an IdempotentParameterMismatch on
+                            # every retry.
+                            f"{token}-c{attempt}",
+                        )
+                    except Exception:
+                        mine = await self._landed_by(
+                            entity_id, resource, operation_id, operation, token, incarnation
+                        )
+                        if mine is None:
+                            raise
+                        return mine
+                    if not landed:
+                        continue  # lost the create race (or its response): re-read
+                if result.shards or idempotency_key is None:
+                    return result  # written (record and audit with it), or a plain no-op
+                # P4 (round-6 review): a keyed call that writes nothing still
+                # records itself, result 0, so a retry with its key after the
+                # bucket appears returns this result instead of applying, and
+                # the key-kind check holds. Same condition and incarnation rules.
+                items = [
+                    self.build_operation_record(
+                        operation, operation_id, result, now_ms, token, incarnation
                     )
-                except Exception:
-                    mine = await self._landed_by(
-                        entity_id, resource, operation_id, operation, token, incarnation
-                    )
-                    if mine is None:
-                        raise
-                    return mine
-                if not landed:
-                    continue  # lost the create race (or its response): re-read
+                ]
             else:
                 top = max(shard.shard_count for shard in shards)
                 lagging = [shard for shard in shards if shard.shard_count < top]
@@ -8878,35 +8893,36 @@ class Repository:
                         operation, operation_id, result, now_ms, token, incarnation
                     ),
                 ]
-                if result.shards:
-                    items.append(await self._operation_audit(operation, result, principal))
-                try:
-                    await self.transact_write(
-                        items,
-                        # Per attempt: a re-planned payload under the same token
-                        # would be an IdempotentParameterMismatch.
-                        client_request_token=f"{token}-{attempt}",
-                    )
-                except ClientError as e:
-                    if e.response.get("Error", {}).get("Code") in _OPERATION_RETRY_CODES:
-                        last_error = e
-                        continue
-                    mine = await self._landed_by(
-                        entity_id, resource, operation_id, operation, token, incarnation
-                    )
-                    if mine is None:
-                        raise
-                    return mine
-                except Exception:
-                    # Not a DynamoDB answer at all (a read timeout, a dropped
-                    # connection): the write may have landed. If this call's
-                    # own record is there, it did, audit event and all.
-                    mine = await self._landed_by(
-                        entity_id, resource, operation_id, operation, token, incarnation
-                    )
-                    if mine is None:
-                        raise
-                    return mine
+            # Every write carries its audit event, a keyed no-op's included
+            # (zero amounts): the trail shows the call happened.
+            items.append(await self._operation_audit(operation, result, principal))
+            try:
+                await self.transact_write(
+                    items,
+                    # Per attempt: a re-planned payload under the same token
+                    # would be an IdempotentParameterMismatch.
+                    client_request_token=f"{token}-{attempt}",
+                )
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") in _OPERATION_RETRY_CODES:
+                    last_error = e
+                    continue
+                mine = await self._landed_by(
+                    entity_id, resource, operation_id, operation, token, incarnation
+                )
+                if mine is None:
+                    raise
+                return mine
+            except Exception:
+                # Not a DynamoDB answer at all (a read timeout, a dropped
+                # connection): the write may have landed. If this call's
+                # own record is there, it did, audit event and all.
+                mine = await self._landed_by(
+                    entity_id, resource, operation_id, operation, token, incarnation
+                )
+                if mine is None:
+                    raise
+                return mine
             return result
         recorded = await self._operation_record(
             entity_id, resource, operation_id, operation, incarnation

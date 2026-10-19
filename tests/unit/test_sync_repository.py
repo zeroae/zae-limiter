@@ -7764,6 +7764,42 @@ class TestResetAndTopUp:
         assert int(item["ttl"]["N"]) == now_s + calculate_bucket_ttl_seconds([_OP_SES, leap], 7)
         assert int(item["ttl"]["N"]) * 1000 >= _op_num(item, "ses", BUCKET_FIELD_WS) + 18000000
 
+    def test_a_keyed_no_op_top_up_is_recorded(self, repo):
+        """Round-6 review, P4: a keyed dripping-only top-up with no bucket wrote
+        nothing, so a retry with its key after the bucket appeared applied it
+        ({'rpm': 5}, 1 shard). The no-op now records itself, result 0."""
+        repo.set_limits("e", [_OP_RPM], resource="r")
+        repo._now_ms = lambda: _OP_T0
+        first = repo.top_up("e", "r", {"rpm": 5}, idempotency_key="k")
+        _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        again = repo.top_up("e", "r", {"rpm": 5}, idempotency_key="k")
+        assert again == first
+        assert again.amounts == {"rpm": 0} and again.shards == 0
+        assert _op_num(_op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 0
+        events = [e for e in repo.get_audit_events("e") if e.action == "bucket_topped_up"]
+        assert [(e.details["amounts"], e.details["shards"]) for e in events] == [({"rpm": 0}, 0)]
+
+    def test_a_keyed_no_op_reset_is_recorded(self, repo):
+        """The same for a reset of a missing bucket, and the record's kind
+        holds: the key cannot then be reused for a top-up."""
+        repo.set_limits("e", [_OP_RPM], resource="r")
+        repo._now_ms = lambda: _OP_T0
+        first = repo.reset_bucket("e", "r", idempotency_key="k")
+        _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        assert repo.reset_bucket("e", "r", idempotency_key="k") == first
+        assert _op_num(_op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 0
+        with pytest.raises(ValidationError):
+            repo.top_up("e", "r", {"rpm": 5}, idempotency_key="k")
+        events = [e for e in repo.get_audit_events("e") if e.action == "bucket_reset"]
+        assert len(events) == 1
+
+    def test_an_unkeyed_no_op_writes_nothing(self, repo):
+        repo.set_limits("e", [_OP_RPM], resource="r")
+        repo._now_ms = lambda: _OP_T0
+        with patch.object(repo, "transact_write", side_effect=AssertionError("write")):
+            assert repo.reset_bucket("e", "r").shards == 0
+            assert repo.top_up("e", "r", {"rpm": 5}).shards == 0
+
     def test_an_invalid_principal_is_refused_before_any_io(self, repo):
         with (
             patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),

@@ -7120,7 +7120,8 @@ class SyncRepository:
             idempotency_key: Names this operation (1-64 characters: letters,
                 digits, ``.``, ``_``, ``:``, ``-``). A retry with the same key
                 within three days is applied once and returns the first call's
-                result. **Without a key, an error from this call leaves the
+                result, even when that call changed nothing (no bucket yet: it
+                is recorded, result 0). **Without a key, an error from this call leaves the
                 outcome unknown**: the reset may or may not have landed, and
                 retrying it may apply it twice. One residual: if the
                 entity is deleted and recreated *while* the call is in flight,
@@ -7194,7 +7195,9 @@ class SyncRepository:
             idempotency_key: Names this operation (1-64 characters: letters,
                 digits, ``.``, ``_``, ``:``, ``-``) — a purchase id, say. A
                 retry with the same key within three days is applied once and
-                returns the first call's result. **Without a key, an error
+                returns the first call's result, even when that call changed
+                nothing (no bucket yet, or only dripping limits: it is
+                recorded, result 0). **Without a key, an error
                 from this call leaves the outcome unknown**: the tokens may or
                 may not have been granted, and retrying may grant them twice. One residual: if the
                 entity is deleted and recreated *while* the call is in flight,
@@ -7298,33 +7301,41 @@ class SyncRepository:
             shards, raw = self._read_operation_shards(entity_id, resource, now_ms)
             if not shards:
                 if operation == bucket_ops.RESET:
-                    return BucketOperationResult(
+                    result = BucketOperationResult(
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
                     )
-                try:
-                    result, landed = self._top_up_new_bucket(
-                        entity_id,
-                        resource,
-                        resolved,
-                        source,
-                        requested,
-                        now_ms,
-                        operation_id,
-                        token,
-                        incarnation,
-                        entity,
-                        principal,
-                        f"{token}-c{attempt}",
+                else:
+                    try:
+                        result, landed = self._top_up_new_bucket(
+                            entity_id,
+                            resource,
+                            resolved,
+                            source,
+                            requested,
+                            now_ms,
+                            operation_id,
+                            token,
+                            incarnation,
+                            entity,
+                            principal,
+                            f"{token}-c{attempt}",
+                        )
+                    except Exception:
+                        mine = self._landed_by(
+                            entity_id, resource, operation_id, operation, token, incarnation
+                        )
+                        if mine is None:
+                            raise
+                        return mine
+                    if not landed:
+                        continue
+                if result.shards or idempotency_key is None:
+                    return result
+                items = [
+                    self.build_operation_record(
+                        operation, operation_id, result, now_ms, token, incarnation
                     )
-                except Exception:
-                    mine = self._landed_by(
-                        entity_id, resource, operation_id, operation, token, incarnation
-                    )
-                    if mine is None:
-                        raise
-                    return mine
-                if not landed:
-                    continue
+                ]
             else:
                 top = max(shard.shard_count for shard in shards)
                 lagging = [shard for shard in shards if shard.shard_count < top]
@@ -7358,27 +7369,26 @@ class SyncRepository:
                         operation, operation_id, result, now_ms, token, incarnation
                     ),
                 ]
-                if result.shards:
-                    items.append(self._operation_audit(operation, result, principal))
-                try:
-                    self.transact_write(items, client_request_token=f"{token}-{attempt}")
-                except ClientError as e:
-                    if e.response.get("Error", {}).get("Code") in _OPERATION_RETRY_CODES:
-                        last_error = e
-                        continue
-                    mine = self._landed_by(
-                        entity_id, resource, operation_id, operation, token, incarnation
-                    )
-                    if mine is None:
-                        raise
-                    return mine
-                except Exception:
-                    mine = self._landed_by(
-                        entity_id, resource, operation_id, operation, token, incarnation
-                    )
-                    if mine is None:
-                        raise
-                    return mine
+            items.append(self._operation_audit(operation, result, principal))
+            try:
+                self.transact_write(items, client_request_token=f"{token}-{attempt}")
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") in _OPERATION_RETRY_CODES:
+                    last_error = e
+                    continue
+                mine = self._landed_by(
+                    entity_id, resource, operation_id, operation, token, incarnation
+                )
+                if mine is None:
+                    raise
+                return mine
+            except Exception:
+                mine = self._landed_by(
+                    entity_id, resource, operation_id, operation, token, incarnation
+                )
+                if mine is None:
+                    raise
+                return mine
             return result
         recorded = self._operation_record(entity_id, resource, operation_id, operation, incarnation)
         if recorded is not None:
