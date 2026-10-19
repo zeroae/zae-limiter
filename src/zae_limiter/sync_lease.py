@@ -80,7 +80,14 @@ class QuotaMoveLostError(Exception):
     since it was read, or the recipient raced — or kept conflicting past its
     retries. It rolled back whole, donor untouched, so the plan is stale and
     the acquire re-plans from a fresh read (design §6 step 6). Not exported.
+
+    ``contended`` is True when the move was lost to write conflicts rather
+    than to a failed condition: the donor was busy, not spent (#724).
     """
+
+    def __init__(self, *, contended: bool = False) -> None:
+        super().__init__("quota move lost" + (" to contention" if contended else ""))
+        self.contended = contended
 
 
 def _mark_granted(entry: LeaseEntry) -> None:
@@ -553,7 +560,7 @@ class SyncLease:
                         time.sleep(delay)
                         continue
                     if donor_items:
-                        raise QuotaMoveLostError from exc
+                        raise QuotaMoveLostError(contended=True) from exc
                     raise _contention_rejection(self.entries, now_ms) from exc
                 raise
         if condition_failed and donor_items:

@@ -57,7 +57,7 @@ from .models import (
 from .schedule import effective_params, next_boundary, prev_reset_edge, retry_after_with_schedule
 from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 from .sync_config_cache import ConfigSource
-from .sync_lease import LeaseEntry, QuotaMoveLostError, SyncLease
+from .sync_lease import LeaseEntry, QuotaMoveLostError, SyncLease, _contention_rejection
 from .sync_repository import SyncRepository
 from .sync_repository_protocol import SpeculativeFailureReason
 
@@ -1797,9 +1797,14 @@ class SyncRateLimiter:
         against a zero balance, or `RateLimitExceeded`. Never
         `RateLimiterUnavailable`, which under ALLOW would admit without limit.
         Nothing was written by either lost attempt.
+
+        When the second loss was to write conflicts, a rejection caused only
+        by the slot's zero grant is the contended 429 (#724): the table was
+        busy, the quota is not spent, so the caller is told to retry shortly
+        rather than at the next reset edge.
         """
 
-        def plan_and_commit(disable_moves: bool) -> SyncLease:
+        def plan_and_commit(disable_moves: bool, moves_contended: bool = False) -> SyncLease:
             lease = self._do_acquire(
                 entity_id=entity_id,
                 resource=resource,
@@ -1809,6 +1814,7 @@ class SyncRateLimiter:
                 shard_count=shard_count,
                 parent_shard_id=parent_shard_id,
                 disable_moves=disable_moves,
+                moves_contended=moves_contended,
             )
             lease._commit_initial()
             return lease
@@ -1819,9 +1825,9 @@ class SyncRateLimiter:
             pass
         try:
             return plan_and_commit(False)
-        except QuotaMoveLostError:
-            pass
-        return plan_and_commit(True)
+        except QuotaMoveLostError as lost:
+            moves_contended = lost.contended
+        return plan_and_commit(True, moves_contended)
 
     def _do_acquire(
         self,
@@ -1833,6 +1839,7 @@ class SyncRateLimiter:
         shard_count: int | None = None,
         parent_shard_id: int | None = None,
         disable_moves: bool = False,
+        moves_contended: bool = False,
     ) -> SyncLease:
         """Internal acquire implementation (the slow path).
 
@@ -1841,6 +1848,10 @@ class SyncRateLimiter:
                 (design §6 step 6): a quota whose slot a sibling covers gets 0
                 this time instead of a move, and no donor debit rides. Only
                 under-admits, for the rest of the period at most.
+            moves_contended: With ``disable_moves``, the move was lost to
+                write conflicts (#724). A rejection whose every violation is a
+                limit zeroed here is then the contended 429, not an exhausted
+                one.
             shard_id: Child shard the speculative fast path selected, so this
                 path reads and — if missing — creates that same shard
                 (issue #439). None draws one from the cached shard_count.
@@ -1855,6 +1866,7 @@ class SyncRateLimiter:
         rejection_cache = getattr(self._repository, "_rejection_cache", None)
         cache_mark = rejection_cache.mark() if rejection_cache is not None else None
         now_ms = self._repository._now_ms()
+        zeroed: set[tuple[str, str]] = set()
         child_shard, child_shard_count = self._repository.select_shard(
             entity_id, resource, shard_id, shard_count
         )
@@ -1950,6 +1962,9 @@ class SyncRateLimiter:
                 else (plan_count, {}, [])
             )
             if disable_moves:
+                zeroed |= {
+                    (eid, name) for name, grant in grants.items() if grant.donor_shard is not None
+                }
                 grants = {
                     name: grant
                     if grant.donor_shard is None
@@ -2089,6 +2104,8 @@ class SyncRateLimiter:
         if violations:
             if any(entry._donor_debit is not None for entry in entries):
                 self._commit_rejected_moves(entries, carriers)
+            if moves_contended and all((v.entity_id, v.limit_name) in zeroed for v in violations):
+                raise _contention_rejection(entries, now_ms)
             raise RateLimitExceeded(statuses)
         return SyncLease(
             repository=self._repository,

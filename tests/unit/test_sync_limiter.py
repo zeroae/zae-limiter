@@ -11031,3 +11031,136 @@ class TestTransactionConflictIsContention:
         )
         assert lease is None
         assert shard == 1
+
+
+class TestContendedZeroGrant:
+    """A quota slot granted 0 because its move kept conflicting (#724, #729).
+
+    After two lost ADR-145 moves the third pass grants the covered slot 0
+    (design §6 step 6). When the moves were lost to write conflicts the donor
+    was busy, not spent: a rejection caused by that zero grant is the
+    contended 429 (retry in ~0.1 s), not an exhausted one quoting the next
+    reset edge hours away. A donor that genuinely holds nothing still gets the
+    ordinary exhausted 429.
+    """
+
+    QUOTA = Limit.quota("rpd", 1000, cron="0 0 * * *")
+
+    def _shard0_then_doubled(self, sync_limiter, entity_id: str):
+        """Shard 0 granted the whole quota at count 1, then doubled to 2."""
+        repo = sync_limiter._repository
+        now_ms = freeze_clock(repo)
+        sync_limiter.create_entity(entity_id)
+        sync_limiter.set_system_defaults([self.QUOTA])
+        state = BucketState.from_limit(entity_id, "gpt-4", self.QUOTA, now_ms)
+        vu, _reset = SyncRateLimiter._materialisation_stamps(self.QUOTA, state, now_ms)
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    entity_id, "gpt-4", [state], now_ms, shard_id=0, shard_count=1, vu=vu
+                )
+            ]
+        )
+        assert repo.bump_shard_count(entity_id, "gpt-4", 1) == 2
+        return repo
+
+    def _set_shard0_tokens(self, repo, entity_id: str, tokens_milli: int) -> None:
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #t = :v",
+            ExpressionAttributeNames={"#t": bucket_attr("rpd", BUCKET_FIELD_TK)},
+            ExpressionAttributeValues={":v": {"N": str(tokens_milli)}},
+        )
+
+    def _shard_tokens(self, repo, entity_id: str, shard_id: int) -> int | None:
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        raw = (response.get("Item") or {}).get(bucket_attr("rpd", BUCKET_FIELD_TK))
+        return None if raw is None else int(raw["N"])
+
+    @staticmethod
+    def _move_conflict() -> ClientError:
+        return ClientError(
+            {
+                "Error": {"Code": "TransactionCanceledException", "Message": "conflict"},
+                "CancellationReasons": [{"Code": "None"}, {"Code": "TransactionConflict"}],
+            },
+            "TransactWriteItems",
+        )
+
+    @pytest.mark.parametrize("mode", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    def test_a_zero_grant_after_contended_moves_is_a_contended_429(self, sync_limiter, mode):
+        repo = self._shard0_then_doubled(sync_limiter, "busy")
+        real = repo.transact_write
+        moves = {"n": 0}
+
+        def moves_conflict(items):
+            if len(items) > 1:
+                moves["n"] += 1
+                raise self._move_conflict()
+            return real(items)
+
+        repo.transact_write = moves_conflict
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with slow.acquire("busy", "gpt-4", {"rpd": 1}, on_unavailable=mode):
+                    pass
+        rejection = exc_info.value
+        assert moves["n"] == 2 * 4
+        assert rejection.contended is True
+        assert rejection.violations == []
+        assert rejection.retry_after_seconds == pytest.approx(0.1)
+        assert [s.limit_name for s in rejection.statuses] == ["rpd"]
+        assert self._shard_tokens(repo, "busy", 0) == 1000000
+        assert self._shard_tokens(repo, "busy", 1) is None
+
+    def test_a_donor_holding_nothing_is_an_ordinary_429(self, sync_limiter):
+        """No conflict involved: the quota is genuinely spent."""
+        repo = self._shard0_then_doubled(sync_limiter, "spent")
+        self._set_shard0_tokens(repo, "spent", 0)
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with slow.acquire("spent", "gpt-4", {"rpd": 1}):
+                    pass
+        rejection = exc_info.value
+        assert rejection.contended is False
+        assert [v.limit_name for v in rejection.violations] == ["rpd"]
+        assert rejection.retry_after_seconds > 60
+
+    def test_a_donor_spent_after_a_contended_loss_is_an_ordinary_429(self, sync_limiter):
+        """The first move loses to contention, the re-planned one finds the donor
+        spent: the slot's 0 is the donor's empty balance, not the table being busy."""
+        repo = self._shard0_then_doubled(sync_limiter, "drained")
+        real = repo.transact_write
+        moves = {"n": 0}
+
+        def conflict_then_spent(items):
+            if len(items) > 1:
+                moves["n"] += 1
+                if moves["n"] <= 4:
+                    raise self._move_conflict()
+                self._set_shard0_tokens(repo, "drained", 0)
+            return real(items)
+
+        repo.transact_write = conflict_then_spent
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with slow.acquire("drained", "gpt-4", {"rpd": 1}):
+                    pass
+        assert moves["n"] == 5
+        assert exc_info.value.contended is False
+        assert [v.limit_name for v in exc_info.value.violations] == ["rpd"]

@@ -29,7 +29,7 @@ from .exceptions import (
     ValidationError,
     VersionMismatchError,
 )
-from .lease import Lease, LeaseEntry, QuotaMoveLostError
+from .lease import Lease, LeaseEntry, QuotaMoveLostError, _contention_rejection
 from .models import (
     AuditEvent,
     Availability,
@@ -2278,9 +2278,14 @@ class RateLimiter:
         against a zero balance, or `RateLimitExceeded`. Never
         `RateLimiterUnavailable`, which under ALLOW would admit without limit.
         Nothing was written by either lost attempt.
+
+        When the second loss was to write conflicts, a rejection caused only
+        by the slot's zero grant is the contended 429 (#724): the table was
+        busy, the quota is not spent, so the caller is told to retry shortly
+        rather than at the next reset edge.
         """
 
-        async def plan_and_commit(disable_moves: bool) -> Lease:
+        async def plan_and_commit(disable_moves: bool, moves_contended: bool = False) -> Lease:
             lease = await self._do_acquire(
                 entity_id=entity_id,
                 resource=resource,
@@ -2290,6 +2295,7 @@ class RateLimiter:
                 shard_count=shard_count,
                 parent_shard_id=parent_shard_id,
                 disable_moves=disable_moves,
+                moves_contended=moves_contended,
             )
             await lease._commit_initial()
             return lease
@@ -2300,12 +2306,14 @@ class RateLimiter:
             pass  # stale plan: re-read and re-plan once
         try:
             return await plan_and_commit(False)
-        except QuotaMoveLostError:
-            pass
+        except QuotaMoveLostError as lost:
+            # The loss that sends the slot to 0. A first loss to contention
+            # followed by a donor spent since is a genuinely spent donor.
+            moves_contended = lost.contended
         # Lost twice: this pass grants the covered slot nothing and carries no
         # move (design §6 step 6), so the commit cannot lose one again — it
         # admits against a zero balance or is rejected, never unavailable.
-        return await plan_and_commit(True)
+        return await plan_and_commit(True, moves_contended)
 
     async def _do_acquire(
         self,
@@ -2317,6 +2325,7 @@ class RateLimiter:
         shard_count: int | None = None,
         parent_shard_id: int | None = None,
         disable_moves: bool = False,
+        moves_contended: bool = False,
     ) -> Lease:
         """Internal acquire implementation (the slow path).
 
@@ -2325,6 +2334,10 @@ class RateLimiter:
                 (design §6 step 6): a quota whose slot a sibling covers gets 0
                 this time instead of a move, and no donor debit rides. Only
                 under-admits, for the rest of the period at most.
+            moves_contended: With ``disable_moves``, the move was lost to
+                write conflicts (#724). A rejection whose every violation is a
+                limit zeroed here is then the contended 429, not an exhausted
+                one.
             shard_id: Child shard the speculative fast path selected, so this
                 path reads and — if missing — creates that same shard
                 (issue #439). None draws one from the cached shard_count.
@@ -2344,6 +2357,8 @@ class RateLimiter:
         cache_mark = rejection_cache.mark() if rejection_cache is not None else None
 
         now_ms = self._repository._now_ms()
+        # (entity, limit) slots `disable_moves` granted 0 instead of a move.
+        zeroed: set[tuple[str, str]] = set()
 
         # The shard is part of a bucket's identity (GHSA-76rv). Resolve it
         # once here and carry it through the read, the LeaseEntry and the
@@ -2516,6 +2531,9 @@ class RateLimiter:
                 else (plan_count, {}, [])
             )
             if disable_moves:
+                zeroed |= {
+                    (eid, name) for name, grant in grants.items() if grant.donor_shard is not None
+                }
                 grants = {
                     name: (
                         grant
@@ -2788,6 +2806,10 @@ class RateLimiter:
         if violations:
             if any(entry._donor_debit is not None for entry in entries):
                 await self._commit_rejected_moves(entries, carriers)
+            if moves_contended and all((v.entity_id, v.limit_name) in zeroed for v in violations):
+                # Short only because a busy donor's move was given up (#724):
+                # nothing is debited, and the quota is not spent.
+                raise _contention_rejection(entries, now_ms)
             raise RateLimitExceeded(statuses)
 
         return Lease(
