@@ -332,7 +332,7 @@ The move takes effect on the next acquire in every process:
   restamps the bucket if a move overtook it. The read runs in the background while your code
   inside `acquire()` runs, so it adds no latency, and it is finished when the `async with`
   block exits. If it fails or is cancelled, that bucket's next acquire takes the slow path,
-  which restamps it.
+  which restamps it. Cancelling only that read never replaces your own exception.
 - **Nothing already debited moves.** Usage charged to the old parent stays there, including
   usage from leases opened before the move: their adjustments and rollbacks land on the old
   parent, where the tokens were taken.
