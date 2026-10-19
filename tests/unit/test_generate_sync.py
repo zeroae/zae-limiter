@@ -741,6 +741,12 @@ def test_main_fills_the_registry_from_every_covered_file(
     (tests / "test_a.py").write_text(_TASK_METHOD)
     registry: tuple[set[str], set[str]] = (set(), set())
     monkeypatch.setattr(generate_sync, "TASK_REGISTRY", registry)
+    foreign: dict[str, str] = {}
+    monkeypatch.setattr(generate_sync, "FOREIGN_TASK_NAMES", foreign)
+    (src / "helper.py").write_text(
+        "def later(work):\n    return asyncio.create_task(work())\n"
+        "class Box:\n    held: asyncio.Task[None]\n"
+    )
     monkeypatch.setattr(generate_sync, "SRC", src)
     monkeypatch.setattr(generate_sync, "TESTS", tests)
     monkeypatch.setattr(
@@ -752,3 +758,119 @@ def test_main_fills_the_registry_from_every_covered_file(
     generate_sync.main()
 
     assert registry == ({"t"}, {"start"})
+    # Everything under SRC's parent that is not a transformed source is foreign
+    # (in this layout that includes tests/; the real tree keeps tests outside src/).
+    assert foreign == {
+        "later": "src/helper.py",
+        "held": "src/helper.py",
+        "start": "tests/test_a.py",
+    }
+
+
+# Shapes that hide a task from the tracker abort instead of dropping the join
+# (#716 review, item 2)
+
+_START_BACKGROUND = (
+    "class Repository:\n"
+    "    def start_background(self, work) -> asyncio.Task[None]:\n"
+    "        task: asyncio.Task[None] = asyncio.create_task(work())\n"
+    "        return task\n"
+)
+_OWNER_FIELD = "class Lease:\n    _owner_task: asyncio.Task[None] | None = None\n"
+
+
+def _aborts(source: str) -> str:
+    with pytest.raises(generate_sync.UnsupportedAsyncConstructError) as excinfo:
+        transform(source, source_file="lease.py")
+    return str(excinfo.value)
+
+
+def test_a_bound_method_alias_of_a_task_function_aborts() -> None:
+    message = _aborts(
+        _START_BACKGROUND + _OWNER_FIELD + "    async def run(self, work):\n"
+        "        f = self.repository.start_background\n"
+        "        self._owner_task = f(work)\n"
+    )
+
+    assert "referenced without being called (a bound-method alias)" in message
+
+
+def test_a_task_name_from_an_unscanned_module_aborts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(generate_sync, "FOREIGN_TASK_NAMES", {"spawn_later": "zae_limiter/x.py"})
+
+    message = _aborts("async def run(helpers, work):\n    helpers.spawn_later(work)\n")
+
+    assert "defined in zae_limiter/x.py, a module the generator does not scan" in message
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        'await getattr(self, "_owner_task")',
+        'setattr(self, "_owner_task", None)',
+        'delattr(self, "_owner_task")',
+    ],
+)
+def test_a_task_attribute_reached_through_getattr_aborts(use: str) -> None:
+    message = _aborts(_OWNER_FIELD + f"    async def run(self):\n        {use}\n")
+
+    assert "the task attribute `_owner_task` is reached through" in message
+
+
+@pytest.mark.parametrize("kind", ["nonlocal", "global"])
+def test_a_handle_rebound_through_nonlocal_or_global_aborts(kind: str) -> None:
+    if kind == "nonlocal":
+        source = (
+            "async def run(work):\n"
+            "    t = asyncio.create_task(work())\n"
+            "    def reset():\n"
+            "        nonlocal t\n"
+            "        t = None\n"
+            "    await t\n"
+        )
+    else:
+        source = "t = asyncio.create_task(work())\nasync def run():\n    global t\n    await t\n"
+
+    message = _aborts(source)
+
+    assert f"is rebound through `{kind}`" in message
+
+
+_GETATTR_PREFIX = (
+    _START_BACKGROUND + _OWNER_FIELD + "    async def run(self, work):\n"
+    '        start = getattr(self.repository, "start_background", None)\n'
+    "        if start is None:\n"
+    "            return\n"
+)
+
+
+def test_the_lease_getattr_pattern_still_generates() -> None:
+    """lease.py's `_start_owner_checks`: the result lands in a registered task attribute."""
+    result = transform(_GETATTR_PREFIX + "        self._owner_task = start(work)\n")
+
+    assert "start = getattr(self.repository, 'start_background', None)" in result
+    assert "self._owner_task = start(work)" in result
+
+
+@pytest.mark.parametrize(
+    ("tail", "construct"),
+    [
+        pytest.param("        start(work)\n", "is not assigned directly", id="discarded"),
+        pytest.param("        h = start(work)\n", "is not assigned directly", id="plain_local"),
+        pytest.param("        return start\n", "escapes in `return start`", id="escapes"),
+    ],
+)
+def test_a_getattr_fetched_task_function_elsewhere_aborts(tail: str, construct: str) -> None:
+    message = _aborts(_GETATTR_PREFIX + tail)
+
+    assert "fetched through `getattr`" in message
+    assert construct in message
+
+
+def test_a_getattr_fetched_task_function_not_bound_to_a_local_aborts() -> None:
+    message = _aborts(
+        _START_BACKGROUND + _OWNER_FIELD + "    async def run(self, work):\n"
+        '        self._owner_task = getattr(self.repository, "start_background")(work)\n'
+    )
+
+    assert "without being bound to a local" in message
