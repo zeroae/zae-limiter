@@ -743,6 +743,8 @@ def test_main_fills_the_registry_from_every_covered_file(
     monkeypatch.setattr(generate_sync, "TASK_REGISTRY", registry)
     foreign: dict[str, str] = {}
     monkeypatch.setattr(generate_sync, "FOREIGN_TASK_NAMES", foreign)
+    origins: dict[str, str] = {}
+    monkeypatch.setattr(generate_sync, "TASK_ORIGINS", origins)
     (src / "helper.py").write_text(
         "def later(work):\n    return asyncio.create_task(work())\n"
         "class Box:\n    held: asyncio.Task[None]\n"
@@ -758,6 +760,7 @@ def test_main_fills_the_registry_from_every_covered_file(
     generate_sync.main()
 
     assert registry == ({"t"}, {"start"})
+    assert origins == {"t": "src/a.py:2", "start": "tests/test_a.py:2"}
     # Everything under SRC's parent that is not a transformed source is foreign
     # (in this layout that includes tests/; the real tree keeps tests outside src/).
     assert foreign == {
@@ -874,3 +877,23 @@ def test_a_getattr_fetched_task_function_not_bound_to_a_local_aborts() -> None:
     )
 
     assert "without being bound to a local" in message
+
+
+def test_a_name_match_abort_says_it_is_by_name_and_where_and_how_to_fix() -> None:
+    """The registry is name-only (#716 item 3): the abort must say so and point at it."""
+    message = _aborts(_OWNER_FIELD + "async def exit(lease):\n    await lease._owner_task\n")
+
+    assert "This is a match by name only" in message
+    assert "`_owner_task` is registered as a task attribute at lease.py:2" in message
+    assert "If this is an unrelated attribute, rename it" in message
+
+
+def test_a_name_registered_in_another_file_points_at_that_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(generate_sync, "TASK_REGISTRY", (set(), {"start_background"}))
+    monkeypatch.setattr(generate_sync, "TASK_ORIGINS", {"start_background": "zae/repo.py:9"})
+
+    message = _aborts("async def run(repo, work):\n    repo.start_background(work)\n")
+
+    assert "registered as a task function at zae/repo.py:9" in message

@@ -466,8 +466,18 @@ TASK_REGISTRY: tuple[set[str], set[str]] = (set(), set())
 # reaches one gets no sync translation for it, so any reference aborts.
 FOREIGN_TASK_NAMES: dict[str, str] = {}
 
+# Where each TASK_REGISTRY name was first registered ("file:line"), so an
+# abort caused by a name match can point at it. Filled with the registry.
+TASK_ORIGINS: dict[str, str] = {}
+
 
 def task_registry(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """``(attrs, methods)``: names that may hold, or return, an ``asyncio.Task``."""
+    attrs, methods = task_registry_lines(tree)
+    return set(attrs), set(methods)
+
+
+def task_registry_lines(tree: ast.AST) -> tuple[dict[str, int], dict[str, int]]:
     """``(attrs, methods)``: names that may hold, or return, an ``asyncio.Task``.
 
     ``attrs`` are class fields annotated ``asyncio.Task[...]`` and every
@@ -476,8 +486,8 @@ def task_registry(tree: ast.AST) -> tuple[set[str], set[str]]:
     """
     names_a_task = AsyncToSyncTransformer._names_a_task
     is_create_task = AsyncToSyncTransformer._is_create_task
-    attrs: set[str] = set()
-    methods: set[str] = set()
+    attrs: dict[str, int] = {}
+    methods: dict[str, int] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             for stmt in node.body:
@@ -486,10 +496,10 @@ def task_registry(tree: ast.AST) -> tuple[set[str], set[str]]:
                     and isinstance(stmt.target, ast.Name)
                     and names_a_task(stmt.annotation)
                 ):
-                    attrs.add(stmt.target.id)
+                    attrs.setdefault(stmt.target.id, stmt.lineno)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if names_a_task(node.returns):
-                methods.add(node.name)
+                methods.setdefault(node.name, node.lineno)
         targets: list[ast.expr] = []
         if isinstance(node, ast.Assign) and is_create_task(node.value):
             targets = node.targets
@@ -503,7 +513,7 @@ def task_registry(tree: ast.AST) -> tuple[set[str], set[str]]:
                 and isinstance(target.value, ast.Name)
                 and target.value.id == "self"
             ):
-                attrs.add(target.attr)
+                attrs.setdefault(target.attr, target.lineno)
     return attrs, methods
 
 
@@ -520,6 +530,7 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         self._trackable_create_tasks: set[int] = set()
         self._task_attrs: set[str] = set()
         self._task_methods: set[str] = set()
+        self._task_origins: dict[str, str] = {}
         super().__init__()
 
     # -- asyncio.create_task -------------------------------------------------
@@ -564,6 +575,16 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         return UnsupportedAsyncConstructError(
             f"{self.source_file}:{getattr(node, 'lineno', '?')}: `asyncio.create_task` cannot "
             f"be translated faithfully: {construct}.\n\n{_CREATE_TASK_HELP}"
+        )
+
+    def _name_match(self, name: str) -> str:
+        """The explanation appended to an abort that a registry name match caused."""
+        kind = "attribute" if name in self._task_attrs else "function"
+        origin = self._task_origins.get(name, "another generator-covered file")
+        return (
+            f". This is a match by name only: `{name}` is registered as a task {kind} at "
+            f"{origin}, so every `{name}` is treated as that task {kind}. If this is an "
+            "unrelated attribute, rename it"
         )
 
     @staticmethod
@@ -643,9 +664,12 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         ``create_task`` whose handle is not assigned to one of those
         spellings.
         """
-        own_attrs, own_methods = task_registry(tree)
-        self._task_attrs = own_attrs | TASK_REGISTRY[0]
-        self._task_methods = own_methods | TASK_REGISTRY[1]
+        own_attrs, own_methods = task_registry_lines(tree)
+        self._task_attrs = set(own_attrs) | TASK_REGISTRY[0]
+        self._task_methods = set(own_methods) | TASK_REGISTRY[1]
+        self._task_origins = dict(TASK_ORIGINS)
+        for name, line in {**own_methods, **own_attrs}.items():
+            self._task_origins.setdefault(name, f"{self.source_file}:{line}")
         self._check_scope(tree.body, set(), set(), returns_task=False, in_class=False)
         for node in ast.walk(tree):
             if self._is_create_task(node) and id(node) not in self._trackable_create_tasks:
@@ -772,7 +796,8 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
                 raise self._create_task_error(
                     node,
                     f"the task-returning function `{ast.unparse(node)}` is referenced "
-                    "without being called (a bound-method alias); call it directly",
+                    "without being called (a bound-method alias); call it directly"
+                    + self._name_match(name),
                 )
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             if node.func.id in ("getattr", "setattr", "delattr") and len(node.args) >= 2:
@@ -781,7 +806,8 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
                     raise self._create_task_error(
                         node,
                         f"the task attribute `{key.value}` is reached through "
-                        f"`{node.func.id}`; read it as `self.{key.value}`",
+                        f"`{node.func.id}`; read it as `self.{key.value}`"
+                        + self._name_match(str(key.value)),
                     )
             fetched = self._getattr_task_method(node)
             if fetched is not None:
@@ -863,7 +889,7 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             node,
             f"`{ast.unparse(node)}` reads a task attribute outside the class that annotates or "
             "assigns it; read it through `self` in that class (a subclass must annotate the "
-            "field `asyncio.Task[...]` again)",
+            "field `asyncio.Task[...]` again)" + self._name_match(node.attr),
         )
 
     def _check_task_method_call(
@@ -908,7 +934,7 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             node,
             f"`{ast.unparse(node)}` returns an `asyncio.Task`, and its result is not returned "
             "from a `-> asyncio.Task[...]` function, nor assigned to a target annotated "
-            "`asyncio.Task[...]` or already tracked as a handle",
+            "`asyncio.Task[...]` or already tracked as a handle" + self._name_match(name),
         )
 
     def _check_create_task_site(
@@ -2189,9 +2215,11 @@ def main() -> int:
         for source_name, _target_name in pairs:
             path = base / source_name
             if path.exists():
-                attrs, methods = task_registry(ast.parse(path.read_text()))
-                TASK_REGISTRY[0].update(attrs)
-                TASK_REGISTRY[1].update(methods)
+                attr_lines, method_lines = task_registry_lines(ast.parse(path.read_text()))
+                TASK_REGISTRY[0].update(attr_lines)
+                TASK_REGISTRY[1].update(method_lines)
+                for name, line in {**method_lines, **attr_lines}.items():
+                    TASK_ORIGINS.setdefault(name, f"{path.relative_to(base.parent)}:{line}")
     covered = {(SRC / source_name).resolve() for source_name, _ in SOURCE_TRANSFORMS}
     covered |= {(SRC / target_name).resolve() for _, target_name in SOURCE_TRANSFORMS}
     for path in sorted(SRC.parent.rglob("*.py")):
