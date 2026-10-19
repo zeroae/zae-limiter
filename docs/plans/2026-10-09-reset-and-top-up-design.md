@@ -202,6 +202,13 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
   condition is `attribute_not_exists(PK) OR (:ent <> :legacy AND ent <> :ent AND ent <> :legacy)`.
   **Trade-off:** a caller with no META right after a delete gets the old entity's result
   instead of a new grant. That under-grants and never over-grants.
+- **Residual P2 — a pre-META record outlives a recreate (round-6 review, accepted).** The
+  second case of the same trade-off. A top-up with key K made before the entity had META
+  writes its record with `ent = "-"`; if shard 0 then expires, `delete_entity` cannot find the
+  record, and after `create_entity` a top-up with K matches it, returns the old result and
+  grants 0 (probe: `first={'cal': 5} recreated_result={'cal': 5} tk_after=0`). Behaviour is
+  kept: making `"-"` match one way only is what over-granted in round 5. It ends with the
+  record's three-day TTL; callers should use a fresh key once the entity exists.
   The create path reads META once, for both the identity and the cascade stamps (F4).
 - **Residual F2 — a delete and recreate during one call.** The call reads META, then writes;
   if the entity is deleted and recreated in between, the record carries the old incarnation

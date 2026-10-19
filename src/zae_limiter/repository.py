@@ -8610,11 +8610,15 @@ class Repository:
                 retrying it may apply it twice. One residual: if the
                 entity is deleted and recreated *while* the call is in flight,
                 its record carries the old incarnation and a retry under the
-                new one is applied again, once. And a call made while the
-                entity has no META record reuses any record for the key, so
-                right after a ``delete_entity`` it can return the deleted
-                entity's result and apply nothing (an under-grant, never an
-                over-grant).
+                new one is applied again, once. And a record made while the
+                entity had no META record matches every incarnation, both
+                ways: a call with no META reuses any record for the key (right
+                after a ``delete_entity``, the deleted entity's), and a record
+                written before META existed outlives a later delete and
+                recreate (when ``delete_entity`` could not find it). Either
+                way the call returns the old result and applies nothing: an
+                under-grant, never an over-grant. Use a fresh key once the
+                entity exists.
 
         Returns:
             The shards written and, per limit, the tokens restored.
@@ -8680,11 +8684,15 @@ class Repository:
                 may not have been granted, and retrying may grant them twice. One residual: if the
                 entity is deleted and recreated *while* the call is in flight,
                 its record carries the old incarnation and a retry under the
-                new one is applied again, once. And a call made while the
-                entity has no META record reuses any record for the key, so
-                right after a ``delete_entity`` it can return the deleted
-                entity's result and apply nothing (an under-grant, never an
-                over-grant).
+                new one is applied again, once. And a record made while the
+                entity had no META record matches every incarnation, both
+                ways: a call with no META reuses any record for the key (right
+                after a ``delete_entity``, the deleted entity's), and a record
+                written before META existed outlives a later delete and
+                recreate (when ``delete_entity`` could not find it). Either
+                way the call returns the old result and applies nothing: an
+                under-grant, never an over-grant. Use a fresh key once the
+                entity exists.
 
         Returns:
             The shards written and, per limit, the tokens granted.

@@ -956,6 +956,28 @@ class TestRecordsBelongToOneIncarnation:
         clock[0] += 1
         assert await _drain(limiter, "e", "cal") == 5
 
+    async def test_a_pre_meta_record_outlives_a_recreate(self, limiter, clock):
+        """Round-6 review, P2, accepted and documented: a record written before
+        the entity had META ("-") matches every incarnation, so after shard 0
+        expired, delete_entity missed it and create_entity, the same key
+        returns the old result and grants 0 (an under-grant, never an
+        over-grant)."""
+        repo = limiter._repository
+        await repo.set_resource_defaults("r", [CAL])
+        first = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy")
+        client = await repo._get_client()
+        shard0 = {
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, "e", "r", 0)},
+            "SK": {"S": schema.sk_state()},
+        }
+        await client.delete_item(TableName=repo.table_name, Key=shard0)  # the TTL sweep
+        await repo.delete_entity("e")  # cannot find the record any more
+        await self._create(repo, "e", "inc-1")
+        again = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy")
+        assert again == first
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 10  # the share, no top-up
+
     @pytest.mark.parametrize("meta", ["pinc", "created_at", "none"])
     async def test_a_key_retry_hits_whatever_identifies_the_entity(self, limiter, clock, meta):
         repo = limiter._repository
