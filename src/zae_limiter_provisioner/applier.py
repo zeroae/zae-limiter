@@ -10,6 +10,7 @@ import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import boto3
@@ -364,9 +365,31 @@ def drop_unchanged(
         stored = list(pool.map(_read, [key for _i, key, _item in candidates]))
 
     unchanged = {
-        i for (i, _key, item), live in zip(candidates, stored, strict=True) if live == item
+        i
+        for (i, _key, item), live in zip(candidates, stored, strict=True)
+        if live is not None and _normalized(live) == _normalized(item)
     }
     return [change for i, change in enumerate(changes) if i not in unchanged]
+
+
+def _normalized(value: Any) -> Any:
+    """An attribute value with every number compared as a number.
+
+    DynamoDB stores a number canonically, so a manifest's ``capacity: 1000.0``
+    is written as ``"1000.0"`` and read back as ``"1000"``. Compared as strings
+    the entry would differ on every apply: correct, but rewritten and fanned
+    out each time.
+    """
+    if isinstance(value, dict):
+        if set(value) == {"N"} and isinstance(value["N"], str):
+            try:
+                return ("N", Decimal(value["N"]))
+            except InvalidOperation:
+                return value
+        return {k: _normalized(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalized(v) for v in value]
+    return value
 
 
 def apply_changes(

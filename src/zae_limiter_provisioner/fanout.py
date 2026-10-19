@@ -105,9 +105,22 @@ def resolve_disabled(
 
 
 def fanout_resource(
-    client: Any, table_name: str, namespace_id: str, resource: str, disabled: bool
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    resource: str,
+    disabled: bool,
+    *,
+    skip_matching: bool = False,
 ) -> int:
     """Stamp every bucket for a resource, honoring per-entity overrides.
+
+    ``skip_matching`` leaves alone a bucket whose stamp, as GSI2 projects it
+    (``ProjectionType: ALL``), already equals ``disabled`` — before resolving
+    its entity, so a re-assert of an unchanged level (the handler's repair of
+    a bucket an earlier fan-out missed) costs only the discovery query. Off by
+    default: the index is eventually consistent, and a level that just
+    changed must not trust it.
 
     Mirrors ``Repository._fanout_resource``: an entity whose own config
     resolves to a different value than the resource-level directive is
@@ -131,6 +144,10 @@ def fanout_resource(
             return None
         return disabled
 
+    def _matches(item: dict[str, Any]) -> bool:
+        stamp = item.get(BUCKET_FIELD_DISABLED, {}).get("BOOL", False)
+        return bool(stamp) == disabled
+
     return _fanout(
         client,
         table_name,
@@ -141,6 +158,7 @@ def fanout_resource(
         sk_prefix="BUCKET#",
         disabled=disabled,
         decide=_decide,
+        already=_matches if skip_matching else None,
     )
 
 
@@ -205,6 +223,7 @@ def _fanout(
     sk_prefix: str,
     disabled: bool,
     decide: Callable[[str], bool | None] | None = None,
+    already: Callable[[dict[str, Any]], bool] | None = None,
 ) -> int:
     """Discover and stamp matching bucket items, across two passes.
 
@@ -214,13 +233,18 @@ def _fanout(
     on each newly-discovered PK, or returns None to leave it alone; a PK it
     declines is NOT added to `stamped`, so it is re-considered (cheaply,
     since the caller's resolutions are memoized) on a later pass or page.
+    `already`, when given, is asked first about the indexed item and skips it
+    (unstamped and unresolved) when it says the bucket already holds the value.
     """
     stamped: set[str] = set()
 
     for _pass in range(2):
-        for pk in _query_bucket_pks(
+        for item in _query_bucket_items(
             client, table_name, index, pk_name, sk_name, pk_value, sk_prefix
         ):
+            pk = item["PK"]["S"]
+            if already is not None and already(item):
+                continue
             if pk not in stamped:
                 value = disabled if decide is None else decide(pk)
                 if value is None:
@@ -241,6 +265,22 @@ def _query_bucket_pks(
     sk_prefix: str,
 ) -> Iterator[str]:
     """Every bucket PK one paginated discovery query returns."""
+    for item in _query_bucket_items(
+        client, table_name, index, pk_name, sk_name, pk_value, sk_prefix
+    ):
+        yield item["PK"]["S"]
+
+
+def _query_bucket_items(
+    client: Any,
+    table_name: str,
+    index: str,
+    pk_name: str,
+    sk_name: str,
+    pk_value: str,
+    sk_prefix: str,
+) -> Iterator[dict[str, Any]]:
+    """Every bucket item (as the index projects it) one paginated discovery query returns."""
     start_key: dict[str, Any] | None = None
     while True:
         params: dict[str, Any] = {
@@ -256,9 +296,8 @@ def _query_bucket_pks(
             params["ExclusiveStartKey"] = start_key
         response = client.query(**params)
         for item in response.get("Items", []):
-            pk = item.get("PK", {}).get("S", "")
-            if pk:
-                yield pk
+            if item.get("PK", {}).get("S"):
+                yield item
         start_key = response.get("LastEvaluatedKey")
         if not start_key:
             return

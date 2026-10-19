@@ -40,6 +40,17 @@ def _disable_stamps(mock_client):
     ]
 
 
+def _bucket_updates(mock_client):
+    """The `update_item` calls a mock client made against bucket items.
+
+    An apply also writes the `#PROVISIONER` record's pending fan-outs ahead of
+    its config writes (an `UpdateItem`), which these tests do not count.
+    """
+    return [
+        c for c in mock_client.update_item.call_args_list if "BUCKET#" in c.kwargs["Key"]["PK"]["S"]
+    ]
+
+
 def _entity_default_get_item(namespace_id: str, entity_id: str, value: bool):
     """Build a `client.get_item` side_effect where only the entity's
     `_default_` config item is set, to `value`. Every other key (a specific
@@ -324,10 +335,8 @@ class TestProvisionerHandler:
         query_kwargs = mock_client.query.call_args.kwargs
         assert query_kwargs["IndexName"] == "GSI2"
         assert query_kwargs["ExpressionAttributeValues"][":pk"] == {"S": "ns123/RESOURCE#gpt-4"}
-        mock_client.update_item.assert_called_once()
-        assert mock_client.update_item.call_args.kwargs["Key"]["PK"] == {
-            "S": "ns123/BUCKET#user-1#gpt-4#0"
-        }
+        (stamp,) = _bucket_updates(mock_client)
+        assert stamp.kwargs["Key"]["PK"] == {"S": "ns123/BUCKET#user-1#gpt-4#0"}
 
     def test_a_level_whose_disabled_did_not_change_is_not_fanned_out(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
@@ -354,7 +363,7 @@ class TestProvisionerHandler:
         on_event(event, MagicMock())
 
         mock_client.query.assert_not_called()
-        mock_client.update_item.assert_not_called()
+        assert _bucket_updates(mock_client) == []
 
     def test_reapply_without_disabled_line_unstamps_previously_disabled_buckets(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
@@ -422,10 +431,8 @@ class TestProvisionerHandler:
         # resource config item now has an explicit `disabled: true`.
         resource_state["disabled"] = True
         on_event(disable_event, MagicMock())
-        mock_client.update_item.assert_called_once()
-        assert (
-            mock_client.update_item.call_args.kwargs["UpdateExpression"] == "SET #disabled = :true"
-        )
+        (stamp,) = _bucket_updates(mock_client)
+        assert stamp.kwargs["UpdateExpression"] == "SET #disabled = :true"
 
         mock_client.update_item.reset_mock()
 
@@ -446,8 +453,8 @@ class TestProvisionerHandler:
         }
         on_event(reenable_event, MagicMock())
 
-        mock_client.update_item.assert_called_once()
-        assert mock_client.update_item.call_args.kwargs["UpdateExpression"] == "REMOVE #disabled"
+        (stamp,) = _bucket_updates(mock_client)
+        assert stamp.kwargs["UpdateExpression"] == "REMOVE #disabled"
 
     def test_apply_disabled_resource_and_entity_fans_out_resource_first(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
@@ -628,8 +635,8 @@ class TestProvisionerHandler:
         query_kwargs = mock_client.query.call_args.kwargs
         assert query_kwargs["IndexName"] == "GSI2"
         assert query_kwargs["ExpressionAttributeValues"][":pk"] == {"S": "ns123/RESOURCE#gpt-4"}
-        mock_client.update_item.assert_called_once()
-        update_expr = mock_client.update_item.call_args.kwargs["UpdateExpression"]
+        (stamp,) = _bucket_updates(mock_client)
+        update_expr = stamp.kwargs["UpdateExpression"]
         assert update_expr == "SET #disabled = :true"
 
     def test_cfn_create_with_disabled_absent_key_is_not_fanned_out(
@@ -659,7 +666,7 @@ class TestProvisionerHandler:
         result = on_event(event, MagicMock())
         assert result["status"] == "applied"
         mock_client.query.assert_not_called()
-        mock_client.update_item.assert_not_called()
+        assert _bucket_updates(mock_client) == []
 
     def test_cfn_update_event(self, mock_handler_boto3, mock_applier_boto3, mock_urlopen):
         """CloudFormation Update event diffs against previous state."""
@@ -2043,6 +2050,7 @@ class TestCascadeFanoutChanges:
         assert errors == ["cascade fan-out resource llm: boom (retried on the next apply)"]
         assert failed == [("resource", "llm")]
 
+    @patch("zae_limiter_provisioner.handler._write_pending_ahead")
     @patch("zae_limiter_provisioner.handler._write_provisioner_state")
     @patch("zae_limiter_provisioner.handler._sync_bucket_param_changes", return_value=([], []))
     @patch("zae_limiter_provisioner.handler._fanout_disabled_changes", return_value=([], []))
@@ -2051,7 +2059,7 @@ class TestCascadeFanoutChanges:
     @patch("zae_limiter_provisioner.handler.require_cascade_policy_readers")
     @patch("zae_limiter_provisioner.handler.require_reset_after_readers")
     def test_an_apply_retries_pending_and_records_what_still_fails(
-        self, _gate1, mock_gate, mock_apply, mock_fanout, _disabled, _sync, mock_write
+        self, _gate1, mock_gate, mock_apply, mock_fanout, _disabled, _sync, mock_write, _ahead
     ):
         from zae_limiter_provisioner.applier import ApplyResult
         from zae_limiter_provisioner.handler import _apply_and_record
@@ -2259,7 +2267,8 @@ class TestApplyCostsWhatChanged:
         assert counting.calls["put_item"] == 2
         # Only the new entity's bucket sync discovers buckets (two passes).
         assert counting.calls.get("query", 0) == 2
-        assert counting.calls.get("update_item", 0) == 0
+        # Only the pending fan-outs written ahead of the config write.
+        assert counting.calls.get("update_item", 0) == 1
 
     def test_an_identical_reapply_writes_only_the_record(self, counting):
         self._apply(self._manifest(self.ENTITIES))
@@ -2320,9 +2329,12 @@ class TestApplyCostsWhatChanged:
         retry.assert_called_once()
         assert retry.call_args.args[3:] == ("gpt-4", True)
 
+        # Cleared; a declared `disabled` is still re-asserted on every apply,
+        # skipping buckets already stamped (the missed-bucket repair).
         with patch("zae_limiter_provisioner.handler.fanout_resource") as third:
             self._apply(manifest)
-        third.assert_not_called()
+        third.assert_called_once()
+        assert third.call_args.kwargs == {"skip_matching": True}
 
     def test_a_failed_sync_for_a_dropped_entity_is_retried_as_a_delete(self, counting):
         self._apply(self._manifest(2))
@@ -2410,3 +2422,238 @@ class TestWithPending:
             {"kind": "disabled", "level": "resource", "target": "gpt-4"},
         ]
         assert self._with_pending(changed, pending, "disabled") == changed
+
+
+class TestChangeOnlyApplyStaysSafe:
+    """The #739 review: a change-only apply must not lose a fan-out it owes."""
+
+    TABLE = "prov-change-only-safety"
+
+    @pytest.fixture
+    def counting(self, mock_dynamodb):
+        import boto3
+
+        from zae_limiter.sync_repository import SyncRepository
+
+        setup = SyncRepository(name=self.TABLE, region="us-east-1", _skip_deprecation_warning=True)
+        setup.create_table()
+        setup.close()
+        client = _CountingClient(boto3.client("dynamodb", region_name="us-east-1"))
+        with patch("boto3.client", return_value=client):
+            yield client
+
+    def _apply(self, manifest, action="apply", **extra):
+        return on_event(
+            {
+                "action": action,
+                "table_name": self.TABLE,
+                "namespace_id": "ns123",
+                "manifest": manifest,
+                **extra,
+            },
+            MagicMock(),
+        )
+
+    @staticmethod
+    def _manifest(capacity=10, *, disabled=None, resource_disabled=None, entities=("user-0",)):
+        entry: dict = {"limits": {"rpm": {"capacity": capacity}}}
+        if disabled is not None:
+            entry["disabled"] = disabled
+        resource: dict = {"limits": {"rpm": {"capacity": 1000}}}
+        if resource_disabled is not None:
+            resource["disabled"] = resource_disabled
+        return {
+            "namespace": "test-ns",
+            "resources": {"gpt-4": resource},
+            "entities": {e: {"resources": {"gpt-4": entry}} for e in entities},
+        }
+
+    def _put_bucket(self, client, entity_id, *, disabled=False, capacity=10):
+        from zae_limiter.schema import gsi2_pk_resource, gsi2_sk_bucket, gsi3_pk_entity
+
+        item = {
+            "PK": {"S": f"ns123/BUCKET#{entity_id}#gpt-4#0"},
+            "SK": {"S": "#STATE"},
+            "GSI2PK": {"S": gsi2_pk_resource("ns123", "gpt-4")},
+            "GSI2SK": {"S": gsi2_sk_bucket(entity_id, 0)},
+            "GSI3PK": {"S": gsi3_pk_entity("ns123", entity_id)},
+            "GSI3SK": {"S": "BUCKET#gpt-4#0"},
+            "b_rpm_cp": {"N": str(capacity * 1000)},
+            "b_rpm_ra": {"N": str(capacity * 1000)},
+            "b_rpm_rp": {"N": "60"},
+            "b_rpm_tk": {"N": str(capacity * 1000)},
+            "rf": {"N": "1"},
+        }
+        if disabled:
+            item["disabled"] = {"BOOL": True}
+        client.put_item(TableName=self.TABLE, Item=item)
+
+    def _bucket(self, client, entity_id):
+        return client.get_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": f"ns123/BUCKET#{entity_id}#gpt-4#0"}, "SK": {"S": "#STATE"}},
+        )["Item"]
+
+    def _record(self, client):
+        from zae_limiter_provisioner.handler import _read_provisioner_state
+
+        return _read_provisioner_state(self.TABLE, "ns123")
+
+    def test_an_apply_killed_before_its_fanouts_is_healed_by_the_next(self, counting):
+        """The reproduced case: the config lands, the Lambda dies, nothing fans out."""
+        self._apply(self._manifest())
+        self._put_bucket(counting, "user-0")
+
+        with patch(
+            "zae_limiter_provisioner.handler._fanout_disabled_changes",
+            side_effect=TimeoutError("Lambda timed out"),
+        ):
+            with pytest.raises(TimeoutError):
+                self._apply(self._manifest(disabled=True))
+        assert "disabled" not in self._bucket(counting, "user-0")
+        assert {"kind": "disabled", "level": "entity", "target": "user-0/gpt-4"} in (
+            self._record(counting)["fanout_pending"]
+        )
+
+        result = self._apply(self._manifest(disabled=True))
+
+        assert result["changes"] == []  # the config already matches
+        assert self._bucket(counting, "user-0")["disabled"] == {"BOOL": True}
+        assert self._record(counting)["fanout_pending"] == []
+
+    def test_a_killed_limit_change_is_still_synced(self, counting):
+        """Nothing re-asserts a limit, so only the written-ahead record heals it."""
+        self._apply(self._manifest(capacity=10))
+        self._put_bucket(counting, "user-0", capacity=10)
+
+        with patch(
+            "zae_limiter_provisioner.handler._sync_bucket_param_changes",
+            side_effect=TimeoutError("Lambda timed out"),
+        ):
+            with pytest.raises(TimeoutError):
+                self._apply(self._manifest(capacity=20))
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "10000"}
+
+        self._apply(self._manifest(capacity=20))
+
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
+        assert self._record(counting)["fanout_pending"] == []
+
+    def test_a_killed_cascade_change_is_still_restamped(self, counting):
+        manifest = self._manifest()
+        self._apply(manifest)
+        manifest["entities"]["user-0"]["resources"]["gpt-4"]["cascade"] = True
+
+        with (
+            patch("zae_limiter_provisioner.handler.require_cascade_policy_readers"),
+            patch(
+                "zae_limiter_provisioner.handler._fanout_cascade_changes",
+                side_effect=TimeoutError("Lambda timed out"),
+            ),
+        ):
+            with pytest.raises(TimeoutError):
+                self._apply(manifest)
+        assert ("entity", "user-0/gpt-4") in self._record(counting)["cascade_pending"]
+
+        with (
+            patch("zae_limiter_provisioner.handler.require_cascade_policy_readers"),
+            patch("zae_limiter_provisioner.handler.fanout_cascade") as fanout,
+        ):
+            self._apply(manifest)
+        assert fanout.call_args.kwargs == {"entity_id": "user-0", "resource": "gpt-4"}
+        assert self._record(counting)["cascade_pending"] == []
+
+    def test_a_bucket_the_disable_fanout_missed_is_stamped_by_a_reapply(self, counting):
+        manifest = self._manifest(resource_disabled=True)
+        self._apply(manifest)
+        # Created by an acquire the fan-out's discovery query did not see.
+        self._put_bucket(counting, "user-0")
+
+        result = self._apply(manifest)
+
+        assert result["changes"] == []
+        assert self._bucket(counting, "user-0")["disabled"] == {"BOOL": True}
+
+    def test_a_reasserted_resource_rewrites_no_bucket_already_stamped(self, counting):
+        manifest = self._manifest(resource_disabled=True, entities=("user-0", "user-1"))
+        self._apply(manifest)
+        self._put_bucket(counting, "user-0", disabled=True)
+        self._put_bucket(counting, "user-1", disabled=True)
+        counting.calls.clear()
+
+        self._apply(manifest)
+
+        assert counting.calls.get("update_item", 0) == 0
+        assert counting.calls["query"] == 2  # the GSI2 discovery, two passes
+
+    def test_an_undeclared_disabled_is_not_reasserted(self, counting):
+        self._apply(self._manifest())
+        counting.calls.clear()
+        self._apply(self._manifest())
+        assert counting.calls.get("query", 0) == 0
+
+    def test_full_fans_out_every_declared_level(self, counting):
+        manifest = self._manifest(entities=("user-0", "user-1", "user-2"))
+        self._apply(manifest)
+
+        with patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync:
+            result = self._apply(manifest, full=True)
+
+        assert result["unchanged"] == 0
+        assert len(result["changes"]) == 4
+        assert sorted(c.kwargs["entity_id"] for c in sync.call_args_list) == [
+            "user-0",
+            "user-1",
+            "user-2",
+        ]
+
+    def test_the_version_gates_see_unchanged_entries(self, counting):
+        manifest = self._manifest()
+        self._apply(manifest)
+
+        with (
+            patch("zae_limiter_provisioner.handler.require_reset_after_readers") as reset_gate,
+            patch("zae_limiter_provisioner.handler.require_cascade_policy_readers") as cascade_gate,
+        ):
+            result = self._apply(manifest)
+
+        assert result["changes"] == []
+        for gate in (reset_gate, cascade_gate):
+            targets = {c.target for c in gate.call_args.args[0]}
+            assert targets == {"gpt-4", "user-0/gpt-4"}
+
+    def test_a_large_apply_cut_short_runs_the_next_one_in_full(self, counting):
+        """Too many levels to list ahead: one flag instead, far under 400 KB."""
+        from zae_limiter_provisioner.handler import _MAX_PENDING_AHEAD
+
+        entities = tuple(f"user-{i}" for i in range(_MAX_PENDING_AHEAD + 1))
+        with patch(
+            "zae_limiter_provisioner.handler._sync_bucket_param_changes",
+            side_effect=TimeoutError("Lambda timed out"),
+        ):
+            with pytest.raises(TimeoutError):
+                self._apply(self._manifest(entities=entities))
+        record = self._record(counting)
+        assert record["full_pending"] is True
+        assert record["fanout_pending"] == []
+
+        with patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync:
+            result = self._apply(self._manifest(entities=entities))
+
+        assert result["unchanged"] == 0
+        assert sync.call_count == len(entities)
+        assert self._record(counting)["full_pending"] is False
+
+    def test_a_plan_does_not_run_in_full(self, counting):
+        from zae_limiter_provisioner.handler import _MAX_PENDING_AHEAD
+
+        entities = tuple(f"user-{i}" for i in range(_MAX_PENDING_AHEAD + 1))
+        with patch(
+            "zae_limiter_provisioner.handler._sync_bucket_param_changes",
+            side_effect=TimeoutError("Lambda timed out"),
+        ):
+            with pytest.raises(TimeoutError):
+                self._apply(self._manifest(entities=entities))
+
+        result = self._apply(self._manifest(entities=entities), action="plan")
+        assert result["changes"] == []

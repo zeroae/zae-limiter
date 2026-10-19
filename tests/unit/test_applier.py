@@ -980,3 +980,34 @@ class TestChangedFanouts:
             "update bogus x: Unknown level: bogus",
             "delete bogus x: Unknown level: bogus",
         ]
+
+
+class TestDropUnchangedNumbers:
+    """Numbers compare as numbers: DynamoDB stores `1000.0` as `1000`."""
+
+    @pytest.fixture
+    def table(self, mock_dynamodb):
+        import boto3
+
+        from zae_limiter.sync_repository import SyncRepository
+
+        setup = SyncRepository(
+            name="drop-numbers", region="us-east-1", _skip_deprecation_warning=True
+        )
+        setup.create_table()
+        setup.close()
+        return boto3.client("dynamodb", region_name="us-east-1")
+
+    def test_a_float_capacity_matches_its_stored_integer(self, table):
+        limits = {"rpm": {"capacity": 1000.0, "refill_amount": 1000.0, "refill_period": 60}}
+        change = Change("update", "resource", "gpt-4", {"limits": limits})
+        apply_changes([change], "drop-numbers", "ns", client=table)
+
+        assert drop_unchanged([change], "drop-numbers", "ns", client=table) == []
+
+    def test_a_different_number_still_differs(self, table):
+        apply_changes(
+            [Change("create", "resource", "gpt-4", _rpm(1000))], "drop-numbers", "ns", client=table
+        )
+        change = Change("update", "resource", "gpt-4", _rpm(1001))
+        assert drop_unchanged([change], "drop-numbers", "ns", client=table) == [change]

@@ -1337,3 +1337,27 @@ class TestLimitsQuietAndUnchanged:
         response = {k: v for k, v in self._APPLIED.items() if k != "unchanged"}
         result = self._run("apply", response, "-q")
         assert result.output == "Applied: 1 created, 1 updated, 0 deleted.\n"
+
+
+class TestLimitsApplyFull:
+    """`--full` asks the provisioner to fan out every declared entry."""
+
+    def _invoke(self, *flags):
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+            with patch(
+                "zae_limiter.limits_cli._invoke_provisioner",
+                return_value={"status": "applied", "changes": []},
+            ) as invoke:
+                result = CliRunner().invoke(
+                    cli, ["limits", "apply", "--name", "test-app", "-f", f.name, *flags]
+                )
+        assert result.exit_code == 0
+        return invoke
+
+    def test_full_is_forwarded(self):
+        assert self._invoke("--full").call_args.kwargs["full"] is True
+
+    def test_change_only_by_default(self):
+        assert self._invoke().call_args.kwargs["full"] is False

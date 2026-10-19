@@ -293,6 +293,11 @@ change.
 Pass `--quiet` / `-q` to `plan`, `apply` or `diff` to print only the summary line, without a
 line per changed entry. Errors are still printed.
 
+Entries that declare `disabled` (kill switches and carve-outs) are re-checked on every apply
+even when unchanged, so a bucket created while an earlier disable was being applied is still
+stamped. Limit changes are not re-checked: `limits apply --full` rewrites every declared entry
+and pushes its limits to existing buckets again, as every apply did before change-only applies.
+
 ### Detect Drift
 
 ```bash
@@ -333,6 +338,7 @@ The generated template uses `Custom::ZaeLimiterLimits` backed by the provisioner
 | `--endpoint-url` | | Custom endpoint URL (e.g., LocalStack) |
 | `--namespace` | `-N` | Namespace (default: `"default"`) |
 | `--quiet` | `-q` | Print only the summary, not a line per changed entry (`plan`, `apply`, `diff`) |
+| `--full` | | Rewrite and fan out every declared entry, not only changed ones (`apply`) |
 
 ### Partial Failures
 
@@ -349,7 +355,9 @@ Errors (1):
 
 Every write is idempotent, so re-running the same manifest reconciles the remainder. A fan-out
 that failed is recorded in the `#PROVISIONER` record and retried by the next apply even when the
-manifest has not changed (unchanged entries are otherwise skipped). The record is written either
+manifest has not changed (unchanged entries are otherwise skipped). The entries an apply is about
+to change are recorded **before** it writes them, so an apply that is interrupted (a Lambda
+timeout) is finished by the next one. The record is written either
 way, so it always describes the config that is actually in the table.
 
 !!! note "Provisioner Lambda"

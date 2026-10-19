@@ -94,6 +94,14 @@ def limits_plan(
     is_flag=True,
     help="Print only the summary, not a line per changed entry.",
 )
+@click.option(
+    "--full",
+    is_flag=True,
+    help=(
+        "Rewrite and fan out every declared entry, not only the ones that differ "
+        "from the table. Repairs bucket items an earlier fan-out missed."
+    ),
+)
 def limits_apply(
     name: str,
     region: str | None,
@@ -101,10 +109,11 @@ def limits_apply(
     namespace: str,
     file_path: str,
     quiet: bool,
+    full: bool,
 ) -> None:
     """Apply limits from YAML file (like terraform apply)."""
     manifest_data = _load_yaml(file_path)
-    result = _invoke_provisioner(name, region, endpoint_url, "apply", manifest_data)
+    result = _invoke_provisioner(name, region, endpoint_url, "apply", manifest_data, full=full)
 
     changes = result.get("changes", [])
     errors = result.get("errors", [])
@@ -401,6 +410,7 @@ def _invoke_provisioner(
     manifest_data: dict[str, Any],
     *,
     preview: str | None = None,
+    full: bool = False,
 ) -> dict[str, Any]:
     """Invoke the provisioner Lambda function.
 
@@ -491,12 +501,14 @@ def _invoke_provisioner(
 
     lambda_client = boto3.client("lambda", **kwargs)
 
-    payload = {
+    payload: dict[str, Any] = {
         "action": action,
         "table_name": name,
         "namespace_id": namespace_id,
         "manifest": manifest_data,
     }
+    if full:
+        payload["full"] = True
 
     try:
         response = lambda_client.invoke(
