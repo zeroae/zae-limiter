@@ -2219,7 +2219,14 @@ class SyncRateLimiter:
         resolved limits: one per limit named in ``consume``, none exceeded,
         each waiting ``_CONTENTION_RETRY_AFTER_S``. ``available`` is the stored
         balance where the item has one; a slot still being planned has none.
+
+        When no resolved limit is named in ``consume`` — a cascade parent whose
+        limits share no name with the request — every resolved limit is
+        reported, requesting ``consume.get(name, 0)``. An empty list made the
+        constructor raise ``ValueError``, which reached ``on_unavailable``: a
+        degraded lease under ALLOW (#729).
         """
+        reported = [limit for limit in limits if limit.name in consume] or limits
         statuses = [
             LimitStatus(
                 entity_id=entity_id,
@@ -2229,12 +2236,11 @@ class SyncRateLimiter:
                 available=state.tokens_milli // 1000
                 if (state := existing.get((entity_id, resource, limit.name))) is not None
                 else 0,
-                requested=consume[limit.name],
+                requested=consume.get(limit.name, 0),
                 exceeded=False,
                 retry_after_seconds=_CONTENTION_RETRY_AFTER_S,
             )
-            for limit in limits
-            if limit.name in consume
+            for limit in reported
         ]
         return RateLimitExceeded(statuses, contended=True)
 

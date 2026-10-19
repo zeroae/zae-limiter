@@ -12575,3 +12575,51 @@ class TestStampingContinuesPastAContendedSibling:
             except RateLimitExceeded:
                 pass
         assert admitted <= 1125
+
+
+class TestPlanningContentionOnACascadeParent:
+    """A planning conflict on a cascade parent is a 429, never an outage (#729).
+
+    The parent is sharded and carries only a daily quota, which shares no name
+    with ``consume={"rpm": 1}``. Its quota planning keeps conflicting.
+    """
+
+    RPM = Limit.per_minute("rpm", 10)
+    DAILY = Limit.quota("daily", 1000, cron="0 0 * * *")
+
+    def _setup(self, sync_limiter, child_tokens: int):
+        repo = sync_limiter._repository
+        now_ms = freeze_clock(repo)
+        sync_limiter.create_entity("org")
+        sync_limiter.create_entity("kid", parent_id="org", cascade=True)
+        sync_limiter.set_limits("kid", [self.RPM], resource="gpt-4")
+        sync_limiter.set_limits("org", [self.DAILY], resource="gpt-4")
+        state = BucketState.from_limit("kid", "gpt-4", self.RPM, now_ms)
+        state.tokens_milli = child_tokens
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "kid", "gpt-4", [state], now_ms, cascade=True, parent_id="org"
+                )
+            ]
+        )
+        repo._entity_cache[repo._namespace_id, "org"] = (False, None, {"gpt-4": 4})
+        original = repo.plan_quota_shard
+
+        def conflicting_for_parent(entity_id, *args, **kwargs):
+            if entity_id == "org":
+                raise ClientError(
+                    {"Error": {"Code": "TransactionConflictException", "Message": "busy"}},
+                    "UpdateItem",
+                )
+            return original(entity_id, *args, **kwargs)
+
+        repo.plan_quota_shard = conflicting_for_parent
+        return SyncRateLimiter(repository=repo, speculative_writes=False)
+
+    @pytest.mark.parametrize("mode", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    def test_a_parent_sharing_no_limit_name_is_still_a_429(self, sync_limiter, mode):
+        slow = self._setup(sync_limiter, child_tokens=0)
+        with pytest.raises(RateLimitExceeded):
+            with slow.acquire("kid", "gpt-4", {"rpm": 1}, on_unavailable=mode):
+                pass
