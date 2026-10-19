@@ -7172,12 +7172,13 @@ class SyncRepository:
         period.
 
         - A **quota** gains exactly the amount, spread over its shards by
-          the share of the allowance each one holds (``1 / gc``). What lands
-          above a shard's ceiling is recorded as allowance topped up this
-          period (``b_{name}_tu``) and lasts until the next reset or window
-          roll. That needs Lambdas at 0.17.0 or later (an older aggregator
-          clamps it away): the version is checked once per repository and
-          ``client_min_version`` is raised to 0.17.0.
+          the share of the allowance each one holds (``1 / gc``). Every
+          token a shard gains is recorded as allowance topped up this period
+          (``b_{name}_tu`` += its portion), whatever the shard held, and lasts
+          until the next reset or window roll. That needs Lambdas at 0.17.0
+          or later (an older aggregator clamps it away): the version is
+          checked once per repository and ``client_min_version`` is raised
+          to 0.17.0.
         - A **session** quota with no live window opens one now, so the
           purchase starts the session.
         - A **dripping** limit gains at most the room below its ceiling (a
@@ -7218,8 +7219,8 @@ class SyncRepository:
         Raises:
             ValidationError: An amount is not a positive integer, or a name is
                 not a limit configured for the pair.
-            VersionMismatchError: A quota top-up above the plan against Lambdas
-                predating 0.17.0.
+            VersionMismatchError: A quota top-up against Lambdas predating
+                0.17.0.
             ResourceDisabled: The bucket does not exist yet and the resource is
                 disabled for the entity.
             RateLimiterUnavailable: Another writer kept changing the bucket
