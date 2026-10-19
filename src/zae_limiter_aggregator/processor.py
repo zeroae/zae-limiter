@@ -961,6 +961,9 @@ def try_refill_bucket(
     # name (#634) — `NAME_PATTERN` allows `.` and `-`, and an inline
     # `b_rpm.v2_tk` parses as a nested document path.
     refilled: list[str] = []
+    # (alias, placeholder, `tk` as read) for every raise this write computes
+    # from the image: pinned on `tk <= read` below (#730).
+    raised: list[tuple[str, str, int]] = []
     # Limits this pass leaves unclamped — a quota it does not reset or roll (it
     # never drips, so `refill_bucket` never clamps it) — with their ceilings.
     # `vu` is not re-stamped while one is above its ceiling, and a re-stamp is
@@ -1057,6 +1060,8 @@ def try_refill_bucket(
                 add_parts.append(f"#wtk{idx} :wd{idx}")
                 expr_names[f"#wtk{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
                 expr_values[f":wd{idx}"] = roll_delta
+                if roll_delta > 0:
+                    raised.append((f"#wtk{idx}", f":wk{idx}", info.tk_milli))
                 # Pin the window being restored (see the condition below).
                 expr_names[f"#wws{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_WS)
                 expr_values[f":ews{idx}"] = window[0]
@@ -1091,6 +1096,8 @@ def try_refill_bucket(
                     add_parts.append(f"#rt{idx} :rd{idx}")
                     expr_names[f"#rt{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
                     expr_values[f":rd{idx}"] = reset_delta
+                    if reset_delta > 0:
+                        raised.append((f"#rt{idx}", f":rk{idx}", info.tk_milli))
                     refilled.append(limit_name)
                 continue
 
@@ -1141,6 +1148,8 @@ def try_refill_bucket(
         add_parts.append(f"#rt{idx} :rd{idx}")
         expr_names[f"#rt{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
         expr_values[f":rd{idx}"] = refill_delta
+        if refill_delta > 0:
+            raised.append((f"#rt{idx}", f":rk{idx}", info.tk_milli))
         refilled.append(limit_name)
 
     if not any_needs_refill:
@@ -1231,6 +1240,16 @@ def try_refill_bucket(
     # lost lock. One term per rolled limit, positional aliases only.
     for idx in range(len(rolled)):
         condition += f" AND #wws{idx} = :ews{idx}"
+
+    # A raise is computed from the image's `tk`. A refund or release landing
+    # since moves neither `rf` nor `vu`, so the refill would stack on top of
+    # it (#730: 15 admitted against a quota of 10). Speculative debits only
+    # lower `tk`, so `tk` above the image means a credit: the write fails its
+    # condition and is skipped like any lost lock. A trim (delta <= 0) is not
+    # pinned, so it still clamps. Positional tokens (#634).
+    for alias, token, read_tk in raised:
+        condition += f" AND {alias} <= {token}"
+        expr_values[token] = read_tk
 
     # ADR-145 I3/I4: a reset or roll this write applies re-grants that quota
     # at the item's count, so it stamps `gc` in the same write — and pins the

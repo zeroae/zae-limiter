@@ -15,6 +15,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from .lambda_builder import write_lambda_zip
+
 
 def _get_runtime_requirements() -> list[str]:
     """Read ``[lambda]`` extra dependencies plus pyyaml.
@@ -165,10 +167,7 @@ def build_provisioner_package() -> bytes:
         # Create zip
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for file_path in artifacts_dir.rglob("*"):
-                if file_path.is_file():
-                    arcname = file_path.relative_to(artifacts_dir)
-                    zf.write(file_path, arcname)
+            write_lambda_zip(zf, artifacts_dir)
 
         zip_buffer.seek(0)
         return zip_buffer.getvalue()

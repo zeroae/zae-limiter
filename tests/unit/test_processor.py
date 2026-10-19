@@ -2635,7 +2635,7 @@ class TestAggregatorRestampsVu:
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
         kwargs = table.update_item.call_args.kwargs
         assert kwargs["ConditionExpression"] == (
-            "rf = :expected_rf AND #vu = :expected_vu AND #sched = :expected_sched"
+            "rf = :expected_rf AND #vu = :expected_vu AND #rt0 <= :rk0 AND #sched = :expected_sched"
         )
         assert kwargs["ExpressionAttributeValues"][":expected_sched"] == BUSINESS_COMPACT
         assert kwargs["ExpressionAttributeNames"]["#sched"] == "sched"
@@ -2651,7 +2651,10 @@ class TestAggregatorRestampsVu:
         state = _sched_state(sched=BUSINESS)
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
         kwargs = table.update_item.call_args.kwargs
-        assert kwargs["ConditionExpression"] == ("rf = :expected_rf AND attribute_not_exists(#vu)")
+        # Plus the refill's own pin on the balance it read (#730 R5).
+        assert kwargs["ConditionExpression"] == (
+            "rf = :expected_rf AND attribute_not_exists(#vu) AND #rt0 <= :rk0"
+        )
         assert "#sched" not in kwargs["ExpressionAttributeNames"]
 
     def test_the_vu_pin_matches_the_stamp_the_image_carried(self) -> None:
