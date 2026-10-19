@@ -120,6 +120,14 @@ repair is tracked in [#747](https://github.com/zeroae/zae-limiter/issues/747).
     the missing shards at that count on its next acquire. No repair procedure is documented
     yet; follow #747.
 
+**Client clock skew can still double up to 32.** The aggregator projects a bucket's stored
+`wcu` balance from its `rf` timestamp to the aggregator's own clock before deciding to double.
+`rf` is stamped from the client's clock, so when a client runs about 2 seconds ahead, the
+projection adds no refill, a stale low balance still reads as a hot partition, and the
+aggregator can double the entity again on following invocations. The walk is bounded: it stops
+at `MAX_SHARD_COUNT` (32) and never goes past it. Keep client and Lambda clocks in sync (NTP;
+Lambda's clock is already synced) to avoid it.
+
 ### Limits Not Enforcing
 
 **Common causes:**
