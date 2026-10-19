@@ -14899,3 +14899,134 @@ class TestPeriodRedoKeepsContention:
             (True, True),
             (True, True),  # the redo, which dropped it before
         ]
+
+
+class TestStampingContinuesPastAContendedSibling:
+    """A sibling stamp still contended after its retries skips only that sibling (#729).
+
+    ``_propagate_shard_count``'s ``stamp()`` re-raised such a conflict. The sync
+    twin in serial mode runs the stamps one by one (``tuple(fn() for fn in
+    funcs)``), so the first contended sibling stopped every later one, and in
+    async the raise left the other stamps un-awaited. Measured: doubling 4 -> 8
+    with shard 1 contended left counts [8, 4, 4, 4] and admitted 1375 in one
+    minute against 1000/min. The sync twin is forced to serial below; it is
+    what ``parallel_mode="auto"`` picks on a 1-vCPU host.
+    """
+
+    RPM = Limit.per_minute("rpm", 1000)
+
+    async def _sharded(self, limiter, entity_id: str, old_count: int):
+        """``old_count`` shards of a 1000/min limit, all stamped ``old_count``."""
+        repo = limiter._repository
+        if hasattr(repo, "_executor_fn"):  # the sync twin: one stamp after another
+            repo._executor_fn = lambda funcs: tuple(fn() for fn in funcs)
+        clock = {"now": repo._now_ms()}
+        repo._now_ms = lambda: clock["now"]
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([self.RPM])
+        for shard in range(old_count):
+            state = BucketState.from_limit(
+                entity_id, "gpt-4", self.RPM, clock["now"], shard_count=old_count
+            )
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id,
+                        "gpt-4",
+                        [state],
+                        clock["now"],
+                        shard_id=shard,
+                        shard_count=old_count,
+                    )
+                ]
+            )
+        repo._entity_cache[(repo._namespace_id, entity_id)] = (False, None, {"gpt-4": old_count})
+        return repo, clock
+
+    def _key(self, repo, entity_id: str, shard_id: int) -> dict:
+        return {
+            "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+            "SK": {"S": sk_state()},
+        }
+
+    async def _counts(self, repo, entity_id: str, shards: int) -> list[int]:
+        client = await repo._get_client()
+        counts = []
+        for shard in range(shards):
+            response = await client.get_item(
+                TableName=repo.table_name, Key=self._key(repo, entity_id, shard)
+            )
+            counts.append(int(response["Item"]["shard_count"]["N"]))
+        return counts
+
+    async def _contend(self, repo, entity_id: str, shards: set[int]) -> None:
+        client = await repo._get_client()
+        original = client.update_item
+        contended = {pk_bucket(repo._namespace_id, entity_id, "gpt-4", s) for s in shards}
+
+        async def conflicted(**kwargs):
+            if (
+                kwargs.get("Key", {}).get("PK", {}).get("S") in contended
+                and kwargs.get("ConditionExpression") == "shard_count < :new"
+            ):
+                raise ClientError(
+                    {"Error": {"Code": "TransactionConflictException", "Message": "busy"}},
+                    "UpdateItem",
+                )
+            return await original(**kwargs)
+
+        client.update_item = conflicted
+
+    @pytest.mark.parametrize("old_count", [4, 16])
+    @pytest.mark.parametrize("position", ["first", "middle", "last", "two"])
+    async def test_every_other_sibling_is_stamped(self, limiter, old_count, position):
+        repo, _clock = await self._sharded(limiter, "busy", old_count)
+        stuck = {
+            "first": {1},
+            "middle": {old_count // 2},
+            "last": {old_count - 1},
+            "two": {1, old_count - 1},
+        }[position]
+        await self._contend(repo, "busy", stuck)
+
+        assert await repo.bump_shard_count("busy", "gpt-4", old_count) == 2 * old_count
+
+        counts = await self._counts(repo, "busy", old_count)
+        assert counts == [old_count if s in stuck else 2 * old_count for s in range(old_count)]
+
+    async def test_one_contended_sibling_bounds_the_overshoot(self, limiter):
+        """4 -> 8 with shard 1 contended: only that shard stays on the old share.
+
+        It refills toward 1000 // 4 = 250 instead of 125, so a minute admits at
+        most 7 * 125 + 250 = 1125 (that stale sibling is a separate item); before
+        the fix shards 2 and 3 were skipped too and a minute admitted 1375.
+        """
+        repo, clock = await self._sharded(limiter, "hot", 4)
+        await self._contend(repo, "hot", {1})
+        assert await repo.bump_shard_count("hot", "gpt-4", 4) == 8
+        for shard in range(4, 8):  # the new range, created by the real slow path
+            with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                async with limiter.acquire("hot", "gpt-4", {"rpm": 0}):
+                    pass
+
+        client = await repo._get_client()
+        for shard in range(8):
+            await client.update_item(
+                TableName=repo.table_name,
+                Key=self._key(repo, "hot", shard),
+                UpdateExpression="SET #t = :z, #rf = :rf",
+                ExpressionAttributeNames={
+                    "#t": bucket_attr("rpm", BUCKET_FIELD_TK),
+                    "#rf": BUCKET_FIELD_RF,
+                },
+                ExpressionAttributeValues={":z": {"N": "0"}, ":rf": {"N": str(clock["now"])}},
+            )
+        clock["now"] += 60_000
+        admitted = 0
+        for _ in range(1600):
+            try:
+                async with limiter.acquire("hot", "gpt-4", {"rpm": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                pass
+        assert admitted <= 1125

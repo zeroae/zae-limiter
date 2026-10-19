@@ -4310,6 +4310,12 @@ class Repository:
                 code = e.response.get("Error", {}).get("Code")
                 if code == "ConditionalCheckFailedException":
                     return 0  # Already at or above the new count
+                if _is_item_transaction_conflict(e):
+                    # Still contended after the retries: leave this sibling and
+                    # stamp the rest, so one busy shard cannot stop the others
+                    # (sync serial runs them one by one).
+                    logger.warning("shard count stamp still contended; sibling left behind")
+                    return 0
                 raise
 
         # A comprehension, not a pre-built list: the sync transformer rewrites

@@ -3591,6 +3591,9 @@ class SyncRepository:
                 code = e.response.get("Error", {}).get("Code")
                 if code == "ConditionalCheckFailedException":
                     return 0
+                if _is_item_transaction_conflict(e):
+                    logger.warning("shard count stamp still contended; sibling left behind")
+                    return 0
                 raise
 
         results = self._run_in_executor(*[lambda n=n: stamp(n) for n in range(1, old_count)])
