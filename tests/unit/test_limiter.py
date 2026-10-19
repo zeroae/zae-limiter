@@ -14574,3 +14574,117 @@ class TestContendedZeroGrant:
         assert moves["n"] == 5
         assert exc_info.value.contended is False
         assert [v.limit_name for v in exc_info.value.violations] == ["rpd"]
+
+
+class TestDoublingSurvivesASiblingStampConflict:
+    """A conflict on a sibling's ``shard_count`` stamp is not a skipped doubling (#729).
+
+    ``bump_shard_count`` read a ``TransactionConflictException`` from
+    ``_propagate_shard_count`` as "shard 0 stayed contended": it returned the old
+    count while shard 0 had already doubled, so the caller drew from the old
+    range, the conflicted sibling kept its stale count, and every shard created
+    from the stale count was born with it too. Each stale shard refills toward
+    ``capacity // 2`` instead of ``// 4``: 1496 admitted in one minute against
+    1000/min before the fix. Shard 0 doubled is the truth; each sibling stamp
+    retries its own conflict.
+    """
+
+    RPM = Limit.per_minute("rpm", 1000)
+
+    async def _two_shards(self, limiter, entity_id: str):
+        """A 1000/min limit on shards 0 and 1 at count 2, with a settable clock."""
+        repo = limiter._repository
+        clock = {"now": repo._now_ms()}
+        repo._now_ms = lambda: clock["now"]
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([self.RPM])
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 0}):
+            pass
+        assert await repo.bump_shard_count(entity_id, "gpt-4", 1) == 2
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire(entity_id, "gpt-4", {"rpm": 0}):
+                pass
+        return repo, clock
+
+    def _key(self, repo, entity_id: str, shard_id: int) -> dict:
+        return {
+            "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+            "SK": {"S": sk_state()},
+        }
+
+    async def _shard_count_of(self, repo, entity_id: str, shard_id: int) -> int:
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name, Key=self._key(repo, entity_id, shard_id)
+        )
+        return int(response["Item"]["shard_count"]["N"])
+
+    async def _conflict_sibling_stamp(self, repo, entity_id: str, shard_id: int, times: int):
+        client = await repo._get_client()
+        original = client.update_item
+        state = {"left": times, "hits": 0}
+        sibling_pk = pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)
+
+        async def conflicted(**kwargs):
+            if (
+                kwargs.get("Key", {}).get("PK", {}).get("S") == sibling_pk
+                and kwargs.get("ConditionExpression") == "shard_count < :new"
+                and state["left"] > 0
+            ):
+                state["left"] -= 1
+                state["hits"] += 1
+                raise ClientError(
+                    {"Error": {"Code": "TransactionConflictException", "Message": "busy"}},
+                    "UpdateItem",
+                )
+            return await original(**kwargs)
+
+        client.update_item = conflicted
+        return state
+
+    async def test_the_doubling_stands_and_every_sibling_is_stamped(self, limiter):
+        repo, clock = await self._two_shards(limiter, "hot")
+        stamps = await self._conflict_sibling_stamp(repo, "hot", 1, times=1)
+
+        assert await repo.bump_shard_count("hot", "gpt-4", 2) == 4
+        assert stamps["hits"] == 1  # the conflicted stamp was retried, not skipped
+
+        for shard in (2, 3):  # the new range, created by the real slow path
+            with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                async with limiter.acquire("hot", "gpt-4", {"rpm": 0}):
+                    pass
+        assert [await self._shard_count_of(repo, "hot", s) for s in range(4)] == [4, 4, 4, 4]
+
+        # Empty every shard, let one full minute pass, then spend it: each
+        # shard refills to its own share, and the shares must sum to the limit.
+        client = await repo._get_client()
+        for shard in range(4):
+            await client.update_item(
+                TableName=repo.table_name,
+                Key=self._key(repo, "hot", shard),
+                UpdateExpression="SET #t = :z, #rf = :rf",
+                ExpressionAttributeNames={
+                    "#t": bucket_attr("rpm", BUCKET_FIELD_TK),
+                    "#rf": BUCKET_FIELD_RF,
+                },
+                ExpressionAttributeValues={":z": {"N": "0"}, ":rf": {"N": str(clock["now"])}},
+            )
+        clock["now"] += 60_000
+        admitted = 0
+        for _ in range(1500):
+            try:
+                async with limiter.acquire("hot", "gpt-4", {"rpm": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                pass
+        assert admitted <= 1000
+
+    async def test_a_sibling_stamp_that_stays_contended_keeps_the_new_count(self, limiter):
+        """Even a stamp whose retries run out does not undo shard 0's doubling."""
+        repo, _clock = await self._two_shards(limiter, "stuck")
+        stamps = await self._conflict_sibling_stamp(repo, "stuck", 1, times=1000)
+
+        assert await repo.bump_shard_count("stuck", "gpt-4", 2) == 4
+
+        assert stamps["hits"] == 4  # the stamp and its three retries
+        assert await self._shard_count_of(repo, "stuck", 0) == 4

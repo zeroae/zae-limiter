@@ -3522,8 +3522,9 @@ class SyncRepository:
                 ReturnValuesOnConditionCheckFailure="ALL_OLD",
             )
             effective_count = new_count
-            self._propagate_shard_count(entity_id, resource, current_count, new_count)
+            won = True
         except ClientError as e:
+            won = False
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 winner = cast(dict[str, Any] | None, e.response.get("Item")) or {}
                 winner_count = int(winner.get("shard_count", {}).get("N", str(current_count)))
@@ -3532,6 +3533,16 @@ class SyncRepository:
                 effective_count = current_count
             else:
                 raise
+        if won:
+            try:
+                self._propagate_shard_count(entity_id, resource, current_count, new_count)
+            except Exception as exc:
+                logger.warning(
+                    "shard_count propagation to %d for resource=%s incomplete (%s)",
+                    new_count,
+                    resource,
+                    type(exc).__name__,
+                )
         return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
 
     def _propagate_shard_count(
@@ -3560,7 +3571,8 @@ class SyncRepository:
 
         def stamp(target_shard: int) -> int:
             try:
-                client.update_item(
+                self._update_item_retrying_conflict(
+                    client,
                     TableName=self.table_name,
                     Key={
                         "PK": {

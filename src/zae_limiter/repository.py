@@ -4210,15 +4210,9 @@ class Repository:
                 ReturnValuesOnConditionCheckFailure="ALL_OLD",
             )
             effective_count = new_count
-            # We won the bump, so we own propagating the new count to the
-            # shards that already exist (1..current_count-1). The aggregator's
-            # Path 1 does this from the stream, but with --no-aggregator
-            # nothing would, and a shard left on a stale lower count refills
-            # to cp // stale_count — the shares then sum to more than the
-            # limit (issue #439). Same conditional write, so whichever of us
-            # gets there first wins and the other is a no-op.
-            await self._propagate_shard_count(entity_id, resource, current_count, new_count)
+            won = True
         except ClientError as e:
+            won = False
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 # Another client already doubled: adopt the winner's count —
                 # but never a lower one. Shard 0 can lag its siblings (a TTL
@@ -4235,6 +4229,33 @@ class Repository:
                 effective_count = current_count
             else:
                 raise
+
+        if won:
+            # We won the bump, so we own propagating the new count to the
+            # shards that already exist (1..current_count-1). The aggregator's
+            # Path 1 does this from the stream, but with --no-aggregator
+            # nothing would, and a shard left on a stale lower count refills
+            # to cp // stale_count — the shares then sum to more than the
+            # limit (issue #439). Same conditional write, so whichever of us
+            # gets there first wins and the other is a no-op.
+            #
+            # Outside the try above (#729): shard 0 has doubled, so the new
+            # count is the truth whatever happens to a sibling stamp. Reading
+            # a sibling's conflict as "doubling skipped" returned the old
+            # count, sent the caller to the old shard range, and left the
+            # other siblings unstamped (1251 admitted against 1000). Each
+            # stamp retries its own conflicts; one that still fails is logged
+            # and left to the next propagation or the aggregator.
+            try:
+                await self._propagate_shard_count(entity_id, resource, current_count, new_count)
+            except Exception as exc:
+                # Never the entity id: it is routinely an API key.
+                logger.warning(
+                    "shard_count propagation to %d for resource=%s incomplete (%s)",
+                    new_count,
+                    resource,
+                    type(exc).__name__,
+                )
 
         # Update entity cache with new shard_count (monotonic)
         return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
@@ -4265,7 +4286,10 @@ class Repository:
 
         async def stamp(target_shard: int) -> int:
             try:
-                await client.update_item(
+                # Retried on a transaction conflict (#729), like every other
+                # single-item write on the acquire path.
+                await self._update_item_retrying_conflict(
+                    client,
                     TableName=self.table_name,
                     Key={
                         "PK": {
