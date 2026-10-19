@@ -93,15 +93,14 @@ operation: reusing a reset's key for a top-up is a `ValidationError`. With a key
 reads its record first (+1 RCU).
 
 A key belongs to one entity, and to one *incarnation* of it: if the entity is deleted and
-created again, the same key names a new operation. Three cases are not covered:
+created again, the same key names a new operation. Two cases are not covered:
 
 | Case | What happens |
 |------|--------------|
 | The entity is deleted and recreated *while* a call is in flight | A retry with the same key can be applied once more |
 | A call made while the entity has no entity record (for example, right after `delete_entity`) | It can return the deleted entity's result and apply nothing |
-| The entity is recreated within the same second as the delete, before #716 ships | Same as the row above: the old result, nothing applied |
 
-The last two apply too little, never too much. To be safe, use a fresh key after deleting an
+The second applies too little, never too much. To be safe, use a fresh key after deleting an
 entity.
 
 ## Requirements and costs
