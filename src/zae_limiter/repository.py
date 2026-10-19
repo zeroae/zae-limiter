@@ -3884,7 +3884,9 @@ class Repository:
 
         try:
             # Retried on a transaction conflict (#724): a slow-path commit, a
-            # quota move or a reset may be writing this item right now.
+            # quota move or a reset may be writing this item right now. A retry
+            # re-sends the same `:vu_now` / `:now_epoch` deliberately: one
+            # acquire, one instant (#430), and the retries add at most ~175 ms.
             response = await self._update_item_retrying_conflict(
                 client,
                 TableName=self.table_name,
