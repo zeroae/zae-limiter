@@ -878,6 +878,10 @@ class SyncLease:
             return
         try:
             self._owner_task.result()
+        except concurrent.futures.CancelledError:
+            self._owner_task.cancel()
+            self._abandon_owner_checks(self._owner_checks)
+            raise
         except Exception:
             logger.warning("owner stamp checks failed", exc_info=True)
         except BaseException:

@@ -911,6 +911,31 @@ class TestStaleWriters:
         await lease._start_owner_checks([])  # nothing to check
         await lease._await_owner_checks()  # nothing to join
 
+    def test_the_sync_join_forces_the_slow_pass_for_a_cancelled_spawn(self):
+        """A cancelled spawn's `.result()` raises an `Exception`; it still gets vu = 0."""
+        from concurrent.futures import CancelledError, Future
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.sync_lease import SyncLease
+        from zae_limiter.sync_repository_protocol import SyncRepositoryProtocol
+
+        cancelled: Future[None] = Future()
+        cancelled.cancel()
+        writes: list[tuple] = []
+        backend = SimpleNamespace(
+            start_background=lambda _work: cancelled,
+            repair_created_owner_stamp=lambda *a: False,
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=writes.extend,
+        )
+        lease = SyncLease(repository=cast(SyncRepositoryProtocol, backend))
+        lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
+
+        with pytest.raises(CancelledError):
+            lease._await_owner_checks()
+        assert writes == [("vu=0", "user", "gpt-4", 0)]
+
     def test_the_sync_twin_runs_the_check_in_the_background(self, mock_dynamodb):
         """The generated SyncLease spawns the check (threadpool) during the block."""
         import time

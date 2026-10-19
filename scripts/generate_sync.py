@@ -89,6 +89,9 @@ ATTRIBUTE_ACCESS_REWRITES = {
     # A spawned handle's type: `_spawn` returns a `concurrent.futures.Future`
     # in every parallel_mode. ruff removes the import where it is unused.
     ("asyncio", "Task"): ("concurrent.futures", "Future"),
+    # What awaiting a cancelled task raises, and so what `.result()` raises
+    # on a cancelled (or, under gevent, killed) spawn.
+    ("asyncio", "CancelledError"): ("concurrent.futures", "CancelledError"),
 }
 
 # Import path rewrites (for relative imports)

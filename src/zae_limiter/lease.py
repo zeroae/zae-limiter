@@ -1229,6 +1229,14 @@ class Lease:
             return
         try:
             await self._owner_task
+        except asyncio.CancelledError:
+            # Ahead of `Exception`: in the sync twin this is
+            # `concurrent.futures.CancelledError`, an `Exception`, raised by a
+            # spawn that was cancelled or killed (gevent), which never ran its
+            # checks either.
+            self._owner_task.cancel()
+            await self._abandon_owner_checks(self._owner_checks)
+            raise
         except Exception:
             logger.warning("owner stamp checks failed", exc_info=True)
         except BaseException:
