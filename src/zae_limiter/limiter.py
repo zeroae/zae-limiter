@@ -2360,6 +2360,7 @@ class RateLimiter:
                     shard_count=shard_count,
                     parent_shard_id=parent_shard_id,
                     disable_moves=disable_moves,
+                    moves_contended=moves_contended,
                 )
                 await lease._commit_initial()
             return lease

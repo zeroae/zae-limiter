@@ -12406,3 +12406,44 @@ class TestContendedZeroGrantNeedsTokensToMove:
         assert moves["n"] == 2 * 4
         assert rejection.contended is False
         assert [v.limit_name for v in rejection.violations] == ["rpd"]
+
+
+class TestPeriodRedoKeepsContention:
+    """The #743 period redo of the third pass keeps ``moves_contended`` (#729)."""
+
+    def test_the_redo_passes_moves_contended_through(self, sync_limiter):
+        from zae_limiter.models import LimitStatus
+        from zae_limiter.sync_lease import PeriodNotAppliedError, QuotaMoveLostError
+
+        status = LimitStatus(
+            entity_id="e",
+            resource="gpt-4",
+            limit_name="rpd",
+            limit=Limit.quota("rpd", 1000, cron="0 0 * * *"),
+            available=0,
+            requested=1,
+            exceeded=True,
+            retry_after_seconds=1.0,
+        )
+        outcomes = [
+            QuotaMoveLostError(contended=True),
+            QuotaMoveLostError(contended=True),
+            PeriodNotAppliedError([status]),
+            None,
+        ]
+        calls: list[dict] = []
+
+        def fake_do_acquire(**kwargs):
+            calls.append(kwargs)
+            lease = MagicMock()
+            lease._commit_initial = MagicMock(side_effect=outcomes[len(calls) - 1])
+            return lease
+
+        sync_limiter._do_acquire = fake_do_acquire
+        sync_limiter._slow_acquire("e", "gpt-4", None, {"rpd": 1})
+        assert [(c["disable_moves"], c["moves_contended"]) for c in calls] == [
+            (False, False),
+            (False, False),
+            (True, True),
+            (True, True),
+        ]
