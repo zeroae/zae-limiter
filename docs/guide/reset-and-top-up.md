@@ -92,16 +92,20 @@ A key is 1-64 characters of letters, digits, `.`, `_`, `:` and `-`, and names on
 operation: reusing a reset's key for a top-up is a `ValidationError`. With a key, each call
 reads its record first (+1 RCU).
 
+A keyed call that changes nothing is recorded too: a reset of an entity with no bucket yet, or
+a top-up of dripping limits only. A retry with the same key returns that first result (0)
+even after the bucket exists, and grants nothing.
+
 A key belongs to one entity, and to one *incarnation* of it: if the entity is deleted and
 created again, the same key names a new operation. Two cases are not covered:
 
 | Case | What happens |
 |------|--------------|
 | The entity is deleted and recreated *while* a call is in flight | A retry with the same key can be applied once more |
-| A call made while the entity has no entity record (for example, right after `delete_entity`) | It can return the deleted entity's result and apply nothing |
+| A call made while the entity has no entity record, or a key first used then (for example, right after `delete_entity`, or before `create_entity`) | It can return the earlier result and apply nothing, even after the entity is created again |
 
 The second applies too little, never too much. To be safe, use a fresh key after deleting an
-entity.
+entity, and once the entity exists.
 
 ## Requirements and costs
 
@@ -110,9 +114,11 @@ entity.
   version record once per repository and raises `VersionMismatchError` when it is older; it
   also raises the stack's minimum client version to 0.17.0. Run `zae-limiter upgrade` first.
   A reset, and a top-up of a dripping limit, are not gated.
-- **Cost:** about 3 RCU + 5 WCU at one shard (one transaction holding the shard write and the
-  operation's own record, plus the audit event), growing by about 1 RCU + 2 WCU per extra
-  shard, plus one slow pass per shard on its next acquire. The acquire fast path is unchanged.
+- **Cost:** about 3 RCU + 6 WCU at one shard (one transaction holding the shard write, the
+  operation's own record and its audit event), growing by about 1 RCU + 2 WCU per extra
+  shard, plus one slow pass per shard on its next acquire. A keyed call that changes nothing
+  costs 4 WCU (its record and audit event); without a key it writes nothing. The acquire fast
+  path is unchanged.
 - **Another process may refuse for up to its rejection-cache TTL** (default 1 s) after a reset
   or top-up made elsewhere. The process that made the change admits at once.
 
@@ -131,7 +137,11 @@ entity.
 - A write whose response is lost is never applied twice: each call writes its own operation
   record in the same transaction, and a retry that finds it returns the stored result instead
   of re-applying — even when another reset or top-up landed on the bucket in between.
-- Once the write has landed the call does not fail: an invalid `principal` is refused before
-  anything is written, and an audit write that fails afterwards is logged, not raised.
+- Every operation that writes has exactly one audit event: it is written in the same
+  transaction, so it lands exactly when the operation does, however the call ends. An invalid
+  `principal` is refused before anything is written.
+- On a bucket using resource or system defaults, which expires when idle, a reset or top-up
+  also extends the bucket's expiry to cover at least the current period, so a purchase is not
+  swept away before it can be spent. A bucket with entity-level limits never expires.
 
 See [ADR-149](../adr/149-reset-and-top-up.md) for the design.

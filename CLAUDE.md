@@ -1535,7 +1535,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Client shard propagation (#439) | `SET shard_count = :new` | `shard_count < :new` | No |
 | Limit-change sync, per shard (#468), per resource under `_default_` (#487) | `SET cp/ra/rp, sched/rsched/sched_tz, per-limit sched/rsched (compact, or "-" for unscheduled), b_{n}_rsa for a session quota, vu = 0 (+ ttl) REMOVE stale, per-limit overrides that now match the item default, b_{n}_rsa for a limit without a window` (never writes `ws`, ADR-139) | `attribute_exists(PK)` | No |
 | Disable stamp (ADR-125) | `SET disabled = :true` / `REMOVE disabled` | `attribute_exists(PK)` | No |
-| Reset / top-up, every shard in one transaction (ADR-149) | `ADD b_{n}_tk :delta` per limit, `SET rf = max(now, rf + 1, ws), vu = 0` (+ `gc`, `ws`/`rsa`, `wa`, `b_{q}_tu`) `REMOVE b_{q}_tu, b_{n}_wtc` | `rf = :read AND shard_count = :read`; the call's operation record (`SK = #OP#{id}`) is a `Put` in the same transaction under `attribute_not_exists(PK)` | Yes (optimistic lock) |
+| Reset / top-up, every shard in one transaction (ADR-149) | `ADD b_{n}_tk :delta` per limit, `SET rf = max(now, rf + 1, ws), vu = 0` (+ `gc`, `ws`/`rsa`, `wa`, `b_{q}_tu`, `ttl` on a default bucket) `REMOVE b_{q}_tu, b_{n}_wtc` | `rf = :read AND shard_count = :read`; the call's operation record (`SK = #OP#{id}`) and its audit event are `Put`s in the same transaction, the record under `attribute_not_exists(PK) OR (:ent <> :legacy AND ent <> :ent AND ent <> :legacy)` | Yes (optimistic lock) |
 
 **Expression tokens are positional (#634).** Every `#…` alias and `:…` placeholder in a bucket
 write is built from a loop index, never from a limit name, and the alias *value* carries the real
@@ -1835,8 +1835,10 @@ exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed u
   `RateLimiter` helpers (`_apply_reset_edge`, `_apply_window_roll`, then `force_consume(0)`),
   then the op lands as a token **delta** (`ADD`, never `SET`, so a fast-path debit in between is
   kept). Every write: `rf = max(now, stored rf + 1, applied ws)`, `vu = 0`, condition
-  `rf = :read AND shard_count = :read`; never `tc`, `disabled`, `ttl`, owner stamps, config, the
-  parent. A conflict re-reads and re-plans (3 retries, full jitter, then `RateLimiterUnavailable`).
+  `rf = :read AND shard_count = :read`; never `tc`, `disabled`, owner stamps, config, the
+  parent. A bucket on resource or system defaults also gets `SET ttl` (`#ottl`), the later of
+  the acquire path's rule and every quota's current period end (`_operation_ttl`; D5's create
+  too); an entity-level bucket gets none. A conflict re-reads and re-plans (3 retries, full jitter, then `RateLimiterUnavailable`).
 - **Shards** are read strongly consistent: GSI3 discovery plus shard 0 and every slot below the
   stored count **by key** (GSI3 can miss a just-created shard). Lagging counts are raised first
   with the R5 freeze, then re-read (D7).
@@ -1851,7 +1853,11 @@ exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed u
   days out (`OPERATION_RECORD_TTL_SECONDS`), GSI4 keys for `purge_namespace`, no GSI1-3 keys.
   At most one transaction per id commits; after any unclear failure (`_OPERATION_RETRY_CODES`,
   including `TransactionInProgressException`) one consistent `GetItem` of the record decides.
-  So every operation is a transaction — a one-shard one is 2 items, 4 WRU. A per-bucket `op`
+  The audit event's `Put` rides in the same transaction (`_operation_audit`, built by
+  `_build_audit_item`, the item `_log_audit_event` writes), so a grant and its audit commit
+  together. So every operation is a transaction — a one-shard one is 3 items, 6 WRU, at most
+  32 + 2 = 34 items. A keyed call that writes no bucket still writes its record and audit
+  (result 0, zero amounts); an unkeyed one writes nothing. A per-bucket `op`
   marker was tried first and lost to a concurrent operation overwriting it. `idempotency_key`
   (API and CLI `--idempotency-key`, 1-64 of `[A-Za-z0-9._:-]`) is the id when given: the record
   is read first (+1 RCU) and a hit returns its result; reused for the other operation kind it
@@ -1859,20 +1865,20 @@ exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed u
   `ClientRequestToken` is a random per-call nonce plus the attempt, **never** derived from the
   key (DynamoDB answers a reused token with a new payload with
   `IdempotentParameterMismatchException`, itself an unclear outcome resolved by the record).
-  The record stores its `writer` (that nonce), and only the committing call audits, so a
-  same-key race writes one audit event; any other error after the write (timeout, 5xx) is
-  resolved the same way. A record belongs to one **incarnation** of its entity:
+  The record stores its `writer` (that nonce); any other error after the write (timeout, 5xx)
+  returns the result only if this call's own record is there, else re-raises. A record belongs to one **incarnation** of its entity:
   `schema.entity_incarnation(meta)` (shared with #716: `pinc` -> `created_at` ->
   `LEGACY_INCARNATION = "-"`, also for no META); each call reads META once (consistent,
   +1 RCU, reused for a create's cascade stamps) and stores it as `ent`; a record of another
   incarnation reads as absent and is replaced
-  (`attribute_not_exists(PK) OR (ent <> :ent AND ent <> :legacy)`), while one written before
-  META existed (`ent = "-"`) matches every incarnation. Residual: an entity deleted and
+  (`attribute_not_exists(PK) OR (:ent <> :legacy AND ent <> :ent AND ent <> :legacy)`). `"-"`
+  matches every incarnation **both ways**: a record written before META existed is never
+  replaced, and a call with no META takes any record for its key — so a reused key around a
+  delete or a create returns the old result and grants nothing (under-grant, never
+  over-grant). Residual: an entity deleted and
   recreated *during* one call can see a key retry applied once more (closing it needs
-  `dynamodb:ConditionCheckItem`, which no shipped policy grants). A lost audit (write and
-  record read both unclear) is logged at WARNING without the entity id. `delete_entity` deletes the entity's
-  records too (one Query per shard-0 partition), best effort only. The principal and key are validated before any I/O, and a
-  post-commit audit failure is logged, never raised.
+  `dynamodb:ConditionCheckItem`, which no shipped policy grants). `delete_entity` deletes the entity's
+  records too (one Query per shard-0 partition), best effort only. The principal and key are validated before any I/O.
 - **Top-up:** a quota gains exactly N, split by coverage `S // gc` (`split_weighted`, remainder
   to the lowest shard, D1), and **`tu += portion`** — the whole portion, not only what lands
   above the ceiling, or a refund of spent room is clamped away (design-validator). A dripping
