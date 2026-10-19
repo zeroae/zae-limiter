@@ -3568,6 +3568,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#over-sharded-entities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Over-sharded entities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#limits-not-enforcing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3849,6 +3860,11 @@
 <td>Compare server time with bucket <code>last_update</code></td>
 <td>Sync NTP</td>
 </tr>
+<tr>
+<td>Over-sharded entity</td>
+<td><code>shard_count</code> above 32 on the bucket item</td>
+<td>See <a href="#over-sharded-entities">Over-sharded entities</a></td>
+</tr>
 </tbody>
 </table>
 <p><strong>Check bucket state:</strong></p>
@@ -3863,6 +3879,38 @@
 <li><code>last_update</code>: Unix timestamp of last access</li>
 <li><code>capacity</code>: Maximum bucket capacity (in millitokens)</li>
 </ul>
+<h3 id="over-sharded-entities">Over-sharded entities<a class="headerlink" href="#over-sharded-entities" title="Permanent link">&para;</a></h3>
+<p>Before <a href="https://github.com/zeroae/zae-limiter/pull/745">#745</a>, the aggregator's proactive
+sharding could double an entity's <code>shard_count</code> on light traffic, with no upper bound: one
+entity went from 1 to 2048 shards over 11 aggregator invocations. Each shard holds
+<code>capacity // shard_count</code>, so at 2048 shards almost every request is larger than one shard's
+share.</p>
+<p><strong>Symptom:</strong> <code>RateLimitExceeded</code> while the entity is far below its configured limit. In one
+measurement, 1 request in 200 was admitted.</p>
+<p><strong>How to spot it:</strong></p>
+<ul>
+<li>The bucket item's <code>shard_count</code> is above 32 (<code>MAX_SHARD_COUNT</code>). Use the
+  <code>get-item</code> command above; <code>shard_count</code> is in the projection.</li>
+<li>Or the GSI3 discovery in <a href="#debug-bucket-state">Debug Bucket State</a> returns more than 32
+  bucket items for one entity and resource.</li>
+</ul>
+<p><strong>Upgrading does not repair it.</strong> A current version never doubles past 32 and never
+propagates a count above 32, but nothing lowers a <code>shard_count</code> that is already there. The
+repair is tracked in <a href="https://github.com/zeroae/zae-limiter/issues/747">#747</a>.</p>
+<div class="admonition warning">
+<p class="admonition-title">Deleting the bucket items is not a safe workaround</p>
+<p>Clients cache each entity's <code>shard_count</code> in memory and draw a shard from that cached
+value (<code>Repository.select_shard</code>). A running client that cached the old count recreates
+the missing shards at that count on its next acquire. No repair procedure is documented
+yet; follow #747.</p>
+</div>
+<p><strong>Client clock skew can still double up to 32.</strong> The aggregator projects a bucket's stored
+<code>wcu</code> balance from its <code>rf</code> timestamp to the aggregator's own clock before deciding to double.
+<code>rf</code> is stamped from the client's clock, so when a client runs about 2 seconds ahead, the
+projection adds no refill, a stale low balance still reads as a hot partition, and the
+aggregator can double the entity again on following invocations. The walk is bounded: it stops
+at <code>MAX_SHARD_COUNT</code> (32) and never goes past it. Keep client and Lambda clocks in sync (NTP;
+Lambda's clock is already synced) to avoid it.</p>
 <h3 id="limits-not-enforcing">Limits Not Enforcing<a class="headerlink" href="#limits-not-enforcing" title="Permanent link">&para;</a></h3>
 <p><strong>Common causes:</strong></p>
 <table>
