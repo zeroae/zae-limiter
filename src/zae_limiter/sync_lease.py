@@ -119,6 +119,9 @@ class SyncLease:
     _carriers: list[LeaseEntry] = field(default_factory=list)
     _cache_mark: int | None = None
     _owner_task: concurrent.futures.Future[None] | None = field(default=None, repr=False)
+    _owner_checks: list[tuple[str, str, int, int, str | None]] = field(
+        default_factory=list, repr=False
+    )
     _declared_names: frozenset[str] = field(init=False, default=frozenset())
 
     def __post_init__(self) -> None:
@@ -851,16 +854,22 @@ class SyncLease:
         if start is None:
             self._repair_created_owner_stamps(checks)
             return
+        self._owner_checks = list(checks)
         self._owner_task = start(functools.partial(self._repair_created_owner_stamps, checks))
 
     def _await_owner_checks(self) -> None:
         """Join the owner-check task this lease started, if any (ADR-150).
 
         Called by ``SyncRateLimiter.acquire`` on exit, whether the caller's block
-        succeeded or raised, so the task never outlives the lease. Never
-        raises: a failure is logged at WARNING without the entity id, routinely
-        an API key, and can neither fail the acquire nor mask the caller's
-        exception.
+        succeeded or raised, so the task never outlives the lease. A failure is
+        logged at WARNING without the entity id, routinely an API key, and can
+        neither fail the acquire nor mask the caller's exception.
+
+        A cancellation (or interrupt) delivered while joining cancels the task
+        with it, so its checks may never finish. Each bucket they covered then
+        gets the safety net a failed check uses, ``vu = 0``, before the
+        cancellation is re-raised: the next acquire on it takes the pinned slow
+        path. A check that had already finished costs one extra slow pass.
         """
         if self._owner_task is None:
             return
@@ -868,8 +877,18 @@ class SyncLease:
             self._owner_task.result()
         except Exception:
             logger.warning("owner stamp checks failed", exc_info=True)
+        except BaseException:
+            self._owner_task.cancel()
+            self._abandon_owner_checks(self._owner_checks)
+            raise
         finally:
             self._owner_task = None
+            self._owner_checks = []
+
+    def _abandon_owner_checks(self, checks: list[tuple[str, str, int, int, str | None]]) -> None:
+        """Force each created bucket whose check will not run onto the slow path (ADR-150)."""
+        for entity_id, resource, shard_id, _stamped, _incarnation in checks:
+            self._force_owner_restamp(entity_id, resource, shard_id)
 
     def _repair_created_owner_stamps(
         self, owner_creates: list[tuple[str, str, int, int, str | None]]

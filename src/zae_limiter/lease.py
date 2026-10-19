@@ -219,6 +219,11 @@ class Lease:
     # its round trip overlaps the caller's block instead of adding to the
     # acquire's latency or to its exit. `_await_owner_checks` joins it.
     _owner_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    # The checks that task runs: if the join is cancelled, each of these
+    # buckets is forced onto the slow path instead (`_abandon_owner_checks`).
+    _owner_checks: list[tuple[str, str, int, int, str | None]] = field(
+        default_factory=list, repr=False
+    )
     # Names of the declared limits, computed once at construction so the hot
     # path (adjust/consume/release on every request) allocates nothing to
     # answer "is this key declared?". Entries are never appended after the
@@ -1194,16 +1199,22 @@ class Lease:
         if start is None:
             await self._repair_created_owner_stamps(checks)
             return
+        self._owner_checks = list(checks)
         self._owner_task = start(functools.partial(self._repair_created_owner_stamps, checks))
 
     async def _await_owner_checks(self) -> None:
         """Join the owner-check task this lease started, if any (ADR-150).
 
         Called by ``RateLimiter.acquire`` on exit, whether the caller's block
-        succeeded or raised, so the task never outlives the lease. Never
-        raises: a failure is logged at WARNING without the entity id, routinely
-        an API key, and can neither fail the acquire nor mask the caller's
-        exception.
+        succeeded or raised, so the task never outlives the lease. A failure is
+        logged at WARNING without the entity id, routinely an API key, and can
+        neither fail the acquire nor mask the caller's exception.
+
+        A cancellation (or interrupt) delivered while joining cancels the task
+        with it, so its checks may never finish. Each bucket they covered then
+        gets the safety net a failed check uses, ``vu = 0``, before the
+        cancellation is re-raised: the next acquire on it takes the pinned slow
+        path. A check that had already finished costs one extra slow pass.
         """
         if self._owner_task is None:
             return
@@ -1211,8 +1222,20 @@ class Lease:
             await self._owner_task
         except Exception:
             logger.warning("owner stamp checks failed", exc_info=True)
+        except BaseException:
+            self._owner_task.cancel()
+            await self._abandon_owner_checks(self._owner_checks)
+            raise
         finally:
             self._owner_task = None
+            self._owner_checks = []
+
+    async def _abandon_owner_checks(
+        self, checks: list[tuple[str, str, int, int, str | None]]
+    ) -> None:
+        """Force each created bucket whose check will not run onto the slow path (ADR-150)."""
+        for entity_id, resource, shard_id, _stamped, _incarnation in checks:
+            await self._force_owner_restamp(entity_id, resource, shard_id)
 
     async def _repair_created_owner_stamps(
         self, owner_creates: list[tuple[str, str, int, int, str | None]]

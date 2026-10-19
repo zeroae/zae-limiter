@@ -799,6 +799,58 @@ class TestStaleWriters:
         assert "owner stamp checks failed" in caplog.text
         assert "user" not in [r.getMessage() for r in caplog.records]
 
+    async def test_a_cancel_during_the_join_forces_the_slow_pass(self, limiter):
+        """r4 #1: a cancelled join loses the check, so the bucket gets ``vu = 0``."""
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [RPM])
+        await repo.create_entity("user")
+        started = asyncio.Event()
+        outcome: list[str] = []
+
+        async def slow_check(*args):
+            started.set()
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                outcome.append("cancelled")
+                raise
+            return False
+
+        async def run():
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass  # the block ends at once: the join is what waits
+
+        with patch.object(repo, "repair_created_owner_stamp", slow_check):
+            task = asyncio.create_task(run())
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert outcome == ["cancelled"]  # the check itself never finished...
+        item = await _item(repo, "user", "gpt-4")
+        assert item[schema.BUCKET_FIELD_VU] == {"N": "0"}  # ...so the fast path is closed
+
+    async def test_a_cancelled_join_with_nothing_to_force_still_reraises(self):
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        async def never():
+            await asyncio.sleep(5)
+
+        lease = Lease(repository=cast(RepositoryProtocol, SimpleNamespace()))
+        lease._owner_task = asyncio.create_task(never())
+        join = asyncio.create_task(lease._await_owner_checks())
+        await asyncio.sleep(0)
+        join.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await join
+        assert lease._owner_task is None
+        assert lease._owner_checks == []
+
     async def test_a_backend_without_background_tasks_checks_inline(self):
         from types import SimpleNamespace
         from typing import cast
