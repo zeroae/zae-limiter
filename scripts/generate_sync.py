@@ -278,8 +278,17 @@ def _spawn(self, fn: Any) -> Any:
                 self.greenlet.kill(block=False)
             return cancelled
 
+    def settle_if_never_ran(_greenlet: Any) -> None:
+        # A greenlet killed before it started never calls `run`, which would
+        # leave the future PENDING and every `.result()` blocked forever. On
+        # its death, a future still pending is cancelled instead; one that
+        # ran (or was killed while running) is already done.
+        if not pending.done():
+            pending.cancel()
+
     pending = _GreenletFuture()
     pending.greenlet = gevent_spawn(run, pending)
+    pending.greenlet.rawlink(settle_if_never_ran)
     return pending
 
 def _cleanup_thread_pool(self) -> None:
