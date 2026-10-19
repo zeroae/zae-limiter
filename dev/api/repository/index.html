@@ -1715,17 +1715,6 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#zae_limiter.repository.Repository.build_vu_reset" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;build_vu_reset
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.transact_write" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6117,17 +6106,6 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;build_composite_adjust
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#zae_limiter.repository.Repository.build_vu_reset" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;build_vu_reset
       
     </span>
   </a>
@@ -11057,13 +11035,21 @@ item carries (ADR-140). <code>None</code> stamps <code>now_ms</code>.</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_composite_normal" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">applied_windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">grant_counts</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">owner</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">expected_vu</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">applied_windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">grant_counts</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">owner</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">expected_vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">read_tokens</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Build an UpdateItem for the normal write path (ADR-115 path 2).</p>
-<p>ADD tk:(refill - consumed), tc:consumed for each limit.
+<p>ADD tk:(refill - consumed), tc:consumed for each limit.</p>
+<p><code>read_tokens</code> (limit name -&gt; <code>tk</code> as read, millitokens): each
+limit whose refill delta is positive — a drip, a reset, a roll, a
+window opened — is pinned on <code>tk &lt;= :read</code>. The delta was computed
+from that read, and a credit landing in between (a refund, a release)
+moves neither <code>rf</code> nor <code>vu</code>: the refill would stack on top of it.
+A pin that fails sends the write to the consumption-only retry, as a
+lost <code>rf</code> lock does. A trim (delta &lt;= 0) stays unpinned so it still
+clamps.
 SET rf:now. CONDITION rf = :expected.</p>
 
 
@@ -11467,7 +11453,7 @@ every other writer of the marker.</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_composite_retry" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_retry</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_retry</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">period_guards</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -11521,6 +11507,30 @@ therefore debited, never re-seeded.</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>period_guards</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="tuple">tuple</span>[<span title="int">int</span> | None, <span title="int">int</span> | None]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; <code>(reset_edge_ms, window_start_ms)</code>
+for each quota the lost write was to reset, roll or open
+(#743). The retry debits the item's balance as it stands, so it
+must only do so once that period has been applied: a calendar
+quota requires <code>rf &gt;= reset_edge_ms</code> (a reset pass stamps
+<code>rf</code> at or past the edge), a session quota
+<code>b_{name}_wa = window_start_ms</code>. Otherwise it would spend the
+previous period's balance and leave the reset pending, so the
+next pass grants a full allowance again.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -11537,43 +11547,36 @@ therefore debited, never re-seeded.</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_composite_adjust" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_adjust</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">deltas</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_adjust</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">deltas</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">ceilings</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">trim</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">pin</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Build an UpdateItem for the adjust write path (ADR-115 path 4).</p>
-<p>Unconditional ADD for post-hoc correction. Can go negative by design.
+<p>An <code>ADD</code> for post-hoc correction. Can go negative by design.
 Positive delta = consumed more (subtract tokens, add to counter).
 Negative delta = consumed less (add tokens, subtract from counter).</p>
+<p>A credit is <strong>self-trimming</strong> (#680, #721). With <code>ceilings</code> (limit name
+-&gt; <code>CreditCeiling</code>), every credited limit that has one is conditioned
+on <code>tk &lt;= ceiling - credit</code>: the credit lands only if the balance
+stays at or below the ceiling. The ceiling is the caller's, computed
+from a state that may be stale, so the condition also pins everything
+that state's ceiling was computed from and that a write can lower: the
+limit's stored <code>cp</code>, <code>gc</code> and schedule overrides, and, from
+<code>pin</code>, the item's <code>shard_count</code>, <code>vu</code> and item-level schedule
+strings (each <code>None</code> = absent). When the condition
+fails — a reset edge, a refill to capacity, a doubling, a re-grant, a
+changed limit — the caller re-issues the credit with <code>trim=True</code>: the
+same <code>ADD</code> plus <code>SET vu = 0</code> in one write. A debit, or a credit with
+no known ceiling, carries no ceiling condition.</p>
+<p>Every adjust is conditioned on <code>attribute_exists(PK)</code>: an <code>ADD</code> on
+an item that is gone (swept by TTL, deleted) would create a stub with no
+parameters, which the speculative path then rejects forever. A failed
+condition on a write with no other term therefore means the item is
+gone, and the caller treats the adjustment as done.</p>
 <p>Every refund, release, rollback and speculative compensation is built
 here, so the shard's cached state is forgotten here (ADR-147): tokens
 this process gives back must not be hidden by its own cache.</p>
-
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h4 id="zae_limiter.repository.Repository.build_vu_reset" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">build_vu_reset</span>
-
-
-<a href="#zae_limiter.repository.Repository.build_vu_reset" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_vu_reset</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
-</span></code></pre></div>
-
-    <div class="doc doc-contents ">
-
-        <p>Build an UpdateItem that forces one materialising pass (#679).</p>
-<p><code>vu = 0</code> fails the speculative condition, so the next acquire takes the
-slow path, which clamps every limit to its ceiling under the <code>rf</code> lock
-and clears <code>vu</code> again — the mechanism the limit-change sync uses after a
-capacity shrink (#222 Task 13). Used after a credit lifted a balance above
-its ceiling, which the fast path (a pure <code>ADD</code>) would otherwise spend.</p>
 
 
     </div>
@@ -11598,6 +11601,8 @@ its ceiling, which the fast path (a pure <code>ADD</code>) would otherwise spend
     <div class="doc doc-contents ">
 
         <p>Execute a write, using single-item API when possible to halve WCU cost.</p>
+<p>Returns the item's <code>ALL_NEW</code> attributes for a single-item update
+(free on <code>UpdateItem</code>; a refund pins the image, #721), else <code>None</code>.</p>
 
 
     </div>
@@ -15987,6 +15992,75 @@ every existing bucket of the resource (<code>_fanout_cascade</code>).</p>
 </div><h2 id="repositoryprotocol">RepositoryProtocol<a class="headerlink" href="#repositoryprotocol" title="Permanent link">&para;</a></h2>
 <p>The <code>RepositoryProtocol</code> defines the interface for pluggable backends.
 Implement this protocol to use a different storage backend (e.g., for testing).</p>
+<div class="admonition warning">
+<p class="admonition-title">Changed in v0.17.0: the adjust, normal and retry writes' contracts (#721)</p>
+<p>A custom backend must accept <code>ceilings</code>, <code>trim</code> and <code>pin</code> on
+<code>build_composite_adjust</code> from v0.17.0. The lease and the limiter pass them on
+every refund — a rollback, a <code>release()</code>, a negative <code>adjust()</code> or a
+speculative compensation — so a backend that does not accept them raises
+<code>TypeError</code> there. It must also accept <code>read_tokens</code> on
+<code>build_composite_normal</code> and <code>period_guards</code> on <code>build_composite_retry</code>,
+described below.</p>
+<p><strong>Required of every adjust write</strong>, whatever the keywords:</p>
+<ul>
+<li><strong>The item must exist.</strong> Fail the write (raise
+  <code>ConditionalCheckFailedException</code>) when the bucket is gone. An
+  unconditional credit onto a swept or deleted item creates a stub that
+  rejects the entity forever.</li>
+<li><strong>A quota credit stays in its debit's period.</strong> For each credited limit
+  whose <code>CreditCeiling.quota_period</code> is set, fail the write unless the period
+  still holds — calendar: the item's <code>rf</code> is before <code>reset_edge_ms</code> and the
+  reset-schedule strings in <code>reset_sched_raw</code> (item <code>rsched</code>, <code>sched_tz</code>, the
+  limit's <code>rsched</code>) are still the item's; session: the limit's window start
+  and applied marker equal <code>window</code>. An
+  unconditional credit lands a refund of one period's debit in the next,
+  which then admits more than its allowance. Applies to the <code>trim=True</code>
+  write too.</li>
+</ul>
+<p>Expected for the protection a refund relies on:</p>
+<ul>
+<li><code>ceilings</code>: limit name → <code>CreditCeiling</code>. Condition each credited limit on
+  its balance staying at or below <code>ceiling_milli</code> after the credit, and on the
+  stored capacity, grant count and schedule overrides it was computed from.
+  Raise <code>ConditionalCheckFailedException</code> when the condition fails.</li>
+<li><code>trim=True</code>: the fallback the caller sends after that failure. Apply the
+  same credit (still subject to the two requirements above) and, in the same
+  write, mark the bucket so the next acquire re-materialises it
+  (<code>SET vu = 0</code> on DynamoDB).</li>
+<li><code>pin</code>: the item's (<code>shard_count</code>, <code>vu</code>, item-level schedule strings) as the
+  ceiling saw them, held beside the ceilings.</li>
+</ul>
+<p><strong><code>build_composite_normal(read_tokens=...)</code></strong>: limit name → the <code>tk</code> the
+slow pass read (millitokens). For every limit whose refill delta is
+positive — a drip, a reset, a roll, a window opened — fail the write
+unless the stored balance is still at or below that read. A refund or
+release landing between the read and the write moves neither <code>rf</code> nor
+<code>vu</code>, and an unpinned raise stacks on top of it. A trim (delta &lt;= 0) is
+not pinned. A failure falls to the consumption-only retry, like a lost
+<code>rf</code> lock.</p>
+<p><strong><code>build_composite_retry(period_guards=...)</code></strong>: limit name →
+<code>(reset_edge_ms, window_start_ms)</code>, one of the two set, for each quota the
+lost write was to reset, roll or open. Fail the retry unless that period
+has been applied on the item — calendar: <code>rf &gt;= reset_edge_ms</code>; session:
+the limit's window-applied marker equals <code>window_start_ms</code> — and return the
+old image on that failure (<code>ALL_OLD</code>). The lease then re-plans once from a
+fresh read; a second loss is a rejection. Without the guard the retry
+spends the previous period's balance and leaves the reset pending, so the
+next pass grants a full allowance again.</p>
+<p><strong><code>transact_write</code> now returns</strong> the item's attributes after a single-item
+update (<code>ALL_NEW</code>), or <code>None</code>. A refund after the consumption-only retry
+takes its quota period from that image; a backend that returns <code>None</code>
+makes it fall back to the period the lease read, which can drop a refund
+after a reset raced the retry but never lands one in the wrong period.</p>
+<p><strong>Known gaps (not a backend's to close).</strong> A resource- or system-level
+change never reaches the bucket item (it propagates through the TTL). A
+lowered schedule there lets a refund land above the new ceiling until the
+next slow pass clamps it; a reset-schedule change there leaves the period
+guard following the lease's cron, so a reset under the new cron before
+the old edge can let the old period's refund land. An entity-level change
+reaches the item, and any reset-schedule change on the item drops the
+in-flight quota refunds (one per open lease per change).</p>
+</div>
 
 
 <div class="doc doc-object doc-class">
@@ -18209,12 +18283,16 @@ is uniform over the others. Passed only when non-empty.</p>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_composite_normal" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">applied_windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">grant_counts</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">owner</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">expected_vu</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">applied_windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">grant_counts</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">owner</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">expected_vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">read_tokens</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Build an UpdateItem for the normal write path (ADR-115 path 2).</p>
+<p><code>read_tokens</code> (limit name -&gt; <code>tk</code> as read) pins every limit whose
+refill delta is positive on <code>tk &lt;= :read</code>, so a credit landing
+between the read and the write fails the write rather than having the
+refill stack on it (#730).</p>
 <p><code>owner</code> is <code>(cascade, parent_id)</code> from the item owner's META, read
 this pass: when given, both stamps are rewritten so the fast path's
 denormalised copy is repaired (#684). <code>None</code> leaves them as stored.</p>
@@ -18530,12 +18608,17 @@ on this write re-granted it at, stamped as <code>b_{name}_gc</code>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_composite_retry" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_retry</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_retry</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">period_guards</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Build an UpdateItem for the retry write path (ADR-115 path 3).</p>
+<p><code>period_guards</code> (limit name -&gt; <code>(reset_edge_ms, window_start_ms)</code>):
+for each quota the lost write was to reset, roll or open, the retry
+requires that period to be applied already (<code>rf &gt;= edge</code>, or
+<code>b_{name}_wa = window_start</code>), so it never spends the previous
+period's balance (#743).</p>
 <p>Must ask for <code>ReturnValuesOnConditionCheckFailure=ALL_OLD</code>: the lease
 reports a failure here from the item's real balance (#633).</p>
 
@@ -18638,13 +18721,13 @@ writer seeded first is debited, never re-seeded.</p>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_composite_adjust" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_adjust</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">deltas</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_adjust</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">deltas</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">ceilings</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">trim</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">pin</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Build an UpdateItem for the adjust write path (ADR-115 path 4).</p>
-<p>Unconditional ADD for post-hoc correction. Can go negative by design.
+<p>An ADD for post-hoc correction. Can go negative by design.
 Positive delta = consumed more (subtract tokens, add to counter).
 Negative delta = consumed less (add tokens, subtract from counter).</p>
 
@@ -18708,6 +18791,64 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
                 <em>required</em>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>ceilings</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="zae_limiter.models.CreditCeiling">CreditCeiling</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; <code>CreditCeiling</code>. Each credited limit
+named here is conditioned on its balance staying at or below
+the ceiling after the credit, and on the stored <code>cp</code> / <code>gc</code>
+the ceiling was computed from (#721); a failed condition raises
+<code>ConditionalCheckFailedException</code> and the caller re-issues
+the credit with <code>trim=True</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>trim</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Build the fallback: the same unconditional ADD plus
+<code>SET vu = 0</code> in one write, so the speculative fast path cannot
+spend a balance above the ceiling before a slow pass clamps it.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>pin</code>
+            </td>
+            <td>
+                  <code><span title="zae_limiter.models.CreditPin">CreditPin</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The item's (<code>shard_count</code>, <code>vu</code>, item-level schedule
+strings) the ceilings were computed against (<code>None</code> =
+absent), pinned beside them: a doubling, a schedule change or a
+reset may have lowered the real ceiling.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -18764,6 +18905,49 @@ TransactWriteItems for atomicity.</p>
             </td>
             <td>
                 <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>For a single-item update, the item's attributes after the write</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>(<code>ALL_NEW</code>), which a later refund pins (#721); otherwise, or when</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>a backend cannot say, <code>None</code>.</p>
+              </div>
             </td>
           </tr>
       </tbody>
@@ -18896,17 +19080,7 @@ where partial success is acceptable.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>return <code>None</code>; callers then skip the post-credit ceiling check</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="list">list</span>[<span title="dict">dict</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>]] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>(#679) rather than fail.</p>
+                <p>return <code>None</code>; no caller depends on the result.</p>
               </div>
             </td>
           </tr>

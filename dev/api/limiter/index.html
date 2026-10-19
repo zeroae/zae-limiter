@@ -2162,6 +2162,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label=" adjust">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.lease.Lease.adjust--681-no-process-can-spend-the-excess-in-between-not-covered-a" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        681). No process can spend the excess in between. Not covered: a
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -2250,6 +2267,23 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label=" adjust">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.sync_lease.SyncLease.adjust--681-no-process-can-spend-the-excess-in-between-not-covered-a" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        681). No process can spend the excess in between. Not covered: a
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
         
@@ -5603,6 +5637,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label=" adjust">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.lease.Lease.adjust--681-no-process-can-spend-the-excess-in-between-not-covered-a" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        681). No process can spend the excess in between. Not covered: a
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -5691,6 +5742,23 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label=" adjust">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.sync_lease.SyncLease.adjust--681-no-process-can-spend-the-excess-in-between-not-covered-a" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        681). No process can spend the excess in between. Not covered: a
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
         
@@ -12480,18 +12548,15 @@ explicitly where that lease is built, never inferred from an empty
         <p>Adjust consumption by delta (positive or negative).</p>
 <p>Never raises - allows bucket to go negative.
 Use for post-hoc reconciliation (e.g., LLM token counts).</p>
-<p>A negative delta is a credit, written as an unconditional <code>ADD</code>, so
-the stored balance can land above the shard's ceiling. The excess is
-trimmed before the fast path can spend it: when the write reports a
-balance over its ceiling, the item is marked (<code>vu = 0</code>) so the next
-acquire takes the slow path, which clamps every limit, and the
-aggregator does not reopen the fast path meanwhile (#679, #681).
-Not covered: the one round trip between the credit and its <code>vu = 0</code>
-write (two separate writes); a backend whose <code>write_each</code> reports no balances; a
-<code>vu = 0</code> write that itself fails (logged, the excess then waits for
-the next materialising pass); an adjustment commit that fails partway
-(#682); and the speculative compensation a rejected cascade writes,
-which credits back a debit one round trip old.</p>
+<p>A negative delta is a credit, an <code>ADD</code>, and a reset edge or a refill
+to capacity since the debit can make it land above the shard's
+ceiling. So the credit is conditioned on staying within the ceiling
+and, when it would not, re-issued with <code>vu = 0</code> in the same write
+(#721): the next acquire takes the slow path, which clamps every limit,
+and the aggregator does not reopen the fast path meanwhile (#679,</p>
+<h5 id="zae_limiter.lease.Lease.adjust--681-no-process-can-spend-the-excess-in-between-not-covered-a">681). No process can spend the excess in between. Not covered: a<a class="headerlink" href="#zae_limiter.lease.Lease.adjust--681-no-process-can-spend-the-excess-in-between-not-covered-a" title="Permanent link">&para;</a></h5>
+<p>limit whose ceiling the lease could not compute (logged, the credit is
+then unconditional) and an adjustment commit that fails partway (#682).</p>
 <p>Only limits declared in <code>acquire(consume=...)</code> can be adjusted;
 other keys are reported (Issue #455) and ignored.</p>
 
@@ -12777,18 +12842,15 @@ explicitly where that lease is built, never inferred from an empty
         <p>Adjust consumption by delta (positive or negative).</p>
 <p>Never raises - allows bucket to go negative.
 Use for post-hoc reconciliation (e.g., LLM token counts).</p>
-<p>A negative delta is a credit, written as an unconditional <code>ADD</code>, so
-the stored balance can land above the shard's ceiling. The excess is
-trimmed before the fast path can spend it: when the write reports a
-balance over its ceiling, the item is marked (<code>vu = 0</code>) so the next
-acquire takes the slow path, which clamps every limit, and the
-aggregator does not reopen the fast path meanwhile (#679, #681).
-Not covered: the one round trip between the credit and its <code>vu = 0</code>
-write (two separate writes); a backend whose <code>write_each</code> reports no balances; a
-<code>vu = 0</code> write that itself fails (logged, the excess then waits for
-the next materialising pass); an adjustment commit that fails partway
-(#682); and the speculative compensation a rejected cascade writes,
-which credits back a debit one round trip old.</p>
+<p>A negative delta is a credit, an <code>ADD</code>, and a reset edge or a refill
+to capacity since the debit can make it land above the shard's
+ceiling. So the credit is conditioned on staying within the ceiling
+and, when it would not, re-issued with <code>vu = 0</code> in the same write
+(#721): the next acquire takes the slow path, which clamps every limit,
+and the aggregator does not reopen the fast path meanwhile (#679,</p>
+<h5 id="zae_limiter.sync_lease.SyncLease.adjust--681-no-process-can-spend-the-excess-in-between-not-covered-a">681). No process can spend the excess in between. Not covered: a<a class="headerlink" href="#zae_limiter.sync_lease.SyncLease.adjust--681-no-process-can-spend-the-excess-in-between-not-covered-a" title="Permanent link">&para;</a></h5>
+<p>limit whose ceiling the lease could not compute (logged, the credit is
+then unconditional) and an adjustment commit that fails partway (#682).</p>
 <p>Only limits declared in <code>acquire(consume=...)</code> can be adjusted;
 other keys are reported (Issue #455) and ignored.</p>
 
