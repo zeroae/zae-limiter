@@ -522,3 +522,114 @@ def test_create_task_inside_nested_blocks_is_tracked() -> None:
 
     assert "task.result()" in result
     assert "self.t.result()" in result
+
+
+@pytest.mark.parametrize(
+    ("use", "construct"),
+    [
+        pytest.param(
+            "await asyncio.wait_for(task, 1)", "used in `asyncio.wait_for(", id="wait_for"
+        ),
+        pytest.param("await asyncio.gather(task)", "used in `asyncio.gather(task)`", id="gather"),
+        pytest.param("consume(task)", "used in `consume(task)`", id="call_argument"),
+        pytest.param("self.tasks = [task]", "used in `[task]`", id="container"),
+        pytest.param("return task", "used in `return task`", id="unannotated_return"),
+        pytest.param("task.add_done_callback(f)", "used in `task.add_done_callback`", id="method"),
+        pytest.param("task.cancel('why')", "used in `task.cancel`", id="cancel_with_msg"),
+        pytest.param("ok = task == other", "used in `task == other`", id="compare"),
+    ],
+)
+def test_a_handle_used_any_other_way_aborts_generation(use: str, construct: str) -> None:
+    """A `Future` keeps only a task's await, cancel and None checks (#716)."""
+    source = f"async def run(self, f, other):\n    task = asyncio.create_task(work())\n    {use}\n"
+
+    with pytest.raises(generate_sync.UnsupportedAsyncConstructError) as excinfo:
+        transform(source, source_file="lease.py")
+
+    message = str(excinfo.value)
+    assert "lease.py:3:" in message
+    assert "the task handle `task`" in message
+    assert construct in message
+
+
+def test_a_handle_may_be_compared_with_none_and_returned_when_annotated() -> None:
+    source = (
+        "async def run(self) -> asyncio.Task[None]:\n"
+        "    task = asyncio.create_task(work())\n"
+        "    if task is not None and None is not task:\n"
+        "        task.cancel()\n"
+        "    return task\n"
+    )
+    result = transform(source)
+
+    assert "if task is not None and None is not task:" in result
+    assert "return task" in result
+
+
+def test_handles_are_scoped_to_their_function_and_class() -> None:
+    """The same spelling elsewhere is not a handle: its await stays a plain call."""
+    source = (
+        "class Lease:\n"
+        "    task: asyncio.Task[None] | None = None\n"
+        "    async def finish(self):\n"
+        "        await self.task\n"
+        "class Other:\n"
+        "    async def finish(self):\n"
+        "        await self.task\n"
+        "async def spawn():\n"
+        "    t = asyncio.create_task(work())\n"
+        "    await t\n"
+        "async def plain(t):\n"
+        "    await t\n"
+    )
+    result = transform(source)
+
+    assert result.count("self.task.result()") == 1
+    assert result.count("t.result()") == 1
+    assert "    self.task\n" in result  # Other.finish: the await's operand, unchanged
+    assert result.rstrip().endswith("def plain(t):\n    t")  # the await's operand, unchanged
+
+
+def test_a_nested_function_sees_the_enclosing_handle() -> None:
+    source = (
+        "async def run():\n"
+        "    t = asyncio.create_task(work())\n"
+        "    async def join():\n"
+        "        await t\n"
+        "    await join()\n"
+    )
+
+    assert "t.result()" in transform(source)
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    ["asyncio.TaskGroup", "asyncio.Tasks[None]", "my.asyncio.Task[None]", "'asyncio.TaskGroup'"],
+)
+def test_only_an_exact_asyncio_task_annotation_names_a_handle(annotation: str) -> None:
+    source = (
+        f"class Lease:\n    group: {annotation}\n"
+        "    async def finish(self):\n        await self.group\n"
+    )
+
+    assert "self.group.result()" not in transform(source)
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    ["asyncio.Task", "'asyncio.Task[None]'", "Optional[asyncio.Task[None]]", "None | asyncio.Task"],
+)
+def test_an_asyncio_task_annotation_names_a_handle_in_every_spelling(annotation: str) -> None:
+    source = (
+        f"class Lease:\n    t: {annotation}\n    async def finish(self):\n        await self.t\n"
+    )
+
+    assert "self.t.result()" in transform(source)
+
+
+def test_an_unparseable_quoted_annotation_names_no_handle() -> None:
+    source = (
+        "class Lease:\n    t: 'not valid ('\n    async def finish(self):\n        await self.t\n"
+    )
+
+    assert "self.t.result()" not in transform(source)

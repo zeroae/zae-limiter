@@ -417,7 +417,11 @@ every parallel_mode), and `await <handle>` into `<handle>.result()`. That needs:
   - the handle assigned to a local name or `self.<attr>`, or returned from a
     function annotated `-> asyncio.Task[...]`; a handle stored elsewhere is
     tracked only through an `asyncio.Task[...]` annotation on the field or name
-    it is awaited through.
+    it is awaited through;
+  - the handle only assigned, awaited, cancelled with a bare `.cancel()`,
+    compared with `None` (`is` / `is not`), or returned from a function
+    annotated `-> asyncio.Task[...]` — never passed to `wait_for`, `gather` or
+    any other call, aliased, or stored in a container.
 """
 
 
@@ -426,17 +430,18 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
 
     def __init__(self, source_file: str):
         self.source_file = source_file
-        # `asyncio.create_task` support: the handles (`name` / `self.attr`)
-        # whose `await` becomes `.result()`, and the create_task calls found
-        # where a handle can be tracked. Filled by `visit_Module`'s pre-pass.
-        self._spawned_handles: set[str] = set()
+        # `asyncio.create_task` support, filled by `visit_Module`'s pre-pass:
+        # the `await` nodes whose operand is a spawned-task handle (they become
+        # `.result()`), and the create_task calls found where a handle can be
+        # tracked.
+        self._spawned_awaits: set[int] = set()
         self._trackable_create_tasks: set[int] = set()
         super().__init__()
 
     # -- asyncio.create_task -------------------------------------------------
 
     @staticmethod
-    def _is_create_task(node: ast.AST) -> bool:
+    def _is_create_task(node: ast.AST | None) -> bool:
         return (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -445,9 +450,31 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             and node.func.attr == "create_task"
         )
 
-    @staticmethod
-    def _names_a_task(annotation: ast.AST | None) -> bool:
-        return annotation is not None and "asyncio.Task" in ast.unparse(annotation)
+    @classmethod
+    def _names_a_task(cls, annotation: ast.AST | None) -> bool:
+        """True if ``annotation`` is ``asyncio.Task``, exactly, possibly parametrised.
+
+        Also through ``X | None``, ``Optional[X]`` and a quoted annotation.
+        Matched structurally, never as a substring: ``asyncio.TaskGroup`` is
+        not a task handle.
+        """
+        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+            try:
+                annotation = ast.parse(annotation.value, mode="eval").body
+            except SyntaxError:
+                return False
+        if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+            return cls._names_a_task(annotation.left) or cls._names_a_task(annotation.right)
+        if isinstance(annotation, ast.Subscript):
+            if isinstance(annotation.value, ast.Name) and annotation.value.id == "Optional":
+                return cls._names_a_task(annotation.slice)
+            annotation = annotation.value
+        return (
+            isinstance(annotation, ast.Attribute)
+            and isinstance(annotation.value, ast.Name)
+            and annotation.value.id == "asyncio"
+            and annotation.attr == "Task"
+        )
 
     def _create_task_error(self, node: ast.AST, construct: str) -> UnsupportedAsyncConstructError:
         return UnsupportedAsyncConstructError(
@@ -455,72 +482,84 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             f"be translated faithfully: {construct}.\n\n{_CREATE_TASK_HELP}"
         )
 
-    def _collect_spawned_handles(self, tree: ast.Module) -> None:
-        """Find every task handle the sync twin must resolve with `.result()`.
+    @staticmethod
+    def _handle_of(target: ast.AST) -> tuple[str, str] | None:
+        """``("local", name)`` for a name, ``("attr", attr)`` for ``self.<attr>``."""
+        if isinstance(target, ast.Name):
+            return ("local", target.id)
+        if (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+        ):
+            return ("attr", target.attr)
+        return None
 
-        A handle is tracked by its spelling: a local name, or `self.<attr>`. It
-        is one when a `create_task` call is assigned to it, or when it is
-        annotated `asyncio.Task[...]` (a class field or a local). A
-        `create_task` anywhere else — an argument, a container element, a bare
-        expression, a target the generator cannot spell — cannot have its
-        `await` found later, so it aborts generation.
+    @staticmethod
+    def _scope_nodes(body: list[ast.stmt]) -> list[tuple[ast.AST, ast.AST | None]]:
+        """Every node of one scope with its parent, nested scopes left out.
+
+        A nested ``def`` / ``class`` is listed (so the caller can descend into
+        it as a scope of its own) but not entered. A ``lambda`` is entered: it
+        has no statements and reads the enclosing scope's names.
         """
+        found: list[tuple[ast.AST, ast.AST | None]] = []
+        stack: list[tuple[ast.AST, ast.AST | None]] = [(stmt, None) for stmt in body]
+        while stack:
+            node, parent = stack.pop()
+            found.append((node, parent))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            stack.extend((child, node) for child in ast.iter_child_nodes(node))
+        return found
 
-        def handle_of(target: ast.expr) -> str | None:
-            if isinstance(target, ast.Name):
-                return target.id
-            if (
-                isinstance(target, ast.Attribute)
-                and isinstance(target.value, ast.Name)
-                and target.value.id == "self"
+    def _declared_handles(self, nodes: list[ast.AST], kind: str) -> set[str]:
+        """The handles of ``kind`` that ``nodes`` assign a task to or annotate as one."""
+        found: set[str] = set()
+        for node in nodes:
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign) and self._is_create_task(node.value):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign) and (
+                self._is_create_task(node.value) or self._names_a_task(node.annotation)
             ):
-                return f"self.{target.attr}"
-            return None
+                targets = [node.target]
+            for target in targets:
+                handle = self._handle_of(target)
+                if handle is not None and handle[0] == kind:
+                    found.add(handle[1])
+        return found
 
-        def scan(body: list[ast.stmt], in_class: bool, returns_task: bool) -> None:
-            for stmt in body:
-                if isinstance(stmt, ast.ClassDef):
-                    scan(stmt.body, True, False)
-                    continue
-                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    scan(stmt.body, False, self._names_a_task(stmt.returns))
-                    continue
-                if isinstance(stmt, ast.AnnAssign) and self._names_a_task(stmt.annotation):
-                    name = handle_of(stmt.target)
-                    if name is not None:
-                        self._spawned_handles.add(
-                            f"self.{name}" if in_class and "." not in name else name
-                        )
-                value = getattr(stmt, "value", None)
-                if self._is_create_task(value):
-                    targets: list[ast.expr] = []
-                    if isinstance(stmt, ast.Assign):
-                        targets = stmt.targets
-                    elif isinstance(stmt, ast.AnnAssign):
-                        targets = [stmt.target]
-                    if isinstance(stmt, ast.Return):
-                        if not returns_task:
-                            raise self._create_task_error(
-                                stmt,
-                                "returned from a function not annotated to return "
-                                "`asyncio.Task[...]`",
-                            )
-                        self._trackable_create_tasks.add(id(value))
-                    elif len(targets) == 1 and handle_of(targets[0]) is not None:
-                        name = handle_of(targets[0])
-                        assert name is not None
-                        self._spawned_handles.add(name)
-                        self._trackable_create_tasks.add(id(value))
-                # Nested blocks (if / try / with / for) hold statements too.
-                for field_name in ("body", "orelse", "finalbody"):
-                    nested = getattr(stmt, field_name, None)
-                    if isinstance(nested, list) and nested and isinstance(nested[0], ast.stmt):
-                        if not isinstance(stmt, (ast.ClassDef, ast.FunctionDef)):
-                            scan(nested, in_class, returns_task)
-                for handler in getattr(stmt, "handlers", []) or []:
-                    scan(handler.body, in_class, returns_task)
+    def _attr_handles(self, owner: ast.AST) -> set[str]:
+        """The ``self.<attr>`` handles of a class, or of a function outside one.
 
-        scan(tree.body, False, False)
+        A class's are its fields annotated ``asyncio.Task[...]`` and every
+        ``self.<attr>`` any of its methods assigns a task to or annotates.
+        """
+        found: set[str] = set()
+        if isinstance(owner, ast.ClassDef):
+            fields = [stmt for stmt in owner.body if isinstance(stmt, ast.AnnAssign)]
+            found |= self._declared_handles(list(fields), "local")
+        found |= self._declared_handles(list(ast.walk(owner)), "attr")
+        return found
+
+    def _collect_spawned_handles(self, tree: ast.Module) -> None:
+        """Find every awaited task handle, and abort on any use the sync twin can't keep.
+
+        A handle is a local name, scoped to its function (and the functions
+        nested in it), or ``self.<attr>``, scoped to its class. It is one when
+        a ``create_task`` call is assigned to it, or when it is annotated
+        ``asyncio.Task[...]`` (a class field or a local). Its sync twin is a
+        ``concurrent.futures.Future``, which keeps only a few of a task's uses,
+        so a handle may only be assigned, awaited (``.result()``), cancelled
+        (``.cancel()``), compared with ``None`` by ``is`` / ``is not``, or
+        returned from a function annotated ``-> asyncio.Task[...]``. Anything
+        else — passed to ``wait_for``, ``gather`` or any call, stored in a
+        container, returned elsewhere — aborts generation, as does a
+        ``create_task`` whose handle is not assigned to one of those
+        spellings.
+        """
+        self._check_scope(tree.body, set(), set(), returns_task=False, in_class=False)
         for node in ast.walk(tree):
             if self._is_create_task(node) and id(node) not in self._trackable_create_tasks:
                 raise self._create_task_error(
@@ -528,6 +567,99 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
                     "its handle is not assigned to a name or `self.<attr>`, nor returned "
                     "from a function annotated `-> asyncio.Task[...]`",
                 )
+
+    def _check_scope(
+        self,
+        body: list[ast.stmt],
+        outer_locals: set[str],
+        attrs: set[str],
+        *,
+        returns_task: bool,
+        in_class: bool,
+    ) -> None:
+        nodes = self._scope_nodes(body)
+        locals_ = outer_locals | self._declared_handles([node for node, _ in nodes], "local")
+        parents = {id(node): parent for node, parent in nodes}
+        for node, parent in nodes:
+            if isinstance(node, ast.ClassDef):
+                self._check_scope(
+                    node.body, set(), self._attr_handles(node), returns_task=False, in_class=True
+                )
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self._check_scope(
+                    node.body,
+                    locals_,
+                    attrs if in_class else attrs | self._attr_handles(node),
+                    returns_task=self._names_a_task(node.returns),
+                    in_class=in_class,
+                )
+            elif self._is_create_task(node):
+                self._check_create_task_site(node, parent, returns_task)
+            else:
+                handle = self._handle_of(node)
+                if handle is None or isinstance(getattr(node, "ctx", None), ast.Store):
+                    continue  # not a handle, or (re)assigning one
+                if handle[1] not in (locals_ if handle[0] == "local" else attrs):
+                    continue
+                if isinstance(node, ast.Name) and isinstance(parent, ast.Attribute):
+                    if handle[1] == "self":
+                        continue  # the `self` of `self.<attr>`
+                self._check_handle_use(node, parent, parents, returns_task)
+
+    def _check_create_task_site(
+        self, node: ast.AST, parent: ast.AST | None, returns_task: bool
+    ) -> None:
+        if isinstance(parent, ast.Return):
+            if not returns_task:
+                raise self._create_task_error(
+                    parent,
+                    "returned from a function not annotated to return `asyncio.Task[...]`",
+                )
+            self._trackable_create_tasks.add(id(node))
+            return
+        targets: list[ast.expr] = []
+        if isinstance(parent, ast.Assign) and parent.value is node:
+            targets = parent.targets
+        elif isinstance(parent, ast.AnnAssign) and parent.value is node:
+            targets = [parent.target]
+        if len(targets) == 1 and self._handle_of(targets[0]) is not None:
+            self._trackable_create_tasks.add(id(node))
+
+    def _check_handle_use(
+        self,
+        node: ast.AST,
+        parent: ast.AST | None,
+        parents: dict[int, ast.AST | None],
+        returns_task: bool,
+    ) -> None:
+        """Accept one read of a spawned-task handle, or abort naming it."""
+        if isinstance(parent, ast.Await):
+            self._spawned_awaits.add(id(parent))
+            return
+        if isinstance(parent, ast.Attribute) and parent.attr == "cancel":
+            call = parents.get(id(parent))
+            if isinstance(call, ast.Call) and call.func is parent and not call.args:
+                if not call.keywords:
+                    return
+        if (
+            isinstance(parent, ast.Compare)
+            and all(isinstance(op, (ast.Is, ast.IsNot)) for op in parent.ops)
+            and all(
+                isinstance(side, ast.Constant) and side.value is None
+                for side in [parent.left, *parent.comparators]
+                if side is not node
+            )
+        ):
+            return
+        if isinstance(parent, ast.Return) and returns_task:
+            return
+        use = ast.unparse(parent) if parent is not None else ast.unparse(node)
+        raise self._create_task_error(
+            node,
+            f"the task handle `{ast.unparse(node)}` is used in `{use}`; a handle may only be "
+            "assigned, awaited, cancelled with `.cancel()`, compared with `None`, or returned "
+            "from a function annotated `-> asyncio.Task[...]`",
+        )
 
     def visit_Module(self, node: ast.Module) -> ast.AST:  # noqa: N802
         """Find the spawned-task handles before anything is rewritten."""
@@ -736,7 +868,7 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
 
     def visit_Await(self, node: ast.Await) -> ast.AST:  # noqa: N802
         """Remove await, keep the expression; a spawned handle's await is `.result()`."""
-        if ast.unparse(node.value) in self._spawned_handles:
+        if id(node) in self._spawned_awaits:
             value = self.visit(node.value)
             return ast.copy_location(
                 ast.Call(
