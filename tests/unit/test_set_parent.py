@@ -912,6 +912,75 @@ class TestStaleWriters:
         await lease._await_owner_checks()
         assert writes[-1] == ("vu=0", "user", "gpt-4", 1)
 
+    @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+    def test_an_interrupted_sync_join_skips_the_writes_and_reraises(self, interrupt):
+        """r5 #5: Ctrl-C during the join must not wait on vu = 0 round trips."""
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.sync_lease import SyncLease
+        from zae_limiter.sync_repository_protocol import SyncRepositoryProtocol
+
+        cancelled: list[bool] = []
+
+        def result():
+            raise interrupt()
+
+        handle = SimpleNamespace(result=result, cancel=lambda: cancelled.append(True))
+        writes: list[tuple] = []
+        backend = SimpleNamespace(
+            start_background=lambda _work: handle,
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=writes.extend,
+        )
+        lease = SyncLease(repository=cast(SyncRepositoryProtocol, backend))
+        lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
+
+        with pytest.raises(interrupt):
+            lease._await_owner_checks()
+        assert writes == []  # no network round trip on the way down
+        assert cancelled == [True]
+        assert lease._owner_task is None
+
+    async def test_another_base_exception_in_the_join_still_forces_the_slow_pass(self):
+        """Anything else that unwinds the join (a killed greenlet's GreenletExit) writes vu = 0."""
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        class Unwind(BaseException):
+            pass
+
+        class Handle:
+            cancelled = False
+
+            def cancel(self):
+                self.cancelled = True
+
+            def __await__(self):
+                raise Unwind  # `await` calls this first, so it unwinds right there
+
+        writes: list[tuple] = []
+
+        async def write_each(items):
+            writes.extend(items)
+
+        backend = SimpleNamespace(
+            start_background=lambda _work: Handle(),
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=write_each,
+        )
+        lease = Lease(repository=cast(RepositoryProtocol, backend))
+        await lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
+        handle = lease._owner_task
+
+        with pytest.raises(Unwind):
+            await lease._await_owner_checks()
+        assert writes == [("vu=0", "user", "gpt-4", 0)]
+        assert handle.cancelled
+
     def test_the_sync_twin_never_reads_its_caller_as_cancelled(self):
         from zae_limiter.cancellation import caller_is_cancelled, sync_caller_is_cancelled
 

@@ -878,6 +878,10 @@ class SyncLease:
         is re-raised only when it is aimed at the caller
         (:func:`~zae_limiter.cancellation.caller_is_cancelled`); otherwise the
         caller's own exception, or its normal exit, stands.
+
+        ``KeyboardInterrupt`` and ``SystemExit`` skip the ``vu = 0`` writes and
+        re-raise at once: the process is going down, and in the sync twin the
+        writes would hold Ctrl-C for their network round trips.
         """
         if self._owner_task is None:
             return
@@ -891,6 +895,9 @@ class SyncLease:
             logger.warning("owner stamp checks were cancelled; forced a slow pass instead")
         except Exception:
             logger.warning("owner stamp checks failed", exc_info=True)
+        except (KeyboardInterrupt, SystemExit):
+            self._owner_task.cancel()
+            raise
         except BaseException:
             self._owner_task.cancel()
             self._abandon_owner_checks(self._owner_checks)
