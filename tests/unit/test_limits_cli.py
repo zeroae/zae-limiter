@@ -789,6 +789,38 @@ class TestInvokeProvisioner:
                 assert "test-app-limits-provisioner" in result.output
                 assert "--no-provisioner" in result.output
 
+    def test_invoke_provisioner_throttled_exits_cleanly(self):
+        """A throttled invoke ran nothing: say so instead of printing a traceback."""
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+
+            class FakeResourceNotFoundError(Exception):
+                """Stand-in for the botocore-generated client exception."""
+
+            class FakeTooManyRequestsError(Exception):
+                """Stand-in for the botocore-generated client exception."""
+
+            with (
+                patch("asyncio.run", return_value="test-ns-id"),
+                patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
+            ):
+                mock_lambda = MagicMock()
+                mock_lambda.exceptions.ResourceNotFoundException = FakeResourceNotFoundError
+                mock_lambda.exceptions.TooManyRequestsException = FakeTooManyRequestsError
+                mock_lambda.invoke.side_effect = FakeTooManyRequestsError("Rate exceeded")
+                mock_boto3_client.return_value = mock_lambda
+
+                result = CliRunner().invoke(
+                    cli, ["limits", "apply", "--name", "test-app", "-f", f.name]
+                )
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert (
+            "Error: Lambda function 'test-app-limits-provisioner' is throttled; "
+            "nothing was applied. Try again in a moment."
+        ) in result.output
+
     def test_invoke_provisioner_lambda_error_exits(self):
         """_invoke_provisioner exits on Lambda error response."""
         yaml_content = {"namespace": "test-ns"}

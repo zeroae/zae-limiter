@@ -487,6 +487,16 @@ def _invoke_provisioner(
             err=True,
         )
         sys.exit(1)
+    except lambda_client.exceptions.TooManyRequestsException:
+        # Lambda throttled the invoke before the function ran, so nothing was
+        # applied. Not retried: retries are off so a read timeout cannot invoke
+        # `apply` twice, and botocore cannot retry one error and not the other.
+        click.echo(
+            f"Error: Lambda function '{function_name}' is throttled; nothing was applied. "
+            "Try again in a moment.",
+            err=True,
+        )
+        sys.exit(1)
 
     response_payload: dict[str, Any] = json.loads(response["Payload"].read())
 
