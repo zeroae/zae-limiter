@@ -1194,6 +1194,12 @@ class SyncLease:
         self-trimming credit per bucket item (``write_credit``, #721): a reset
         edge or a refill to capacity that landed since the debit can no longer
         lift the balance above the ceiling where the fast path would spend it.
+
+        Each refund is written on its own (#729): one that fails after its
+        retries — a transaction conflict or throttling on a busy item — is
+        logged and the rest are still attempted, so a stuck child refund
+        cannot leave the parent debited for work that never happened. Never
+        raises: a rollback failure must not mask the caller's exception.
         """
         if self._committed or self._rolled_back:
             return
@@ -1201,15 +1207,16 @@ class SyncLease:
         if not self._initial_committed:
             return
         writes = self._adjust_writes(lambda entry: -entry._initial_consumed * 1000)
-        try:
-            for entity_id, resource, shard_id, deltas, ceilings, pin in writes:
+        for entity_id, resource, shard_id, deltas, ceilings, pin in writes:
+            try:
                 write_credit(self.repository, entity_id, resource, deltas, shard_id, ceilings, pin)
-        except Exception:
-            logger.warning(
-                "Failed to rollback consumed tokens for entities: %s",
-                [write[:3] for write in writes],
-                exc_info=True,
-            )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to roll back consumed tokens for resource=%s shard=%d (%s)",
+                    resource,
+                    shard_id,
+                    type(exc).__name__,
+                )
 
     def _adjust_writes(self, delta_of: Callable[[LeaseEntry], int]) -> list[_CreditWrite]:
         """One ``(entity, resource, shard, deltas, ceilings, pin)`` per bucket item touched.

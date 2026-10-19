@@ -1629,7 +1629,7 @@ class TestWriteOnEnter:
             await lease._rollback()
 
         assert lease._rolled_back is True
-        assert "Failed to rollback consumed tokens" in caplog.text
+        assert "Failed to roll back consumed tokens" in caplog.text
 
     async def test_cascade_normal_fails_retry_succeeds(self):
         """Cascade: normal path fails (optimistic lock), retry path succeeds.
@@ -14296,6 +14296,41 @@ class TestTransactionConflictIsContention:
             assert rejection.as_dict()["contended"] is True
 
         assert await self._available(limiter, "solo") == 9  # nothing debited
+
+    @pytest.mark.parametrize(("stuck", "refunded"), [("user", "org"), ("org", "user")])
+    async def test_one_stuck_rollback_refund_does_not_drop_the_others(
+        self, limiter, caplog, stuck, refunded
+    ):
+        """A cascade rollback writes every refund on its own (#729 item 10).
+
+        One item's refund keeps conflicting past its retries; the other item's
+        refund is still written, the failure is logged without the entity id,
+        and the caller sees its own exception, not the rollback's.
+        """
+        import logging
+
+        await self._cascade(limiter)  # one admitted request each: both at 9
+        refunds = await self._inject(limiter._repository, stuck, 1000, refunds_only=True)
+
+        class WorkFailedError(Exception):
+            pass
+
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(WorkFailedError):
+                async with limiter.acquire("user", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+                    raise WorkFailedError
+
+        assert refunds["hits"] == 4  # the stuck refund and its three retries
+        assert await self._available(limiter, refunded) == 9  # refunded
+        assert await self._available(limiter, stuck) == 8  # its refund was lost
+        failures = [
+            r.getMessage()
+            for r in caplog.records
+            if r.getMessage().startswith("Failed to roll back consumed tokens")
+        ]
+        assert failures == [
+            "Failed to roll back consumed tokens for resource=gpt-4 shard=0 (ClientError)"
+        ]
 
     async def test_a_conflicted_slow_path_commit_is_retried(self, limiter):
         """A one-item slow-path commit goes out as a plain UpdateItem."""
