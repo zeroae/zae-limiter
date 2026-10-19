@@ -183,8 +183,14 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
 - **Identity, as built (round-4 review).** The incarnation is #716's `pinc` on META, read
   through `schema.entity_incarnation` (`pinc` → `created_at` → `"-"`); #720 writes no META
   field of its own. A record written before the entity had META (`ent = "-"`) matches every
-  incarnation — otherwise a top-up retried across `create_entity` was granted twice (F1) —
-  and the record's condition is `attribute_not_exists(PK) OR (ent <> :ent AND ent <> :legacy)`.
+  incarnation — otherwise a top-up retried across `create_entity` was granted twice (F1).
+  The match is two-sided (round-5 review): a call that read no META (`"-"`) also takes any
+  record for its key. One-sided, a same-key call that read META before a concurrent
+  `create_entity` replaced the record of one that landed after it and granted again (10
+  granted against 5 on a bucket, 20 admitted against 15 on the create path). The record's
+  condition is `attribute_not_exists(PK) OR (:ent <> :legacy AND ent <> :ent AND ent <> :legacy)`.
+  **Trade-off:** a caller with no META right after a delete gets the old entity's result
+  instead of a new grant. That under-grants and never over-grants.
   The create path reads META once, for both the identity and the cascade stamps (F4).
 - **Residual F2 — a delete and recreate during one call.** The call reads META, then writes;
   if the entity is deleted and recreated in between, the record carries the old incarnation
@@ -201,6 +207,11 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
   mismatch only if something wrote `pinc` onto an *existing* META (a backfill): then a caller
   retry that straddles that write, inside the record's three-day TTL, would be applied once
   more.
+- **Residual — a recreate within the same second (until #716 merges).** On this branch an
+  incarnation is `created_at`, which has one-second resolution. A leftover record (one
+  `delete_entity` could not find, above) therefore matches an entity recreated within the
+  same second, and a top-up with the same key returns the old result and grants 0. It ends
+  once #716 merges, because #716 writes a random `pinc` on every create.
 - **Residual F3 — a lost audit.** When a write's response is unclear and the record read that
   would resolve it fails too, the error is raised (the caller retries with its key); if the
   write had landed, its audit event is not written. Logged at WARNING, without the entity id.

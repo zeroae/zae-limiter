@@ -931,6 +931,79 @@ class TestRecordsBelongToOneIncarnation:
         clock[0] += 1
         assert await _drain(limiter, "e", "cal") == 5
 
+    @staticmethod
+    def _after_meta_read(repo, hook):
+        """Run `hook` once, right after the call's strongly consistent META read."""
+        real = repo._get_item_consistent
+        fired = []
+
+        async def wrapped(pk, sk):
+            item = await real(pk, sk)
+            if sk == schema.sk_meta() and not fired:
+                fired.append(True)
+                repo._get_item_consistent = real
+                await hook()
+            return item
+
+        repo._get_item_consistent = wrapped
+        return fired
+
+    def _landed_after_create_entity(self, repo, clock):
+        """Call B: create_entity, then the same-key top-up, landing first."""
+
+        async def b():
+            await repo.create_entity("e")
+            clock[0] += 1
+            await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy")
+            clock[0] += 1
+
+        return b
+
+    async def test_same_key_across_create_entity_on_a_bucket(self, limiter, clock):
+        """Round-5 review: A read no META ("-"); B, same key, read META after a
+        create_entity and landed first. A's record Put replaced B's and A's
+        pre-check ignored it: 10 granted against 5."""
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        assert await _drain(limiter, "e", "cal") == 10
+        clock[0] += 1
+        fired = self._after_meta_read(repo, self._landed_after_create_entity(repo, clock))
+        await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy")
+        assert fired
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 5
+
+    async def test_same_key_across_create_entity_creating_the_bucket(self, limiter, clock):
+        """The same race on the create path: 20 admitted against 15 (the
+        10-token share plus one 5-token top-up)."""
+        repo = limiter._repository
+        await repo.set_resource_defaults("r", [CAL])
+        fired = self._after_meta_read(repo, self._landed_after_create_entity(repo, clock))
+        await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy")
+        assert fired
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 15
+
+    async def test_no_meta_after_a_delete_takes_the_old_result(self, limiter, clock):
+        """The accepted cost of "-" matching both ways: a caller with no META
+        reuses a leftover record for the key, so it under-grants (0 here)
+        rather than risk granting twice."""
+        repo = limiter._repository
+        await self._create(repo, "e", "inc-1")
+        await repo.set_resource_defaults("r", [CAL])
+        first = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy")
+        client = await repo._get_client()
+        shard0 = {
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, "e", "r", 0)},
+            "SK": {"S": schema.sk_state()},
+        }
+        await client.delete_item(TableName=repo.table_name, Key=shard0)  # the TTL sweep
+        await repo.delete_entity("e")  # cannot find the record any more
+        again = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy")
+        assert again == first
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 10  # the share, no top-up
+
 
 class TestEntityIncarnation:
     """`schema.entity_incarnation`, shared with #716's stack."""
