@@ -14,6 +14,7 @@ stub (``schema.py``, ``bucket.py``, ``models.py``, ``exceptions.py``,
 import importlib.metadata
 import io
 import shutil
+import stat
 import sys
 import tempfile
 import zipfile
@@ -42,6 +43,33 @@ def _get_runtime_requirements() -> list[str]:
             dep = r.split(";")[0].strip()
             result.append(dep)
     return result
+
+
+def write_lambda_zip(zf: zipfile.ZipFile, artifacts_dir: Path) -> None:
+    """Add every file under ``artifacts_dir`` to ``zf`` with Lambda-safe modes.
+
+    ``ZipFile.write`` copies each file's on-disk mode into the archive, and
+    Lambda extracts the archive as-is but runs the handler as a non-root
+    user. A file stored ``0600`` — anything installed or generated under a
+    restrictive umask such as ``077`` — is then unreadable at cold start:
+    ``PermissionError: [Errno 13] Permission denied:
+    '/var/task/zae_limiter_provisioner/__init__.py'``. Every entry is
+    therefore stored world-readable: ``0755`` if the source carries any
+    execute bit, ``0644`` otherwise.
+
+    Args:
+        zf: Open, writable zip archive
+        artifacts_dir: Directory whose contents become the archive root
+    """
+    for file_path in sorted(artifacts_dir.rglob("*")):
+        if not file_path.is_file():
+            continue
+        info = zipfile.ZipInfo.from_file(file_path, file_path.relative_to(artifacts_dir))
+        mode = 0o755 if file_path.stat().st_mode & 0o111 else 0o644
+        info.external_attr = (stat.S_IFREG | mode) << 16
+        info.compress_type = zipfile.ZIP_DEFLATED
+        with file_path.open("rb") as src, zf.open(info, "w") as dst:
+            shutil.copyfileobj(src, dst)
 
 
 def build_lambda_package() -> bytes:
@@ -165,10 +193,7 @@ def build_lambda_package() -> bytes:
         # Create zip from artifacts
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for file_path in artifacts_dir.rglob("*"):
-                if file_path.is_file():
-                    arcname = file_path.relative_to(artifacts_dir)
-                    zf.write(file_path, arcname)
+            write_lambda_zip(zf, artifacts_dir)
 
         zip_buffer.seek(0)
         return zip_buffer.getvalue()
