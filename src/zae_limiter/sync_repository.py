@@ -6283,10 +6283,11 @@ class SyncRepository:
 
         def raise_one(shard_id: int, quota_grants: Sequence[tuple[str, int]]) -> int:
             try:
-                client.update_item(
+                self._update_item_retrying_conflict(
+                    client,
                     **self._build_quota_count_freeze(
                         entity_id, resource, shard_id, new_count, quota_grants
-                    )
+                    ),
                 )
                 return 1
             except ClientError as e:

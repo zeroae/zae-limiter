@@ -14688,3 +14688,105 @@ class TestDoublingSurvivesASiblingStampConflict:
 
         assert stamps["hits"] == 4  # the stamp and its three retries
         assert await self._shard_count_of(repo, "stuck", 0) == 4
+
+
+class TestFreezeConflictIsContention:
+    """A conflict on the ADR-145 grant-size freeze is contention (#729).
+
+    Before a fresh grant, quota planning raises a lagging sibling's
+    ``shard_count`` with its grant size frozen. That write had no conflict
+    handling: a ``TransactionConflictException`` reached ``acquire()``'s generic
+    handler, a degraded lease (no limiting) under ALLOW, ``RateLimiterUnavailable``
+    under BLOCK. It is now retried, and a conflict that outlasts the retries is
+    the contended 429.
+    """
+
+    QUOTA = Limit.quota("rpd", 1000, cron="0 0 * * *")
+
+    async def _lagging_shard0(self, limiter, entity_id: str):
+        """Shard 0 granted half the quota at count 2 (covers slots 0 and 2);
+        the client believes the count is 4, so slot 3 is a fresh grant and
+        shard 0 lags the planned count."""
+        repo = limiter._repository
+        now_ms = freeze_clock(repo)
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([self.QUOTA])
+        state = BucketState.from_limit(entity_id, "gpt-4", self.QUOTA, now_ms, shard_count=2)
+        state.grant_count = 2
+        vu, _reset = RateLimiter._materialisation_stamps(self.QUOTA, state, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    entity_id, "gpt-4", [state], now_ms, shard_id=0, shard_count=2, vu=vu
+                )
+            ]
+        )
+        repo._entity_cache[(repo._namespace_id, entity_id)] = (False, None, {"gpt-4": 4})
+        return repo
+
+    async def _conflict_freeze(self, repo, times: int):
+        client = await repo._get_client()
+        original = client.update_item
+        state = {"left": times, "hits": 0}
+
+        async def conflicted(**kwargs):
+            if kwargs.get("ConditionExpression") == "#qsc < :qnew" and state["left"] > 0:
+                state["left"] -= 1
+                state["hits"] += 1
+                raise ClientError(
+                    {"Error": {"Code": "TransactionConflictException", "Message": "busy"}},
+                    "UpdateItem",
+                )
+            return await original(**kwargs)
+
+        client.update_item = conflicted
+        return state
+
+    async def _shard0_count(self, repo, entity_id: str) -> int:
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return int(response["Item"]["shard_count"]["N"])
+
+    @pytest.mark.parametrize("mode", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    async def test_a_freeze_that_keeps_conflicting_is_a_contended_429(self, limiter, mode):
+        repo = await self._lagging_shard0(limiter, "frozen")
+        freezes = await self._conflict_freeze(repo, 1000)
+
+        with patch("zae_limiter.repository.random.randrange", return_value=3):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with limiter.acquire("frozen", "gpt-4", {"rpd": 1}, on_unavailable=mode):
+                    pass
+
+        rejection = exc_info.value
+        assert freezes["hits"] == 4  # the freeze and its three retries
+        assert rejection.contended is True
+        assert rejection.violations == []
+        assert rejection.retry_after_seconds == pytest.approx(0.1)
+        assert [s.limit_name for s in rejection.statuses] == ["rpd"]
+        assert await self._shard0_count(repo, "frozen") == 2  # nothing written
+
+    async def test_a_freeze_that_conflicts_once_is_retried(self, limiter):
+        repo = await self._lagging_shard0(limiter, "thawed")
+        freezes = await self._conflict_freeze(repo, 1)
+
+        with patch("zae_limiter.repository.random.randrange", return_value=3):
+            async with limiter.acquire("thawed", "gpt-4", {"rpd": 1}) as lease:
+                assert not lease.degraded
+
+        assert freezes["hits"] == 1
+        assert await self._shard0_count(repo, "thawed") == 4
+
+    async def test_other_planning_errors_still_reach_on_unavailable(self, limiter):
+        repo = await self._lagging_shard0(limiter, "broken")
+        repo.plan_quota_shard = AsyncMock(side_effect=RuntimeError("backend down"))
+
+        with patch("zae_limiter.repository.random.randrange", return_value=3):
+            with pytest.raises(RateLimiterUnavailable):
+                async with limiter.acquire("broken", "gpt-4", {"rpd": 1}):
+                    pass

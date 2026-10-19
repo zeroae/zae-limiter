@@ -7661,10 +7661,14 @@ class Repository:
 
         async def raise_one(shard_id: int, quota_grants: Sequence[tuple[str, int]]) -> int:
             try:
-                await client.update_item(
+                # Retried on a transaction conflict (#729); one that outlasts
+                # the retries propagates, and the acquire answers it with the
+                # contended 429.
+                await self._update_item_retrying_conflict(
+                    client,
                     **self._build_quota_count_freeze(
                         entity_id, resource, shard_id, new_count, quota_grants
-                    )
+                    ),
                 )
                 return 1
             except ClientError as e:

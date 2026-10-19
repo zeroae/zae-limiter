@@ -58,11 +58,13 @@ from .schedule import effective_params, next_boundary, prev_reset_edge, retry_af
 from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 from .sync_config_cache import ConfigSource
 from .sync_lease import (
+    _CONTENTION_RETRY_AFTER_S,
     LeaseEntry,
     PeriodNotAppliedError,
     QuotaMoveLostError,
     SyncLease,
     _contention_rejection,
+    _is_transaction_conflict,
     credit_ceilings,
     credit_image,
     write_credit,
@@ -2007,13 +2009,20 @@ class SyncRateLimiter:
                 else [limit for limit in entity_limits[eid] if limit.is_quota]
             )
             plan_count = seed_shard_count if any_existing else eid_shard_count
-            grant_count, grants, donor_debits = (
-                self._repository.plan_quota_shard(
-                    eid, resource, quota_needing, eid_shard, plan_count, now_ms
+            try:
+                grant_count, grants, donor_debits = (
+                    self._repository.plan_quota_shard(
+                        eid, resource, quota_needing, eid_shard, plan_count, now_ms
+                    )
+                    if quota_needing and plan_count > 1
+                    else (plan_count, {}, [])
                 )
-                if quota_needing and plan_count > 1
-                else (plan_count, {}, [])
-            )
+            except Exception as exc:
+                if not _is_transaction_conflict(exc):
+                    raise
+                raise self._planning_contention(
+                    eid, resource, entity_limits[eid], consume, existing_buckets, now_ms
+                ) from exc
             if disable_moves:
                 zeroed |= {
                     (eid, name) for name, grant in grants.items() if grant.donor_shard is not None
@@ -2191,6 +2200,40 @@ class SyncRateLimiter:
             (b.entity_id, b.resource, b.limit_name): b for b in buckets
         }
         return (entity, bucket_dict)
+
+    @staticmethod
+    def _planning_contention(
+        entity_id: str,
+        resource: str,
+        limits: list[Limit],
+        consume: dict[str, int],
+        existing: dict[tuple[str, str, str], BucketState],
+        now_ms: int,
+    ) -> RateLimitExceeded:
+        """The contended 429 for a conflict during quota planning (#729).
+
+        Raised before any lease entry exists, so the statuses come from the
+        resolved limits: one per limit named in ``consume``, none exceeded,
+        each waiting ``_CONTENTION_RETRY_AFTER_S``. ``available`` is the stored
+        balance where the item has one; a slot still being planned has none.
+        """
+        statuses = [
+            LimitStatus(
+                entity_id=entity_id,
+                resource=resource,
+                limit_name=limit.name,
+                limit=limit,
+                available=state.tokens_milli // 1000
+                if (state := existing.get((entity_id, resource, limit.name))) is not None
+                else 0,
+                requested=consume[limit.name],
+                exceeded=False,
+                retry_after_seconds=_CONTENTION_RETRY_AFTER_S,
+            )
+            for limit in limits
+            if limit.name in consume
+        ]
+        return RateLimitExceeded(statuses, contended=True)
 
     def _commit_rejected_moves(self, entries: list[LeaseEntry], carriers: list[LeaseEntry]) -> None:
         """Commit a rejected pass's quota moves with nothing consumed (ADR-145 I5).
