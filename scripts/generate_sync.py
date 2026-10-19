@@ -214,13 +214,22 @@ def _run_in_executor(self, *funcs: Any) -> Any:
     return tuple(f.result() for f in futures)
 
 def _spawn(self, fn: Any) -> Any:
-    # Run `fn` in the background: the sync twin of `asyncio.create_task`.
-    # Returns a `concurrent.futures.Future` in every parallel_mode: `.result()`
-    # returns `fn`'s value or re-raises the exception `fn` raised (held, never
-    # lost), and `.cancel()` cancels it. threadpool submits to the lazy
-    # executor; gevent (patched) spawns a greenlet; serial runs `fn` inline and
-    # returns a completed future.
-    from concurrent.futures import Future
+    '''Run ``fn`` in the background: the sync twin of ``asyncio.create_task``.
+
+    Returns a ``concurrent.futures.Future`` in every parallel_mode: ``.result()``
+    returns ``fn``'s value or re-raises the exception ``fn`` raised (held, never
+    lost). threadpool submits to the lazy executor; gevent (patched) spawns a
+    greenlet; serial runs ``fn`` inline and returns a completed future.
+
+    ``.cancel()`` keeps ``concurrent.futures`` semantics, not asyncio's: it
+    cancels only a spawn that has not started, and returns False for one that
+    is running. threadpool then runs ``fn`` to completion (a thread cannot be
+    interrupted). gevent also kills the running greenlet, and ``.result()``
+    raises ``concurrent.futures.CancelledError``, translated from the
+    ``GreenletExit`` the kill raises inside ``fn``. serial has always run ``fn``
+    to completion before ``.cancel()`` can be called.
+    '''
+    from concurrent.futures import CancelledError, Future
     executor_fn = self._executor_fn
     if executor_fn is None:
         if self._thread_pool is None:
@@ -228,13 +237,15 @@ def _spawn(self, fn: Any) -> Any:
             self._thread_pool = ThreadPoolExecutor(max_workers=2)
         return self._thread_pool.submit(fn)
     gevent_spawn: Any = None
+    killed: tuple[type[BaseException], ...] = ()
     if self._parallel_mode in ("auto", "gevent"):
         try:
-            from gevent import monkey, spawn
+            from gevent import GreenletExit, monkey, spawn
             # Unpatched, a greenlet would never run while `.result()` blocks
             # the thread: like the gevent executor, that runs like serial.
             if monkey.is_module_patched("socket"):
                 gevent_spawn = spawn
+                killed = (GreenletExit,)
         except ImportError:
             gevent_spawn = None
 
@@ -243,6 +254,8 @@ def _spawn(self, fn: Any) -> Any:
             return
         try:
             future.set_result(fn())
+        except killed:
+            future.set_exception(CancelledError())
         except BaseException as exc:
             future.set_exception(exc)
 

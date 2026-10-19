@@ -231,3 +231,8 @@ class TestSpawn:
         future.greenlet.join()  # ...but its greenlet was killed
         assert future.greenlet.dead
         assert future.done()
+        # The kill's GreenletExit surfaces as the concurrent.futures answer.
+        from concurrent.futures import CancelledError
+
+        with pytest.raises(CancelledError):
+            future.result()
