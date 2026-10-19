@@ -981,6 +981,47 @@ class TestStaleWriters:
         assert writes == [("vu=0", "user", "gpt-4", 0)]
         assert handle.cancelled
 
+    async def test_a_second_cancel_stops_the_fallback_part_way(self):
+        """r5 #4 (case2), the residual ADR-150 records: a second cancel ends the vu = 0
+        writes where they stand; the buckets not yet written keep the create's stamp."""
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        writes: list[tuple] = []
+        first_written = asyncio.Event()
+
+        async def slow(*args):
+            await asyncio.sleep(5)
+
+        async def write_each(items):
+            if writes:
+                await asyncio.sleep(5)  # the second write is in flight when cancelled
+            writes.extend(items)
+            first_written.set()
+
+        backend = SimpleNamespace(
+            start_background=lambda work: asyncio.create_task(work()),
+            repair_created_owner_stamp=slow,
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=write_each,
+        )
+        lease = Lease(repository=cast(RepositoryProtocol, backend))
+        await lease._start_owner_checks([("user", "gpt-4", s, 1, "inc") for s in range(3)])
+        join = asyncio.create_task(lease._await_owner_checks())
+        await asyncio.sleep(0.01)
+        join.cancel()  # first cancel: the fallback starts
+        await first_written.wait()
+        await asyncio.sleep(0.01)
+        join.cancel()  # second cancel, e.g. an outer timeout or asyncio.run shutdown
+
+        with pytest.raises(asyncio.CancelledError):
+            await join
+        assert writes == [("vu=0", "user", "gpt-4", 0)]  # shards 1 and 2 were never forced
+        assert lease._owner_task is None
+
     def test_the_sync_twin_never_reads_its_caller_as_cancelled(self):
         from zae_limiter.cancellation import caller_is_cancelled, sync_caller_is_cancelled
 

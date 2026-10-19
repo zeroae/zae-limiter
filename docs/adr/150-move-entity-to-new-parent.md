@@ -89,6 +89,16 @@ by leases open across the move, stays where it was debited.
 - Residual: a process that dies between a create and its owner check leaves a create that
   read META before a move on the old parent until the bucket's next slow pass or a repeat
   of the move. The check's own failure is covered (`vu = 0` forces that slow pass).
+- Residual: a cancelled check is covered the same way, by `vu = 0` on every bucket it
+  checked, but those writes are themselves cancellable. A second cancellation landing
+  while they run (an outer timeout, an event-loop shutdown) stops them where they stand,
+  and the buckets not yet written keep the create's stamp, wrong only if a move overtook
+  the create in that window, until their next slow pass or a repeat of the move. It is
+  bounded by the buckets one acquire created. A `KeyboardInterrupt` or `SystemExit` during
+  the join skips the writes on purpose, with the same residual: the process is going down.
+  Shielding the writes was not chosen, because the generated sync twin has no
+  `asyncio.shield`, and a detached write task needs a strong reference that would outlive
+  the lease.
 - Residual (ADR-125's two-pass race, here for moves): a move whose META write lands after a
   create's owner check runs its fan-out after the bucket exists, but GSI3 can lag the
   create, so both discovery passes can miss it. The bucket keeps the old parent until its
