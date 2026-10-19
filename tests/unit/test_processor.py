@@ -1144,6 +1144,66 @@ class TestTryRefillBucket:
         assert "ADD" in call_kwargs["UpdateExpression"]
         assert "SET rf = :new_rf" in call_kwargs["UpdateExpression"]
 
+    @staticmethod
+    def _wcu(tk_milli: int) -> LimitRefillInfo:
+        # `wcu`'s `tc` never moves: the fast path debits only its `tk`.
+        return LimitRefillInfo(
+            tc_delta=0, tk_milli=tk_milli, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=1000
+        )
+
+    def test_a_refill_that_moves_rf_credits_wcu(self) -> None:
+        """`wcu` rides along on a write that moves `rf`, or it forfeits its accrual.
+
+        Left out, its stored balance drained one token per write for good and
+        read as a hot partition after ~800 writes, at any rate.
+        """
+        mock_table = MagicMock()
+        state = self._make_state(
+            rf_ms=1704067195000,  # 5s ago
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=20000000,
+                    tk_milli=5000000,
+                    cp_milli=100000000,
+                    ra_milli=100000000,
+                    rp_ms=60000,
+                ),
+                "wcu": self._wcu(150_000),
+            },
+        )
+
+        assert try_refill_bucket(mock_table, state, 1704067200000) is True
+
+        kwargs = mock_table.update_item.call_args[1]
+        names, values = kwargs["ExpressionAttributeNames"], kwargs["ExpressionAttributeValues"]
+        alias = next(a for a, attr in names.items() if attr == "b_wcu_tk")
+        idx = alias.removeprefix("#rt")
+        assert f"{alias} :rd{idx}" in kwargs["UpdateExpression"]
+        assert values[f":rd{idx}"] == 1_000_000 - 150_000  # refilled to capacity
+        # Pinned on the balance read, like every raise (#730).
+        assert f"{alias} <= :rk{idx}" in kwargs["ConditionExpression"]
+        assert values[f":rk{idx}"] == 150_000
+
+    def test_wcu_alone_never_causes_a_write(self) -> None:
+        """A `wcu`-only refill is skipped: `rf` does not move, so nothing is forfeited."""
+        mock_table = MagicMock()
+        state = self._make_state(
+            rf_ms=1704067195000,
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=1000000,
+                    tk_milli=100000000,  # full
+                    cp_milli=100000000,
+                    ra_milli=100000000,
+                    rp_ms=60000,
+                ),
+                "wcu": self._wcu(150_000),
+            },
+        )
+
+        assert try_refill_bucket(mock_table, state, 1704067200000) is False
+        mock_table.update_item.assert_not_called()
+
     def test_refill_skipped_when_tokens_sufficient(self) -> None:
         """Skips refill when projected tokens >= consumption."""
         mock_table = MagicMock()

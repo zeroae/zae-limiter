@@ -973,6 +973,10 @@ def try_refill_bucket(
     # pinned on each staying within it (#679, #681, see below).
     unclamped: list[tuple[str, int]] = []
     over_ceiling: list[str] = []
+    # `wcu`'s refill when the threshold below would skip it: credited if this
+    # write happens for another limit, since that write moves `rf` (see after
+    # the loop). `(delta, tk as read)`.
+    deferred_wcu: tuple[int, int] | None = None
 
     for limit_name, info in state.limits.items():
         if limit_name == WCU_LIMIT_NAME:
@@ -1136,6 +1140,8 @@ def try_refill_bucket(
             projected = result.new_tokens_milli
             consumption_estimate = max(0, info.tc_delta)
             if projected >= consumption_estimate:
+                if limit_name == WCU_LIMIT_NAME:
+                    deferred_wcu = (refill_delta, info.tk_milli)
                 continue
         # A negative delta is a clamp: the bucket holds more than its effective
         # cap after a shrink (set_limits, a shard doubling, or a schedule
@@ -1162,6 +1168,24 @@ def try_refill_bucket(
             resource=state.resource,
         )
         return False
+
+    # This write moves `rf`, and every limit on the item refills from `rf`, so
+    # a limit left out of it forfeits everything it accrued since the last
+    # stamp. `wcu` was always left out: its `tc` never moves (the fast path
+    # debits only its `tk`), so the threshold above skipped it on every pass,
+    # and nothing else on the fast path refills it. Its stored balance then
+    # drained by one token per write for good, and read as a hot partition
+    # after ~800 writes however slowly they came. Credited only here, never as
+    # a reason to write: a `wcu`-only refill would spend a write to record
+    # capacity that refill from the unmoved `rf` already accounts for.
+    if deferred_wcu is not None:
+        wcu_delta, wcu_read_tk = deferred_wcu
+        idx = len(refilled)
+        add_parts.append(f"#rt{idx} :rd{idx}")
+        expr_names[f"#rt{idx}"] = bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK)
+        expr_values[f":rd{idx}"] = wcu_delta
+        raised.append((f"#rt{idx}", f":rk{idx}", wcu_read_tk))
+        refilled.append(WCU_LIMIT_NAME)
 
     # Build single UpdateItem for the composite bucket
     # ADD is commutative with concurrent speculative writes (Issue #317)
