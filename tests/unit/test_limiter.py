@@ -15121,3 +15121,28 @@ class TestPlanningContentionOnACascadeParent:
 
         capacities = {s.entity_id: s.limit.capacity for s in exc_info.value.statuses}
         assert capacities == {"kid": 10, "org": 250}
+
+
+class TestDoublingSurvivesAPropagationError:
+    """Once shard 0 has doubled, any propagation error leaves the new count (#729)."""
+
+    async def test_an_unexpected_propagation_error_still_returns_the_new_count(
+        self, limiter, caplog
+    ):
+        import logging
+
+        repo = limiter._repository
+        freeze_clock(repo)
+        await limiter.create_entity("odd")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        async with limiter.acquire("odd", "gpt-4", {"rpm": 0}):
+            pass
+        repo._propagate_shard_count = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with caplog.at_level(logging.WARNING):
+            assert await repo.bump_shard_count("odd", "gpt-4", 1) == 2
+
+        assert "shard_count propagation to 2 for resource=gpt-4 incomplete (RuntimeError)" in (
+            caplog.text
+        )
+        assert "odd" not in caplog.text
