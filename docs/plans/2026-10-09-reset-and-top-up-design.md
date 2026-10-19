@@ -207,6 +207,11 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
   mismatch only if something wrote `pinc` onto an *existing* META (a backfill): then a caller
   retry that straddles that write, inside the record's three-day TTL, would be applied once
   more.
+- **Residual — a recreate within the same second (until #716 merges).** On this branch an
+  incarnation is `created_at`, which has one-second resolution. A leftover record (one
+  `delete_entity` could not find, above) therefore matches an entity recreated within the
+  same second, and a top-up with the same key returns the old result and grants 0. It ends
+  once #716 merges, because #716 writes a random `pinc` on every create.
 - **Residual F3 — a lost audit.** When a write's response is unclear and the record read that
   would resolve it fails too, the error is raised (the caller retries with its key); if the
   write had landed, its audit event is not written. Logged at WARNING, without the entity id.
