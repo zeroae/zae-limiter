@@ -1176,9 +1176,13 @@ def try_refill_bucket(
 
     # This write moves `rf`, and every limit on the item refills from `rf`, so
     # a limit left out of it forfeits everything it accrued since the last
-    # stamp. `wcu` was always left out: its `tc` never moves (the fast path
-    # debits only its `tk`), so the threshold above skipped it on every pass,
-    # and nothing else on the fast path refills it. Its stored balance then
+    # stamp. `wcu` was always left out by the threshold above. Its `tc` does
+    # move (the fast path ADDs one token to `#wcu_tc` per write), but a batch holds
+    # at most BatchSize (100) records, so its `tc_delta` is at most 100 tokens,
+    # while its projection from the unmoved `rf` is back near its 1000-token
+    # capacity within a second (it refills 1000/s): `projected >= tc_delta`
+    # skipped it on every pass, and nothing on the fast path refills it.
+    # Its stored balance then
     # drained by one token per write for good, and read as a hot partition
     # after ~800 writes however slowly they came. Credited only here, never as
     # a reason to write: a `wcu`-only refill would spend a write to record

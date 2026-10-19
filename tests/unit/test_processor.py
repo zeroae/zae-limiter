@@ -1146,7 +1146,8 @@ class TestTryRefillBucket:
 
     @staticmethod
     def _wcu(tk_milli: int) -> LimitRefillInfo:
-        # `wcu`'s `tc` never moves: the fast path debits only its `tk`.
+        # `tc_delta=0` isolates the refill credit: a batch's real wcu
+        # `tc_delta` (at most 100 writes) never beats its projection either.
         return LimitRefillInfo(
             tc_delta=0, tk_milli=tk_milli, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=1000
         )
