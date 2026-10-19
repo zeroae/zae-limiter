@@ -1408,6 +1408,14 @@ def try_proactive_shard(
     MODIFY of shard 0 that still carries the low ``wcu`` balance, so the next
     invocation read it and doubled again, without bound.
 
+    A backstop, not the primary protection. The client doubles on its own
+    the moment a write finds ``wcu`` exhausted (``_shard_after_wcu_exhaustion``),
+    and that is what protects a hot shard. Projected to now, the balance this
+    reads is low only when a materialising pass stamped ``rf`` less than
+    0.2 s before this invocation's clock (``wcu`` refills 1000/s; the
+    threshold is 200), so the aggregator rarely doubles before the client
+    already has.
+
     Only acts on shard 0 (source of truth for shard_count).
     Uses conditional write to prevent double-bumping.
 
