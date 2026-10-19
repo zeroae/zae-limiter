@@ -669,9 +669,14 @@ class TestInvokeProvisioner:
         """The CLI's assumed Lambda timeout tracks cfn_template.yaml."""
         from zae_limiter.infra import PROVISIONER_LAMBDA_TIMEOUT_SECONDS, get_cfn_template
 
-        template = get_cfn_template()
-        block = template.split("  ProvisionerFunction:\n", 1)[1].split("\n\n", 1)[0]
-        assert f"Timeout: {PROVISIONER_LAMBDA_TIMEOUT_SECONDS}" in block
+        class _TagIgnoringLoader(yaml.SafeLoader):
+            """SafeLoader that loads CloudFormation intrinsics (``!Ref``, ...) as None."""
+
+        _TagIgnoringLoader.add_multi_constructor("!", lambda loader, suffix, node: None)
+
+        template = yaml.load(get_cfn_template(), Loader=_TagIgnoringLoader)
+        timeout = template["Resources"]["ProvisionerFunction"]["Properties"]["Timeout"]
+        assert timeout == PROVISIONER_LAMBDA_TIMEOUT_SECONDS
 
     def test_invoke_provisioner_resolves_namespace(self):
         """A preview resolves namespace_id read-only, requiring current Lambdas (#648)."""
