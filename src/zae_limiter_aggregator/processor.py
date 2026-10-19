@@ -728,6 +728,11 @@ def aggregate_bucket_states(
             # records for one key arrive in order, so the last image is the
             # closest thing to the item's current state.
             bucket_states[key].rf_ms = parsed.rf_ms
+            # A doubling later in the batch must reach the refill: it targets
+            # `cp // shard_count`, and the first record's count would top this
+            # shard up to the old, larger share while the new shards are
+            # created holding theirs (1265 against 1000 until the next pass).
+            bucket_states[key].shard_count = parsed.shard_count
             bucket_states[key].sched = parsed.sched
             bucket_states[key].sched_compact = parsed.sched_compact
             bucket_states[key].reset_sched = parsed.reset_sched

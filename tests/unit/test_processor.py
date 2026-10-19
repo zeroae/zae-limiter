@@ -2272,6 +2272,80 @@ class TestProactiveShardingFeedback:
         assert counts == [1, 1, 1]
 
 
+class TestRefillAtTheBatchsLatestShardCount:
+    """A batch carrying a doubling refills shard 0 toward its new share.
+
+    `aggregate_bucket_states` kept the first record's `shard_count` for a
+    bucket and ignored a later record in the same batch that doubled it, so the
+    refill topped shard 0 up to the whole capacity while shard 1 was created
+    holding its own share: 765 + 500 = 1265 against a limit of 1000 until the
+    next pass trimmed it. Real items on moto, the batch built from them.
+    """
+
+    TABLE = "test-rate-limits"
+
+    @staticmethod
+    def _record(old: dict, new: dict) -> dict:
+        from boto3.dynamodb.types import TypeSerializer
+
+        ser = TypeSerializer()
+        return {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "OldImage": {k: ser.serialize(v) for k, v in old.items()},
+                "NewImage": {k: ser.serialize(v) for k, v in new.items()},
+            },
+        }
+
+    def test_shards_never_exceed_the_limit_after_a_doubling_batch(self, sync_repository) -> None:
+        import boto3
+
+        from zae_limiter import Limit, SyncRateLimiter
+
+        limiter = SyncRateLimiter(repository=sync_repository)
+        limiter.create_entity("user-1")
+        limiter.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="api")
+        with limiter.acquire("user-1", "api", {"rpm": 1}):
+            pass
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(self.TABLE)
+        pk = next(i["PK"] for i in table.scan()["Items"] if i["PK"].endswith("BUCKET#user-1#api#0"))
+        key = {"PK": pk, "SK": "#STATE"}
+        item0 = table.get_item(Key=key)["Item"]
+
+        # Record 1: 899 more tokens spent on shard 0 (tk 100, 900 consumed).
+        table.update_item(
+            Key=key,
+            UpdateExpression="ADD b_rpm_tk :d, b_rpm_tc :c",
+            ExpressionAttributeValues={":d": -899_000, ":c": 899_000},
+        )
+        item1 = table.get_item(Key=key)["Item"]
+        # Record 2: a client doubles shard 0 to 2 (no `rf`, no `tk` change).
+        table.update_item(
+            Key=key,
+            UpdateExpression="SET shard_count = :n",
+            ExpressionAttributeValues={":n": 2},
+        )
+        item2 = table.get_item(Key=key)["Item"]
+
+        # 40 s after `rf`: 666 tokens of refill, short of the 900 consumed, so
+        # the refill is written.
+        clock = MagicMock()
+        clock.time.return_value = int(item2["rf"]) / 1000 + 40
+        clock.perf_counter.return_value = 0.0
+        with patch("zae_limiter_aggregator.processor.time_module", clock):
+            result = process_stream_records(
+                [self._record(item0, item1), self._record(item1, item2)],
+                self.TABLE,
+                windows=[],
+            )
+        assert result.errors == []
+
+        shards = [i for i in table.scan()["Items"] if "BUCKET#user-1#api#" in i["PK"]]
+        assert len(shards) == 2  # shard 1 created by the propagation
+        total_milli = sum(int(i["b_rpm_tk"]) for i in shards)
+        assert total_milli <= 1000 * 1000, total_milli
+
+
 class TestPropagateShardsCount:
     """Tests for propagate_shard_count function."""
 
