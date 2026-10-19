@@ -1228,7 +1228,11 @@ class Lease:
         that had already finished costs one extra slow pass. The cancellation
         is re-raised only when it is aimed at the caller
         (:func:`~zae_limiter.cancellation.caller_is_cancelled`); otherwise the
-        caller's own exception, or its normal exit, stands.
+        caller's own exception, or its normal exit, stands. If the caller's own
+        code suppressed a cancellation without ``Task.uncancel()``,
+        ``cancelling()`` stays above 0 and such a cancel is re-raised in place of
+        the caller's exception; ``vu = 0`` still runs, so nothing is
+        over-admitted. The sync twin never reports a cancellation.
 
         ``KeyboardInterrupt`` and ``SystemExit`` skip the ``vu = 0`` writes and
         re-raise at once: the process is going down, and in the sync twin the
