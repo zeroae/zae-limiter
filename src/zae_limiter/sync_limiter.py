@@ -756,7 +756,7 @@ class SyncRateLimiter:
             lease._rollback()
             raise
         finally:
-            lease._run_owner_checks()
+            lease._await_owner_checks()
 
     def _try_speculative_acquire(
         self,
@@ -2217,7 +2217,7 @@ class SyncRateLimiter:
         try:
             lease = SyncLease(repository=self._repository, entries=entries, _carriers=carriers)
             lease._commit_initial()
-            lease._run_owner_checks()
+            lease._await_owner_checks()
         except Exception as exc:
             logger.warning(
                 "A rejected pass's quota move on resource %r was not written: %r",

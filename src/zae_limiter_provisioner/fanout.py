@@ -31,12 +31,11 @@ from zae_limiter.schema import (
     BUCKET_FIELD_PINC,
     DEFAULT_RESOURCE,
     ENTITY_FIELD_PGEN,
-    ENTITY_FIELD_PINC,
     GSI2_NAME,
     GSI3_NAME,
-    LEGACY_INCARNATION,
     decode_cascade,
     decode_disabled,
+    entity_incarnation,
     gsi2_pk_resource,
     gsi3_pk_entity,
     parse_bucket_pk,
@@ -331,7 +330,7 @@ def _owner(
         item.get("cascade", {}).get("BOOL", False),
         item.get("parent_id", {}).get("S"),
         int(item.get(ENTITY_FIELD_PGEN, {}).get("N", "0")),
-        item.get(ENTITY_FIELD_PINC, {}).get("S", LEGACY_INCARNATION),
+        entity_incarnation(item),
     )
 
 

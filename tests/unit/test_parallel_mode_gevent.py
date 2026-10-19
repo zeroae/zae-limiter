@@ -48,3 +48,41 @@ class TestGeventParallelMode:
         )
         result = repo._run_in_executor(lambda: 42, lambda: 99)
         assert result == (42, 99)
+
+
+class TestGeventSpawn:
+    """`_spawn` with real gevent monkey-patching (run with GEVENT=1, -m gevent -n 0)."""
+
+    def test_spawn_runs_in_a_greenlet_and_holds_exceptions(self):
+        from gevent import monkey
+
+        if not monkey.is_module_patched("socket"):
+            pytest.skip("gevent not monkey-patched (run with GEVENT=1)")
+        repo = SyncRepository(
+            name="test", region="us-east-1", _skip_deprecation_warning=True, parallel_mode="auto"
+        )
+        assert repo._spawn(lambda: 42).result() == 42
+
+        def fail():
+            raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            repo._spawn(fail).result()
+
+    def test_cancelling_a_running_spawn_kills_it_and_result_raises_cancelled(self):
+        """A running spawn's `.cancel()` returns False; `.result()` is CancelledError."""
+        from concurrent.futures import CancelledError
+
+        import gevent
+        from gevent import monkey
+
+        if not monkey.is_module_patched("socket"):
+            pytest.skip("gevent not monkey-patched (run with GEVENT=1)")
+        repo = SyncRepository(
+            name="test", region="us-east-1", _skip_deprecation_warning=True, parallel_mode="gevent"
+        )
+        future = repo._spawn(lambda: gevent.sleep(1))
+        gevent.sleep(0.01)  # let it start
+        assert future.cancel() is False
+        with pytest.raises(CancelledError):
+            future.result(timeout=2)
