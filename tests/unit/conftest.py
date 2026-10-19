@@ -1,5 +1,7 @@
 """Unit test fixtures using moto."""
 
+import os
+
 import pytest
 
 from zae_limiter import RateLimiter, Repository, __version__
@@ -51,6 +53,16 @@ async def _setup_moto_table(name: str = "test-rate-limits", region: str = "us-ea
     await repo._register_namespace("default")
     await repo.set_version_record(schema_version=get_schema_version(), lambda_version=__version__)
     await repo.close()
+
+
+@pytest.fixture
+def restrictive_umask():
+    """Run the test under ``umask 077``, as on a hardened build host, then restore it."""
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
 
 
 def _setup_moto_table_sync(name: str = "test-rate-limits", region: str = "us-east-1") -> None:
