@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING, Any
 
-from .schedule import cycle_seconds, entry_params, parse_cron
+from .schedule import cycle_seconds, encode, encode_reset, entry_params, parse_cron
 
 if TYPE_CHECKING:
     from .models import Limit
@@ -1046,3 +1046,33 @@ def calculate_bucket_ttl(
     if ttl_seconds is None:
         return None
     return (now_ms // 1000) + ttl_seconds
+
+
+def explicit_schedule_overrides(
+    sched: "tuple[ScheduleEntry, ...]",
+    reset_sched: "tuple[ScheduleEntry, ...]",
+) -> tuple[str | None, dict[str, str]]:
+    """A seeded limit's own schedule overrides, spelled out (#633, #541).
+
+    Both ``b_{name}_sched`` and ``b_{name}_rsched`` are written explicitly — the
+    limit's compact encoding, or ``BUCKET_SCHED_NONE`` when it has none of that
+    kind — so the item default can never leak onto a limit added to an existing
+    item. Shared by the seed write and the image a refund pins after it (#721).
+
+    Returns:
+        ``(tz, {field: compact})``: the zone the limit's schedules are written
+        in, or ``None`` when it has none, and one entry per field.
+    """
+    tz: str | None = None
+    overrides: dict[str, str] = {}
+    for field, entries, encoder in (
+        (BUCKET_FIELD_SCHED, sched, encode),
+        (BUCKET_FIELD_RSCHED, reset_sched, encode_reset),
+    ):
+        if entries:
+            compact, entry_tz = encoder(entries)
+            overrides[field] = compact
+            tz = tz or entry_tz
+        else:
+            overrides[field] = BUCKET_SCHED_NONE
+    return tz, overrides

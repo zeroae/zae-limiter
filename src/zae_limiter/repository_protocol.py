@@ -19,6 +19,8 @@ if TYPE_CHECKING:
         BackendCapabilities,
         BucketState,
         ConfigAccess,
+        CreditCeiling,
+        CreditPin,
         Entity,
         Limit,
         OnUnavailableAction,
@@ -619,8 +621,14 @@ class RepositoryProtocol(Protocol):
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
+        read_tokens: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
+
+        ``read_tokens`` (limit name -> ``tk`` as read) pins every limit whose
+        refill delta is positive on ``tk <= :read``, so a credit landing
+        between the read and the write fails the write rather than having the
+        refill stack on it (#730).
 
         ``owner`` is ``(cascade, parent_id)`` from the item owner's META, read
         this pass: when given, both stamps are rewritten so the fast path's
@@ -676,8 +684,15 @@ class RepositoryProtocol(Protocol):
         consumed: dict[str, int],
         shard_id: int = 0,
         seeds: "dict[str, BucketState] | None" = None,
+        period_guards: dict[str, tuple[int | None, int | None]] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
+
+        ``period_guards`` (limit name -> ``(reset_edge_ms, window_start_ms)``):
+        for each quota the lost write was to reset, roll or open, the retry
+        requires that period to be applied already (``rf >= edge``, or
+        ``b_{name}_wa = window_start``), so it never spends the previous
+        period's balance (#743).
 
         Must ask for ``ReturnValuesOnConditionCheckFailure=ALL_OLD``: the lease
         reports a failure here from the item's real balance (#633).
@@ -698,10 +713,13 @@ class RepositoryProtocol(Protocol):
         resource: str,
         deltas: dict[str, int],
         shard_id: int = 0,
+        ceilings: "dict[str, CreditCeiling] | None" = None,
+        trim: bool = False,
+        pin: "CreditPin | None" = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
-        Unconditional ADD for post-hoc correction. Can go negative by design.
+        An ADD for post-hoc correction. Can go negative by design.
         Positive delta = consumed more (subtract tokens, add to counter).
         Negative delta = consumed less (add tokens, subtract from counter).
 
@@ -709,10 +727,23 @@ class RepositoryProtocol(Protocol):
             entity_id: Entity owning the bucket
             resource: Resource name
             deltas: Delta per limit (millitokens, positive=consume, negative=release)
+            ceilings: Limit name -> ``CreditCeiling``. Each credited limit
+                named here is conditioned on its balance staying at or below
+                the ceiling after the credit, and on the stored ``cp`` / ``gc``
+                the ceiling was computed from (#721); a failed condition raises
+                ``ConditionalCheckFailedException`` and the caller re-issues
+                the credit with ``trim=True``.
+            trim: Build the fallback: the same unconditional ADD plus
+                ``SET vu = 0`` in one write, so the speculative fast path cannot
+                spend a balance above the ceiling before a slow pass clamps it.
+            pin: The item's (``shard_count``, ``vu``, item-level schedule
+                strings) the ceilings were computed against (``None`` =
+                absent), pinned beside them: a doubling, a schedule change or a
+                reset may have lowered the real ceiling.
         """
         ...
 
-    async def transact_write(self, items: list[dict[str, Any]]) -> None:
+    async def transact_write(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
         """
         Execute a write of one or more items.
 
@@ -722,6 +753,11 @@ class RepositoryProtocol(Protocol):
 
         Args:
             items: List of transaction items from build_bucket_put_item
+
+        Returns:
+            For a single-item update, the item's attributes after the write
+            (``ALL_NEW``), which a later refund pins (#721); otherwise, or when
+            a backend cannot say, ``None``.
 
         Raises:
             TransactionCanceledException: If multi-item transaction fails
@@ -743,8 +779,7 @@ class RepositoryProtocol(Protocol):
         Returns:
             One entry per item: the attributes an UpdateItem returned (when the
             item asked for ``ReturnValues``), else an empty dict. A backend may
-            return ``None``; callers then skip the post-credit ceiling check
-            (#679) rather than fail.
+            return ``None``; no caller depends on the result.
         """
         ...
 

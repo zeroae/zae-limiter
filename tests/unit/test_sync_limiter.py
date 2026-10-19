@@ -33,7 +33,7 @@ from zae_limiter.exceptions import (
     VersionMismatchError,
 )
 from zae_limiter.infra.sync_discovery import SyncInfrastructureDiscovery
-from zae_limiter.models import BucketState
+from zae_limiter.models import BucketState, CreditCeiling
 from zae_limiter.schedule import ScheduleEntry, retry_after_with_schedule
 from zae_limiter.schema import (
     BUCKET_FIELD_CP,
@@ -769,6 +769,13 @@ class TestWriteOnEnter:
         state.refill_period_ms = 60000
         state.shard_count = 1
         state.report_shard_count = 1
+        state.capacity_milli = 100000
+        state.grant_count = None
+        state.stored_vu_read = True
+        state.stored_vu_ms = None
+        state.stored_item_sched_raw = (None, None, None)
+        state.stored_sched_raw = (None, None)
+        state.limit_name = "rpm"
         return LeaseEntry(
             entity_id=entity_id,
             resource="gpt-4",
@@ -1122,29 +1129,185 @@ class TestWriteOnEnter:
         assert lease._rolled_back is False
         mock_repo.write_each.assert_not_called()
 
-    OVER = [{bucket_attr("rpm", "tk"): {"N": "999999"}}]
+    @staticmethod
+    def _condition_failed():
+        return ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "over"}}, "UpdateItem"
+        )
 
-    @pytest.mark.parametrize(
-        ("returns", "clamps"),
-        [([OVER, OVER], 2), ([None, None], 0), ([OVER, None], 0), ([None, OVER], 0)],
-    )
-    def test_commit_adjustments_without_per_item_results_skips_the_ceiling(self, returns, clamps):
-        """A backend whose write_each reports nothing skips the #679 ceiling check."""
+    def test_a_credit_within_the_ceiling_is_one_conditional_write(self):
+        """#721: the usual credit lands in one write, conditioned on its ceiling."""
         from zae_limiter.sync_lease import SyncLease
 
-        entries = [
-            self._make_entry(consumed=5, initial_consumed=10, entity_id="e1"),
-            self._make_entry(consumed=5, initial_consumed=10, entity_id="e2"),
-        ]
-        for entry in entries:
-            entry.state.ceiling_milli.return_value = 100000
+        entry = self._make_entry(consumed=5, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100000
         mock_repo = self._make_mock_repo()
-        mock_repo.write_each.side_effect = [*returns, None, None]
-        mock_repo.build_vu_reset = MagicMock(return_value={"Update": {}})
-        lease = SyncLease(repository=mock_repo, entries=entries)
+        lease = SyncLease(repository=mock_repo, entries=[entry])
         lease._commit_adjustments()
+        mock_repo.build_composite_adjust.assert_called_once_with(
+            entity_id="e1",
+            resource="gpt-4",
+            deltas={"rpm": -5000},
+            shard_id=0,
+            ceilings={"rpm": CreditCeiling(100000, 100000, None, (None, None))},
+            pin=(1, None, (None, None, None)),
+        )
+        mock_repo.write_each.assert_called_once()
+
+    def test_a_credit_over_the_ceiling_is_re_issued_with_vu_zero(self):
+        """#721: a failed ceiling condition re-issues the same credit with trim=True."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=5, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100000
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = [self._condition_failed(), []]
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        lease._commit_adjustments()
+        assert mock_repo.write_each.call_count == 2
+        assert mock_repo.build_composite_adjust.call_args.kwargs == {
+            "entity_id": "e1",
+            "resource": "gpt-4",
+            "deltas": {"rpm": -5000},
+            "shard_id": 0,
+            "ceilings": {"rpm": CreditCeiling(100000, 100000, None, (None, None))},
+            "trim": True,
+        }
+
+    def test_a_failure_other_than_the_ceiling_is_not_re_issued(self):
+        """Only the ceiling condition triggers the fallback; anything else propagates."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=5, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100000
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = RuntimeError("throttled")
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        with pytest.raises(RuntimeError, match="throttled"):
+            lease._commit_adjustments()
+        mock_repo.write_each.assert_called_once()
+
+    def test_a_debit_onto_a_gone_item_is_skipped(self):
+        """A debit's only condition is that the item exists: failing it means the
+        bucket is gone, so there is nothing to adjust (#721) -- not an error."""
+        from zae_limiter.sync_lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = self._condition_failed()
+        write_credit(mock_repo, "e1", "gpt-4", {"rpm": 5000}, 0, {}, None)
+        mock_repo.write_each.assert_called_once()
+
+    def test_a_trimmed_credit_onto_a_gone_item_is_skipped(self):
+        """Step 1 and then the trimmed write both fail: the item is gone."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=5, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100000
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = [self._condition_failed(), self._condition_failed()]
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        lease._commit_adjustments()
+        assert mock_repo.write_each.call_count == 2
         assert lease._committed is True
-        assert mock_repo.build_vu_reset.call_count == clamps
+
+    def test_a_bucket_item_with_nothing_to_refund_gets_no_write(self):
+        """Rollback writes only the bucket items the initial commit debited."""
+        from zae_limiter.sync_lease import SyncLease
+
+        debited = self._make_entry(consumed=10, initial_consumed=10, entity_id="e1")
+        untouched = self._make_entry(consumed=0, initial_consumed=0, entity_id="e2")
+        debited.state.ceiling_milli.return_value = 100000
+        mock_repo = self._make_mock_repo()
+        lease = SyncLease(repository=mock_repo, entries=[debited, untouched])
+        lease._initial_committed = True
+        lease._rollback()
+        mock_repo.build_composite_adjust.assert_called_once()
+        assert mock_repo.build_composite_adjust.call_args.kwargs["entity_id"] == "e1"
+
+    def test_a_credit_with_no_known_pin_is_trimmed_outright(self):
+        """#721: with the item's rf unknown the ceiling cannot be trusted: one trimmed write."""
+        from zae_limiter.sync_lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        write_credit(
+            mock_repo,
+            "e1",
+            "gpt-4",
+            {"rpm": -5000},
+            0,
+            {"rpm": CreditCeiling(100000, 100000, None, (None, None))},
+            None,
+        )
+        mock_repo.build_composite_adjust.assert_called_once_with(
+            entity_id="e1",
+            resource="gpt-4",
+            deltas={"rpm": -5000},
+            shard_id=0,
+            ceilings={"rpm": CreditCeiling(100000, 100000, None, (None, None))},
+            trim=True,
+        )
+        mock_repo.write_each.assert_called_once()
+
+    def test_a_trimmed_credit_with_nothing_to_write_writes_nothing(self):
+        from zae_limiter.sync_lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(return_value={})
+        write_credit(
+            mock_repo, "e1", "gpt-4", {"rpm": 0}, 0, {"rpm": CreditCeiling(1, 1, None)}, None
+        )
+        mock_repo.write_each.assert_not_called()
+
+    def test_a_quota_credit_with_no_known_period_is_dropped(self):
+        """#721: a quota credit whose period cannot be told is dropped, not landed."""
+        from zae_limiter.sync_lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(
+            side_effect=lambda **k: {"Update": {}} if any(k["deltas"].values()) else {}
+        )
+        ceiling = CreditCeiling(10000, 10000, None, (None, None), quota=True)
+        write_credit(
+            mock_repo, "e1", "gpt-4", {"q": -5000}, 0, {"q": ceiling}, (1, None, (None,) * 3)
+        )
+        mock_repo.write_each.assert_not_called()
+
+    def test_a_guarded_trimmed_write_propagates_other_errors(self):
+        """Only a failed condition drops a quota credit; anything else propagates."""
+        from zae_limiter.models import QuotaPeriodPin
+        from zae_limiter.sync_lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(return_value={"Update": {}})
+        mock_repo.write_each.side_effect = RuntimeError("throttled")
+        ceiling = CreditCeiling(10000, 10000, None, (None, None), True, QuotaPeriodPin(9))
+        with pytest.raises(RuntimeError, match="throttled"):
+            write_credit(mock_repo, "e1", "gpt-4", {"q": -5000}, 0, {"q": ceiling}, None)
+        mock_repo.write_each.assert_called_once()
+
+    def test_a_single_quota_retry_propagates_other_errors(self):
+        """After the guarded trimmed write fails, each quota credit is retried on
+        its own guard; only a failed condition drops it (#721)."""
+        from zae_limiter.models import QuotaPeriodPin
+        from zae_limiter.sync_lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(
+            side_effect=lambda **k: {"Update": {}} if any(k["deltas"].values()) else {}
+        )
+        mock_repo.write_each.side_effect = [self._condition_failed(), RuntimeError("throttled")]
+        ceiling = CreditCeiling(10000, 10000, None, (None, None), True, QuotaPeriodPin(9))
+        with pytest.raises(RuntimeError, match="throttled"):
+            write_credit(mock_repo, "e1", "gpt-4", {"q": -5000}, 0, {"q": ceiling}, None)
+        assert mock_repo.write_each.call_count == 2
+
+    def test_nothing_to_adjust_writes_nothing(self):
+        from zae_limiter.sync_lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(return_value={})
+        write_credit(mock_repo, "e1", "gpt-4", {"rpm": 0}, 0, {}, None)
+        mock_repo.write_each.assert_not_called()
 
     def test_rollback_skips_when_committed(self):
         """_rollback is no-op when already committed (line 358)."""
@@ -1174,13 +1337,19 @@ class TestWriteOnEnter:
         from zae_limiter.sync_lease import SyncLease
 
         entry = self._make_entry(consumed=10, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100000
         mock_repo = self._make_mock_repo()
         lease = SyncLease(repository=mock_repo, entries=[entry])
         lease._initial_committed = True
         lease._rollback()
         assert lease._rolled_back is True
         mock_repo.build_composite_adjust.assert_called_once_with(
-            entity_id="e1", resource="gpt-4", deltas={"rpm": -10000}, shard_id=0
+            entity_id="e1",
+            resource="gpt-4",
+            deltas={"rpm": -10000},
+            shard_id=0,
+            ceilings={"rpm": CreditCeiling(100000, 100000, None, (None, None))},
+            pin=(1, None, (None, None, None)),
         )
         mock_repo.write_each.assert_called_once()
 
@@ -5442,9 +5611,9 @@ class TestCascadeEntityCache:
         compensated_entity_ids: list[str] = []
         original_compensate = sync_limiter._compensate_speculative
 
-        def tracking_compensate(entity_id, resource, consume, shard_id):
+        def tracking_compensate(entity_id, resource, consume, shard_id, buckets=None):
             compensated_entity_ids.append(entity_id)
-            return original_compensate(entity_id, resource, consume, shard_id)
+            return original_compensate(entity_id, resource, consume, shard_id, buckets)
 
         def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None):
             if entity_id == "child-1":
@@ -10434,31 +10603,28 @@ class TestCreditAboveCapacity:
         assert item[tk]["N"] == "105000"
         assert item[BUCKET_FIELD_VU]["N"] == "0"
 
-    def test_a_backend_without_the_reset_builder_skips_the_check(self, sync_limiter, monkeypatch):
-        """A third-party backend need not grow the new builder; it keeps the old behaviour."""
+    def test_a_failed_trimmed_write_is_an_adjustment_failure(self, sync_limiter, monkeypatch):
+        """The fallback write failing is re-raised like any adjustment write (#682).
+
+        Nothing landed — neither the credit nor the stamp — and the lease is
+        committed, so the initial consumption stays and nothing rolls it back.
+        """
         repo = sync_limiter._repository
-        repo.set_limits("no-builder", [self.SLOW], resource="r")
-        monkeypatch.delattr(type(repo), "build_vu_reset")
-        with sync_limiter.acquire("no-builder", "r", consume={"q": 10}) as lease:
-            lease.release(q=500)
-        assert BUCKET_FIELD_VU not in self._raw(repo, "no-builder")
+        repo.set_limits("ghost-trim", [self.SLOW], resource="r")
+        original = repo.write_each
 
-    def test_a_failed_clamp_write_is_logged_not_raised(self, sync_limiter, monkeypatch, caplog):
-        """The lease already committed; a failed follow-up must not fail the caller."""
-        import logging
+        def fail_the_trim(items):
+            if any("#vu" in item["Update"].get("ExpressionAttributeNames", {}) for item in items):
+                raise RuntimeError("throttled")
+            return original(items)
 
-        repo = sync_limiter._repository
-        repo.set_limits("ghost-clamp", [self.SLOW], resource="r")
-        original = repo.build_vu_reset
-
-        def aim_at_a_missing_item(_entity, resource, shard):
-            return original("ghost", resource, shard)
-
-        monkeypatch.setattr(repo, "build_vu_reset", aim_at_a_missing_item)
-        with caplog.at_level(logging.WARNING, logger="zae_limiter.sync_lease"):
-            with sync_limiter.acquire("ghost-clamp", "r", consume={"q": 10}) as lease:
+        monkeypatch.setattr(repo, "write_each", fail_the_trim)
+        with pytest.raises(RuntimeError, match="throttled"):
+            with sync_limiter.acquire("ghost-trim", "r", consume={"q": 10}) as lease:
                 lease.release(q=500)
-        assert "Failed to force a clamp after a credit above capacity" in caplog.text
+        item = self._raw(repo, "ghost-trim")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "90000"
+        assert BUCKET_FIELD_VU not in item
 
     def test_write_each_of_nothing_returns_nothing(self, sync_limiter):
         assert sync_limiter._repository.write_each([]) == []
@@ -10485,6 +10651,779 @@ class TestCreditAboveCapacity:
         assert "Could not check a credit against its ceiling" in caplog.text
         item = self._raw(repo, "broken-check")
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "590000"
+
+
+class TestCreditImage:
+    """The bucket item a refund pins, as the lease last wrote or read it (#721)."""
+
+    def test_an_empty_or_missing_item_is_unknown(self):
+        from zae_limiter.sync_lease import credit_image_from_item
+
+        assert credit_image_from_item(None) is None
+        assert credit_image_from_item({}) is None
+
+    def test_a_raw_item_skips_wcu_and_a_stray_balance(self):
+        from zae_limiter.sync_lease import credit_image_from_item
+
+        image = credit_image_from_item(
+            {
+                "rf": {"N": "5"},
+                "vu": {"N": "9"},
+                "sched": {"S": "1m0h0"},
+                "sched_tz": {"S": "UTC"},
+                bucket_attr("wcu", "tk"): {"N": "1000"},
+                bucket_attr("wcu", "cp"): {"N": "1000"},
+                bucket_attr("stray", "tk"): {"N": "0"},
+                bucket_attr("q", "tk"): {"N": "1000"},
+                bucket_attr("q", "cp"): {"N": "10000"},
+                bucket_attr("q", "gc"): {"N": "2"},
+                bucket_attr("q", "sched"): {"S": "-"},
+                bucket_attr("q", "ws"): {"N": "7"},
+                bucket_attr("q", "wa"): {"N": "7"},
+            }
+        )
+        assert image is not None
+        assert (image.shard_count, image.vu, image.rf) == (1, 9, 5)
+        assert image.item_sched == ("1m0h0", None, "UTC")
+        assert [name for name, _ in image.limits] == ["q"]
+        q = image.limit("q")
+        assert q is not None
+        assert (q.capacity_milli, q.grant_count, q.sched_raw) == (10000, 2, ("-", None))
+        assert (q.window_start_ms, q.window_applied_ms) == (7, 7)
+        assert image.limit("missing") is None
+
+    def test_a_seeding_write_records_the_seed_in_full(self):
+        """A seed writes its own schedule overrides and, when it has a zone, the
+        item's `sched_tz` (#633): the image is what the write leaves."""
+        from zae_limiter.sync_lease import LeaseEntry, _written_image
+
+        def state(name, **kwargs):
+            return BucketState(
+                entity_id="e",
+                resource="r",
+                limit_name=name,
+                tokens_milli=1000,
+                last_refill_ms=1,
+                capacity_milli=10000,
+                refill_amount_milli=10000,
+                refill_period_ms=60000,
+                **kwargs,
+            )
+
+        read = state(
+            "a",
+            stored_vu_ms=None,
+            stored_vu_read=True,
+            stored_item_sched_raw=(None, None, None),
+            stored_sched_raw=(None, None),
+        )
+        sched = (ScheduleEntry(cron="* 9-17 * * *", tz="America/New_York", scale=0.5),)
+        seeded = state("b", sched=sched)
+        entries = [
+            LeaseEntry(entity_id="e", resource="r", limit=Limit.per_minute("a", 10), state=read),
+            LeaseEntry(
+                entity_id="e",
+                resource="r",
+                limit=Limit.per_minute("b", 10).with_schedule(sched),
+                state=seeded,
+                _seed=True,
+            ),
+        ]
+        image = _written_image(entries, rf=42, vu=99, windows={}, applied={})
+        assert image is not None
+        assert (image.rf, image.vu) == (42, 99)
+        assert image.item_sched == (None, None, "America/New_York")
+        b = image.limit("b")
+        assert b is not None
+        assert b.sched_raw[0] is not None and b.sched_raw[1] == "-"
+
+    def test_a_write_with_no_read_image_is_unknown(self):
+        from zae_limiter.sync_lease import LeaseEntry, _written_image
+
+        state = BucketState(
+            entity_id="e",
+            resource="r",
+            limit_name="a",
+            tokens_milli=0,
+            last_refill_ms=0,
+            capacity_milli=1000,
+            refill_amount_milli=1000,
+            refill_period_ms=60000,
+        )
+        entry = LeaseEntry(entity_id="e", resource="r", limit=Limit.per_minute("a", 1), state=state)
+        assert _written_image([entry], rf=1, vu=None, windows={}, applied={}) is None
+
+
+class TestSelfTrimmingRefunds:
+    """A refund cannot be spent above the ceiling before it is trimmed (#721).
+
+    A refund (rollback, release, speculative compensation) is an ``ADD``. A reset
+    edge or a refill to capacity can land between the debit and the refund, so
+    the refund lifts the balance above the ceiling. The #680 trim used to be a
+    separate ``vu = 0`` write one round trip later, and another process's fast
+    path spent the surplus in between: a daily quota of 10 admitted 15. The
+    credit is now conditioned on staying within the ceiling and, when it would
+    not, re-issued with ``vu = 0`` in the same write.
+    """
+
+    QUOTA = Limit.quota("q", 10, cron="0 0 * * *")
+    T0 = int(datetime(2026, 10, 9, 23, 59, 0, tzinfo=UTC).timestamp() * 1000)
+    MIDNIGHT = int(datetime(2026, 10, 10, 0, 0, 0, tzinfo=UTC).timestamp() * 1000)
+
+    @pytest.fixture
+    def two(self, sync_limiter):
+        """Two processes on one table, both on one clock, neither caching rejections."""
+        from zae_limiter.sync_repository import SyncRepository
+
+        now = [self.T0]
+        r1 = sync_limiter._repository
+        r2 = SyncRepository.open(stack="test-rate-limits", rejection_cache_ttl=0)
+        for repo in (r1, r2):
+            repo._rejection_cache.ttl_seconds = 0
+            repo._now_ms = lambda: now[0]
+        r1.set_resource_defaults("budget", [self.QUOTA])
+        l2 = SyncRateLimiter(repository=r2)
+        yield (sync_limiter, l2, now)
+        r2.close()
+
+    @staticmethod
+    def _raw(repo, entity_id, resource="budget", shard=0):
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response["Item"]
+
+    def _admitted(self, sync_limiter, amounts) -> list[int]:
+        admitted = []
+        for amount in amounts:
+            try:
+                with sync_limiter.acquire("solo", "budget", {"q": amount}):
+                    admitted.append(amount)
+            except RateLimitExceeded:
+                pass
+        return admitted
+
+    def test_a_rollback_across_a_reset_is_not_spent_by_the_fast_path(self, two):
+        """The reviewer's reproduction: 15 of 10 admitted on main."""
+        l1, l2, now = two
+        r1 = l1._repository
+        with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        with l1.acquire("solo", "budget", {"q": 3}):
+            pass
+        now[0] = self.T0 + 59000
+        real_write_each = r1.write_each
+        seen = {"refund": False}
+        admitted_before_the_trim: list[int] = []
+
+        def write_each(items):
+            text = repr(items)
+            if not seen["refund"] and "b_q_tk" in text and ("ADD" in text):
+                seen["refund"] = True
+                now[0] = self.MIDNIGHT + 1000
+                with l2.acquire("solo", "budget", {"q": 0}):
+                    pass
+                return real_write_each(items)
+            if seen["refund"] and "vu" in text and ("ADD" not in text):
+                admitted_before_the_trim.extend(self._admitted(l2, [15]))
+            return real_write_each(items)
+
+        r1.write_each = write_each
+        with pytest.raises(RuntimeError):
+            with l1.acquire("solo", "budget", {"q": 5}):
+                raise RuntimeError("user code failed")
+        r1.write_each = real_write_each
+        assert admitted_before_the_trim == []
+        item = self._raw(r1, "solo")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "10000"
+        assert self._admitted(l2, [15, 10, 1]) == [10]
+
+    def test_a_rollback_within_the_ceiling_is_one_write(self, two):
+        """The usual refund: one conditional write, no `vu` stamp."""
+        l1, _, _ = two
+        r1 = l1._repository
+        with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        calls: list[dict] = []
+        client = r1._get_client()
+        original = client.update_item
+
+        def spy(**kwargs):
+            calls.append(kwargs)
+            return original(**kwargs)
+
+        client.update_item = spy
+        try:
+            with pytest.raises(RuntimeError):
+                with l1.acquire("solo", "budget", {"q": 5}):
+                    raise RuntimeError("user code failed")
+        finally:
+            client.update_item = original
+        assert len(calls) == 2
+        assert "ConditionExpression" in calls[1]
+        item = self._raw(r1, "solo")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "8000"
+        assert item[BUCKET_FIELD_VU]["N"] != "0"
+
+    def test_a_compensation_across_a_reset_is_not_spent_by_the_fast_path(self, two):
+        """Speculative compensation is the same credit, built from the debit's image."""
+        l1, l2, now = two
+        r1 = l1._repository
+        with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        now[0] = self.T0 + 59000
+        result = r1.speculative_consume("solo", "budget", {"q": 5}, shard_id=0)
+        assert result.success
+        now[0] = self.MIDNIGHT + 1000
+        with l2.acquire("solo", "budget", {"q": 0}):
+            pass
+        l1._compensate_speculative("solo", "budget", {"q": 5}, 0, result.buckets)
+        item = self._raw(r1, "solo")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "10000"
+        assert self._admitted(l2, [15, 10, 1]) == [10]
+
+    def test_a_compensation_within_the_ceiling_leaves_vu_alone(self, two):
+        l1, _, _ = two
+        r1 = l1._repository
+        with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        result = r1.speculative_consume("solo", "budget", {"q": 5}, shard_id=0)
+        l1._compensate_speculative("solo", "budget", {"q": 5}, 0, result.buckets)
+        item = self._raw(r1, "solo")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "8000"
+        assert item[BUCKET_FIELD_VU]["N"] != "0"
+
+    SLOW = Limit.custom("q", capacity=100, refill_amount=1, refill_period_seconds=86400)
+
+    def _bucket_rf_and_shard_moved(self, l1, entity_id, during):
+        """Debit 10 of 100, run `during` inside the body, then roll back."""
+        r1 = l1._repository
+        r1.set_limits(entity_id, [self.SLOW], resource="r")
+        with l1.acquire(entity_id, "r", {"q": 1}):
+            pass
+        with pytest.raises(RuntimeError):
+            with l1.acquire(entity_id, "r", {"q": 10}):
+                during()
+                raise RuntimeError("user code failed")
+        return self._raw(r1, entity_id, resource="r")
+
+    def test_a_doubling_before_the_refund_lowers_the_ceiling(self, two):
+        """The #720 review: the in-memory ceiling (100) is stale once the count doubles
+        (the real share is 50); `tk + credit <= 100` would pass and leave 99 spendable."""
+        l1, _, _ = two
+        r1 = l1._repository
+        client = r1._get_client()
+
+        def double():
+            client.update_item(
+                TableName=r1.table_name,
+                Key={
+                    "PK": {"S": pk_bucket(r1._namespace_id, "dbl", "r", 0)},
+                    "SK": {"S": sk_state()},
+                },
+                UpdateExpression="SET shard_count = :two",
+                ExpressionAttributeValues={":two": {"N": "2"}},
+            )
+
+        item = self._bucket_rf_and_shard_moved(l1, "dbl", double)
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
+        spend = r1.speculative_consume("dbl", "r", {"q": 60}, shard_id=0)
+        assert not spend.success
+
+    T10 = int(datetime(2026, 10, 9, 10, 0, 0, tzinfo=UTC).timestamp() * 1000)
+
+    @staticmethod
+    def _windowed(cap_in_window):
+        base = Limit.custom("q", capacity=100, refill_amount=1, refill_period_seconds=86400)
+        return base.with_schedule((ScheduleEntry(cron="* 0-11 * * *", capacity=cap_in_window),))
+
+    def test_entity_schedule_scale_change_same_boundary(self, two):
+        """A window's capacity tuned 100 -> 50 under the same cron (#730 review): cp,
+        gc, shard_count and vu all come out identical, so only the stored schedule
+        strings show that the ceiling dropped. Spent 60 against 50 before."""
+        l1, l2, now = two
+        now[0] = self.T10
+        r1, r2 = (l1._repository, l2._repository)
+        r1.set_limits("e", [self._windowed(100)], resource="r")
+        with l1.acquire("e", "r", {"q": 1}):
+            pass
+        with pytest.raises(RuntimeError):
+            with l1.acquire("e", "r", {"q": 10}):
+                r2.set_limits("e", [self._windowed(50)], resource="r")
+                with l2.acquire("e", "r", {"q": 0}):
+                    pass
+                raise RuntimeError("body failed")
+        item = self._raw(r1, "e", resource="r")
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
+        spend = r2.speculative_consume("e", "r", {"q": 60}, shard_id=0)
+        assert not spend.success
+
+    def test_sharded_compensation_within_ceiling_cost(self, two):
+        """On a sharded entity a compensation that fits is one write and leaves `vu`
+        alone (#730 review): the pin's count came from `wcu`, which always reads as
+        one shard, so every compensation used to fail it and stamp `vu = 0`."""
+        l1, _, _ = two
+        r1 = l1._repository
+        limit = Limit.custom("q", capacity=1000, refill_amount=1, refill_period_seconds=86400)
+        r1.set_limits("s", [limit], resource="r")
+        with l1.acquire("s", "r", {"q": 1}):
+            pass
+        client = r1._get_client()
+        client.update_item(
+            TableName=r1.table_name,
+            Key={"PK": {"S": pk_bucket(r1._namespace_id, "s", "r", 0)}, "SK": {"S": sk_state()}},
+            UpdateExpression="SET shard_count = :c, #tk = :tk",
+            ExpressionAttributeNames={"#tk": bucket_attr("q", BUCKET_FIELD_TK)},
+            ExpressionAttributeValues={":c": {"N": "2"}, ":tk": {"N": "400000"}},
+        )
+        result = r1.speculative_consume("s", "r", {"q": 5}, shard_id=0)
+        assert result.success
+        calls: list[dict] = []
+        original = client.update_item
+
+        def spy(**kwargs):
+            calls.append(kwargs)
+            return original(**kwargs)
+
+        client.update_item = spy
+        try:
+            l1._compensate_speculative("s", "r", {"q": 5}, 0, result.buckets)
+        finally:
+            client.update_item = original
+        assert len(calls) == 1
+        assert "ConditionExpression" in calls[0]
+        assert BUCKET_FIELD_VU not in self._raw(r1, "s", resource="r")
+
+    def test_refund_after_item_deleted(self, two):
+        """The bucket is swept (TTL) or deleted between the debit and the refund
+        (#730 review): the refund used to `ADD` onto nothing, creating a stub with
+        no parameters that rejected the entity forever."""
+        l1, l2, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        r1.set_resource_defaults("r", [Limit.per_minute("q", 100)])
+        with l1.acquire("d", "r", {"q": 1}):
+            pass
+        client = r1._get_client()
+        key = {"PK": {"S": pk_bucket(r1._namespace_id, "d", "r", 0)}, "SK": {"S": sk_state()}}
+        with pytest.raises(RuntimeError):
+            with l1.acquire("d", "r", {"q": 10}):
+                client.delete_item(TableName=r1.table_name, Key=key)
+                raise RuntimeError("body failed")
+        assert "Item" not in client.get_item(TableName=r1.table_name, Key=key)
+        with l2.acquire("d", "r", {"q": 1}):
+            pass
+        item = self._raw(r1, "d", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+        assert bucket_attr("q", BUCKET_FIELD_CP) in item
+
+    @staticmethod
+    def _update_items(repo):
+        """Every `UpdateItem` the client sends from here, and a function to stop."""
+        client = repo._get_client()
+        calls: list[dict] = []
+        original = client.update_item
+
+        def spy(**kwargs):
+            calls.append(kwargs)
+            return original(**kwargs)
+
+        client.update_item = spy
+        return (calls, lambda: setattr(client, "update_item", original))
+
+    def test_cost_rollback_after_create(self, two):
+        """A refund of the lease that created the bucket fits: one conditional write
+        and `vu` left alone (#730 review). Its pin is the create's own `Put`; before,
+        the lease knew nothing after a create and every such refund stamped `vu = 0`."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        r1.set_limits("c", [Limit.per_minute("q", 1000)], resource="r")
+        calls, stop = self._update_items(r1)
+        try:
+            with pytest.raises(RuntimeError):
+                with l1.acquire("c", "r", {"q": 1}):
+                    raise RuntimeError("body failed")
+        finally:
+            stop()
+        refunds = [c for c in calls if "#bc0" in c["ExpressionAttributeNames"]]
+        assert len(refunds) == 1
+        assert refunds[0]["UpdateExpression"].startswith("ADD")
+        assert "#bt0 <= :bm0" in refunds[0]["ConditionExpression"]
+        assert BUCKET_FIELD_VU not in self._raw(r1, "c", resource="r")
+        r1.set_limits("c2", [Limit.per_minute("q", 1000)], resource="r")
+        with l1.acquire("c2", "r", {"q": 100}) as lease:
+            lease.adjust(q=-80)
+        assert BUCKET_FIELD_VU not in self._raw(r1, "c2", resource="r")
+
+    def test_cost_retry_lease_credit_trims(self, two):
+        """A lease committed by the consumption-only retry (it lost the `rf` lock)
+        pins the retry's `ALL_NEW` image, so a credit that fits is one write and
+        leaves `vu` alone (#730 review). Before, it had no pin and stamped `vu = 0`,
+        which under contention sent the next wave to the slow path again."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        slow = SyncRateLimiter(repository=r1, speculative_writes=False)
+        r1.set_limits("rt", [Limit.per_minute("q", 10000000)], resource="r")
+        with slow.acquire("rt", "r", {"q": 1}):
+            pass
+        client = r1._get_client()
+        key = {"PK": {"S": pk_bucket(r1._namespace_id, "rt", "r", 0)}, "SK": {"S": sk_state()}}
+        original = r1.transact_write
+        raced: list[int] = []
+
+        def racing(items):
+            if not raced:
+                raced.append(1)
+                client.update_item(
+                    TableName=r1.table_name,
+                    Key=key,
+                    UpdateExpression="ADD rf :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            return original(items)
+
+        r1.transact_write = racing
+        try:
+            with slow.acquire("rt", "r", {"q": 100}) as lease:
+                assert lease.entries[0]._image is not None
+                calls, stop = self._update_items(r1)
+                lease.adjust(q=-50)
+        finally:
+            r1.transact_write = original
+        stop()
+        assert raced
+        assert len(calls) == 1
+        assert BUCKET_FIELD_VU not in self._raw(r1, "rt", resource="r")
+
+    def _drain(self, sync_limiter, entity_id) -> int:
+        """Admit one at a time until rejected; the total admitted."""
+        admitted = 0
+        while admitted <= 100:
+            try:
+                with sync_limiter.acquire(entity_id, "r", {"q": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                break
+        return admitted
+
+    def test_quota_refund_across_reset_spent_first(self, two):
+        """A refund of yesterday's debit lands after another process reset the quota
+        and spent from it (#730 review): today's allowance took the refund too, 15
+        admitted against a daily quota of 10. The credit is now dropped."""
+        l1, l2, now = two
+        now[0] = self.T0 + 59000
+        r1 = l1._repository
+        r1.set_limits("e", [Limit.quota("q", 10, cron="0 0 * * *")], resource="r")
+        with l1.acquire("e", "r", {"q": 1}):
+            pass
+        with l1.acquire("e", "r", {"q": 4}):
+            pass
+        today = 0
+        with pytest.raises(RuntimeError):
+            with l1.acquire("e", "r", {"q": 5}):
+                now[0] = self.MIDNIGHT + 1000
+                with l2.acquire("e", "r", {"q": 6}):
+                    today += 6
+                raise RuntimeError("body failed")
+        today += self._drain(l2, "e")
+        assert today == 10
+
+    def test_session_window_refund_across_roll(self, two):
+        """The same across a session window: debit in window 1, another process opens
+        window 2 and spends, then the refund lands. Dropped: window 2 admits 10."""
+        l1, l2, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        r1.set_limits("w", [Limit.quota("q", 10, reset_after=timedelta(hours=1))], resource="r")
+        with l1.acquire("w", "r", {"q": 5}):
+            pass
+        second = 0
+        with pytest.raises(RuntimeError):
+            with l1.acquire("w", "r", {"q": 5}):
+                now[0] = self.T10 + 3601000
+                with l2.acquire("w", "r", {"q": 6}):
+                    second += 6
+                raise RuntimeError("body failed")
+        second += self._drain(l2, "w")
+        assert second == 10
+
+    def test_a_quota_refund_within_its_period_lands(self, two):
+        """The guard costs nothing when the period has not moved: one write."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        r1.set_limits("p", [Limit.quota("q", 10, cron="0 0 * * *")], resource="r")
+        with l1.acquire("p", "r", {"q": 1}):
+            pass
+        calls, stop = self._update_items(r1)
+        try:
+            with pytest.raises(RuntimeError):
+                with l1.acquire("p", "r", {"q": 5}):
+                    raise RuntimeError("body failed")
+        finally:
+            stop()
+        refunds = [c for c in calls if "#bc0" in c["ExpressionAttributeNames"]]
+        assert len(refunds) == 1
+        assert "#bqrf < :bq0" in refunds[0]["ConditionExpression"]
+        item = self._raw(r1, "p", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "9000"
+
+    def test_a_dropped_quota_credit_keeps_the_rate_credit(self, two):
+        """Only the quota's credit is dropped; a rate limit on the same item is
+        refunded as before (#721)."""
+        l1, l2, now = two
+        now[0] = self.T0 + 59000
+        r1 = l1._repository
+        rate = Limit.custom("rpm", capacity=100, refill_amount=1, refill_period_seconds=86400)
+        quota = Limit.quota("q", 10, cron="0 0 * * *")
+        r1.set_limits("m", [quota, rate], resource="r")
+        with l1.acquire("m", "r", {"q": 1, "rpm": 1}):
+            pass
+        with pytest.raises(RuntimeError):
+            with l1.acquire("m", "r", {"q": 5, "rpm": 5}):
+                now[0] = self.MIDNIGHT + 1000
+                with l2.acquire("m", "r", {"q": 0, "rpm": 0}):
+                    pass
+                raise RuntimeError("body failed")
+        item = self._raw(r1, "m", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "10000"
+        assert int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) >= 99000
+
+    def test_retry_image_vs_stale_ceiling(self, two):
+        """After the consumption-only retry, the refund's ceiling is the read's, so
+        its pins must be the read's too (#730 third review). Another client doubles
+        the entity and clamps shard 0 to its 50 before this lease commits; the retry's
+        `ALL_NEW` image shows `shard_count = 2` while the ceiling was computed at 1
+        (100). Pinned from that image, the refund lifted shard 0 to 60 with no `vu`,
+        and the fast path spent 60 against 50."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        slow = SyncRateLimiter(repository=r1, speculative_writes=False)
+        r1.set_limits("dbl", [Limit.per_minute("q", 100)], resource="r")
+        with slow.acquire("dbl", "r", {"q": 1}):
+            pass
+        client = r1._get_client()
+        key = {"PK": {"S": pk_bucket(r1._namespace_id, "dbl", "r", 0)}, "SK": {"S": sk_state()}}
+        tk = bucket_attr("q", BUCKET_FIELD_TK)
+        original = r1.transact_write
+        raced: list[int] = []
+
+        def racing(items):
+            if not raced:
+                raced.append(1)
+                client.update_item(
+                    TableName=r1.table_name,
+                    Key=key,
+                    UpdateExpression="SET shard_count = :two, #tk = :half ADD rf :one",
+                    ExpressionAttributeNames={"#tk": tk},
+                    ExpressionAttributeValues={
+                        ":two": {"N": "2"},
+                        ":half": {"N": "50000"},
+                        ":one": {"N": "1"},
+                    },
+                )
+            return original(items)
+
+        r1.transact_write = racing
+        try:
+            with pytest.raises(RuntimeError):
+                with slow.acquire("dbl", "r", {"q": 10}):
+                    client.update_item(
+                        TableName=r1.table_name,
+                        Key=key,
+                        UpdateExpression="SET #tk = :half ADD rf :one",
+                        ExpressionAttributeNames={"#tk": tk},
+                        ExpressionAttributeValues={":half": {"N": "50000"}, ":one": {"N": "1"}},
+                    )
+                    raise RuntimeError("body failed")
+        finally:
+            r1.transact_write = original
+        assert raced
+        assert self._raw(r1, "dbl", resource="r")[BUCKET_FIELD_VU]["N"] == "0"
+        admitted = 0
+        while admitted <= 100:
+            result = r1.speculative_consume("dbl", "r", {"q": 1}, shard_id=0)
+            if not result.success:
+                break
+            admitted += 1
+        assert admitted <= 50
+
+    def _lose_the_rf_lock(self, repo, entity_id, *, image=True):
+        """Make the next commit lose its `rf` lock once, so it takes the retry.
+
+        ``image=False`` also hides the retry's `ALL_NEW`, as a backend whose
+        `transact_write` returns ``None`` would. Returns a function to undo.
+        """
+        client = repo._get_client()
+        key = {
+            "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "r", 0)},
+            "SK": {"S": sk_state()},
+        }
+        original = repo.transact_write
+        raced: list[int] = []
+
+        def racing(items):
+            if not raced:
+                raced.append(1)
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key=key,
+                    UpdateExpression="ADD rf :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            attrs = original(items)
+            return attrs if image else None
+
+        repo.transact_write = racing
+        return lambda: setattr(repo, "transact_write", original)
+
+    def test_cascade_retry_quota_credit(self, two):
+        """A cascade's consumption-only retry writes child and parent in one
+        transaction, which returns no image (#730 third review). Its quota credits
+        used to be dropped as having no known period: refunds lost in their own
+        period (child 94, parent 94). The read's period now stands."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        slow = SyncRateLimiter(repository=r1, speculative_writes=False)
+        r1.create_entity("p")
+        r1.create_entity("c", parent_id="p", cascade=True)
+        quota = [Limit.quota("q", 100, cron="0 0 * * *")]
+        r1.set_limits("p", quota, resource="r")
+        r1.set_limits("c", quota, resource="r")
+        with slow.acquire("c", "r", {"q": 1}):
+            pass
+        undo = self._lose_the_rf_lock(r1, "c")
+        try:
+            with pytest.raises(RuntimeError):
+                with slow.acquire("c", "r", {"q": 5}) as lease:
+                    assert {e.entity_id for e in lease.entries} == {"c", "p"}
+                    raise RuntimeError("body failed")
+        finally:
+            undo()
+        for entity_id in ("c", "p"):
+            item = self._raw(r1, entity_id, resource="r")
+            assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+
+    def test_retry_with_no_image_keeps_the_reads_period(self, two):
+        """A backend whose `transact_write` returns no image after the retry: the
+        quota credit is guarded on the read's period and lands in it."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        slow = SyncRateLimiter(repository=r1, speculative_writes=False)
+        r1.set_limits("n", [Limit.quota("q", 100, cron="0 0 * * *")], resource="r")
+        with slow.acquire("n", "r", {"q": 1}):
+            pass
+        undo = self._lose_the_rf_lock(r1, "n", image=False)
+        try:
+            with pytest.raises(RuntimeError):
+                with slow.acquire("n", "r", {"q": 5}):
+                    raise RuntimeError("body failed")
+        finally:
+            undo()
+        item = self._raw(r1, "n", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+
+    def test_two_quotas_one_reset_drops_the_other(self, two):
+        """A daily and a monthly quota on one item; a reset of the daily one races
+        the refund (#730 third review). Only the daily credit belongs to a period
+        that ended: the monthly one is in its own period and must land (98), where
+        dropping every quota credit on the item left it at 97."""
+        l1, l2, now = two
+        now[0] = self.T0 + 59000
+        r1 = l1._repository
+        quotas = [Limit.quota("d", 10, cron="0 0 * * *"), Limit.quota("m", 100, cron="0 0 1 * *")]
+        r1.set_limits("mm", quotas, resource="r")
+        with l1.acquire("mm", "r", {"d": 1, "m": 1}):
+            pass
+        with pytest.raises(RuntimeError):
+            with l1.acquire("mm", "r", {"d": 1, "m": 1}):
+                now[0] = self.MIDNIGHT + 1000
+                with l2.acquire("mm", "r", {"d": 1, "m": 1}):
+                    pass
+                raise RuntimeError("body failed")
+        item = self._raw(r1, "mm", resource="r")
+        assert item[bucket_attr("d", BUCKET_FIELD_TK)]["N"] == "9000"
+        assert item[bucket_attr("m", BUCKET_FIELD_TK)]["N"] == "98000"
+
+    def test_cron_change_moves_reset_before_guard_edge(self, two):
+        """The calendar guard's edge comes from the cron the lease held (#730 fourth
+        review). An entity-level change moves the reset from 06:00 to 00:00 under an
+        open lease; another client resets at 00:00:01 and spends 6; `rf < 06:00`
+        still held, so the old period's refund landed in the new one: 15 against 10.
+        The guard now also pins the reset-schedule strings, and the credit drops."""
+        l1, l2, now = two
+        now[0] = self.T0 + 59000
+        r1, r2 = (l1._repository, l2._repository)
+        r1.set_limits("cc", [Limit.quota("q", 10, cron="0 6 * * *")], resource="r")
+        with l1.acquire("cc", "r", {"q": 1}):
+            pass
+        today = 0
+        with pytest.raises(RuntimeError):
+            with l1.acquire("cc", "r", {"q": 5}):
+                r2.set_limits("cc", [Limit.quota("q", 10, cron="0 0 * * *")], resource="r")
+                now[0] = self.MIDNIGHT + 1000
+                with l2.acquire("cc", "r", {"q": 6}):
+                    today += 6
+                raise RuntimeError("body failed")
+        today += self._drain(l2, "cc")
+        assert today == 10
+
+    def test_a_lowered_limit_clamped_before_the_refund(self, two):
+        """The limit drops to 50 and another process's slow pass clamps to it (moving
+        `rf`) before the refund: the in-memory ceiling is still 100."""
+        l1, l2, _ = two
+        r1 = l1._repository
+
+        def lower_and_clamp():
+            r1.set_limits(
+                "low",
+                [Limit.custom("q", capacity=50, refill_amount=1, refill_period_seconds=86400)],
+                resource="r",
+            )
+            with l2.acquire("low", "r", {"q": 0}):
+                pass
+
+        item = self._bucket_rf_and_shard_moved(l1, "low", lower_and_clamp)
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "60000"
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
+        spend = r1.speculative_consume("low", "r", {"q": 55}, shard_id=0)
+        assert not spend.success
+
+    def test_a_cascade_compensation_trims_the_child_too(self, two):
+        """`_compensate_child` hands the child's image through to the same credit."""
+        l1, _, now = two
+        r1 = l1._repository
+        with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        result = r1.speculative_consume("solo", "budget", {"q": 5}, shard_id=0)
+        r1._get_client()
+        tk = bucket_attr("q", BUCKET_FIELD_TK)
+        client = r1._get_client()
+        client.update_item(
+            TableName=r1.table_name,
+            Key={
+                "PK": {"S": pk_bucket(r1._namespace_id, "solo", "budget", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #tk = :full",
+            ExpressionAttributeNames={"#tk": tk},
+            ExpressionAttributeValues={":full": {"N": "10000"}},
+        )
+        l1._compensate_child("solo", "budget", {"q": 5}, 0, result.buckets)
+        item = self._raw(r1, "solo")
+        assert item[tk]["N"] == "15000"
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
 
 
 class TestMiddleEntityKeepsCascading:
