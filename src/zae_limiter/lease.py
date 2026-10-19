@@ -2093,7 +2093,10 @@ def _contention_rejection(
             resource=entry.resource,
             limit_name=entry.limit.name,
             limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
-            available=entry.state.tokens_milli // 1000,
+            # Nothing was written, so the balance is the one before this
+            # pass's in-memory debit: `_admit_limit` took `consumed` whole
+            # tokens off `tokens_milli` when it admitted the entry.
+            available=(entry.state.tokens_milli + entry.consumed * 1000) // 1000,
             requested=(consume or {}).get(entry.limit.name, entry.consumed),
             exceeded=False,
             retry_after_seconds=_CONTENTION_RETRY_AFTER_S,

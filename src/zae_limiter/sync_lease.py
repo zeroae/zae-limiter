@@ -1694,7 +1694,7 @@ def _contention_rejection(
             resource=entry.resource,
             limit_name=entry.limit.name,
             limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
-            available=entry.state.tokens_milli // 1000,
+            available=(entry.state.tokens_milli + entry.consumed * 1000) // 1000,
             requested=(consume or {}).get(entry.limit.name, entry.consumed),
             exceeded=False,
             retry_after_seconds=_CONTENTION_RETRY_AFTER_S,

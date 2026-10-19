@@ -11911,6 +11911,17 @@ class TestTransactionConflictIsContention:
             "Failed to roll back consumed tokens for resource=gpt-4 shard=0 (ClientError)"
         ]
 
+    def test_a_contended_commit_reports_the_undebited_balance(self, sync_limiter):
+        """The commit wrote nothing, so the 429 reports the 5 the bucket still
+        holds, not the 3 the in-memory debit of 2 left."""
+        freeze_clock(sync_limiter._repository)
+        self._acquire(sync_limiter, "solo", rpm=5)
+        self._inject(sync_limiter._repository, "solo", 10000, speculative_only=False)
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            self._acquire(sync_limiter, "solo", rpm=2)
+        assert exc_info.value.contended is True
+        assert [(s.available, s.requested) for s in exc_info.value.statuses] == [(5, 2)]
+
     def test_a_conflicted_slow_path_commit_is_retried(self, sync_limiter):
         """A one-item slow-path commit goes out as a plain UpdateItem."""
         sync_limiter._speculative_writes = False
