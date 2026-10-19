@@ -996,7 +996,9 @@ class TestAcceptance:
         """R5, carried from Task 5: a reset pass sized at count 1 loses its
         `shard_count <= 1` pin to a doubling that lands between its read and
         its write. It falls to the consumption-only retry, which grants
-        nothing; the next pass resets at the doubled count."""
+        nothing — and, since #743, does not debit the previous period either:
+        its period guard fails, and the pass is redone from a fresh read, which
+        resets at the doubled count."""
         repo = limiter._repository
         day = 86_400_000
         midnight = (T0 // day + 1) * day
@@ -1014,20 +1016,18 @@ class TestAcceptance:
             return await real(items)
 
         slow = RateLimiter(repository=repo, speculative_writes=False)
-        with patch.object(repo, "transact_write", doubling_lands_first):
+        with (
+            patch.object(repo, "transact_write", doubling_lands_first),
+            patch("zae_limiter.repository.random.randrange", return_value=0),
+        ):
             async with slow.acquire("r5", RESOURCE, {"rpd": 1}):
                 pass
         item = await _item(repo, "r5", 0)
-        assert item["b_rpd_tk"]["N"] == "99000", "the stale reset was not written"
-        assert int(item["rf"]["N"]) < midnight, "nor was its rf"
-
-        repo._entity_cache[(repo._namespace_id, "r5")] = (False, None, {RESOURCE: 2})
-        with patch("zae_limiter.repository.random.randrange", return_value=0):
-            async with slow.acquire("r5", RESOURCE, {"rpd": 1}):
-                pass
-        item = await _item(repo, "r5", 0)
+        assert raced
+        # The stale reset at count 1 was not written; the redo reset at 2.
         assert item["b_rpd_tk"]["N"] == "499000"
         assert item["b_rpd_gc"]["N"] == "2"
+        assert int(item["rf"]["N"]) >= midnight
 
 
 class TestCreateOvertakenByADoubling:

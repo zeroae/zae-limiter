@@ -684,8 +684,15 @@ class RepositoryProtocol(Protocol):
         consumed: dict[str, int],
         shard_id: int = 0,
         seeds: "dict[str, BucketState] | None" = None,
+        period_guards: dict[str, tuple[int | None, int | None]] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
+
+        ``period_guards`` (limit name -> ``(reset_edge_ms, window_start_ms)``):
+        for each quota the lost write was to reset, roll or open, the retry
+        requires that period to be applied already (``rf >= edge``, or
+        ``b_{name}_wa = window_start``), so it never spends the previous
+        period's balance (#743).
 
         Must ask for ``ReturnValuesOnConditionCheckFailure=ALL_OLD``: the lease
         reports a failure here from the item's real balance (#633).

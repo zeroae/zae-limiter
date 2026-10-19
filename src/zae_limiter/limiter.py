@@ -32,6 +32,7 @@ from .exceptions import (
 from .lease import (
     Lease,
     LeaseEntry,
+    PeriodNotAppliedError,
     QuotaMoveLostError,
     credit_ceilings,
     credit_image,
@@ -2310,7 +2311,23 @@ class RateLimiter:
                 parent_shard_id=parent_shard_id,
                 disable_moves=disable_moves,
             )
-            await lease._commit_initial()
+            try:
+                await lease._commit_initial()
+            except PeriodNotAppliedError:
+                # The retry found a quota period nobody has applied (#743):
+                # redo the pass once from a fresh read, which applies it. A
+                # second loss stands as the rejection it was raised as.
+                lease = await self._do_acquire(
+                    entity_id=entity_id,
+                    resource=resource,
+                    limits_override=limits_override,
+                    consume=consume,
+                    shard_id=shard_id,
+                    shard_count=shard_count,
+                    parent_shard_id=parent_shard_id,
+                    disable_moves=disable_moves,
+                )
+                await lease._commit_initial()
             return lease
 
         try:

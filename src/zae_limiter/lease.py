@@ -27,7 +27,7 @@ from .models import (
     QuotaDonorDebit,
     QuotaPeriodPin,
 )
-from .schedule import next_reset_edge
+from .schedule import next_reset_edge, prev_reset_edge
 from .schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
@@ -435,6 +435,19 @@ async def _write_unless_gone(
 
 _CreditWrite = tuple[str, str, int, dict[str, int], dict[str, CreditCeiling], CreditPin | None]
 """(entity_id, resource, shard_id, deltas, ceilings, pin) for one adjust write (#721)."""
+
+
+class PeriodNotAppliedError(RateLimitExceeded):
+    """The consumption-only retry found a quota period not yet applied (#743).
+
+    The slow pass applied a reset, roll or window open in memory; its
+    rf-locked write lost, and the retry's period guard found that nobody has
+    applied that period on the item since. The retry must not debit the
+    previous period's balance, so the acquire re-plans once from a fresh read
+    (`RateLimiter._slow_acquire`). A `RateLimitExceeded`, so any
+    other caller of `_commit_initial` reads it as a rejection: it can only
+    under-admit.
+    """
 
 
 class QuotaMoveLostError(Exception):
@@ -1181,6 +1194,9 @@ class Lease:
                 _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None
             )
 
+            # Quotas whose reset, roll or open the lost write carried (#743).
+            retry_guards: dict[tuple[str, str, int], dict[str, tuple[int | None, int | None]]] = {}
+
             def _consumption_only(
                 entity_id: str, resource: str, shard_id: int, group_entries: list[LeaseEntry]
             ) -> dict[str, Any] | None:
@@ -1209,6 +1225,17 @@ class Lease:
                 }
                 if not consumed:
                     return None
+                guards = _period_guards(group_entries, now_ms)
+                if guards:
+                    retry_guards[(entity_id, resource, shard_id)] = guards
+                    return repo.build_composite_retry(
+                        entity_id=entity_id,
+                        resource=resource,
+                        consumed=consumed,
+                        shard_id=shard_id,
+                        seeds=seeds or None,
+                        period_guards=guards,
+                    )
                 return repo.build_composite_retry(
                     entity_id=entity_id,
                     resource=resource,
@@ -1277,6 +1304,11 @@ class Lease:
                         images = _retry_failure_images(
                             retry_exc, [key for key, _group in retry_groups]
                         )
+                        unapplied = _unapplied_periods(retry_guards, images)
+                        if unapplied:
+                            raise PeriodNotAppliedError(
+                                _period_statuses(self.entries, now_ms, unapplied)
+                            ) from retry_exc
                         statuses = _build_retry_failure_statuses(self.entries, now_ms, images)
                         raise RateLimitExceeded(statuses) from retry_exc
                     retry_items = downgraded
@@ -1853,6 +1885,82 @@ def _monotonic_rf(now_ms: int, stored_rf: int | None, group: list[LeaseEntry]) -
         if e.limit.reset_after is not None and e.state.window_start_ms is not None
     )
     return max(candidates)
+
+
+def _period_guards(
+    group: list[LeaseEntry], now_ms: int
+) -> dict[str, tuple[int | None, int | None]]:
+    """The period each quota this pass reset, rolled or opened (#743).
+
+    ``(reset_edge_ms, None)`` for a calendar quota — the edge the write would
+    have applied, the latest at or before ``now_ms`` — or ``(None,
+    window_start_ms)`` for a session quota, the window it opened or rolled to.
+    Only a quota the retry debits, and only one this pass granted: a period
+    nobody granted was already current.
+    """
+    guards: dict[str, tuple[int | None, int | None]] = {}
+    for entry in group:
+        if not (entry._granted and entry.limit.is_quota and entry.consumed > 0):
+            continue
+        state = entry.state
+        if state.reset_after_seconds is not None:
+            if state.window_start_ms is not None:
+                guards[entry.limit.name] = (None, state.window_start_ms)
+        else:
+            edge = prev_reset_edge(state.reset_sched, now_ms)
+            if edge is not None:
+                guards[entry.limit.name] = (edge, None)
+    return guards
+
+
+def _unapplied_periods(
+    guards: dict[tuple[str, str, int], dict[str, tuple[int | None, int | None]]],
+    images: dict[tuple[str, str, int], dict[str, Any]],
+) -> set[tuple[tuple[str, str, int], str]]:
+    """The (bucket, quota) pairs whose period guard the failed retry tripped (#743).
+
+    Read off each failed write's ``ALL_OLD`` image: a calendar quota whose
+    ``rf`` is still before the edge, or a session quota whose ``wa`` is not
+    the window. No image, nothing can be told: the rejection stands as before.
+    """
+    unapplied: set[tuple[tuple[str, str, int], str]] = set()
+    for key, per_limit in guards.items():
+        item = images.get(key)
+        if not item:
+            continue
+        rf = int(item.get(BUCKET_FIELD_RF, {}).get("N", "0"))
+        for name, (edge, window_start) in per_limit.items():
+            applied = item.get(bucket_attr(name, BUCKET_FIELD_WA), {}).get("N")
+            if (edge is not None and rf < edge) or (
+                window_start is not None and applied != str(window_start)
+            ):
+                unapplied.add((key, name))
+    return unapplied
+
+
+def _period_statuses(
+    entries: list[LeaseEntry],
+    now_ms: int,
+    unapplied: set[tuple[tuple[str, str, int], str]],
+) -> list[LimitStatus]:
+    """Statuses for a rejection on a period nobody has applied yet (#743).
+
+    The in-memory statuses, with each such quota marked exceeded: the request
+    was not admitted against it. The wait is the floor, never ``0.0`` — the
+    next pass applies the period, so the answer is "shortly", not "now".
+    """
+    statuses = _retry_statuses(entries, now_ms, None)
+    names = {name for _key, name in unapplied}
+    return [
+        replace(
+            status,
+            exceeded=True,
+            retry_after_seconds=max(status.retry_after_seconds, _MIN_RETRY_AFTER_S),
+        )
+        if status.limit_name in names
+        else status
+        for status in statuses
+    ]
 
 
 def _retry_failure_images(

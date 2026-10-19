@@ -59,6 +59,7 @@ from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 from .sync_config_cache import ConfigSource
 from .sync_lease import (
     LeaseEntry,
+    PeriodNotAppliedError,
     QuotaMoveLostError,
     SyncLease,
     credit_ceilings,
@@ -1829,7 +1830,20 @@ class SyncRateLimiter:
                 parent_shard_id=parent_shard_id,
                 disable_moves=disable_moves,
             )
-            lease._commit_initial()
+            try:
+                lease._commit_initial()
+            except PeriodNotAppliedError:
+                lease = self._do_acquire(
+                    entity_id=entity_id,
+                    resource=resource,
+                    limits_override=limits_override,
+                    consume=consume,
+                    shard_id=shard_id,
+                    shard_count=shard_count,
+                    parent_shard_id=parent_shard_id,
+                    disable_moves=disable_moves,
+                )
+                lease._commit_initial()
             return lease
 
         try:

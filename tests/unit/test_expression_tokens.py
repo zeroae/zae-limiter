@@ -320,6 +320,18 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert update["ReturnValuesOnConditionCheckFailure"] == "ALL_OLD"
 
+    def test_retry_with_period_guards(self) -> None:
+        """#743: the retry requires the period the lost write applied."""
+        update = _repo().build_composite_retry(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000, HYPHENATED: 2000, "rpm": 500},
+            period_guards={DOTTED: (9_000, None), HYPHENATED: (None, 7_000)},
+        )["Update"]
+        assert_expression_safe(update)
+        condition = update["ConditionExpression"]
+        assert "#prf >= :pe0" in condition and "#pw1 = :pw1" in condition
+
     def test_retry_with_only_unconsumed_seeds(self) -> None:
         """A seed nothing consumes needs no condition at all."""
         update = _repo().build_composite_retry(

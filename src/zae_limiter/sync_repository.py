@@ -2708,6 +2708,7 @@ class SyncRepository:
         consumed: dict[str, int],
         shard_id: int = 0,
         seeds: dict[str, BucketState] | None = None,
+        period_guards: dict[str, tuple[int | None, int | None]] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
 
@@ -2729,12 +2730,22 @@ class SyncRepository:
                 ``attribute_not_exists(tk) OR tk >= :c``, and every parameter
                 as ``if_not_exists``. A limit another writer seeded first is
                 therefore debited, never re-seeded.
+            period_guards: Limit name -> ``(reset_edge_ms, window_start_ms)``
+                for each quota the lost write was to reset, roll or open
+                (#743). The retry debits the item's balance as it stands, so it
+                must only do so once that period has been applied: a calendar
+                quota requires ``rf >= reset_edge_ms`` (a reset pass stamps
+                ``rf`` at or past the edge), a session quota
+                ``b_{name}_wa = window_start_ms``. Otherwise it would spend the
+                previous period's balance and leave the reset pending, so the
+                next pass grants a full allowance again.
         """
         add_parts: list[str] = []
         set_parts: list[str] = []
         condition_parts: list[str] = []
         attr_names: dict[str, str] = {}
         attr_values: dict[str, Any] = {}
+        guards = period_guards or {}
         for i, name in enumerate(consumed):
             if seeds and name in seeds:
                 continue
@@ -2752,6 +2763,15 @@ class SyncRepository:
             add_parts.append(f"{tk_alias} {tk_neg_val}")
             add_parts.append(f"{tc_alias} {tc_val}")
             condition_parts.append(f"{tk_alias} >= {tk_threshold}")
+            edge, window_start = guards.get(name, (None, None))
+            if edge is not None:
+                attr_names["#prf"] = schema.BUCKET_FIELD_RF
+                attr_values[f":pe{i}"] = {"N": str(edge)}
+                condition_parts.append(f"#prf >= :pe{i}")
+            if window_start is not None:
+                attr_names[f"#pw{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_WA)
+                attr_values[f":pw{i}"] = {"N": str(window_start)}
+                condition_parts.append(f"#pw{i} = :pw{i}")
         seeded_tz: str | None = None
         for j, (name, state) in enumerate(sorted((seeds or {}).items())):
             c = consumed.get(name, 0)
