@@ -243,6 +243,16 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
 - `SET vu = 0`. This forces one materialising pass per shard on the next acquire. That pass
   clamps any credit that slipped in between the read and the write, and re-stamps the correct
   `vu` (validator finding 4; the same mechanism as #679).
+- **`SET ttl` on a bucket that carries one (round-6 review, P3).** A bucket on resource or
+  system defaults has a `ttl` (ADR-136), and a write that left it alone let DynamoDB sweep the
+  item, purchase and all, before the period it was bought for ended (probe: `ttl` 60 s out,
+  period end 12 h out). Every reset and top-up write on such a bucket, and D5's create, stamps
+  the later of the acquire path's `now + calculate_bucket_ttl_seconds(limits, multiplier)` and
+  the end of every quota's current period (a calendar quota's next reset edge; a session
+  quota's window, which ends at most `reset_after` from now, so a window a D4 top-up opens
+  never outlives its bucket). With the multiplier at 1 or more the first already covers the
+  second; the `max` keeps that true by construction. An entity-level bucket never gets a `ttl`,
+  and with the multiplier at 0 nothing is stamped. Same write, no extra cost.
 - **Condition:** `rf = :read_rf AND shard_count = :read_sc`, plus the existing I4 pin when `gc`
   is written.
 - **S = 1:** a single `UpdateItem`. `transact_write` already uses the single-item API, so this

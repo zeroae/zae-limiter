@@ -7348,9 +7348,10 @@ class SyncRepository:
                 if plan.raises_ceiling:
                     self._require_top_up_readers()
                 result = BucketOperationResult(entity_id, resource, len(plan.writes), plan.amounts)
+                ttl = self._operation_ttl(resolved, source, now_ms)
                 items = [
                     *(
-                        self.build_bucket_operation(entity_id, resource, write)
+                        self.build_bucket_operation(entity_id, resource, write, ttl)
                         for write in plan.writes
                     ),
                     self.build_operation_record(
@@ -7632,12 +7633,8 @@ class SyncRepository:
                 state.tokens_milli += amount * 1000
                 state.topped_up_milli = amount * 1000
         self._require_top_up_readers()
-        multiplier = self._bucket_ttl_refill_multiplier
-        ttl_seconds = (
-            None
-            if source in ("entity", "entity_default") or multiplier <= 0
-            else schema.calculate_bucket_ttl_seconds(resolved, multiplier)
-        )
+        ttl = self._operation_ttl(resolved, source, now_ms)
+        ttl_seconds = None if ttl is None else ttl - now_ms // 1000
         create = self.build_composite_create(
             entity_id=entity_id,
             resource=resource,
@@ -7669,6 +7666,36 @@ class SyncRepository:
             return (result, False)
         return (result, True)
 
+    def _operation_ttl(
+        self, resolved: list[Limit], source: ConfigSource | None, now_ms: int
+    ) -> int | None:
+        """The ``ttl`` (epoch seconds) a reset or top-up stamps, or None to leave it.
+
+        A bucket on resource or system defaults carries a ``ttl`` (ADR-136),
+        and a top-up that left it alone could be swept, purchase and all,
+        before the period it was bought for ends (round-6 review, P3). So the
+        write SETs the later of the acquire path's rule (``now`` + the slowest
+        recovery x the multiplier) and the end of every quota's current
+        period: a calendar quota's next reset edge, a session quota's window,
+        which ends at most ``reset_after`` from ``now`` (a window a top-up
+        opens, D4, included). An entity-level bucket carries no ``ttl`` and
+        gets none; with the multiplier at 0 nothing is stamped either.
+        """
+        seconds = schema.calculate_bucket_ttl_seconds(resolved, self._bucket_ttl_refill_multiplier)
+        if source in ("entity", "entity_default") or seconds is None:
+            return None
+        ttl = schema.calculate_ttl(now_ms, seconds)
+        for limit in resolved:
+            if limit.reset_after is not None:
+                period_end_ms: int | None = now_ms + int(limit.reset_after.total_seconds() * 1000)
+            elif limit.reset_schedule:
+                period_end_ms = schedule.next_reset_edge(limit.reset_schedule, now_ms=now_ms)
+            else:
+                continue
+            if period_end_ms is not None:
+                ttl = max(ttl, -(-period_end_ms // 1000))
+        return ttl
+
     def _require_top_up_readers(self) -> None:
         """Refuse a quota top-up above the plan the stack's readers would clamp (ADR-149).
 
@@ -7688,7 +7715,7 @@ class SyncRepository:
         self._top_up_readers_proven = True
 
     def build_bucket_operation(
-        self, entity_id: str, resource: str, write: bucket_ops.ShardWrite
+        self, entity_id: str, resource: str, write: bucket_ops.ShardWrite, ttl: int | None = None
     ) -> dict[str, Any]:
         """Build one shard's rf-locked reset or top-up ``Update`` (ADR-149 §4.2).
 
@@ -7697,13 +7724,15 @@ class SyncRepository:
         to force one materialising pass that clamps anything credited in
         between, plus the grant counts, windows, applied markers and top-ups the
         plan sets and the ``tu`` / ``wtc`` it removes. Conditioned on the
-        ``rf`` and ``shard_count`` read; ``tc``, ``disabled``, ``ttl`` and the
-        owner stamps are never touched. The call's operation record rides in
-        the same transaction (:meth:`build_operation_record`).
+        ``rf`` and ``shard_count`` read; ``tc``, ``disabled`` and the owner
+        stamps are never touched, and ``ttl`` only when one is given. The
+        call's operation record rides in the same transaction (:meth:`build_operation_record`).
 
         Tokens are positional (#634): ``#ot``/``:ot`` deltas, ``#og``/``:og``
         grant counts, ``#ow``/``:ow`` + ``#or``/``:or`` windows, ``#oa``/``:oa``
-        applied markers, ``#ou``/``:ou`` top-ups, ``#ox`` / ``#oy`` removals.
+        applied markers, ``#ou``/``:ou`` top-ups, ``#ox`` / ``#oy`` removals,
+        ``#ottl``/``:ottl`` the ``ttl`` (epoch seconds) when one is given: a
+        bucket on resource or system defaults (:meth:`_operation_ttl`).
         """
         names: dict[str, str] = {"#rf": schema.BUCKET_FIELD_RF, "#vu": schema.BUCKET_FIELD_VU}
         values: dict[str, Any] = {
@@ -7746,6 +7775,10 @@ class SyncRepository:
         for i, name in enumerate(sorted(write.cleared_window_marks)):
             names[f"#oy{i}"] = attr(name, schema.BUCKET_FIELD_WTC)
             remove_parts.append(f"#oy{i}")
+        if ttl is not None:
+            names["#ottl"] = "ttl"
+            values[":ottl"] = {"N": str(ttl)}
+            set_parts.append("#ottl = :ottl")
         names["#osc"] = "shard_count"
         if write.shard_count_stored:
             values[":osc"] = {"N": str(write.shard_count)}

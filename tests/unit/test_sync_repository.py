@@ -44,6 +44,7 @@ from zae_limiter.schema import (
     WCU_LIMIT_NAME,
     bucket_attr,
     calculate_bucket_ttl,
+    calculate_bucket_ttl_seconds,
     limit_attr,
     parse_bucket_attr,
     parse_bucket_sk,
@@ -7696,6 +7697,72 @@ class TestResetAndTopUp:
             repo.reset_bucket("e", "r")
         assert _op_num(_op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 0
         assert [e for e in repo.get_audit_events("e") if e.action == "bucket_reset"] == []
+
+    def test_a_top_up_refreshes_a_default_buckets_ttl(self, repo):
+        """Round-6 review, P3: a top-up left a near-expiry `ttl` alone, so the
+        item and its purchase could be swept in 60 s with 12 h of the period
+        left. It now stamps the acquire path's ttl, never before the period end."""
+        _stamp_deployed(repo)
+        repo.set_resource_defaults("r", [_OP_CAL])
+        now_s = (_OP_T0 + 1) // 1000
+        _op_put_shard(
+            repo, "e", "r", [_OP_CAL], tokens={"cal": 0}, extra={"ttl": {"N": str(now_s + 60)}}
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        repo.top_up("e", "r", {"cal": 500})
+        item = _op_item(repo, "e", "r")
+        ttl = int(item["ttl"]["N"])
+        period_end_s = (_OP_T0 // 86400000 + 1) * 86400
+        assert ttl >= period_end_s
+        assert ttl == now_s + calculate_bucket_ttl_seconds([_OP_CAL], 7)
+
+    def test_a_reset_refreshes_a_default_buckets_ttl(self, repo):
+        repo.set_resource_defaults("r", [_OP_RPM])
+        now_s = (_OP_T0 + 1) // 1000
+        _op_put_shard(
+            repo, "e", "r", [_OP_RPM], tokens={"rpm": 0}, extra={"ttl": {"N": str(now_s + 1)}}
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        repo.reset_bucket("e", "r")
+        item = _op_item(repo, "e", "r")
+        assert int(item["ttl"]["N"]) == now_s + calculate_bucket_ttl_seconds([_OP_RPM], 7)
+
+    def test_a_top_up_adds_no_ttl_to_an_entity_bucket(self, repo):
+        """ADR-136: an entity-level bucket persists; a top-up gives it no ttl."""
+        _stamp_deployed(repo)
+        repo.set_limits("e", [_OP_CAL], resource="r")
+        _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
+        repo._now_ms = lambda: _OP_T0 + 1
+        repo.top_up("e", "r", {"cal": 5})
+        assert "ttl" not in _op_item(repo, "e", "r")
+
+    def test_a_window_a_top_up_opens_ends_before_its_ttl(self, repo):
+        """D4: a session top-up with no live window opens one; the bucket's
+        ttl outlives it."""
+        _stamp_deployed(repo)
+        repo.set_resource_defaults("r", [_OP_SES])
+        now_s = (_OP_T0 + 1) // 1000
+        _op_put_shard(
+            repo, "e", "r", [_OP_SES], tokens={"ses": 0}, extra={"ttl": {"N": str(now_s + 60)}}
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        repo.top_up("e", "r", {"ses": 5})
+        item = _op_item(repo, "e", "r")
+        window_end_ms = _op_num(item, "ses", BUCKET_FIELD_WS) + 5 * 3600000
+        assert int(item["ttl"]["N"]) * 1000 >= window_end_ms
+
+    def test_a_created_bucket_outlives_its_period(self, repo):
+        """D5's create takes the same rule, and a reset edge out of reach (a
+        leap day three years off) adds nothing to it."""
+        leap = Limit.quota("leap", 10, cron="0 0 29 2 *")
+        _stamp_deployed(repo)
+        repo.set_resource_defaults("r", [_OP_SES, leap])
+        repo._now_ms = lambda: _OP_T0
+        repo.top_up("e", "r", {"ses": 5})
+        item = _op_item(repo, "e", "r")
+        now_s = _OP_T0 // 1000
+        assert int(item["ttl"]["N"]) == now_s + calculate_bucket_ttl_seconds([_OP_SES, leap], 7)
+        assert int(item["ttl"]["N"]) * 1000 >= _op_num(item, "ses", BUCKET_FIELD_WS) + 18000000
 
     def test_an_invalid_principal_is_refused_before_any_io(self, repo):
         with (

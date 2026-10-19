@@ -328,6 +328,9 @@ class TestCompositeBuilders:
         )
         update = _repo().build_bucket_operation("e", "r", write)["Update"]
         assert_expression_safe(update)
+        update = _repo().build_bucket_operation("e", "r", write, ttl=123)["Update"]
+        assert_expression_safe(update)
+        assert "#ottl = :ottl" in update["UpdateExpression"]
 
     def test_bucket_operation_with_nothing_but_the_lock(self) -> None:
         from zae_limiter.bucket_ops import ShardWrite
