@@ -252,9 +252,10 @@ infrastructure limit tracks per-partition write pressure.
 4. The client creates the new shard's bucket item itself on its next slow-path acquire,
    with `capacity / shard_count` tokens — the aggregator is **not** required for
    sharding to engage (ADR-133)
-5. The Lambda aggregator, when deployed, is a backstop: it can also double shards at >=80%
-   wcu capacity, though it rarely does so before the client has (step 3 is what protects a hot
-   shard). It pre-creates the new shard items so clients skip that one-time slow path
+5. The Lambda aggregator, when deployed, is a backstop: it can also double shards when the
+   stored `wcu` balance, projected to now, is below 20% of capacity (never past 32), though it
+   rarely does so before the client has (step 3 is what protects a hot shard). It pre-creates
+   the new shard items so clients skip that one-time slow path
 6. Shard count changes on shard 0 are propagated to all other shards by the aggregator
 7. Clients pick a random shard from the entity cache: `random.randrange(shard_count)`
 8. If application limits are exhausted on one shard but the entity has multiple shards,

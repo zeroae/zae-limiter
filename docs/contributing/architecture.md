@@ -508,8 +508,9 @@ The aggregator processes DynamoDB Stream records in each batch to:
 3. **Write refill** -- Issues a single `UpdateItem` with `ADD #rt{i} :rd{i}` (the alias
    `#rt{i}` names `b_{limit}_tk`; tokens are positional because a limit name may contain `.`
    or `-`) and `SET rf = :new_rf`, conditioned on `rf = :expected_rf` (optimistic lock)
-4. **Proactive sharding** -- `try_proactive_shard()` checks if wcu consumption >= 80% of capacity
-   on shard 0, and conditionally doubles `shard_count`
+4. **Proactive sharding** -- `try_proactive_shard()` projects shard 0's stored wcu balance from
+   `rf` to now and, if it is below 20% of capacity, conditionally doubles `shard_count`, never
+   past `MAX_SHARD_COUNT` (32)
 5. **Shard propagation** -- `propagate_shard_count()` detects shard_count changes in stream records
    from shard 0 and propagates to all other shards via conditional writes (`shard_count < :new`)
 
@@ -529,11 +530,14 @@ Aggregator refill flow (per composite bucket shard):
 
 Proactive sharding flow (per bucket):
 1. Check wcu limit info in aggregated state
-2. consumption_ratio = wcu_tc_delta / wcu_capacity_milli
-   +- ratio < 0.8 -> SKIP
-3. Is this shard 0?
+2. shard_count >= MAX_SHARD_COUNT (32) -> SKIP
+3. projected = refill_bucket(wcu_tk, rf, now, wcu_cp, wcu_ra, wcu_rp)
+   token_ratio = projected / wcu_capacity_milli
+   +- ratio >= 0.2 -> SKIP
+4. Is this shard 0?
    +- NO -> SKIP (only shard 0 is source of truth)
-   +- YES -> UpdateItem (SET shard_count = :new, condition shard_count = :old)
+   +- YES -> UpdateItem (SET shard_count = :new, condition shard_count = :old),
+             :new = min(shard_count * 2, MAX_SHARD_COUNT)
       +- SUCCESS -> shard_count doubled
       +- ConditionalCheckFailedException -> concurrent bump, skip
 
@@ -541,6 +545,7 @@ Shard propagation flow (per stream record):
 1. Detect shard_count increase (new > old) in stream record
 2. Is this shard 0?
    +- NO -> SKIP
+   +- new > MAX_SHARD_COUNT -> SKIP (a runaway count, never propagated)
    +- YES -> For each target shard 1..new_count:
       UpdateItem (SET shard_count = :new, condition shard_count < :new OR not exists)
 ```
@@ -554,8 +559,8 @@ Shard propagation flow (per stream record):
 - **No read required** -- all state is derived from stream record NewImage fields
 - **Shard-aware capacity** -- effective capacity and refill amount are divided by `shard_count`
   so each shard gets its proportional share of tokens
-- **Proactive sharding** -- the aggregator doubles shard_count when wcu consumption >= 80%
-  of capacity. A backstop: the client's own doubling on wcu exhaustion is what protects a
+- **Proactive sharding** -- the aggregator doubles shard_count when its stored wcu balance,
+  projected to now, is below 20% of capacity, never past `MAX_SHARD_COUNT`. A backstop: the client's own doubling on wcu exhaustion is what protects a
   hot shard, and the aggregator rarely doubles before the client has
 - **Shard propagation** -- shard_count changes on shard 0 are propagated to other shards
   via conditional writes that only update if the target has a lower value
@@ -614,7 +619,7 @@ src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 7. **Speculative writes skip reads**: With `speculative_writes=True`, `acquire()` tries a conditional UpdateItem first, saving 1 round trip and 1 RCU when the bucket has sufficient tokens
 8. **Entity metadata cache enables parallel cascade**: `Repository._entity_cache` stores `(cascade, parent_id, shard_counts)` per entity. `cascade` and `parent_id` are immutable; `shard_counts` (`dict[str, int]`) is updated on shard doubling. After first acquire, cascade speculative writes run concurrently via `asyncio.gather`
 9. **Aggregator-assisted refill**: The Lambda aggregator proactively refills buckets for active entities, keeping speculative writes on the fast path by ensuring buckets have sufficient tokens between client requests. Effective capacity and refill amount are divided by `shard_count` so each shard receives its proportional share
-10. **Pre-shard buckets (GHSA-76rv)**: Each bucket item lives on its own DynamoDB partition (`PK={ns}/BUCKET#{id}#{resource}#{shard}`). An auto-injected `wcu:1000` infrastructure limit tracks per-partition write pressure. When wcu is exhausted, the client doubles shard_count (conditional write on shard 0); that is what protects a hot shard. As a backstop, the aggregator also doubles shards at >=80% wcu capacity and propagates shard_count changes from shard 0 to all other shards
+10. **Pre-shard buckets (GHSA-76rv)**: Each bucket item lives on its own DynamoDB partition (`PK={ns}/BUCKET#{id}#{resource}#{shard}`). An auto-injected `wcu:1000` infrastructure limit tracks per-partition write pressure. When wcu is exhausted, the client doubles shard_count (conditional write on shard 0); that is what protects a hot shard. As a backstop, the aggregator also doubles shards when the projected wcu balance is below 20% of capacity (never past `MAX_SHARD_COUNT`) and propagates shard_count changes from shard 0 to all other shards
 
 ## Next Steps
 
