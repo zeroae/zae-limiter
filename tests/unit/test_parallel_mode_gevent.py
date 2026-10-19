@@ -92,7 +92,6 @@ class TestGeventOwnerCheckJoin:
     """The sync lease's join of a killed owner-check greenlet (ADR-150, #716 review)."""
 
     def test_a_killed_check_forces_the_slow_pass(self):
-        from concurrent.futures import CancelledError
         from types import SimpleNamespace
 
         import gevent
@@ -125,8 +124,7 @@ class TestGeventOwnerCheckJoin:
         gevent.sleep(0.01)  # the check is running
         lease._owner_task.greenlet.kill()  # killed by someone other than the joiner
 
-        with pytest.raises(CancelledError):
-            lease._await_owner_checks()
+        lease._await_owner_checks()  # nobody cancelled the caller: it returns
 
         assert ran == ["started"]  # the check never finished...
         assert writes == [("vu=0", "user", "gpt-4", 0)]  # ...so the bucket is forced

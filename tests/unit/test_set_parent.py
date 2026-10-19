@@ -869,6 +869,55 @@ class TestStaleWriters:
         item = await _item(repo, "user", "gpt-4")
         assert item[schema.BUCKET_FIELD_VU] == {"N": "0"}  # the check's safety net instead
 
+    async def test_a_task_cancelled_by_someone_else_leaves_the_callers_exception(self, caplog):
+        """r5 #3 (case1): a cancel not aimed at the caller is not raised into it."""
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        writes: list[tuple] = []
+
+        async def slow(*args):
+            await asyncio.sleep(5)
+
+        async def write_each(items):
+            writes.extend(items)
+
+        backend = SimpleNamespace(
+            start_background=lambda work: asyncio.create_task(work()),
+            repair_created_owner_stamp=slow,
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=write_each,
+        )
+        lease = Lease(repository=cast(RepositoryProtocol, backend))
+        await lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
+        await asyncio.sleep(0.01)
+        assert lease._owner_task is not None
+        lease._owner_task.cancel()  # e.g. a shutdown helper cancelling stray tasks
+
+        with pytest.raises(ValueError, match="the caller's"):
+            try:
+                raise ValueError("the caller's")
+            finally:
+                await lease._await_owner_checks()
+        assert writes == [("vu=0", "user", "gpt-4", 0)]
+        assert "owner stamp checks were cancelled" in caplog.text
+
+        # A normal exit stands too.
+        await lease._start_owner_checks([("user", "gpt-4", 1, 1, "inc")])
+        await asyncio.sleep(0.01)
+        lease._owner_task.cancel()
+        await lease._await_owner_checks()
+        assert writes[-1] == ("vu=0", "user", "gpt-4", 1)
+
+    def test_the_sync_twin_never_reads_its_caller_as_cancelled(self):
+        from zae_limiter.cancellation import caller_is_cancelled, sync_caller_is_cancelled
+
+        assert sync_caller_is_cancelled() is False
+        assert caller_is_cancelled() is False  # no running task at all
+
     async def test_a_cancelled_join_with_nothing_to_force_still_reraises(self):
         from types import SimpleNamespace
         from typing import cast
@@ -912,8 +961,11 @@ class TestStaleWriters:
         await lease._await_owner_checks()  # nothing to join
 
     def test_the_sync_join_forces_the_slow_pass_for_a_cancelled_spawn(self):
-        """A cancelled spawn's `.result()` raises an `Exception`; it still gets vu = 0."""
-        from concurrent.futures import CancelledError, Future
+        """A cancelled spawn's `.result()` raises an `Exception`; it still gets vu = 0.
+
+        Nobody cancelled the sync caller, so the join does not raise either.
+        """
+        from concurrent.futures import Future
         from types import SimpleNamespace
         from typing import cast
 
@@ -932,9 +984,9 @@ class TestStaleWriters:
         lease = SyncLease(repository=cast(SyncRepositoryProtocol, backend))
         lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
 
-        with pytest.raises(CancelledError):
-            lease._await_owner_checks()
+        lease._await_owner_checks()  # returns: the cancel was not aimed at the caller
         assert writes == [("vu=0", "user", "gpt-4", 0)]
+        assert lease._owner_task is None
 
     def test_the_sync_twin_runs_the_check_in_the_background(self, mock_dynamodb):
         """The generated SyncLease spawns the check (threadpool) during the block."""

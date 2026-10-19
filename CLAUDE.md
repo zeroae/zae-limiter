@@ -450,6 +450,7 @@ src/zae_limiter/
 ├── limiter.py         # RateLimiter (async)
 ├── config_cache.py    # Client-side config caching with TTL (CacheStats)
 ├── rejection_cache.py # Last bucket state seen per shard; rejects without a DynamoDB call (ADR-147)
+├── cancellation.py    # caller_is_cancelled() and its sync twin (hand-written; the generator maps the name)
 ├── sync_repository_protocol.py  # Generated: SyncRepositoryProtocol
 ├── sync_repository.py           # Generated: SyncRepository
 ├── sync_repository_builder.py   # Generated: SyncRepositoryBuilder

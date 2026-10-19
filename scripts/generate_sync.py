@@ -118,6 +118,8 @@ IMPORT_NAME_REWRITES = {
     "asynccontextmanager": "contextmanager",
     # aiobotocore's get_session() -> boto3.Session()
     "get_session": "boto3.Session",
+    # asyncio.current_task() has no sync twin; a sync join is never cancelled
+    "caller_is_cancelled": "sync_caller_is_cancelled",
 }
 
 # Type annotation rewrites
