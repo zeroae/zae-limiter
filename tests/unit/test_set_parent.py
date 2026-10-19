@@ -869,6 +869,201 @@ class TestStaleWriters:
         item = await _item(repo, "user", "gpt-4")
         assert item[schema.BUCKET_FIELD_VU] == {"N": "0"}  # the check's safety net instead
 
+    async def test_a_task_cancelled_by_someone_else_leaves_the_callers_exception(self, caplog):
+        """r5 #3 (case1): a cancel not aimed at the caller is not raised into it."""
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        writes: list[tuple] = []
+
+        async def slow(*args):
+            await asyncio.sleep(5)
+
+        async def write_each(items):
+            writes.extend(items)
+
+        backend = SimpleNamespace(
+            start_background=lambda work: asyncio.create_task(work()),
+            repair_created_owner_stamp=slow,
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=write_each,
+        )
+        lease = Lease(repository=cast(RepositoryProtocol, backend))
+        await lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
+        await asyncio.sleep(0.01)
+        assert lease._owner_task is not None
+        lease._owner_task.cancel()  # e.g. a shutdown helper cancelling stray tasks
+
+        with pytest.raises(ValueError, match="the caller's"):
+            try:
+                raise ValueError("the caller's")
+            finally:
+                await lease._await_owner_checks()
+        assert writes == [("vu=0", "user", "gpt-4", 0)]
+        assert "owner stamp checks were cancelled" in caplog.text
+
+        # A normal exit stands too.
+        await lease._start_owner_checks([("user", "gpt-4", 1, 1, "inc")])
+        await asyncio.sleep(0.01)
+        lease._owner_task.cancel()
+        await lease._await_owner_checks()
+        assert writes[-1] == ("vu=0", "user", "gpt-4", 1)
+
+    @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+    def test_an_interrupted_sync_join_skips_the_writes_and_reraises(self, interrupt):
+        """r5 #5: Ctrl-C during the join must not wait on vu = 0 round trips."""
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.sync_lease import SyncLease
+        from zae_limiter.sync_repository_protocol import SyncRepositoryProtocol
+
+        cancelled: list[bool] = []
+
+        def result():
+            raise interrupt()
+
+        handle = SimpleNamespace(result=result, cancel=lambda: cancelled.append(True))
+        writes: list[tuple] = []
+        backend = SimpleNamespace(
+            start_background=lambda _work: handle,
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=writes.extend,
+        )
+        lease = SyncLease(repository=cast(SyncRepositoryProtocol, backend))
+        lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
+
+        with pytest.raises(interrupt):
+            lease._await_owner_checks()
+        assert writes == []  # no network round trip on the way down
+        assert cancelled == [True]
+        assert lease._owner_task is None
+
+    @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+    async def test_an_interrupted_async_join_skips_the_writes_and_reraises(self, interrupt):
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        class Handle:
+            cancelled = False
+
+            def cancel(self):
+                self.cancelled = True
+
+            def __await__(self):
+                raise interrupt  # `await` calls this first, so it unwinds right there
+
+        writes: list[tuple] = []
+
+        async def write_each(items):
+            writes.extend(items)
+
+        backend = SimpleNamespace(
+            start_background=lambda _work: Handle(),
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=write_each,
+        )
+        lease = Lease(repository=cast(RepositoryProtocol, backend))
+        await lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
+        handle = lease._owner_task
+
+        with pytest.raises(interrupt):
+            await lease._await_owner_checks()
+        assert writes == []
+        assert handle.cancelled
+
+    async def test_another_base_exception_in_the_join_still_forces_the_slow_pass(self):
+        """Anything else that unwinds the join (a killed greenlet's GreenletExit) writes vu = 0."""
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        class Unwind(BaseException):
+            pass
+
+        class Handle:
+            cancelled = False
+
+            def cancel(self):
+                self.cancelled = True
+
+            def __await__(self):
+                raise Unwind  # `await` calls this first, so it unwinds right there
+
+        writes: list[tuple] = []
+
+        async def write_each(items):
+            writes.extend(items)
+
+        backend = SimpleNamespace(
+            start_background=lambda _work: Handle(),
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=write_each,
+        )
+        lease = Lease(repository=cast(RepositoryProtocol, backend))
+        await lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
+        handle = lease._owner_task
+
+        with pytest.raises(Unwind):
+            await lease._await_owner_checks()
+        assert writes == [("vu=0", "user", "gpt-4", 0)]
+        assert handle.cancelled
+
+    async def test_a_second_cancel_stops_the_fallback_part_way(self):
+        """r5 #4 (case2), the residual ADR-150 records: a second cancel ends the vu = 0
+        writes where they stand; the buckets not yet written keep the create's stamp."""
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.lease import Lease
+        from zae_limiter.repository_protocol import RepositoryProtocol
+
+        writes: list[tuple] = []
+        first_written = asyncio.Event()
+
+        async def slow(*args):
+            await asyncio.sleep(5)
+
+        async def write_each(items):
+            if writes:
+                await asyncio.sleep(5)  # the second write is in flight when cancelled
+            writes.extend(items)
+            first_written.set()
+
+        backend = SimpleNamespace(
+            start_background=lambda work: asyncio.create_task(work()),
+            repair_created_owner_stamp=slow,
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=write_each,
+        )
+        lease = Lease(repository=cast(RepositoryProtocol, backend))
+        await lease._start_owner_checks([("user", "gpt-4", s, 1, "inc") for s in range(3)])
+        join = asyncio.create_task(lease._await_owner_checks())
+        await asyncio.sleep(0.01)
+        join.cancel()  # first cancel: the fallback starts
+        await first_written.wait()
+        await asyncio.sleep(0.01)
+        join.cancel()  # second cancel, e.g. an outer timeout or asyncio.run shutdown
+
+        with pytest.raises(asyncio.CancelledError):
+            await join
+        assert writes == [("vu=0", "user", "gpt-4", 0)]  # shards 1 and 2 were never forced
+        assert lease._owner_task is None
+
+    def test_the_sync_twin_never_reads_its_caller_as_cancelled(self):
+        from zae_limiter.cancellation import caller_is_cancelled, sync_caller_is_cancelled
+
+        assert sync_caller_is_cancelled() is False
+        assert caller_is_cancelled() is False  # no running task at all
+
     async def test_a_cancelled_join_with_nothing_to_force_still_reraises(self):
         from types import SimpleNamespace
         from typing import cast
@@ -910,6 +1105,34 @@ class TestStaleWriters:
         assert lease._owner_task is None
         await lease._start_owner_checks([])  # nothing to check
         await lease._await_owner_checks()  # nothing to join
+
+    def test_the_sync_join_forces_the_slow_pass_for_a_cancelled_spawn(self):
+        """A cancelled spawn's `.result()` raises an `Exception`; it still gets vu = 0.
+
+        Nobody cancelled the sync caller, so the join does not raise either.
+        """
+        from concurrent.futures import Future
+        from types import SimpleNamespace
+        from typing import cast
+
+        from zae_limiter.sync_lease import SyncLease
+        from zae_limiter.sync_repository_protocol import SyncRepositoryProtocol
+
+        cancelled: Future[None] = Future()
+        cancelled.cancel()
+        writes: list[tuple] = []
+        backend = SimpleNamespace(
+            start_background=lambda _work: cancelled,
+            repair_created_owner_stamp=lambda *a: False,
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=writes.extend,
+        )
+        lease = SyncLease(repository=cast(SyncRepositoryProtocol, backend))
+        lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
+
+        lease._await_owner_checks()  # returns: the cancel was not aimed at the caller
+        assert writes == [("vu=0", "user", "gpt-4", 0)]
+        assert lease._owner_task is None
 
     def test_the_sync_twin_runs_the_check_in_the_background(self, mock_dynamodb):
         """The generated SyncLease spawns the check (threadpool) during the block."""

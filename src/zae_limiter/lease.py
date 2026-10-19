@@ -15,6 +15,7 @@ from .bucket import (
     try_consume,
     window_end_in_force,
 )
+from .cancellation import caller_is_cancelled
 from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus, QuotaDonorDebit
 from .schema import (
@@ -1219,18 +1220,46 @@ class Lease:
         logged at WARNING without the entity id, routinely an API key, and can
         neither fail the acquire nor mask the caller's exception.
 
-        A cancellation (or interrupt) delivered while joining cancels the task
-        with it, so its checks may never finish. Each bucket they covered then
-        gets the safety net a failed check uses, ``vu = 0``, before the
-        cancellation is re-raised: the next acquire on it takes the pinned slow
-        path. A check that had already finished costs one extra slow pass.
+        A cancelled task never finishes its checks: the caller was cancelled
+        while joining (the join cancels the task with it), or someone else
+        cancelled the task, or, in the sync twin, its greenlet was killed.
+        Each bucket they covered then gets the safety net a failed check uses,
+        ``vu = 0``, so its next acquire takes the pinned slow path; a check
+        that had already finished costs one extra slow pass. The cancellation
+        is re-raised only when it is aimed at the caller
+        (:func:`~zae_limiter.cancellation.caller_is_cancelled`); otherwise the
+        caller's own exception, or its normal exit, stands.
+
+        ``KeyboardInterrupt`` and ``SystemExit`` skip the ``vu = 0`` writes and
+        re-raise at once: the process is going down, and in the sync twin the
+        writes would hold Ctrl-C for their network round trips.
         """
         if self._owner_task is None:
             return
         try:
             await self._owner_task
+        except asyncio.CancelledError:
+            # Ahead of `Exception`: in the sync twin this is
+            # `concurrent.futures.CancelledError`, an `Exception`, raised by a
+            # spawn that was cancelled or killed (gevent), which never ran its
+            # checks either.
+            self._owner_task.cancel()
+            await self._abandon_owner_checks(self._owner_checks)
+            if caller_is_cancelled():
+                raise
+            # Someone else cancelled the task (a shutdown helper, a killed
+            # greenlet): re-raising would replace the caller's own exception,
+            # or fail a normal exit, with a cancel nobody aimed at the caller.
+            logger.warning("owner stamp checks were cancelled; forced a slow pass instead")
         except Exception:
             logger.warning("owner stamp checks failed", exc_info=True)
+        except (KeyboardInterrupt, SystemExit):
+            # The process is going down: no `vu = 0` writes, which in the sync
+            # twin would block Ctrl-C on network round trips. The buckets keep
+            # the create's stamp, wrong only if a move overtook it, until their
+            # next slow pass or `set_parent`.
+            self._owner_task.cancel()
+            raise
         except BaseException:
             self._owner_task.cancel()
             await self._abandon_owner_checks(self._owner_checks)

@@ -86,3 +86,46 @@ class TestGeventSpawn:
         assert future.cancel() is False
         with pytest.raises(CancelledError):
             future.result(timeout=2)
+
+
+class TestGeventOwnerCheckJoin:
+    """The sync lease's join of a killed owner-check greenlet (ADR-150, #716 review)."""
+
+    def test_a_killed_check_forces_the_slow_pass(self):
+        from types import SimpleNamespace
+
+        import gevent
+        from gevent import monkey
+
+        from zae_limiter.sync_lease import SyncLease
+
+        if not monkey.is_module_patched("socket"):
+            pytest.skip("gevent not monkey-patched (run with GEVENT=1)")
+        repo = SyncRepository(
+            name="test", region="us-east-1", _skip_deprecation_warning=True, parallel_mode="gevent"
+        )
+        ran: list[str] = []
+        writes: list[tuple] = []
+
+        def slow_check(*args):
+            ran.append("started")
+            gevent.sleep(5)
+            ran.append("finished")
+            return False
+
+        backend = SimpleNamespace(
+            start_background=repo.start_background,
+            repair_created_owner_stamp=slow_check,
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=writes.extend,
+        )
+        lease = SyncLease(repository=backend)
+        lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
+        gevent.sleep(0.01)  # the check is running
+        lease._owner_task.greenlet.kill()  # killed by someone other than the joiner
+
+        lease._await_owner_checks()  # nobody cancelled the caller: it returns
+
+        assert ran == ["started"]  # the check never finished...
+        assert writes == [("vu=0", "user", "gpt-4", 0)]  # ...so the bucket is forced
+        assert lease._owner_task is None

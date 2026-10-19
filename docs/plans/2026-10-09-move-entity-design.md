@@ -283,8 +283,9 @@ Per move, entity with R resources × S shards each, ancestor depth d, on-demand 
 
 Per acquire: **unchanged** (fast path 0 RCU + 1 WCU; `pgen` is one condition term on the
 rf-locked write). Per bucket **created** (first acquire of an entity on a resource, or a new
-shard): **+1 RCU**, the strongly consistent owner check (§4), ~$0.125/M creates, after the
-lease is handed back, so no added latency; a restamp
+shard): **+1 RCU**, the strongly consistent owner check (§4), ~$0.125/M creates, started when
+the commit lands and joined on lease exit, so it adds latency only when the caller's block is
+shorter than the read; a restamp
 (+1 WCU, + 4 RCU for the policy) only when a move overtook the create. Per aggregator record
 that clones shards: +1 RCU, the same check. After a move, once per (process, entity): **+2 WCU** (refund + new-parent
 write replace a plain parent write: +1 WCU net over a normal cascade call, ~$0.625/M of those

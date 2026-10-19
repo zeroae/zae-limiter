@@ -22,6 +22,7 @@ from .bucket import (
     try_consume,
     window_end_in_force,
 )
+from .cancellation import sync_caller_is_cancelled
 from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus, QuotaDonorDebit
 from .schema import (
@@ -868,18 +869,35 @@ class SyncLease:
         logged at WARNING without the entity id, routinely an API key, and can
         neither fail the acquire nor mask the caller's exception.
 
-        A cancellation (or interrupt) delivered while joining cancels the task
-        with it, so its checks may never finish. Each bucket they covered then
-        gets the safety net a failed check uses, ``vu = 0``, before the
-        cancellation is re-raised: the next acquire on it takes the pinned slow
-        path. A check that had already finished costs one extra slow pass.
+        A cancelled task never finishes its checks: the caller was cancelled
+        while joining (the join cancels the task with it), or someone else
+        cancelled the task, or, in the sync twin, its greenlet was killed.
+        Each bucket they covered then gets the safety net a failed check uses,
+        ``vu = 0``, so its next acquire takes the pinned slow path; a check
+        that had already finished costs one extra slow pass. The cancellation
+        is re-raised only when it is aimed at the caller
+        (:func:`~zae_limiter.cancellation.caller_is_cancelled`); otherwise the
+        caller's own exception, or its normal exit, stands.
+
+        ``KeyboardInterrupt`` and ``SystemExit`` skip the ``vu = 0`` writes and
+        re-raise at once: the process is going down, and in the sync twin the
+        writes would hold Ctrl-C for their network round trips.
         """
         if self._owner_task is None:
             return
         try:
             self._owner_task.result()
+        except concurrent.futures.CancelledError:
+            self._owner_task.cancel()
+            self._abandon_owner_checks(self._owner_checks)
+            if sync_caller_is_cancelled():
+                raise
+            logger.warning("owner stamp checks were cancelled; forced a slow pass instead")
         except Exception:
             logger.warning("owner stamp checks failed", exc_info=True)
+        except (KeyboardInterrupt, SystemExit):
+            self._owner_task.cancel()
+            raise
         except BaseException:
             self._owner_task.cancel()
             self._abandon_owner_checks(self._owner_checks)

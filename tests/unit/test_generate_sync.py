@@ -567,13 +567,10 @@ def test_a_handle_may_be_compared_with_none_and_returned_when_annotated() -> Non
 
 
 def test_handles_are_scoped_to_their_function_and_class() -> None:
-    """The same spelling elsewhere is not a handle: its await stays a plain call."""
+    """A local of the same spelling elsewhere is not a handle: its await stays plain."""
     source = (
         "class Lease:\n"
         "    task: asyncio.Task[None] | None = None\n"
-        "    async def finish(self):\n"
-        "        await self.task\n"
-        "class Other:\n"
         "    async def finish(self):\n"
         "        await self.task\n"
         "async def spawn():\n"
@@ -586,8 +583,22 @@ def test_handles_are_scoped_to_their_function_and_class() -> None:
 
     assert result.count("self.task.result()") == 1
     assert result.count("t.result()") == 1
-    assert "    self.task\n" in result  # Other.finish: the await's operand, unchanged
     assert result.rstrip().endswith("def plain(t):\n    t")  # the await's operand, unchanged
+
+
+def test_another_class_reading_a_task_attribute_name_aborts() -> None:
+    """An attribute is not scoped like a local: another class's `self.task` could be the
+    same field (a subclass, a mixin), so it fails closed instead of reading as plain."""
+    source = (
+        "class Lease:\n"
+        "    task: asyncio.Task[None] | None = None\n"
+        "class Other:\n"
+        "    async def finish(self):\n"
+        "        await self.task\n"
+    )
+
+    with pytest.raises(generate_sync.UnsupportedAsyncConstructError, match="`self.task` reads"):
+        transform(source)
 
 
 def test_a_nested_function_sees_the_enclosing_handle() -> None:
@@ -633,3 +644,111 @@ def test_an_unparseable_quoted_annotation_names_no_handle() -> None:
     )
 
     assert "self.t.result()" not in transform(source)
+
+
+# A handle the tracker cannot see fails closed (#716 review, shapes A-D)
+
+_TASK_METHOD = (
+    "class Repo:\n"
+    "    def start(self, work) -> asyncio.Task[None]:\n"
+    "        return asyncio.create_task(work())\n"
+)
+_TASK_FIELD = "class Lease:\n    t: asyncio.Task[None] | None = None\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "line", "construct"),
+    [
+        pytest.param(
+            _TASK_METHOD + "async def run(repo, work):\n    t = repo.start(work)\n    await t\n",
+            5,
+            "`repo.start(work)` returns an `asyncio.Task`",
+            id="A_unannotated_local",
+        ),
+        pytest.param(
+            _TASK_FIELD + "async def exit(lease):\n    await lease.t\n",
+            4,
+            "`lease.t` reads a task attribute outside the class",
+            id="B_other_object",
+        ),
+        pytest.param(
+            _TASK_FIELD + "class Child(Lease):\n    async def join(self):\n        await self.t\n",
+            5,
+            "`self.t` reads a task attribute outside the class",
+            id="C_subclass",
+        ),
+        pytest.param(
+            _TASK_FIELD + "async def exit(lease):\n    await asyncio.wait_for(lease.t, 5)\n",
+            4,
+            "`lease.t` reads a task attribute outside the class",
+            id="D_wait_for_other_object",
+        ),
+        pytest.param(
+            _TASK_METHOD + "async def run(repo, work):\n    consume(repo.start(work))\n",
+            5,
+            "`repo.start(work)` returns an `asyncio.Task`",
+            id="call_result_as_argument",
+        ),
+    ],
+)
+def test_a_handle_the_tracker_cannot_see_aborts_generation(
+    source: str, line: int, construct: str
+) -> None:
+    """Translated as a plain value these would silently drop the join: fail closed."""
+    with pytest.raises(generate_sync.UnsupportedAsyncConstructError) as excinfo:
+        transform(source, source_file="lease.py")
+
+    message = str(excinfo.value)
+    assert f"lease.py:{line}:" in message
+    assert construct in message
+
+
+def test_a_task_method_result_landing_where_it_is_tracked_translates() -> None:
+    source = _TASK_METHOD + (
+        "class Lease:\n"
+        "    t: asyncio.Task[None] | None = None\n"
+        "    async def run(self, repo, work):\n"
+        "        self.t = repo.start(work)\n"
+        "        local: asyncio.Task[None] = repo.start(work)\n"
+        "        await local\n"
+        "        await self.t\n"
+        "    def again(self, repo, work) -> asyncio.Task[None]:\n"
+        "        return repo.start(work)\n"
+    )
+    result = transform(source)
+
+    assert "local.result()" in result
+    assert "self.t.result()" in result
+
+
+def test_the_registry_spans_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A field annotated in another generator-covered file is still a task attribute."""
+    monkeypatch.setattr(generate_sync, "TASK_REGISTRY", ({"t"}, {"start"}))
+
+    with pytest.raises(generate_sync.UnsupportedAsyncConstructError, match="`lease.t` reads"):
+        transform("async def exit(lease):\n    await lease.t\n")
+    with pytest.raises(generate_sync.UnsupportedAsyncConstructError, match="returns an"):
+        transform("async def run(repo):\n    t = repo.start()\n")
+
+
+def test_main_fills_the_registry_from_every_covered_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    src, tests = tmp_path / "src", tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+    (src / "a.py").write_text(_TASK_FIELD)
+    (tests / "test_a.py").write_text(_TASK_METHOD)
+    registry: tuple[set[str], set[str]] = (set(), set())
+    monkeypatch.setattr(generate_sync, "TASK_REGISTRY", registry)
+    monkeypatch.setattr(generate_sync, "SRC", src)
+    monkeypatch.setattr(generate_sync, "TESTS", tests)
+    monkeypatch.setattr(
+        generate_sync, "SOURCE_TRANSFORMS", [("a.py", "sync_a.py"), ("gone.py", "x.py")]
+    )
+    monkeypatch.setattr(generate_sync, "TEST_TRANSFORMS", [("test_a.py", "test_sync_a.py")])
+    monkeypatch.setattr(generate_sync, "transform_file", lambda *_a, **_k: False)
+
+    generate_sync.main()
+
+    assert registry == ({"t"}, {"start"})
