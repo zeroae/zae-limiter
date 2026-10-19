@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
+from botocore.exceptions import ClientError
 from click.testing import CliRunner
 
 from zae_limiter.cli import cli
@@ -561,6 +562,7 @@ class TestInvokeProvisioner:
                 patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
             ):
                 mock_lambda = MagicMock()
+                mock_lambda.get_function_configuration.return_value = {"Timeout": 300}
                 response_payload = {"status": "planned", "changes": []}
                 mock_lambda.invoke.return_value = {
                     "Payload": io.BytesIO(json.dumps(response_payload).encode()),
@@ -583,7 +585,8 @@ class TestInvokeProvisioner:
                     ],
                 )
                 assert result.exit_code == 0
-                mock_boto3_client.assert_called_once()
+                # One client to look up the function's Timeout, one to invoke it.
+                assert mock_boto3_client.call_count == 2
                 client_args = mock_boto3_client.call_args
                 assert client_args.args == ("lambda",)
                 assert client_args.kwargs["region_name"] == "us-east-1"
@@ -598,6 +601,69 @@ class TestInvokeProvisioner:
                 payload = json.loads(call_args[1]["Payload"])
                 assert payload["action"] == "plan"
                 assert payload["table_name"] == "test-app"
+
+    def _invoke_config(self, lookup_side_effect=None, lookup_return=None):
+        """Run `limits apply` and return (result, invoke client Config, mock client)."""
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+
+            class FakeResourceNotFoundError(ClientError):
+                """Stand-in for the botocore-generated client exception."""
+
+            with (
+                patch("asyncio.run", return_value="test-ns-id"),
+                patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
+            ):
+                mock_lambda = MagicMock()
+                mock_lambda.exceptions.ResourceNotFoundException = FakeResourceNotFoundError
+                if lookup_side_effect == "not-found":
+                    lookup_side_effect = FakeResourceNotFoundError(
+                        {"Error": {"Code": "ResourceNotFoundException"}},
+                        "GetFunctionConfiguration",
+                    )
+                mock_lambda.get_function_configuration.side_effect = lookup_side_effect
+                mock_lambda.get_function_configuration.return_value = lookup_return
+                mock_lambda.invoke.return_value = {
+                    "Payload": io.BytesIO(json.dumps({"changes": []}).encode()),
+                }
+                mock_boto3_client.return_value = mock_lambda
+
+                result = CliRunner().invoke(
+                    cli, ["limits", "apply", "--name", "test-app", "-f", f.name]
+                )
+        config = mock_boto3_client.call_args.kwargs.get("config")
+        return result, config, mock_lambda
+
+    def test_invoke_read_timeout_follows_the_deployed_function(self):
+        """A stack built from an edited template may run longer than 300 s."""
+        result, config, mock_lambda = self._invoke_config(lookup_return={"Timeout": 600})
+        assert result.exit_code == 0, result.output
+        mock_lambda.get_function_configuration.assert_called_once_with(
+            FunctionName="test-app-limits-provisioner"
+        )
+        assert config.read_timeout == 630
+        assert config.retries["total_max_attempts"] == 1
+
+    def test_invoke_read_timeout_falls_back_when_lookup_is_denied(self):
+        """A caller without lambda:GetFunctionConfiguration still gets 300 + 30 s."""
+        denied = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
+            "GetFunctionConfiguration",
+        )
+        result, config, mock_lambda = self._invoke_config(lookup_side_effect=denied)
+        assert result.exit_code == 0, result.output
+        assert config.read_timeout == 330
+        mock_lambda.invoke.assert_called_once()
+
+    def test_invoke_lookup_not_found_says_not_deployed(self):
+        """A missing function found by the lookup gives the existing explanation."""
+        result, _, mock_lambda = self._invoke_config(lookup_side_effect="not-found")
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Error: Lambda function 'test-app-limits-provisioner' not found." in (result.output)
+        assert "--no-provisioner" in result.output
+        mock_lambda.invoke.assert_not_called()
 
     def test_provisioner_timeout_matches_template(self):
         """The CLI's assumed Lambda timeout tracks cfn_template.yaml."""
