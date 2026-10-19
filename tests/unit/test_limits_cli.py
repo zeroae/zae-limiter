@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
+from botocore.exceptions import ClientError
 from click.testing import CliRunner
 
 from zae_limiter.cli import cli
@@ -561,6 +562,7 @@ class TestInvokeProvisioner:
                 patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
             ):
                 mock_lambda = MagicMock()
+                mock_lambda.get_function_configuration.return_value = {"Timeout": 300}
                 response_payload = {"status": "planned", "changes": []}
                 mock_lambda.invoke.return_value = {
                     "Payload": io.BytesIO(json.dumps(response_payload).encode()),
@@ -583,15 +585,98 @@ class TestInvokeProvisioner:
                     ],
                 )
                 assert result.exit_code == 0
-                mock_boto3_client.assert_called_once_with(
-                    "lambda",
-                    region_name="us-east-1",
-                    endpoint_url="http://localhost:4566",
-                )
+                # One client to look up the function's Timeout, one to invoke it.
+                assert mock_boto3_client.call_count == 2
+                client_args = mock_boto3_client.call_args
+                assert client_args.args == ("lambda",)
+                assert client_args.kwargs["region_name"] == "us-east-1"
+                assert client_args.kwargs["endpoint_url"] == "http://localhost:4566"
+                # The invoke is synchronous, so the read timeout must outlast the
+                # provisioner Lambda's own 300 s timeout, and a timeout must not
+                # trigger a second invocation.
+                config = client_args.kwargs["config"]
+                assert config.read_timeout > 300
+                assert config.retries["total_max_attempts"] == 1
                 call_args = mock_lambda.invoke.call_args
                 payload = json.loads(call_args[1]["Payload"])
                 assert payload["action"] == "plan"
                 assert payload["table_name"] == "test-app"
+
+    def _invoke_config(self, lookup_side_effect=None, lookup_return=None):
+        """Run `limits apply` and return (result, invoke client Config, mock client)."""
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+
+            class FakeResourceNotFoundError(ClientError):
+                """Stand-in for the botocore-generated client exception."""
+
+            with (
+                patch("asyncio.run", return_value="test-ns-id"),
+                patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
+            ):
+                mock_lambda = MagicMock()
+                mock_lambda.exceptions.ResourceNotFoundException = FakeResourceNotFoundError
+                if lookup_side_effect == "not-found":
+                    lookup_side_effect = FakeResourceNotFoundError(
+                        {"Error": {"Code": "ResourceNotFoundException"}},
+                        "GetFunctionConfiguration",
+                    )
+                mock_lambda.get_function_configuration.side_effect = lookup_side_effect
+                mock_lambda.get_function_configuration.return_value = lookup_return
+                mock_lambda.invoke.return_value = {
+                    "Payload": io.BytesIO(json.dumps({"changes": []}).encode()),
+                }
+                mock_boto3_client.return_value = mock_lambda
+
+                result = CliRunner().invoke(
+                    cli, ["limits", "apply", "--name", "test-app", "-f", f.name]
+                )
+        config = mock_boto3_client.call_args.kwargs.get("config")
+        return result, config, mock_lambda
+
+    def test_invoke_read_timeout_follows_the_deployed_function(self):
+        """A stack built from an edited template may run longer than 300 s."""
+        result, config, mock_lambda = self._invoke_config(lookup_return={"Timeout": 600})
+        assert result.exit_code == 0, result.output
+        mock_lambda.get_function_configuration.assert_called_once_with(
+            FunctionName="test-app-limits-provisioner"
+        )
+        assert config.read_timeout == 630
+        assert config.retries["total_max_attempts"] == 1
+
+    def test_invoke_read_timeout_falls_back_when_lookup_is_denied(self):
+        """A caller without lambda:GetFunctionConfiguration still gets 300 + 30 s."""
+        denied = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
+            "GetFunctionConfiguration",
+        )
+        result, config, mock_lambda = self._invoke_config(lookup_side_effect=denied)
+        assert result.exit_code == 0, result.output
+        assert config.read_timeout == 330
+        mock_lambda.invoke.assert_called_once()
+
+    def test_invoke_lookup_not_found_says_not_deployed(self):
+        """A missing function found by the lookup gives the existing explanation."""
+        result, _, mock_lambda = self._invoke_config(lookup_side_effect="not-found")
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Error: Lambda function 'test-app-limits-provisioner' not found." in (result.output)
+        assert "--no-provisioner" in result.output
+        mock_lambda.invoke.assert_not_called()
+
+    def test_provisioner_timeout_matches_template(self):
+        """The CLI's assumed Lambda timeout tracks cfn_template.yaml."""
+        from zae_limiter.infra import PROVISIONER_LAMBDA_TIMEOUT_SECONDS, get_cfn_template
+
+        class _TagIgnoringLoader(yaml.SafeLoader):
+            """SafeLoader that loads CloudFormation intrinsics (``!Ref``, ...) as None."""
+
+        _TagIgnoringLoader.add_multi_constructor("!", lambda loader, suffix, node: None)
+
+        template = yaml.load(get_cfn_template(), Loader=_TagIgnoringLoader)
+        timeout = template["Resources"]["ProvisionerFunction"]["Properties"]["Timeout"]
+        assert timeout == PROVISIONER_LAMBDA_TIMEOUT_SECONDS
 
     def test_invoke_provisioner_resolves_namespace(self):
         """A preview resolves namespace_id read-only, requiring current Lambdas (#648)."""
@@ -774,6 +859,76 @@ class TestInvokeProvisioner:
                 assert result.exception is None or isinstance(result.exception, SystemExit)
                 assert "test-app-limits-provisioner" in result.output
                 assert "--no-provisioner" in result.output
+
+    def test_invoke_provisioner_throttled_exits_cleanly(self):
+        """A throttled invoke ran nothing: say so instead of printing a traceback."""
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+
+            class FakeResourceNotFoundError(Exception):
+                """Stand-in for the botocore-generated client exception."""
+
+            class FakeTooManyRequestsError(Exception):
+                """Stand-in for the botocore-generated client exception."""
+
+            with (
+                patch("asyncio.run", return_value="test-ns-id"),
+                patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
+            ):
+                mock_lambda = MagicMock()
+                mock_lambda.exceptions.ResourceNotFoundException = FakeResourceNotFoundError
+                mock_lambda.exceptions.TooManyRequestsException = FakeTooManyRequestsError
+                mock_lambda.invoke.side_effect = FakeTooManyRequestsError("Rate exceeded")
+                mock_boto3_client.return_value = mock_lambda
+
+                result = CliRunner().invoke(
+                    cli, ["limits", "apply", "--name", "test-app", "-f", f.name]
+                )
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert (
+            "Error: Lambda function 'test-app-limits-provisioner' is throttled; "
+            "nothing was applied. Try again in a moment."
+        ) in result.output
+
+    def test_invoke_provisioner_read_timeout_warns_apply_may_still_run(self):
+        """A read timeout leaves the apply running: say so and point at `limits diff`."""
+        from botocore.exceptions import ReadTimeoutError
+
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+
+            class FakeResourceNotFoundError(Exception):
+                """Stand-in for the botocore-generated client exception."""
+
+            class FakeTooManyRequestsError(Exception):
+                """Stand-in for the botocore-generated client exception."""
+
+            with (
+                patch("asyncio.run", return_value="test-ns-id"),
+                patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
+            ):
+                mock_lambda = MagicMock()
+                mock_lambda.exceptions.ResourceNotFoundException = FakeResourceNotFoundError
+                mock_lambda.exceptions.TooManyRequestsException = FakeTooManyRequestsError
+                mock_lambda.invoke.side_effect = ReadTimeoutError(
+                    endpoint_url="https://lambda.us-east-1.amazonaws.com"
+                )
+                mock_boto3_client.return_value = mock_lambda
+
+                result = CliRunner().invoke(
+                    cli, ["limits", "apply", "--name", "test-app", "-f", f.name]
+                )
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        read_timeout = mock_boto3_client.call_args.kwargs["config"].read_timeout
+        assert f"no answer from 'test-app-limits-provisioner' after {read_timeout} s" in (
+            result.output
+        )
+        assert "may still be running" in result.output
+        assert "zae-limiter limits diff" in result.output
 
     def test_invoke_provisioner_lambda_error_exits(self):
         """_invoke_provisioner exits on Lambda error response."""

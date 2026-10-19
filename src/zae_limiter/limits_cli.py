@@ -4,11 +4,32 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any
+from typing import Any, NoReturn
 
 import boto3
 import click
 import yaml
+from botocore.config import Config
+from botocore.exceptions import ClientError, ReadTimeoutError
+
+from .infra import PROVISIONER_LAMBDA_TIMEOUT_SECONDS
+
+# botocore's default read_timeout is 60 s, so a synchronous invoke of a long apply
+# gave up while the Lambda was still working. The read timeout is the deployed
+# function's own Timeout plus this headroom, so the Lambda's timeout error
+# surfaces instead of ours.
+_INVOKE_READ_TIMEOUT_HEADROOM_SECONDS = 30
+
+
+def _exit_provisioner_not_deployed(function_name: str) -> NoReturn:
+    click.echo(
+        f"Error: Lambda function '{function_name}' not found.\n"
+        "The limits provisioner is not deployed for this stack. It is skipped by "
+        "'zae-limiter deploy --no-provisioner' and by '--no-iam' (which leaves no "
+        "role for it). Redeploy the stack with the provisioner enabled.",
+        err=True,
+    )
+    sys.exit(1)
 
 
 @click.group()
@@ -499,7 +520,27 @@ def _invoke_provisioner(
     if endpoint_url:
         kwargs["endpoint_url"] = endpoint_url
 
-    lambda_client = boto3.client("lambda", **kwargs)
+    # Size the read timeout from the deployed function: a stack built from an
+    # edited template can carry a longer Timeout than the one we ship.
+    lookup_client = boto3.client("lambda", **kwargs)
+    try:
+        function_timeout = lookup_client.get_function_configuration(FunctionName=function_name)[
+            "Timeout"
+        ]
+    except lookup_client.exceptions.ResourceNotFoundException:
+        _exit_provisioner_not_deployed(function_name)
+    except ClientError:
+        # E.g. AccessDenied: the caller may lack lambda:GetFunctionConfiguration.
+        function_timeout = PROVISIONER_LAMBDA_TIMEOUT_SECONDS
+    read_timeout = function_timeout + _INVOKE_READ_TIMEOUT_HEADROOM_SECONDS
+
+    # No retries: botocore retries a read timeout, which would invoke `apply` a
+    # second time while the first is still running.
+    lambda_client = boto3.client(
+        "lambda",
+        config=Config(read_timeout=read_timeout, retries={"total_max_attempts": 1}),
+        **kwargs,
+    )
 
     payload: dict[str, Any] = {
         "action": action,
@@ -517,11 +558,24 @@ def _invoke_provisioner(
             Payload=json.dumps(payload),
         )
     except lambda_client.exceptions.ResourceNotFoundException:
+        _exit_provisioner_not_deployed(function_name)
+    except lambda_client.exceptions.TooManyRequestsException:
+        # Lambda throttled the invoke before the function ran, so nothing was
+        # applied. Not retried: retries are off so a read timeout cannot invoke
+        # `apply` twice, and botocore cannot retry one error and not the other.
         click.echo(
-            f"Error: Lambda function '{function_name}' not found.\n"
-            "The limits provisioner is not deployed for this stack. It is skipped by "
-            "'zae-limiter deploy --no-provisioner' and by '--no-iam' (which leaves no "
-            "role for it). Redeploy the stack with the provisioner enabled.",
+            f"Error: Lambda function '{function_name}' is throttled; nothing was applied. "
+            "Try again in a moment.",
+            err=True,
+        )
+        sys.exit(1)
+    except ReadTimeoutError:
+        # The function may still be running: Lambda keeps executing after the
+        # client stops waiting, so an apply can land after this message.
+        click.echo(
+            f"Error: no answer from '{function_name}' after {read_timeout} s. "
+            "The apply may still be running; check 'zae-limiter limits diff' "
+            "before re-running.",
             err=True,
         )
         sys.exit(1)
