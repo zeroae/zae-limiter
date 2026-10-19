@@ -7361,9 +7361,12 @@ class SyncRepository:
                     self._require_top_up_readers()
                 result = BucketOperationResult(entity_id, resource, len(plan.writes), plan.amounts)
                 ttl = self._operation_ttl(resolved, source, now_ms)
+                remove_ttl = source in ("entity", "entity_default")
                 items = [
                     *(
-                        self.build_bucket_operation(entity_id, resource, write, ttl)
+                        self.build_bucket_operation(
+                            entity_id, resource, write, ttl, remove_ttl=remove_ttl
+                        )
                         for write in plan.writes
                     ),
                     self.build_operation_record(
@@ -7726,7 +7729,13 @@ class SyncRepository:
         self._top_up_readers_proven = True
 
     def build_bucket_operation(
-        self, entity_id: str, resource: str, write: bucket_ops.ShardWrite, ttl: int | None = None
+        self,
+        entity_id: str,
+        resource: str,
+        write: bucket_ops.ShardWrite,
+        ttl: int | None = None,
+        *,
+        remove_ttl: bool = False,
     ) -> dict[str, Any]:
         """Build one shard's rf-locked reset or top-up ``Update`` (ADR-149 §4.2).
 
@@ -7743,7 +7752,9 @@ class SyncRepository:
         grant counts, ``#ow``/``:ow`` + ``#or``/``:or`` windows, ``#oa``/``:oa``
         applied markers, ``#ou``/``:ou`` top-ups, ``#ox`` / ``#oy`` removals,
         ``#ottl``/``:ottl`` the ``ttl`` (epoch seconds) when one is given: a
-        bucket on resource or system defaults (:meth:`_operation_ttl`).
+        bucket on resource or system defaults (:meth:`_operation_ttl`), or
+        ``REMOVE #ottl`` with ``remove_ttl``: an entity-level bucket (ADR-136).
+        Never both: the caller passes ``ttl`` only for a defaults bucket.
         """
         names: dict[str, str] = {"#rf": schema.BUCKET_FIELD_RF, "#vu": schema.BUCKET_FIELD_VU}
         values: dict[str, Any] = {
@@ -7790,6 +7801,9 @@ class SyncRepository:
             names["#ottl"] = "ttl"
             values[":ottl"] = {"N": str(ttl)}
             set_parts.append("#ottl = :ottl")
+        elif remove_ttl:
+            names["#ottl"] = "ttl"
+            remove_parts.append("#ottl")
         names["#osc"] = "shard_count"
         if write.shard_count_stored:
             values[":osc"] = {"N": str(write.shard_count)}

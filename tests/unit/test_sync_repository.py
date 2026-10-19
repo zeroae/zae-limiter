@@ -34,6 +34,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TK,
+    BUCKET_FIELD_TU,
     BUCKET_FIELD_VU,
     BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
@@ -7735,6 +7736,27 @@ class TestResetAndTopUp:
         repo._now_ms = lambda: _OP_T0 + 1
         repo.top_up("e", "r", {"cal": 5})
         assert "ttl" not in _op_item(repo, "e", "r")
+
+    @pytest.mark.parametrize("scope", ["resource", "entity_default"])
+    def test_a_top_up_removes_a_stale_ttl_from_an_entity_bucket(self, repo, scope):
+        """#720 review, Low 1: a bucket that ran on defaults kept its ttl after
+        its entity got its own limits, until the next acquire removed it; a
+        top-up in between could be swept with the item. It now removes it,
+        as acquire does (ADR-136)."""
+        _stamp_deployed(repo)
+        if scope == "resource":
+            repo.set_limits("e", [_OP_CAL], resource="r")
+        else:
+            repo.set_limits("e", [_OP_CAL])
+        now_s = (_OP_T0 + 1) // 1000
+        _op_put_shard(
+            repo, "e", "r", [_OP_CAL], tokens={"cal": 0}, extra={"ttl": {"N": str(now_s + 60)}}
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        repo.top_up("e", "r", {"cal": 5})
+        item = _op_item(repo, "e", "r")
+        assert "ttl" not in item
+        assert _op_num(item, "cal", BUCKET_FIELD_TU) == 5000
 
     def test_a_window_a_top_up_opens_ends_before_its_ttl(self, repo):
         """D4: a session top-up with no live window opens one; the bucket's
