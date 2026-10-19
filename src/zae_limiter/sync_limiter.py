@@ -2022,9 +2022,7 @@ class SyncRateLimiter:
                 if not _is_transaction_conflict(exc):
                     raise
                 if any(status.exceeded for status in statuses):
-                    if any(entry._donor_debit is not None for entry in entries):
-                        self._commit_rejected_moves(entries, carriers)
-                    raise RateLimitExceeded(statuses) from exc
+                    break
                 raise self._planning_contention(
                     eid,
                     resource,

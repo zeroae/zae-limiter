@@ -2604,11 +2604,10 @@ class RateLimiter:
                 # never `on_unavailable`, which under ALLOW admits unlimited.
                 # A real violation already found (the child's, when this is
                 # the parent) outranks "busy": its wait is the true one, and a
-                # 0.1 s retry would only re-pay this planning at 10 Hz.
+                # 0.1 s retry would only re-pay this planning at 10 Hz. Stop
+                # here and let the ordinary rejection below report it.
                 if any(status.exceeded for status in statuses):
-                    if any(entry._donor_debit is not None for entry in entries):
-                        await self._commit_rejected_moves(entries, carriers)
-                    raise RateLimitExceeded(statuses) from exc
+                    break
                 raise self._planning_contention(
                     eid,
                     resource,
