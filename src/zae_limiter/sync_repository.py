@@ -7509,8 +7509,13 @@ class SyncRepository:
                     self.greenlet.kill(block=False)
                 return cancelled
 
+        def settle_if_never_ran(_greenlet: Any) -> None:
+            if not pending.done():
+                pending.cancel()
+
         pending = _GreenletFuture()
         pending.greenlet = gevent_spawn(run, pending)
+        pending.greenlet.rawlink(settle_if_never_ran)
         return pending
 
     def _cleanup_thread_pool(self) -> None:

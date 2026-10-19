@@ -129,3 +129,36 @@ class TestGeventOwnerCheckJoin:
         assert ran == ["started"]  # the check never finished...
         assert writes == [("vu=0", "user", "gpt-4", 0)]  # ...so the bucket is forced
         assert lease._owner_task is None
+
+    def test_a_check_killed_before_it_starts_does_not_hang_the_lease_exit(self):
+        """A greenlet killed before it runs must not leave its future pending forever."""
+        from types import SimpleNamespace
+
+        import gevent
+        from gevent import monkey
+
+        from zae_limiter.sync_lease import SyncLease
+
+        if not monkey.is_module_patched("socket"):
+            pytest.skip("gevent not monkey-patched (run with GEVENT=1)")
+        repo = SyncRepository(
+            name="test", region="us-east-1", _skip_deprecation_warning=True, parallel_mode="gevent"
+        )
+        ran: list[str] = []
+        writes: list[tuple] = []
+        backend = SimpleNamespace(
+            start_background=repo.start_background,
+            repair_created_owner_stamp=lambda *a: ran.append("ran"),
+            build_vu_reset=lambda *a: ("vu=0", *a),
+            write_each=writes.extend,
+        )
+        lease = SyncLease(repository=backend)
+        lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
+        lease._owner_task.greenlet.kill()  # before it ever ran
+
+        with gevent.Timeout(5):  # a hang fails here instead of stalling the suite
+            lease._await_owner_checks()
+
+        assert ran == []  # the check never ran...
+        assert writes == [("vu=0", "user", "gpt-4", 0)]  # ...so the bucket is forced
+        assert lease._owner_task is None

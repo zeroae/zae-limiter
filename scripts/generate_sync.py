@@ -278,8 +278,17 @@ def _spawn(self, fn: Any) -> Any:
                 self.greenlet.kill(block=False)
             return cancelled
 
+    def settle_if_never_ran(_greenlet: Any) -> None:
+        # A greenlet killed before it started never calls `run`, which would
+        # leave the future PENDING and every `.result()` blocked forever. On
+        # its death, a future still pending is cancelled instead; one that
+        # ran (or was killed while running) is already done.
+        if not pending.done():
+            pending.cancel()
+
     pending = _GreenletFuture()
     pending.greenlet = gevent_spawn(run, pending)
+    pending.greenlet.rawlink(settle_if_never_ran)
     return pending
 
 def _cleanup_thread_pool(self) -> None:
@@ -452,8 +461,23 @@ every parallel_mode), and `await <handle>` into `<handle>.result()`. That needs:
 # its own tree's, which is all a single-snippet transform needs.
 TASK_REGISTRY: tuple[set[str], set[str]] = (set(), set())
 
+# Task attributes and task-returning functions found in modules the generator
+# does NOT transform (name -> module), filled by `main()`. Covered source that
+# reaches one gets no sync translation for it, so any reference aborts.
+FOREIGN_TASK_NAMES: dict[str, str] = {}
+
+# Where each TASK_REGISTRY name was first registered ("file:line"), so an
+# abort caused by a name match can point at it. Filled with the registry.
+TASK_ORIGINS: dict[str, str] = {}
+
 
 def task_registry(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """``(attrs, methods)``: names that may hold, or return, an ``asyncio.Task``."""
+    attrs, methods = task_registry_lines(tree)
+    return set(attrs), set(methods)
+
+
+def task_registry_lines(tree: ast.AST) -> tuple[dict[str, int], dict[str, int]]:
     """``(attrs, methods)``: names that may hold, or return, an ``asyncio.Task``.
 
     ``attrs`` are class fields annotated ``asyncio.Task[...]`` and every
@@ -462,8 +486,8 @@ def task_registry(tree: ast.AST) -> tuple[set[str], set[str]]:
     """
     names_a_task = AsyncToSyncTransformer._names_a_task
     is_create_task = AsyncToSyncTransformer._is_create_task
-    attrs: set[str] = set()
-    methods: set[str] = set()
+    attrs: dict[str, int] = {}
+    methods: dict[str, int] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             for stmt in node.body:
@@ -472,10 +496,10 @@ def task_registry(tree: ast.AST) -> tuple[set[str], set[str]]:
                     and isinstance(stmt.target, ast.Name)
                     and names_a_task(stmt.annotation)
                 ):
-                    attrs.add(stmt.target.id)
+                    attrs.setdefault(stmt.target.id, stmt.lineno)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if names_a_task(node.returns):
-                methods.add(node.name)
+                methods.setdefault(node.name, node.lineno)
         targets: list[ast.expr] = []
         if isinstance(node, ast.Assign) and is_create_task(node.value):
             targets = node.targets
@@ -489,7 +513,7 @@ def task_registry(tree: ast.AST) -> tuple[set[str], set[str]]:
                 and isinstance(target.value, ast.Name)
                 and target.value.id == "self"
             ):
-                attrs.add(target.attr)
+                attrs.setdefault(target.attr, target.lineno)
     return attrs, methods
 
 
@@ -506,6 +530,7 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         self._trackable_create_tasks: set[int] = set()
         self._task_attrs: set[str] = set()
         self._task_methods: set[str] = set()
+        self._task_origins: dict[str, str] = {}
         super().__init__()
 
     # -- asyncio.create_task -------------------------------------------------
@@ -550,6 +575,16 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         return UnsupportedAsyncConstructError(
             f"{self.source_file}:{getattr(node, 'lineno', '?')}: `asyncio.create_task` cannot "
             f"be translated faithfully: {construct}.\n\n{_CREATE_TASK_HELP}"
+        )
+
+    def _name_match(self, name: str) -> str:
+        """The explanation appended to an abort that a registry name match caused."""
+        kind = "attribute" if name in self._task_attrs else "function"
+        origin = self._task_origins.get(name, "another generator-covered file")
+        return (
+            f". This is a match by name only: `{name}` is registered as a task {kind} at "
+            f"{origin}, so every `{name}` is treated as that task {kind}. If this is an "
+            "unrelated attribute, rename it"
         )
 
     @staticmethod
@@ -629,9 +664,12 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         ``create_task`` whose handle is not assigned to one of those
         spellings.
         """
-        own_attrs, own_methods = task_registry(tree)
-        self._task_attrs = own_attrs | TASK_REGISTRY[0]
-        self._task_methods = own_methods | TASK_REGISTRY[1]
+        own_attrs, own_methods = task_registry_lines(tree)
+        self._task_attrs = set(own_attrs) | TASK_REGISTRY[0]
+        self._task_methods = set(own_methods) | TASK_REGISTRY[1]
+        self._task_origins = dict(TASK_ORIGINS)
+        for name, line in {**own_methods, **own_attrs}.items():
+            self._task_origins.setdefault(name, f"{self.source_file}:{line}")
         self._check_scope(tree.body, set(), set(), returns_task=False, in_class=False)
         for node in ast.walk(tree):
             if self._is_create_task(node) and id(node) not in self._trackable_create_tasks:
@@ -653,7 +691,9 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         nodes = self._scope_nodes(body)
         locals_ = outer_locals | self._declared_handles([node for node, _ in nodes], "local")
         parents = {id(node): parent for node, parent in nodes}
+        aliases = self._getattr_aliases(nodes)
         for node, parent in nodes:
+            self._check_hidden_task_shapes(node, parent, parents, locals_, attrs, aliases)
             if isinstance(node, ast.ClassDef):
                 self._check_scope(
                     node.body, set(), self._attr_handles(node), returns_task=False, in_class=True
@@ -682,6 +722,153 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
                         continue  # the `self` of `self.<attr>`
                 self._check_handle_use(node, parent, parents, returns_task)
 
+    def _getattr_aliases(self, nodes: list[tuple[ast.AST, ast.AST | None]]) -> set[str]:
+        """Locals bound by ``name = getattr(obj, "<task-returning function>", ...)``."""
+        aliases: set[str] = set()
+        for node, _parent in nodes:
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and self._getattr_task_method(node.value) is not None
+            ):
+                aliases.add(node.targets[0].id)
+        return aliases
+
+    def _getattr_task_method(self, node: ast.AST | None) -> str | None:
+        """The name, if ``node`` is ``getattr(obj, "<task-returning function>", ...)``."""
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in self._task_methods
+        ):
+            return str(node.args[1].value)
+        return None
+
+    def _check_hidden_task_shapes(
+        self,
+        node: ast.AST,
+        parent: ast.AST | None,
+        parents: dict[int, ast.AST | None],
+        locals_: set[str],
+        attrs: set[str],
+        aliases: set[str],
+    ) -> None:
+        """Abort on the shapes that hide a task from the tracker (#716 review).
+
+        Each would otherwise generate a sync twin that silently skips the join:
+        a bound-method alias of a task-returning function, a task name from a
+        module the generator does not scan, a task attribute read or written
+        through ``getattr`` / ``setattr`` / ``delattr``, a handle rebound
+        through ``nonlocal`` / ``global``, and a ``getattr``-fetched
+        task-returning function whose result does not land in a task attribute.
+        """
+        if isinstance(node, (ast.Nonlocal, ast.Global)):
+            rebound = sorted(set(node.names) & locals_)
+            if rebound:
+                kind = "nonlocal" if isinstance(node, ast.Nonlocal) else "global"
+                raise self._create_task_error(
+                    node,
+                    f"the task handle `{rebound[0]}` is rebound through `{kind}`; the "
+                    "tracker follows a handle only within its own scope",
+                )
+            return
+        name = (
+            node.attr
+            if isinstance(node, ast.Attribute)
+            else node.id
+            if isinstance(node, ast.Name)
+            else None
+        )
+        if name is not None and name in FOREIGN_TASK_NAMES and name not in self._task_methods:
+            if name not in self._task_attrs:
+                raise self._create_task_error(
+                    node,
+                    f"`{ast.unparse(node)}` reaches the task name `{name}` defined in "
+                    f"{FOREIGN_TASK_NAMES[name]}, a module the generator does not scan",
+                )
+        if name is not None and name in self._task_methods and name not in aliases:
+            called = isinstance(parent, ast.Call) and parent.func is node
+            if not called and isinstance(getattr(node, "ctx", None), ast.Load):
+                raise self._create_task_error(
+                    node,
+                    f"the task-returning function `{ast.unparse(node)}` is referenced "
+                    "without being called (a bound-method alias); call it directly"
+                    + self._name_match(name),
+                )
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id in ("getattr", "setattr", "delattr") and len(node.args) >= 2:
+                key = node.args[1]
+                if isinstance(key, ast.Constant) and key.value in self._task_attrs:
+                    raise self._create_task_error(
+                        node,
+                        f"the task attribute `{key.value}` is reached through "
+                        f"`{node.func.id}`; read it as `self.{key.value}`"
+                        + self._name_match(str(key.value)),
+                    )
+            fetched = self._getattr_task_method(node)
+            if fetched is not None:
+                bound = (
+                    isinstance(parent, ast.Assign)
+                    and parent.value is node
+                    and len(parent.targets) == 1
+                    and isinstance(parent.targets[0], ast.Name)
+                )
+                if not bound:
+                    raise self._create_task_error(
+                        node,
+                        f"the task-returning function `{fetched}` is fetched through "
+                        "`getattr` without being bound to a local",
+                    )
+        if isinstance(node, ast.Name) and node.id in aliases and isinstance(node.ctx, ast.Load):
+            self._check_getattr_alias_use(node, parent, parents, attrs)
+
+    def _check_getattr_alias_use(
+        self,
+        node: ast.Name,
+        parent: ast.AST | None,
+        parents: dict[int, ast.AST | None],
+        attrs: set[str],
+    ) -> None:
+        """A ``getattr``-fetched task function may only be None-checked or called into
+        a registered task attribute (``self._owner_task = start(...)``)."""
+        if (
+            isinstance(parent, ast.Compare)
+            and all(isinstance(op, (ast.Is, ast.IsNot)) for op in parent.ops)
+            and all(
+                isinstance(side, ast.Constant) and side.value is None
+                for side in [parent.left, *parent.comparators]
+                if side is not node
+            )
+        ):
+            return
+        if isinstance(parent, ast.Call) and parent.func is node:
+            target = parents.get(id(parent))
+            if (
+                isinstance(target, ast.Assign)
+                and target.value is parent
+                and len(target.targets) == 1
+            ):
+                handle = self._handle_of(target.targets[0])
+                if handle is not None and handle[0] == "attr" and handle[1] in attrs:
+                    return
+            raise self._create_task_error(
+                node,
+                f"`{node.id}` holds a task-returning function fetched through `getattr`, "
+                f"and the result of `{ast.unparse(parent)}` is not assigned directly to a "
+                "registered task attribute (`self.<attr> = ...`)",
+            )
+        use = ast.unparse(parent) if parent is not None else node.id
+        raise self._create_task_error(
+            node,
+            f"`{node.id}` holds a task-returning function fetched through `getattr` and "
+            f"escapes in `{use}`; only `{node.id} is None` checks and "
+            f"`self.<attr> = {node.id}(...)` are supported",
+        )
+
     def _check_foreign_task_attr(
         self, node: ast.AST, handle: tuple[str, str] | None, attrs: set[str]
     ) -> None:
@@ -702,7 +889,7 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             node,
             f"`{ast.unparse(node)}` reads a task attribute outside the class that annotates or "
             "assigns it; read it through `self` in that class (a subclass must annotate the "
-            "field `asyncio.Task[...]` again)",
+            "field `asyncio.Task[...]` again)" + self._name_match(node.attr),
         )
 
     def _check_task_method_call(
@@ -747,7 +934,7 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             node,
             f"`{ast.unparse(node)}` returns an `asyncio.Task`, and its result is not returned "
             "from a `-> asyncio.Task[...]` function, nor assigned to a target annotated "
-            "`asyncio.Task[...]` or already tracked as a handle",
+            "`asyncio.Task[...]` or already tracked as a handle" + self._name_match(name),
         )
 
     def _check_create_task_site(
@@ -2028,9 +2215,27 @@ def main() -> int:
         for source_name, _target_name in pairs:
             path = base / source_name
             if path.exists():
-                attrs, methods = task_registry(ast.parse(path.read_text()))
-                TASK_REGISTRY[0].update(attrs)
-                TASK_REGISTRY[1].update(methods)
+                attr_lines, method_lines = task_registry_lines(ast.parse(path.read_text()))
+                TASK_REGISTRY[0].update(attr_lines)
+                TASK_REGISTRY[1].update(method_lines)
+                for name, line in {**method_lines, **attr_lines}.items():
+                    TASK_ORIGINS.setdefault(name, f"{path.relative_to(base.parent)}:{line}")
+    covered = {(SRC / source_name).resolve() for source_name, _ in SOURCE_TRANSFORMS}
+    covered |= {(SRC / target_name).resolve() for _, target_name in SOURCE_TRANSFORMS}
+    for path in sorted(SRC.parent.rglob("*.py")):
+        if path.resolve() in covered:
+            continue
+        tree = ast.parse(path.read_text())
+        attrs, methods = task_registry(tree)
+        # Unannotated helpers that create a task count too.
+        methods |= {
+            fn.name
+            for fn in ast.walk(tree)
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and any(AsyncToSyncTransformer._is_create_task(n) for n in ast.walk(fn))
+        }
+        for name in attrs | methods:
+            FOREIGN_TASK_NAMES.setdefault(name, str(path.relative_to(SRC.parent)))
 
     # Transform source files (async -> sync)
     for source_name, target_name in SOURCE_TRANSFORMS:
