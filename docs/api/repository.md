@@ -70,12 +70,14 @@ counterpart is available with the same signature.
 The `RepositoryProtocol` defines the interface for pluggable backends.
 Implement this protocol to use a different storage backend (e.g., for testing).
 
-!!! warning "Changed in v0.17.0: the adjust write's contract (#721)"
+!!! warning "Changed in v0.17.0: the adjust, normal and retry writes' contracts (#721)"
     A custom backend must accept `ceilings`, `trim` and `pin` on
     `build_composite_adjust` from v0.17.0. The lease and the limiter pass them on
     every refund — a rollback, a `release()`, a negative `adjust()` or a
     speculative compensation — so a backend that does not accept them raises
-    `TypeError` there.
+    `TypeError` there. It must also accept `read_tokens` on
+    `build_composite_normal` and `period_guards` on `build_composite_retry`,
+    described below.
 
     **Required of every adjust write**, whatever the keywords:
 
@@ -105,6 +107,25 @@ Implement this protocol to use a different storage backend (e.g., for testing).
       (`SET vu = 0` on DynamoDB).
     - `pin`: the item's (`shard_count`, `vu`, item-level schedule strings) as the
       ceiling saw them, held beside the ceilings.
+
+    **`build_composite_normal(read_tokens=...)`**: limit name → the `tk` the
+    slow pass read (millitokens). For every limit whose refill delta is
+    positive — a drip, a reset, a roll, a window opened — fail the write
+    unless the stored balance is still at or below that read. A refund or
+    release landing between the read and the write moves neither `rf` nor
+    `vu`, and an unpinned raise stacks on top of it. A trim (delta <= 0) is
+    not pinned. A failure falls to the consumption-only retry, like a lost
+    `rf` lock.
+
+    **`build_composite_retry(period_guards=...)`**: limit name →
+    `(reset_edge_ms, window_start_ms)`, one of the two set, for each quota the
+    lost write was to reset, roll or open. Fail the retry unless that period
+    has been applied on the item — calendar: `rf >= reset_edge_ms`; session:
+    the limit's window-applied marker equals `window_start_ms` — and return the
+    old image on that failure (`ALL_OLD`). The lease then re-plans once from a
+    fresh read; a second loss is a rejection. Without the guard the retry
+    spends the previous period's balance and leaves the reset pending, so the
+    next pass grants a full allowance again.
 
     **`transact_write` now returns** the item's attributes after a single-item
     update (`ALL_NEW`), or `None`. A refund after the consumption-only retry
