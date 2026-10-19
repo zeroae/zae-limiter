@@ -101,7 +101,8 @@ AGGREGATOR = {
 }
 
 _WRITE = re.compile(
-    r"update_item\(|put_item\(|delete_item\(|transact_write_items\("
+    r"update_item\(|_update_item_retrying_conflict\(|put_item\(|delete_item\("
+    r"|transact_write_items\("
     r'|"Update"\s*:|"Put"\s*:|"Delete"\s*:|"UpdateExpression"|UpdateExpression='
 )
 
