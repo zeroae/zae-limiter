@@ -2026,7 +2026,14 @@ class SyncRateLimiter:
                         self._commit_rejected_moves(entries, carriers)
                     raise RateLimitExceeded(statuses) from exc
                 raise self._planning_contention(
-                    eid, resource, entity_limits[eid], consume, existing_buckets, now_ms, statuses
+                    eid,
+                    resource,
+                    entity_limits[eid],
+                    consume,
+                    existing_buckets,
+                    now_ms,
+                    statuses,
+                    plan_count,
                 ) from exc
             if disable_moves:
                 zeroed |= {
@@ -2217,6 +2224,7 @@ class SyncRateLimiter:
         existing: dict[tuple[str, str, str], BucketState],
         now_ms: int,
         prior: list[LimitStatus],
+        plan_count: int,
     ) -> RateLimitExceeded:
         """The contended 429 for a conflict during quota planning (#729).
 
@@ -2224,6 +2232,12 @@ class SyncRateLimiter:
         child's, when the conflict is on the cascade parent — none of them a
         violation (the caller raises the ordinary 429 otherwise). They are
         reported first, as everywhere else, ahead of this level's.
+
+        Each limit is narrowed with ``Limit.per_shard`` like every other
+        status (#475): at the shard count of the state already read, as
+        ``_admit_limit`` does, and for a slot with no state (a quota being
+        planned) at ``plan_count``, the count this acquire was planning it at
+        — the share it would have been given, never an undivided capacity.
 
         Raised before any lease entry exists, so the statuses come from the
         resolved limits: one per limit named in ``consume``, none exceeded,
@@ -2237,21 +2251,23 @@ class SyncRateLimiter:
         degraded lease under ALLOW (#729).
         """
         reported = [limit for limit in limits if limit.name in consume] or limits
-        statuses = [
-            LimitStatus(
-                entity_id=entity_id,
-                resource=resource,
-                limit_name=limit.name,
-                limit=limit,
-                available=state.tokens_milli // 1000
-                if (state := existing.get((entity_id, resource, limit.name))) is not None
-                else 0,
-                requested=consume.get(limit.name, 0),
-                exceeded=False,
-                retry_after_seconds=_CONTENTION_RETRY_AFTER_S,
+        statuses = []
+        for limit in reported:
+            state = existing.get((entity_id, resource, limit.name))
+            statuses.append(
+                LimitStatus(
+                    entity_id=entity_id,
+                    resource=resource,
+                    limit_name=limit.name,
+                    limit=limit.per_shard(
+                        state.report_shard_count if state is not None else plan_count, now_ms
+                    ),
+                    available=state.tokens_milli // 1000 if state is not None else 0,
+                    requested=consume.get(limit.name, 0),
+                    exceeded=False,
+                    retry_after_seconds=_CONTENTION_RETRY_AFTER_S,
+                )
             )
-            for limit in reported
-        ]
         return RateLimitExceeded([*prior, *statuses], contended=True)
 
     def _commit_rejected_moves(self, entries: list[LeaseEntry], carriers: list[LeaseEntry]) -> None:

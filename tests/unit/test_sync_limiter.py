@@ -12647,3 +12647,13 @@ class TestPlanningContentionOnACascadeParent:
             ("kid", "rpm"),
             ("org", "daily"),
         ]
+
+    def test_a_contended_429_reports_the_per_shard_share(self, sync_limiter):
+        """The parent is planned at 4 shards: its 1000/day quota is reported as
+        the 250 a shard holds, like every other 429 (#475), not the undivided 1000."""
+        slow = self._setup(sync_limiter, child_tokens=10000)
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with slow.acquire("kid", "gpt-4", {"rpm": 1}):
+                pass
+        capacities = {s.entity_id: s.limit.capacity for s in exc_info.value.statuses}
+        assert capacities == {"kid": 10, "org": 250}
