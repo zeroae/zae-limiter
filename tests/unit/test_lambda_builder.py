@@ -356,3 +356,48 @@ class TestVendoredSchedule:
         from zae_limiter.infra.lambda_builder import _get_runtime_requirements
 
         assert not any("croniter" in r for r in _get_runtime_requirements())
+
+
+def _modes(zip_bytes: bytes) -> dict[str, int]:
+    """Map each archive entry to the permission bits Lambda will extract it with."""
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        return {i.filename: (i.external_attr >> 16) & 0o777 for i in zf.infolist()}
+
+
+class TestZipPermissions:
+    """Lambda runs the handler as a non-root user, so every entry must be world-readable.
+
+    ``ZipFile.write`` copied each file's on-disk mode into the archive, so a host
+    with ``umask 077`` built a zip of ``0600`` files and the function failed at
+    cold start with ``PermissionError: [Errno 13]``.
+    """
+
+    def test_restrictive_source_modes_are_normalised(self, tmp_path: Path) -> None:
+        from zae_limiter.infra.lambda_builder import write_lambda_zip
+
+        (tmp_path / "pkg").mkdir()
+        private = tmp_path / "pkg" / "__init__.py"
+        private.write_text("x = 1\n")
+        private.chmod(0o600)
+        script = tmp_path / "tool"
+        script.write_text("#!/bin/sh\n")
+        script.chmod(0o700)
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            write_lambda_zip(zf, tmp_path)
+
+        assert _modes(buffer.getvalue()) == {"pkg/__init__.py": 0o644, "tool": 0o755}
+        with zipfile.ZipFile(buffer) as zf:
+            assert zf.read("pkg/__init__.py") == b"x = 1\n"
+            assert zf.getinfo("pkg/__init__.py").compress_type == zipfile.ZIP_DEFLATED
+
+    def test_package_built_under_umask_077_is_world_readable(self, restrictive_umask: None) -> None:
+        from zae_limiter.infra.lambda_builder import build_lambda_package
+
+        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
+            mock_builder_cls.return_value.build.side_effect = _mock_builder_build
+            modes = _modes(build_lambda_package())
+
+        assert "zae_limiter/__init__.py" in modes
+        assert {name for name, mode in modes.items() if mode & 0o444 != 0o444} == set()

@@ -9,12 +9,6 @@ on:
     # No paths filter - run on all pushes to ensure workflow_run always triggers
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    branches:
-      - main
-      - 'release/v*'
-      - 'release/[0-9]*'
-      - 'milestone/v*'
-      - 'milestone/[0-9]*'
     paths:
       - 'src/**'
       - 'tests/**'

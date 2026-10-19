@@ -28,11 +28,14 @@ from .models import (
     BackendCapabilities,
     BucketState,
     ConfigAccess,
+    CreditCeiling,
+    CreditPin,
     Entity,
     Limit,
     OnUnavailableAction,
     QuotaDonorDebit,
     QuotaGrant,
+    QuotaPeriodPin,
     QuotaSibling,
     StackOptions,
     UsageSnapshot,
@@ -129,6 +132,105 @@ _SEED_TOKEN = {
     schema.BUCKET_FIELD_WA: "g",
     schema.BUCKET_FIELD_GC: "k",
 }
+
+
+def _pin_string(alias: str, token: str, raw: str | None, values: dict[str, Any]) -> str:
+    """A condition term holding a string attribute at ``raw``, or absent (#721)."""
+    if raw is None:
+        return f"attribute_not_exists({alias})"
+    values[token] = {"S": raw}
+    return f"{alias} = {token}"
+
+
+def _credit_limit_terms(
+    i: int,
+    name: str,
+    delta: int,
+    ceiling: CreditCeiling,
+    names: dict[str, str],
+    values: dict[str, Any],
+) -> list[str]:
+    """The condition terms of one self-trimming credit (#721).
+
+    The balance after the credit stays at or below the ceiling (debt may take
+    any credit that satisfies it), and the ceiling is still the one computed:
+    the stored base capacity (a limit change), the grant count (a re-grant)
+    and the schedule overrides (a window's capacity or scale changed under the
+    same cron) hold. With ``lease.credit_ceiling`` the one place a credited
+    limit's ceiling and pins are decided: a new input to the ceiling (a quota
+    top-up, #720) adds its term here. Tokens are positional (#634).
+    """
+    tk_alias = f"#bt{i}"
+    values[f":bm{i}"] = {"N": str(ceiling.ceiling_milli + delta)}
+    terms = [f"{tk_alias} <= :bm{i}"]
+    names[f"#bp{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
+    values[f":bp{i}"] = {"N": str(ceiling.capacity_milli)}
+    terms.append(f"#bp{i} = :bp{i}")
+    names[f"#bg{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
+    if ceiling.grant_count is None:
+        terms.append(f"attribute_not_exists(#bg{i})")
+    else:
+        values[f":bg{i}"] = {"N": str(ceiling.grant_count)}
+        terms.append(f"#bg{i} = :bg{i}")
+    if ceiling.sched_raw is not None:
+        for code, field, raw in zip(
+            ("s", "r"),
+            (schema.BUCKET_FIELD_SCHED, schema.BUCKET_FIELD_RSCHED),
+            ceiling.sched_raw,
+            strict=True,
+        ):
+            alias = f"#bx{code}{i}"
+            names[alias] = schema.bucket_attr(name, field)
+            terms.append(_pin_string(alias, f":bx{code}{i}", raw, values))
+    return terms
+
+
+def _credit_period_terms(
+    i: int,
+    name: str,
+    period: QuotaPeriodPin,
+    names: dict[str, str],
+    values: dict[str, Any],
+) -> list[str]:
+    """The terms that keep a quota credit in its debit's period (#721).
+
+    Calendar: the item's ``rf`` is still before the first reset edge after the
+    one the lease saw (a reset pass stamps ``rf`` at or past it), and the
+    reset schedule that edge came from is still the item's (``rsched``,
+    ``sched_tz``, ``b_{name}_rsched``). Session: the window start and applied
+    marker are still the ones the lease saw. Tokens are positional (#634).
+    """
+    terms: list[str] = []
+    if period.reset_edge_ms is not None:
+        names["#bqrf"] = schema.BUCKET_FIELD_RF
+        values[f":bq{i}"] = {"N": str(period.reset_edge_ms)}
+        terms.append(f"#bqrf < :bq{i}")
+    if period.reset_sched_raw is not None:
+        item_rsched, item_tz, own_rsched = period.reset_sched_raw
+        for alias, token, field, raw in (
+            ("#bqis", ":bqis", schema.BUCKET_FIELD_RSCHED, item_rsched),
+            ("#bqiz", ":bqiz", schema.BUCKET_FIELD_SCHED_TZ, item_tz),
+        ):
+            if alias not in names:  # item-level: once per write, however many quotas
+                names[alias] = field
+                terms.append(_pin_string(alias, token, raw, values))
+        names[f"#bqo{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED)
+        terms.append(_pin_string(f"#bqo{i}", f":bqo{i}", own_rsched, values))
+    if period.window is not None:
+        for code, field, number in zip(
+            ("w", "a"),
+            (schema.BUCKET_FIELD_WS, schema.BUCKET_FIELD_WA),
+            period.window,
+            strict=True,
+        ):
+            alias = f"#bq{code}{i}"
+            names[alias] = schema.bucket_attr(name, field)
+            if number is None:
+                terms.append(f"attribute_not_exists({alias})")
+            else:
+                values[f":bq{code}{i}"] = {"N": str(number)}
+                terms.append(f"{alias} = :bq{code}{i}")
+    return terms
 
 
 class Repository:
@@ -2689,19 +2791,7 @@ class Repository:
             written in, or ``None`` when it has none, and one entry per field
             (``sched`` and ``rsched``).
         """
-        tz: str | None = None
-        overrides: dict[str, str] = {}
-        for field, entries, encoder in (
-            (schema.BUCKET_FIELD_SCHED, state.sched, schedule.encode),
-            (schema.BUCKET_FIELD_RSCHED, state.reset_sched, schedule.encode_reset),
-        ):
-            if entries:
-                compact, entry_tz = encoder(entries)
-                overrides[field] = compact
-                tz = tz or entry_tz
-            else:
-                overrides[field] = schema.BUCKET_SCHED_NONE
-        return tz, overrides
+        return schema.explicit_schedule_overrides(state.sched, state.reset_sched)
 
     def build_composite_create(
         self,
@@ -2835,10 +2925,20 @@ class Repository:
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
+        read_tokens: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
         ADD tk:(refill - consumed), tc:consumed for each limit.
+
+        ``read_tokens`` (limit name -> ``tk`` as read, millitokens): each
+        limit whose refill delta is positive — a drip, a reset, a roll, a
+        window opened — is pinned on ``tk <= :read``. The delta was computed
+        from that read, and a credit landing in between (a refund, a release)
+        moves neither ``rf`` nor ``vu``: the refill would stack on top of it.
+        A pin that fails sends the write to the consumption-only retry, as a
+        lost ``rf`` lock does. A trim (delta <= 0) stays unpinned so it still
+        clamps.
         SET rf:now. CONDITION rf = :expected.
 
         Args:
@@ -3069,6 +3169,13 @@ class Repository:
                 attr_values[floor_val] = {"N": str(floor)}
                 condition_parts.append(f"{tk_alias} >= {floor_val}")
 
+            # A raise computed from the read must not stack on a credit that
+            # landed since: speculative debits only lower `tk`, so `tk` above
+            # the read means a refund or release moved it (#730).
+            if r > 0 and read_tokens is not None and name in read_tokens:
+                attr_values[f":bk{i}"] = {"N": str(read_tokens[name])}
+                condition_parts.append(f"{tk_alias} <= :bk{i}")
+
         # #633: limits missing from this existing item are seeded in full.
         seeded_tz: str | None = None
         for j, (name, state) in enumerate(sorted((seeds or {}).items())):
@@ -3146,6 +3253,7 @@ class Repository:
         consumed: dict[str, int],
         shard_id: int = 0,
         seeds: dict[str, BucketState] | None = None,
+        period_guards: dict[str, tuple[int | None, int | None]] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
 
@@ -3167,12 +3275,22 @@ class Repository:
                 ``attribute_not_exists(tk) OR tk >= :c``, and every parameter
                 as ``if_not_exists``. A limit another writer seeded first is
                 therefore debited, never re-seeded.
+            period_guards: Limit name -> ``(reset_edge_ms, window_start_ms)``
+                for each quota the lost write was to reset, roll or open
+                (#743). The retry debits the item's balance as it stands, so it
+                must only do so once that period has been applied: a calendar
+                quota requires ``rf >= reset_edge_ms`` (a reset pass stamps
+                ``rf`` at or past the edge), a session quota
+                ``b_{name}_wa = window_start_ms``. Otherwise it would spend the
+                previous period's balance and leave the reset pending, so the
+                next pass grants a full allowance again.
         """
         add_parts: list[str] = []
         set_parts: list[str] = []
         condition_parts: list[str] = []
         attr_names: dict[str, str] = {}
         attr_values: dict[str, Any] = {}
+        guards = period_guards or {}
 
         # Index-derived tokens, never the limit name (#634); see
         # `build_composite_normal`.
@@ -3195,6 +3313,15 @@ class Repository:
             add_parts.append(f"{tk_alias} {tk_neg_val}")
             add_parts.append(f"{tc_alias} {tc_val}")
             condition_parts.append(f"{tk_alias} >= {tk_threshold}")
+            edge, window_start = guards.get(name, (None, None))
+            if edge is not None:
+                attr_names["#prf"] = schema.BUCKET_FIELD_RF
+                attr_values[f":pe{i}"] = {"N": str(edge)}
+                condition_parts.append(f"#prf >= :pe{i}")
+            if window_start is not None:
+                attr_names[f"#pw{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_WA)
+                attr_values[f":pw{i}"] = {"N": str(window_start)}
+                condition_parts.append(f"#pw{i} = :pw{i}")
 
         seeded_tz: str | None = None
         for j, (name, state) in enumerate(sorted((seeds or {}).items())):
@@ -3255,12 +3382,35 @@ class Repository:
         resource: str,
         deltas: dict[str, int],
         shard_id: int = 0,
+        ceilings: dict[str, CreditCeiling] | None = None,
+        trim: bool = False,
+        pin: CreditPin | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
-        Unconditional ADD for post-hoc correction. Can go negative by design.
+        An ``ADD`` for post-hoc correction. Can go negative by design.
         Positive delta = consumed more (subtract tokens, add to counter).
         Negative delta = consumed less (add tokens, subtract from counter).
+
+        A credit is **self-trimming** (#680, #721). With ``ceilings`` (limit name
+        -> ``CreditCeiling``), every credited limit that has one is conditioned
+        on ``tk <= ceiling - credit``: the credit lands only if the balance
+        stays at or below the ceiling. The ceiling is the caller's, computed
+        from a state that may be stale, so the condition also pins everything
+        that state's ceiling was computed from and that a write can lower: the
+        limit's stored ``cp``, ``gc`` and schedule overrides, and, from
+        ``pin``, the item's ``shard_count``, ``vu`` and item-level schedule
+        strings (each ``None`` = absent). When the condition
+        fails — a reset edge, a refill to capacity, a doubling, a re-grant, a
+        changed limit — the caller re-issues the credit with ``trim=True``: the
+        same ``ADD`` plus ``SET vu = 0`` in one write. A debit, or a credit with
+        no known ceiling, carries no ceiling condition.
+
+        Every adjust is conditioned on ``attribute_exists(PK)``: an ``ADD`` on
+        an item that is gone (swept by TTL, deleted) would create a stub with no
+        parameters, which the speculative path then rejects forever. A failed
+        condition on a write with no other term therefore means the item is
+        gone, and the caller treats the adjustment as done.
 
         Every refund, release, rollback and speculative compensation is built
         here, so the shard's cached state is forgotten here (ADR-147): tokens
@@ -3268,8 +3418,11 @@ class Repository:
         """
         self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
         add_parts: list[str] = []
+        condition_parts: list[str] = ["attribute_exists(PK)"]
         attr_names: dict[str, str] = {}
         attr_values: dict[str, Any] = {}
+        ceilings = ceilings or {}
+        ceiling_terms = False
 
         # Index-derived tokens, never the limit name (#634); see
         # `build_composite_normal`.
@@ -3290,55 +3443,76 @@ class Repository:
             add_parts.append(f"{tk_alias} {tk_val}")
             add_parts.append(f"{tc_alias} {tc_val}")
 
+            if delta < 0 and not trim and name in ceilings:
+                ceiling_terms = True
+                condition_parts += _credit_limit_terms(
+                    i, name, delta, ceilings[name], attr_names, attr_values
+                )
+            period = ceilings[name].quota_period if delta < 0 and name in ceilings else None
+            if period is not None:
+                # In both writes: a quota credit lands only in its debit's period.
+                condition_parts += _credit_period_terms(i, name, period, attr_names, attr_values)
+
         if not add_parts:
             # Nothing to adjust
             return {}
 
         update_expr = f"ADD {', '.join(add_parts)}"
+        if trim:
+            # `vu = 0` fails the speculative condition, so the next acquire takes
+            # the slow path, which clamps every limit to its ceiling under the
+            # `rf` lock and clears `vu` again (#222 Task 13). In the same write
+            # as the credit, so no fast path can spend the excess in between.
+            attr_names["#vu"] = schema.BUCKET_FIELD_VU
+            attr_values[":vuz"] = {"N": "0"}
+            update_expr = f"SET #vu = :vuz {update_expr}"
 
-        return {
-            "Update": {
-                "TableName": self.table_name,
-                "Key": {
-                    "PK": {
-                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
-                    },
-                    "SK": {"S": schema.sk_state()},
-                },
-                "UpdateExpression": update_expr,
-                "ExpressionAttributeNames": attr_names,
-                "ExpressionAttributeValues": attr_values,
-                # Free on UpdateItem: the new balances let a credit that lifted
-                # one above its ceiling be trimmed before the fast path spends
-                # it (#679).
-                "ReturnValues": "UPDATED_NEW",
-            }
+        if ceiling_terms and pin is not None:
+            # A doubling lowers every share without touching a limit's
+            # attributes; a schedule change or a slow pass re-stamps `vu`
+            # (a reset re-stamps a quota's next edge). Pinning `vu`, not `rf`:
+            # `rf` moves on every refill (the aggregator's included), which the
+            # `tk` bound already covers, and stays put for a writer whose clock
+            # lags the stored `rf` (it stamps `max(now, rf)`).
+            shard_count, vu, item_sched = pin
+            attr_names["#bsc"] = "shard_count"
+            attr_values[":bsc"] = {"N": str(shard_count)}
+            condition_parts.append(
+                # An item written before sharding carries no count: it is 1.
+                "(attribute_not_exists(#bsc) OR #bsc = :bsc)" if shard_count == 1 else "#bsc = :bsc"
+            )
+            attr_names["#bvu"] = schema.BUCKET_FIELD_VU
+            if vu is None:
+                condition_parts.append("attribute_not_exists(#bvu)")
+            else:
+                attr_values[":bvu"] = {"N": str(vu)}
+                condition_parts.append("#bvu = :bvu")
+            # The item-level schedule every limit without an override inherits.
+            for code, field, raw in zip(
+                ("s", "r", "z"),
+                (
+                    schema.BUCKET_FIELD_SCHED,
+                    schema.BUCKET_FIELD_RSCHED,
+                    schema.BUCKET_FIELD_SCHED_TZ,
+                ),
+                item_sched,
+                strict=True,
+            ):
+                attr_names[f"#bi{code}"] = field
+                condition_parts.append(_pin_string(f"#bi{code}", f":bi{code}", raw, attr_values))
+
+        update: dict[str, Any] = {
+            "TableName": self.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            "UpdateExpression": update_expr,
+            "ExpressionAttributeNames": attr_names,
+            "ExpressionAttributeValues": attr_values,
+            "ConditionExpression": " AND ".join(condition_parts),
         }
-
-    def build_vu_reset(self, entity_id: str, resource: str, shard_id: int = 0) -> dict[str, Any]:
-        """Build an UpdateItem that forces one materialising pass (#679).
-
-        ``vu = 0`` fails the speculative condition, so the next acquire takes the
-        slow path, which clamps every limit to its ceiling under the ``rf`` lock
-        and clears ``vu`` again — the mechanism the limit-change sync uses after a
-        capacity shrink (#222 Task 13). Used after a credit lifted a balance above
-        its ceiling, which the fast path (a pure ``ADD``) would otherwise spend.
-        """
-        return {
-            "Update": {
-                "TableName": self.table_name,
-                "Key": {
-                    "PK": {
-                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
-                    },
-                    "SK": {"S": schema.sk_state()},
-                },
-                "UpdateExpression": "SET #vu = :zero",
-                "ConditionExpression": "attribute_exists(PK)",
-                "ExpressionAttributeNames": {"#vu": schema.BUCKET_FIELD_VU},
-                "ExpressionAttributeValues": {":zero": {"N": "0"}},
-            }
-        }
+        return {"Update": update}
 
     async def _update_item_retrying_conflict(self, client: Any, **kwargs: Any) -> Any:
         """``UpdateItem``, retried with full jitter on a transaction conflict (#724).
@@ -3363,10 +3537,14 @@ class Repository:
                 await asyncio.sleep(delay)
         return await client.update_item(**kwargs)
 
-    async def transact_write(self, items: list[dict[str, Any]]) -> None:
-        """Execute a write, using single-item API when possible to halve WCU cost."""
+    async def transact_write(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Execute a write, using single-item API when possible to halve WCU cost.
+
+        Returns the item's ``ALL_NEW`` attributes for a single-item update
+        (free on ``UpdateItem``; a refund pins the image, #721), else ``None``.
+        """
         if not items:
-            return
+            return None
 
         client = await self._get_client()
 
@@ -3375,13 +3553,16 @@ class Repository:
             if "Put" in item:
                 await client.put_item(**item["Put"])
             elif "Update" in item:
-                await client.update_item(**item["Update"])
+                response = await client.update_item(**{"ReturnValues": "ALL_NEW", **item["Update"]})
+                attributes = response.get("Attributes")
+                return attributes if isinstance(attributes, dict) else None
             elif "Delete" in item:
                 await client.delete_item(**item["Delete"])
             else:
                 await client.transact_write_items(TransactItems=items)
         else:
             await client.transact_write_items(TransactItems=items)
+        return None
 
     async def write_each(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Write items independently without cross-item atomicity (1 WCU each).
@@ -6536,7 +6717,8 @@ class Repository:
         # §4.1). Absent on every item written before scheduling existed, where
         # UTC is harmless: it is only ever consulted alongside a compact
         # string, and those items carry none.
-        sched_tz = item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S") or "UTC"
+        raw_sched_tz = item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S")
+        sched_tz = raw_sched_tz or "UTC"
         item_sched = item.get(schema.BUCKET_FIELD_SCHED, {}).get("S")
         item_rsched = item.get(schema.BUCKET_FIELD_RSCHED, {}).get("S")
         # Keyed by (compact, reset) rather than by limit: the item-level
@@ -6680,6 +6862,11 @@ class Repository:
                     grant_count=grant_count,
                     stored_vu_ms=stored_vu,
                     stored_vu_read=True,
+                    stored_item_sched_raw=(item_sched, item_rsched, raw_sched_tz),
+                    stored_sched_raw=(
+                        item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED), {}).get("S"),
+                        item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED), {}).get("S"),
+                    ),
                 )
             )
 
