@@ -1838,7 +1838,7 @@ exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed u
   `rf = :read AND shard_count = :read`; never `tc`, `disabled`, owner stamps, config, the
   parent. A bucket on resource or system defaults also gets `SET ttl` (`#ottl`), the later of
   the acquire path's rule and every quota's current period end (`_operation_ttl`; D5's create
-  too); an entity-level bucket gets none. A conflict re-reads and re-plans (3 retries, full jitter, then `RateLimiterUnavailable`).
+  too); an entity-level bucket gets none, and a stale one is `REMOVE`d, as acquire does (ADR-136). A conflict re-reads and re-plans (3 retries, full jitter, then `RateLimiterUnavailable`).
 - **Shards** are read strongly consistent: GSI3 discovery plus shard 0 and every slot below the
   stored count **by key** (GSI3 can miss a just-created shard). Lagging counts are raised first
   with the R5 freeze, then re-read (D7).
