@@ -133,3 +133,48 @@ async def test_aggregator_reset_does_not_stack_on_a_refund(two):
         except RateLimitExceeded:
             break
     assert today <= 10
+
+
+async def test_a_failed_raise_pin_does_not_spend_the_expired_period(two):
+    """#730 R6: the raise pin's failure falls to the consumption-only retry, which
+    used to debit the previous period. Day-1 lease A holds 9 of a daily quota of
+    10; after midnight process 2's slow pass applies the reset in memory and
+    admits 5; A's day-1 refund lands first, so the reset write's `tk <= 0` pin
+    fails; the retry debited 5 from day 1 and left the reset pending, and the next
+    pass granted a full 10 again: 15 admitted on day 2. The retry's period guard
+    (#743) now sends the pass round once more, which applies the reset."""
+    l1, r2, now = two
+    r1 = l1._repository
+    now[0] = EVE
+    await r1.set_limits("p", [Limit.quota("q", 10, cron="0 0 * * *")], resource="r")
+    async with l1.acquire("p", "r", {"q": 1}):
+        pass  # create: 9 (day 1)
+    lease_a = l1.acquire("p", "r", {"q": 9})
+    await lease_a.__aenter__()  # 0, a day-1 refund of 9 pending
+
+    now[0] = MIDNIGHT + 1_000
+    original = r2.transact_write
+    raced: list[int] = []
+
+    async def refund_first(items):
+        if not raced:
+            raced.append(1)
+            await lease_a.__aexit__(RuntimeError, RuntimeError("body failed"), None)
+        return await original(items)
+
+    r2.transact_write = refund_first
+    today = 0
+    try:
+        async with RateLimiter(repository=r2, speculative_writes=False).acquire("p", "r", {"q": 5}):
+            today += 5
+    finally:
+        r2.transact_write = original
+    assert raced
+
+    while today <= 40:
+        try:
+            async with l1.acquire("p", "r", {"q": 1}):
+                today += 1
+        except RateLimitExceeded:
+            break
+    assert today <= 10
