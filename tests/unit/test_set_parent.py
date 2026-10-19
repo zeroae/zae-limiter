@@ -831,6 +831,44 @@ class TestStaleWriters:
         item = await _item(repo, "user", "gpt-4")
         assert item[schema.BUCKET_FIELD_VU] == {"N": "0"}  # ...so the fast path is closed
 
+    async def test_a_cancel_during_the_window_fan_out_leaves_no_task_behind(self, limiter):
+        """r4 #2: the owner task starts after the commit's last await, so none is orphaned."""
+        from zae_limiter.lease import Lease
+
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [RPM])
+        await repo.create_entity("user")
+        started: list[object] = []
+        real_start = repo.start_background
+        in_fan_out = asyncio.Event()
+
+        def start(work):
+            task = real_start(work)
+            started.append(task)
+            return task
+
+        async def slow_fan_out(self, *args):
+            in_fan_out.set()
+            await asyncio.sleep(5)
+
+        async def run():
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+
+        with (
+            patch.object(repo, "start_background", start),
+            patch.object(Lease, "_fan_out_windows", slow_fan_out),
+        ):
+            task = asyncio.create_task(run())
+            await in_fan_out.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert started == []  # no owner task was ever started, so none can be pending
+        item = await _item(repo, "user", "gpt-4")
+        assert item[schema.BUCKET_FIELD_VU] == {"N": "0"}  # the check's safety net instead
+
     async def test_a_cancelled_join_with_nothing_to_force_still_reraises(self):
         from types import SimpleNamespace
         from typing import cast

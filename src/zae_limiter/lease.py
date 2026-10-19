@@ -1033,17 +1033,26 @@ class Lease:
         self._record_written_states(
             groups, [] if condition_failed else written_images, condition_failed
         )
-        if not condition_failed:
-            await self._repair_created_quota_shards(quota_creates)
-            await self._start_owner_checks(owner_creates)
-            await self._fan_out_windows(window_fanouts)
-        elif reissued_creates:
-            await self._repair_created_quota_shards(
-                [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
-            )
-            await self._start_owner_checks(
-                [c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates]
-            )
+        #
+        # The owner checks start last, after every awaited step: a task started
+        # earlier would be orphaned by a cancellation landing in the repair or
+        # the fan-out, since the caller never reaches the lease exit that joins
+        # it. A cancellation there forces the slow pass on those buckets
+        # instead, as a cancelled join does.
+        if condition_failed:
+            owner_creates = [c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates]
+        try:
+            if not condition_failed:
+                await self._repair_created_quota_shards(quota_creates)
+                await self._fan_out_windows(window_fanouts)
+            elif reissued_creates:
+                await self._repair_created_quota_shards(
+                    [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
+                )
+        except BaseException:
+            await self._abandon_owner_checks(owner_creates)
+            raise
+        await self._start_owner_checks(owner_creates)
 
     def _record_written_states(
         self,

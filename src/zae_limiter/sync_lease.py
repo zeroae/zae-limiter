@@ -695,17 +695,20 @@ class SyncLease:
         self._record_written_states(
             groups, [] if condition_failed else written_images, condition_failed
         )
-        if not condition_failed:
-            self._repair_created_quota_shards(quota_creates)
-            self._start_owner_checks(owner_creates)
-            self._fan_out_windows(window_fanouts)
-        elif reissued_creates:
-            self._repair_created_quota_shards(
-                [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
-            )
-            self._start_owner_checks(
-                [c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates]
-            )
+        if condition_failed:
+            owner_creates = [c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates]
+        try:
+            if not condition_failed:
+                self._repair_created_quota_shards(quota_creates)
+                self._fan_out_windows(window_fanouts)
+            elif reissued_creates:
+                self._repair_created_quota_shards(
+                    [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
+                )
+        except BaseException:
+            self._abandon_owner_checks(owner_creates)
+            raise
+        self._start_owner_checks(owner_creates)
 
     def _record_written_states(
         self,
