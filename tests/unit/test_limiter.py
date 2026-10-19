@@ -15180,3 +15180,77 @@ class TestDoublingSurvivesAPropagationError:
             caplog.text
         )
         assert "odd" not in caplog.text
+
+
+class TestZeroGrantedChildUnderABusyParent:
+    """A child slot zeroed by contended moves stays contended under a busy parent (#729).
+
+    The child's quota moves are lost to conflicts twice, so the third pass
+    grants its slot 0; on that pass the parent's quota planning conflicts too.
+    The child's violation is itself contention, so the 429 is the contended
+    one (retry in 0.1 s), not the exhausted one quoting the reset edge.
+    """
+
+    CHILD = Limit.quota("rpd", 1000, cron="0 0 * * *")
+    PARENT = Limit.quota("daily", 1000, cron="0 0 * * *")
+
+    async def test_the_429_stays_contended(self, limiter):
+        repo = limiter._repository
+        now_ms = freeze_clock(repo)
+        await limiter.create_entity("org")
+        await limiter.create_entity("kid", parent_id="org", cascade=True)
+        await limiter.set_limits("kid", [self.CHILD], resource="gpt-4")
+        await limiter.set_limits("org", [self.PARENT], resource="gpt-4")
+        state = BucketState.from_limit("kid", "gpt-4", self.CHILD, now_ms)
+        vu, _reset = RateLimiter._materialisation_stamps(self.CHILD, state, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "kid", "gpt-4", [state], now_ms, cascade=True, parent_id="org", vu=vu
+                )
+            ]
+        )
+        assert await repo.bump_shard_count("kid", "gpt-4", 1) == 2
+        repo._entity_cache[(repo._namespace_id, "org")] = (False, None, {"gpt-4": 4})
+
+        real_write = repo.transact_write
+        moves = {"n": 0}
+
+        async def moves_conflict(items):
+            if len(items) > 1:  # the child's move rides in the commit
+                moves["n"] += 1
+                raise ClientError(
+                    {
+                        "Error": {"Code": "TransactionCanceledException", "Message": "busy"},
+                        "CancellationReasons": [{"Code": "TransactionConflict"}] * len(items),
+                    },
+                    "TransactWriteItems",
+                )
+            return await real_write(items)
+
+        real_plan = repo.plan_quota_shard
+        parent_plans = {"n": 0}
+
+        async def parent_busy_on_the_third_pass(entity_id, *args, **kwargs):
+            if entity_id == "org":
+                parent_plans["n"] += 1
+                if parent_plans["n"] == 3:
+                    raise ClientError(
+                        {"Error": {"Code": "TransactionConflictException", "Message": "busy"}},
+                        "UpdateItem",
+                    )
+            return await real_plan(entity_id, *args, **kwargs)
+
+        repo.transact_write = moves_conflict
+        repo.plan_quota_shard = parent_busy_on_the_third_pass
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with slow.acquire("kid", "gpt-4", {"rpd": 1}):
+                    pass
+
+        rejection = exc_info.value
+        assert moves["n"] == 2 * 4  # two passes' moves, each with 3 retries
+        assert parent_plans["n"] == 3
+        assert rejection.contended is True
+        assert rejection.retry_after_seconds == pytest.approx(0.1)
