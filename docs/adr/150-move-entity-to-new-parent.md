@@ -38,8 +38,12 @@ item cannot be pinned, so every such write (the client's create, the aggregator'
 clone) must re-check the owner's generation against META with a strongly consistent read
 once it lands, and restamp through the pinned write when a move overtook it; when that
 check fails, the bucket must be forced onto the slow path (`vu = 0`), whose pinned owner
-stamp then restamps it. The check is not needed for the acquire that created the bucket and
-must run after its lease is handed back. Each entity must also carry an incarnation, a random
+stamp then restamps it. The check is not needed for the acquire that created the bucket, so it
+must not hold that acquire up: it starts once the commit's last write lands, runs while
+the caller's block does, and is joined when the lease exits, so it never outlives the
+lease. A check that is cancelled before it finishes must leave the same `vu = 0` a
+failed one does; the cancellation is re-raised only when it was aimed at the caller, so a
+cancel of the check alone never replaces the caller's exception. Each entity must also carry an incarnation, a random
 token written at creation and copied onto every owner stamp beside the generation; a
 generation compares only within one incarnation. A writer that read META strongly
 consistently (the fan-outs, the owner checks) may overwrite a stamp of another incarnation; a
@@ -84,8 +88,10 @@ by leases open across the move, stays where it was debited.
 - Every bucket created costs one more strongly consistent read (1 RCU, once per shard), and
   every aggregator record that clones shards one more; a restamp only when a move overtook
   the create. A `ConditionCheck` would avoid the read but needs
-  `dynamodb:ConditionCheckItem`, which no shipped policy grants. The read runs after the
-  creating acquire's lease is handed back, so it adds no latency to that acquire.
+  `dynamodb:ConditionCheckItem`, which no shipped policy grants. The read starts when the
+  commit lands and overlaps the caller's block; the lease exit joins it, which adds
+  latency only when the block is shorter than one strongly consistent `GetItem`, and then
+  only the difference.
 - Residual: a process that dies between a create and its owner check leaves a create that
   read META before a move on the old parent until the bucket's next slow pass or a repeat
   of the move. The check's own failure is covered (`vu = 0` forces that slow pass).
