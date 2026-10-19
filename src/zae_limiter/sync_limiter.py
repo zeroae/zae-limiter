@@ -2025,7 +2025,9 @@ class SyncRateLimiter:
                 ) from exc
             if disable_moves:
                 zeroed |= {
-                    (eid, name) for name, grant in grants.items() if grant.donor_shard is not None
+                    (eid, name)
+                    for name, grant in grants.items()
+                    if grant.donor_shard is not None and grant.tokens_milli > 0
                 }
                 grants = {
                     name: grant

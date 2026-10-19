@@ -12341,3 +12341,68 @@ class TestFreezeConflictIsContention:
             with pytest.raises(RateLimiterUnavailable):
                 with sync_limiter.acquire("broken", "gpt-4", {"rpd": 1}):
                     pass
+
+
+class TestContendedZeroGrantNeedsTokensToMove:
+    """Only a slot whose donor still held tokens counts as zeroed by contention (#729).
+
+    Two moves are lost to contention, and by the third pass the donor has been
+    spent by other traffic. The planner then gives the slot nothing because the
+    donor holds nothing: the quota is genuinely exhausted, and the rejection
+    must be the ordinary 429 with real violations, not the contended one.
+    """
+
+    QUOTA = Limit.quota("rpd", 1000, cron="0 0 * * *")
+
+    def test_a_donor_drained_before_the_third_pass_is_an_ordinary_429(self, sync_limiter):
+        repo = sync_limiter._repository
+        now_ms = freeze_clock(repo)
+        sync_limiter.create_entity("drained3")
+        sync_limiter.set_system_defaults([self.QUOTA])
+        state = BucketState.from_limit("drained3", "gpt-4", self.QUOTA, now_ms)
+        vu, _reset = SyncRateLimiter._materialisation_stamps(self.QUOTA, state, now_ms)
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "drained3", "gpt-4", [state], now_ms, shard_id=0, shard_count=1, vu=vu
+                )
+            ]
+        )
+        assert repo.bump_shard_count("drained3", "gpt-4", 1) == 2
+        client = repo._get_client()
+        real = repo.transact_write
+        moves = {"n": 0}
+
+        def moves_conflict_then_donor_spent(items):
+            if len(items) > 1:
+                moves["n"] += 1
+                if moves["n"] == 2 * 4:
+                    client.update_item(
+                        TableName=repo.table_name,
+                        Key={
+                            "PK": {"S": pk_bucket(repo._namespace_id, "drained3", "gpt-4", 0)},
+                            "SK": {"S": sk_state()},
+                        },
+                        UpdateExpression="SET #t = :z",
+                        ExpressionAttributeNames={"#t": bucket_attr("rpd", BUCKET_FIELD_TK)},
+                        ExpressionAttributeValues={":z": {"N": "0"}},
+                    )
+                raise ClientError(
+                    {
+                        "Error": {"Code": "TransactionCanceledException", "Message": "busy"},
+                        "CancellationReasons": [{"Code": "None"}, {"Code": "TransactionConflict"}],
+                    },
+                    "TransactWriteItems",
+                )
+            return real(items)
+
+        repo.transact_write = moves_conflict_then_donor_spent
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with slow.acquire("drained3", "gpt-4", {"rpd": 1}):
+                    pass
+        rejection = exc_info.value
+        assert moves["n"] == 2 * 4
+        assert rejection.contended is False
+        assert [v.limit_name for v in rejection.violations] == ["rpd"]

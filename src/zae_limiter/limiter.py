@@ -2605,8 +2605,13 @@ class RateLimiter:
                     eid, resource, entity_limits[eid], consume, existing_buckets, now_ms
                 ) from exc
             if disable_moves:
+                # Only a slot whose donor held tokens to move: one whose donor
+                # was already empty gets 0 because the quota is spent, and its
+                # rejection is the ordinary exhausted 429, not contention.
                 zeroed |= {
-                    (eid, name) for name, grant in grants.items() if grant.donor_shard is not None
+                    (eid, name)
+                    for name, grant in grants.items()
+                    if grant.donor_shard is not None and grant.tokens_milli > 0
                 }
                 grants = {
                     name: (
