@@ -434,8 +434,58 @@ every parallel_mode), and `await <handle>` into `<handle>.result()`. That needs:
   - the handle only assigned, awaited, cancelled with a bare `.cancel()`,
     compared with `None` (`is` / `is not`), or returned from a function
     annotated `-> asyncio.Task[...]` — never passed to `wait_for`, `gather` or
-    any other call, aliased, or stored in a container.
+    any other call, aliased, or stored in a container;
+  - a task attribute read only through `self` in a class that annotates or
+    assigns it, and the result of a `-> asyncio.Task[...]` call landing in a
+    target annotated `asyncio.Task[...]`, a tracked handle, or a return.
 """
+
+
+# Task attributes and task-returning methods across every generator-covered
+# file, so a handle that crosses a module boundary (a field annotated in one
+# file, read in another) is seen. Filled by `main()`; a transformer also adds
+# its own tree's, which is all a single-snippet transform needs.
+TASK_REGISTRY: tuple[set[str], set[str]] = (set(), set())
+
+
+def task_registry(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """``(attrs, methods)``: names that may hold, or return, an ``asyncio.Task``.
+
+    ``attrs`` are class fields annotated ``asyncio.Task[...]`` and every
+    ``self.<attr>`` a task is assigned to or annotated as; ``methods`` are the
+    functions annotated ``-> asyncio.Task[...]``.
+    """
+    names_a_task = AsyncToSyncTransformer._names_a_task
+    is_create_task = AsyncToSyncTransformer._is_create_task
+    attrs: set[str] = set()
+    methods: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for stmt in node.body:
+                if (
+                    isinstance(stmt, ast.AnnAssign)
+                    and isinstance(stmt.target, ast.Name)
+                    and names_a_task(stmt.annotation)
+                ):
+                    attrs.add(stmt.target.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if names_a_task(node.returns):
+                methods.add(node.name)
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign) and is_create_task(node.value):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign) and (
+            is_create_task(node.value) or names_a_task(node.annotation)
+        ):
+            targets = [node.target]
+        for target in targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"
+            ):
+                attrs.add(target.attr)
+    return attrs, methods
 
 
 class AsyncToSyncTransformer(ast.NodeTransformer):
@@ -449,6 +499,8 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         # tracked.
         self._spawned_awaits: set[int] = set()
         self._trackable_create_tasks: set[int] = set()
+        self._task_attrs: set[str] = set()
+        self._task_methods: set[str] = set()
         super().__init__()
 
     # -- asyncio.create_task -------------------------------------------------
@@ -572,6 +624,9 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         ``create_task`` whose handle is not assigned to one of those
         spellings.
         """
+        own_attrs, own_methods = task_registry(tree)
+        self._task_attrs = own_attrs | TASK_REGISTRY[0]
+        self._task_methods = own_methods | TASK_REGISTRY[1]
         self._check_scope(tree.body, set(), set(), returns_task=False, in_class=False)
         for node in ast.walk(tree):
             if self._is_create_task(node) and id(node) not in self._trackable_create_tasks:
@@ -610,6 +665,9 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
                 self._check_create_task_site(node, parent, returns_task)
             else:
                 handle = self._handle_of(node)
+                if isinstance(node, ast.Call):
+                    self._check_task_method_call(node, parent, locals_, attrs, returns_task)
+                self._check_foreign_task_attr(node, handle, attrs)
                 if handle is None or isinstance(getattr(node, "ctx", None), ast.Store):
                     continue  # not a handle, or (re)assigning one
                 if handle[1] not in (locals_ if handle[0] == "local" else attrs):
@@ -618,6 +676,74 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
                     if handle[1] == "self":
                         continue  # the `self` of `self.<attr>`
                 self._check_handle_use(node, parent, parents, returns_task)
+
+    def _check_foreign_task_attr(
+        self, node: ast.AST, handle: tuple[str, str] | None, attrs: set[str]
+    ) -> None:
+        """Abort on a task attribute read anywhere but through its own class's ``self``.
+
+        ``await lease.t``, ``wait_for(lease.t)`` or a subclass's ``await self.t``
+        for a field its base annotated: the generator cannot prove what such a
+        read holds, and translating it as a plain value drops the join. Fail
+        closed rather than guess (#716 review).
+        """
+        if not isinstance(node, ast.Attribute) or node.attr not in self._task_attrs:
+            return
+        if isinstance(node.ctx, ast.Store):
+            return
+        if handle is not None and handle[0] == "attr" and handle[1] in attrs:
+            return
+        raise self._create_task_error(
+            node,
+            f"`{ast.unparse(node)}` reads a task attribute outside the class that annotates or "
+            "assigns it; read it through `self` in that class (a subclass must annotate the "
+            "field `asyncio.Task[...]` again)",
+        )
+
+    def _check_task_method_call(
+        self,
+        node: ast.Call,
+        parent: ast.AST | None,
+        locals_: set[str],
+        attrs: set[str],
+        returns_task: bool,
+    ) -> None:
+        """A call to a ``-> asyncio.Task`` function must land where its handle is tracked.
+
+        That is: returned from a function annotated ``-> asyncio.Task[...]``,
+        assigned to a target annotated ``asyncio.Task[...]``, or assigned to a
+        name or ``self.<attr>`` already tracked as a handle. Anywhere else (an
+        unannotated local, an argument, a bare expression) its ``await`` could
+        not be found later, so it aborts.
+        """
+        func = node.func
+        name = (
+            func.attr
+            if isinstance(func, ast.Attribute)
+            else func.id
+            if isinstance(func, ast.Name)
+            else None
+        )
+        if name is None or name not in self._task_methods:
+            return
+        if isinstance(parent, ast.Return) and returns_task:
+            return
+        if (
+            isinstance(parent, ast.AnnAssign)
+            and parent.value is node
+            and self._names_a_task(parent.annotation)
+        ):
+            return
+        if isinstance(parent, ast.Assign) and parent.value is node and len(parent.targets) == 1:
+            handle = self._handle_of(parent.targets[0])
+            if handle is not None and handle[1] in (locals_ if handle[0] == "local" else attrs):
+                return
+        raise self._create_task_error(
+            node,
+            f"`{ast.unparse(node)}` returns an `asyncio.Task`, and its result is not returned "
+            "from a `-> asyncio.Task[...]` function, nor assigned to a target annotated "
+            "`asyncio.Task[...]` or already tracked as a handle",
+        )
 
     def _check_create_task_site(
         self, node: ast.AST, parent: ast.AST | None, returns_task: bool
@@ -1892,6 +2018,14 @@ def transform_file(
 def main() -> int:
     """Run all transformations."""
     changed = []
+
+    for base, pairs in ((SRC, SOURCE_TRANSFORMS), (TESTS, TEST_TRANSFORMS)):
+        for source_name, _target_name in pairs:
+            path = base / source_name
+            if path.exists():
+                attrs, methods = task_registry(ast.parse(path.read_text()))
+                TASK_REGISTRY[0].update(attrs)
+                TASK_REGISTRY[1].update(methods)
 
     # Transform source files (async -> sync)
     for source_name, target_name in SOURCE_TRANSFORMS:
