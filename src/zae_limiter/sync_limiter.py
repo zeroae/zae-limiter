@@ -2179,7 +2179,7 @@ class SyncRateLimiter:
             if any(entry._donor_debit is not None for entry in entries):
                 self._commit_rejected_moves(entries, carriers)
             if moves_contended and all((v.entity_id, v.limit_name) in zeroed for v in violations):
-                raise _contention_rejection(entries, now_ms)
+                raise _contention_rejection(entries, now_ms, consume)
             raise RateLimitExceeded(statuses)
         return SyncLease(
             repository=self._repository,

@@ -12099,6 +12099,26 @@ class TestContendedZeroGrant:
         assert self._shard_tokens(repo, "busy", 0) == 1000000
         assert self._shard_tokens(repo, "busy", 1) is None
 
+    def test_a_contended_zero_grant_reports_the_requested_amount(self, sync_limiter):
+        """The zeroed slot admitted nothing (``consumed == 0``); the 429 still
+        reports what the caller asked for."""
+        repo = self._shard0_then_doubled(sync_limiter, "asked")
+        real = repo.transact_write
+
+        def moves_conflict(items):
+            if len(items) > 1:
+                raise self._move_conflict()
+            return real(items)
+
+        repo.transact_write = moves_conflict
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with slow.acquire("asked", "gpt-4", {"rpd": 7}):
+                    pass
+        assert exc_info.value.contended is True
+        assert [(s.limit_name, s.requested) for s in exc_info.value.statuses] == [("rpd", 7)]
+
     def test_a_donor_holding_nothing_is_an_ordinary_429(self, sync_limiter):
         """No conflict involved: the quota is genuinely spent."""
         repo = self._shard0_then_doubled(sync_limiter, "spent")

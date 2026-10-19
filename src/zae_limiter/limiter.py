@@ -2902,7 +2902,7 @@ class RateLimiter:
             if moves_contended and all((v.entity_id, v.limit_name) in zeroed for v in violations):
                 # Short only because a busy donor's move was given up (#724):
                 # nothing is debited, and the quota is not spent.
-                raise _contention_rejection(entries, now_ms)
+                raise _contention_rejection(entries, now_ms, consume)
             raise RateLimitExceeded(statuses)
 
         return Lease(

@@ -2072,12 +2072,20 @@ def _build_retry_failure_statuses(
     return _retry_statuses(entries, now_ms, None)
 
 
-def _contention_rejection(entries: list[LeaseEntry], now_ms: int) -> RateLimitExceeded:
+def _contention_rejection(
+    entries: list[LeaseEntry], now_ms: int, consume: dict[str, int] | None = None
+) -> RateLimitExceeded:
     """A short 429 for a commit that kept conflicting (#724).
 
     One status per declared entry, from the in-memory state, none marked
     exceeded: the request was not short of capacity, it lost to concurrent
     transactions on the same items. Nothing was debited.
+
+    ``requested`` is what the caller asked for (``consume``), not what the
+    entry was admitted for: a slot granted 0 after its moves were lost
+    admits nothing (``consumed == 0``) and must still report the request.
+    Without ``consume`` the admitted amount stands in, which on the commit
+    path is the same number.
     """
     statuses = [
         LimitStatus(
@@ -2086,7 +2094,7 @@ def _contention_rejection(entries: list[LeaseEntry], now_ms: int) -> RateLimitEx
             limit_name=entry.limit.name,
             limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
             available=entry.state.tokens_milli // 1000,
-            requested=entry.consumed,
+            requested=(consume or {}).get(entry.limit.name, entry.consumed),
             exceeded=False,
             retry_after_seconds=_CONTENTION_RETRY_AFTER_S,
             resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
