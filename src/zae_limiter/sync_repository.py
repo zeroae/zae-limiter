@@ -104,8 +104,8 @@ def _validate_idempotency_key(key: str | None) -> None:
 def _validate_principal(principal: str | None) -> None:
     """The check ``_log_audit_event`` applies, run before any write (ADR-149).
 
-    A reset or top-up audits *after* it commits, so an invalid principal found
-    there would raise for an operation that already happened.
+    A reset or top-up's audit event rides in its transaction, so an invalid
+    principal is refused before any read rather than after the plan.
     """
     if principal is not None and (not principal.startswith("arn:")):
         validate_identifier(principal, "principal")
@@ -4883,13 +4883,30 @@ class SyncRepository:
         Raises:
             InvalidIdentifierError: If principal is invalid
         """
+        event, item = self._build_audit_item(action, entity_id, principal, resource, details)
+        client = self._get_client()
+        client.put_item(TableName=self.table_name, Item=item)
+        return event
+
+    def _build_audit_item(
+        self,
+        action: str,
+        entity_id: str,
+        principal: str | None = None,
+        resource: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> tuple[AuditEvent, dict[str, Any]]:
+        """Build an audit event and its DynamoDB item, writing nothing.
+
+        :meth:`_log_audit_event` puts it on its own; a reset or top-up puts it
+        in the same transaction as the operation it records (ADR-149).
+        """
         if principal is None:
             principal = self._get_caller_identity_arn()
         if principal is not None and (not principal.startswith("arn:")):
             validate_identifier(principal, "principal")
         audit_retention_days = self._get_audit_retention_days()
         ttl_seconds = audit_retention_days * 86400
-        client = self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         event_id = self._generate_event_id()
         event = AuditEvent(
@@ -4915,8 +4932,7 @@ class SyncRepository:
             "GSI4PK": {"S": self._namespace_id},
             "GSI4SK": {"S": schema.pk_audit(self._namespace_id, entity_id)},
         }
-        client.put_item(TableName=self.table_name, Item=item)
-        return event
+        return (event, item)
 
     def get_audit_events(
         self, entity_id: str, limit: int = 100, start_event_id: str | None = None
@@ -7268,7 +7284,7 @@ class SyncRepository:
                     entity_id, resource, operation_id, operation, incarnation
                 )
                 if recorded is not None:
-                    return self._audited_if_mine(operation, recorded, token, principal)
+                    return recorded[0]
                 time.sleep(random.uniform(0, _OPERATION_RETRY_BASE_DELAY * 2**attempt))
             now_ms = self._now_ms()
             shards, raw = self._read_operation_shards(entity_id, resource, now_ms)
@@ -7289,6 +7305,7 @@ class SyncRepository:
                         token,
                         incarnation,
                         entity,
+                        principal,
                         f"{token}-c{attempt}",
                     )
                 except Exception:
@@ -7297,7 +7314,7 @@ class SyncRepository:
                     )
                     if mine is None:
                         raise
-                    return self._audited(operation, mine, principal)
+                    return mine
                 if not landed:
                     continue
             else:
@@ -7323,19 +7340,19 @@ class SyncRepository:
                 if plan.raises_ceiling:
                     self._require_top_up_readers()
                 result = BucketOperationResult(entity_id, resource, len(plan.writes), plan.amounts)
+                items = [
+                    *(
+                        self.build_bucket_operation(entity_id, resource, write)
+                        for write in plan.writes
+                    ),
+                    self.build_operation_record(
+                        operation, operation_id, result, now_ms, token, incarnation
+                    ),
+                ]
+                if result.shards:
+                    items.append(self._operation_audit(operation, result, principal))
                 try:
-                    self.transact_write(
-                        [
-                            *(
-                                self.build_bucket_operation(entity_id, resource, write)
-                                for write in plan.writes
-                            ),
-                            self.build_operation_record(
-                                operation, operation_id, result, now_ms, token, incarnation
-                            ),
-                        ],
-                        client_request_token=f"{token}-{attempt}",
-                    )
+                    self.transact_write(items, client_request_token=f"{token}-{attempt}")
                 except ClientError as e:
                     if e.response.get("Error", {}).get("Code") in _OPERATION_RETRY_CODES:
                         last_error = e
@@ -7345,18 +7362,18 @@ class SyncRepository:
                     )
                     if mine is None:
                         raise
-                    return self._audited(operation, mine, principal)
+                    return mine
                 except Exception:
                     mine = self._landed_by(
                         entity_id, resource, operation_id, operation, token, incarnation
                     )
                     if mine is None:
                         raise
-                    return self._audited(operation, mine, principal)
-            return self._audited(operation, result, principal)
+                    return mine
+            return result
         recorded = self._operation_record(entity_id, resource, operation_id, operation, incarnation)
         if recorded is not None:
-            return self._audited_if_mine(operation, recorded, token, principal)
+            return recorded[0]
         raise RateLimiterUnavailable(
             f"Could not {operation.replace('_', ' ')} the bucket: it kept changing through {_OPERATION_MAX_ATTEMPTS} attempts",
             last_error,
@@ -7365,30 +7382,26 @@ class SyncRepository:
             resource=resource,
         )
 
-    def _audited(
+    def _operation_audit(
         self, operation: bucket_ops.Operation, result: BucketOperationResult, principal: str | None
-    ) -> BucketOperationResult:
-        """Audit an operation that landed, never failing the call (ADR-149).
+    ) -> dict[str, Any]:
+        """The ``Put`` of a reset or top-up's audit event, for its own transaction.
 
-        The caller would retry a reset or top-up that already happened, so a
-        failed audit write is logged, not raised.
+        Written with the shard writes and the operation record, so the grant
+        and its audit commit or fail together: a write whose response was lost
+        and that committed later is audited all the same, and a retry that
+        finds the record writes no second event (ADR-149, round-6 review).
         """
-        if result.shards:
-            try:
-                self._log_audit_event(
-                    action=AuditAction.BUCKET_RESET
-                    if operation == bucket_ops.RESET
-                    else AuditAction.BUCKET_TOPPED_UP,
-                    entity_id=result.entity_id,
-                    principal=principal,
-                    resource=result.resource,
-                    details={"amounts": dict(result.amounts), "shards": result.shards},
-                )
-            except Exception:
-                logger.warning(
-                    "%s landed but its audit event could not be written", operation, exc_info=True
-                )
-        return result
+        _event, item = self._build_audit_item(
+            action=AuditAction.BUCKET_RESET
+            if operation == bucket_ops.RESET
+            else AuditAction.BUCKET_TOPPED_UP,
+            entity_id=result.entity_id,
+            principal=principal,
+            resource=result.resource,
+            details={"amounts": dict(result.amounts), "shards": result.shards},
+        )
+        return {"Put": {"TableName": self.table_name, "Item": item}}
 
     def build_operation_record(
         self,
@@ -7505,32 +7518,10 @@ class SyncRepository:
                 entity_id, resource, operation_id, operation, incarnation
             )
         except Exception:
-            logger.warning(
-                "%s may have landed but its operation record could not be read; if it did, its audit event is missing",
-                operation,
-                exc_info=True,
-            )
             return None
         if recorded is None or recorded[1] != token:
             return None
         return recorded[0]
-
-    def _audited_if_mine(
-        self,
-        operation: bucket_ops.Operation,
-        recorded: tuple[BucketOperationResult, str | None],
-        token: str,
-        principal: str | None,
-    ) -> BucketOperationResult:
-        """Return a recorded result, auditing it only if this call wrote it.
-
-        Two calls with one idempotency key can race; only one transaction
-        commits, and only that call writes the audit event.
-        """
-        result, writer = recorded
-        if writer == token:
-            return self._audited(operation, result, principal)
-        return result
 
     def _get_item_consistent(self, pk: str, sk: str) -> dict[str, Any] | None:
         """One strongly consistent ``GetItem``."""
@@ -7601,6 +7592,7 @@ class SyncRepository:
         token: str,
         incarnation: str,
         entity: Entity | None,
+        principal: str | None,
         request_token: str,
     ) -> tuple[BucketOperationResult, bool]:
         """D5: a top-up with no bucket creates shard 0 holding its share plus the quota top-up.
@@ -7659,6 +7651,7 @@ class SyncRepository:
                     self.build_operation_record(
                         bucket_ops.TOP_UP, operation_id, result, now_ms, token, incarnation
                     ),
+                    self._operation_audit(bucket_ops.TOP_UP, result, principal),
                 ],
                 client_request_token=request_token,
             )

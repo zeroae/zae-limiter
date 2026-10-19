@@ -7682,14 +7682,20 @@ class TestResetAndTopUp:
         with patch.object(repo, "transact_write", side_effect=boom), pytest.raises(ClientError):
             repo.top_up("e", "r", {"cal": 1})
 
-    def test_an_audit_failure_after_the_commit_does_not_raise(self, repo, caplog):
+    def test_an_audit_that_cannot_be_built_writes_nothing(self, repo):
+        """The audit event rides in the operation's transaction (round-6
+        review): when it cannot be built, nothing is written and the call
+        raises, rather than landing an unaudited reset."""
         repo.set_limits("e", [_OP_RPM], resource="r")
         _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
         repo._now_ms = lambda: _OP_T0
-        with patch.object(repo, "_log_audit_event", side_effect=RuntimeError("throttled")):
-            result = repo.reset_bucket("e", "r")
-        assert result.shards == 1
-        assert "audit event could not be written" in caplog.text
+        with (
+            patch.object(repo, "_build_audit_item", side_effect=RuntimeError("throttled")),
+            pytest.raises(RuntimeError),
+        ):
+            repo.reset_bucket("e", "r")
+        assert _op_num(_op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 0
+        assert [e for e in repo.get_audit_events("e") if e.action == "bucket_reset"] == []
 
     def test_an_invalid_principal_is_refused_before_any_io(self, repo):
         with (

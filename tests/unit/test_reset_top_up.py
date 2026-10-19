@@ -828,10 +828,11 @@ class TestErrorsAfterLanding:
         ]
         assert len(events) == 1
 
-    async def test_an_error_whose_record_cannot_be_read_is_raised(self, limiter, clock, caplog):
-        """Round-4 review, F3: when both the write's response and the record
-        read fail, the error is raised and the possibly lost audit is logged at
-        WARNING, without the entity id."""
+    async def test_an_error_whose_record_cannot_be_read_is_raised(self, limiter, clock):
+        """When both the write's response and the record read fail, the error
+        is raised. The write landed, and its audit event with it: the event
+        rides in the same transaction (round-6 review; this was F3's lost
+        audit)."""
         from botocore.exceptions import ReadTimeoutError
 
         repo = limiter._repository
@@ -852,9 +853,49 @@ class TestErrorsAfterLanding:
                 await repo.top_up("e", "r", {"cal": 5})
         finally:
             client.transact_write_items = real
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert any("audit event is missing" in r.getMessage() for r in warnings)
-        assert all("'e'" not in r.getMessage() and " e " not in r.getMessage() for r in warnings)
+        events = [e for e in await repo.get_audit_events("e") if e.action == "bucket_topped_up"]
+        assert len(events) == 1
+
+    async def test_a_write_committing_after_the_record_read_is_audited(self, limiter, clock):
+        """Round-6 review, P1: the transaction times out, the record read finds
+        nothing, and the in-flight transaction commits just after. A keyed
+        retry then found a record that was "not mine", and nobody audited the
+        grant (0 events). With the audit in the transaction, it has one."""
+        from botocore.exceptions import ReadTimeoutError
+
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        await _drain(limiter, "e", "cal")
+        clock[0] += 1
+        real_tx = repo.transact_write
+        real_rec = repo._operation_record
+        deferred = []
+
+        async def tx(items, client_request_token=None):
+            deferred.append((items, client_request_token))
+            raise ReadTimeoutError(endpoint_url="https://dynamodb")
+
+        async def rec(*args, **kwargs):
+            out = await real_rec(*args, **kwargs)
+            if deferred:  # the in-flight transaction commits just after this read
+                items, token = deferred.pop()
+                await real_tx(items, client_request_token=token)
+            return out
+
+        with (
+            patch.object(repo, "transact_write", side_effect=tx),
+            patch.object(repo, "_operation_record", side_effect=rec),
+            pytest.raises(ReadTimeoutError),
+        ):
+            await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy-1", principal="ops")
+        again = await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy-1", principal="ops")
+        assert again.amounts == {"cal": 5}
+        assert await _tu(repo, "e", "cal") == 5_000
+        events = [e for e in await repo.get_audit_events("e") if e.action == "bucket_topped_up"]
+        assert len(events) == 1
+        assert events[0].principal == "ops"
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 5  # granted once
 
 
 class TestRecordsBelongToOneIncarnation:

@@ -73,6 +73,8 @@ REPOSITORY = {
     "_cleanup_entity_config_registry": NOT_BUCKET,
     "_initialize_version_record": NOT_BUCKET,
     "_log_audit_event": NOT_BUCKET,
+    "_build_audit_item": NOT_BUCKET,  # the audit item _log_audit_event puts
+    "_operation_audit": NOT_BUCKET,  # a reset / top-up's audit, in its transaction (ADR-149)
     "_register_namespace": NOT_BUCKET,
     "_require_readers": NOT_BUCKET,  # the version gate's client_min_version ratchet
     "_write_entity_config_flag": NOT_BUCKET,  # disabled / cascade on entity config
