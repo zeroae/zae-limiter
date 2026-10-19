@@ -104,8 +104,8 @@ def _validate_idempotency_key(key: str | None) -> None:
 def _validate_principal(principal: str | None) -> None:
     """The check ``_log_audit_event`` applies, run before any write (ADR-149).
 
-    A reset or top-up audits *after* it commits, so an invalid principal found
-    there would raise for an operation that already happened.
+    A reset or top-up's audit event rides in its transaction, so an invalid
+    principal is refused before any read rather than after the plan.
     """
     if principal is not None and (not principal.startswith("arn:")):
         validate_identifier(principal, "principal")
@@ -4883,13 +4883,30 @@ class SyncRepository:
         Raises:
             InvalidIdentifierError: If principal is invalid
         """
+        event, item = self._build_audit_item(action, entity_id, principal, resource, details)
+        client = self._get_client()
+        client.put_item(TableName=self.table_name, Item=item)
+        return event
+
+    def _build_audit_item(
+        self,
+        action: str,
+        entity_id: str,
+        principal: str | None = None,
+        resource: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> tuple[AuditEvent, dict[str, Any]]:
+        """Build an audit event and its DynamoDB item, writing nothing.
+
+        :meth:`_log_audit_event` puts it on its own; a reset or top-up puts it
+        in the same transaction as the operation it records (ADR-149).
+        """
         if principal is None:
             principal = self._get_caller_identity_arn()
         if principal is not None and (not principal.startswith("arn:")):
             validate_identifier(principal, "principal")
         audit_retention_days = self._get_audit_retention_days()
         ttl_seconds = audit_retention_days * 86400
-        client = self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         event_id = self._generate_event_id()
         event = AuditEvent(
@@ -4915,8 +4932,7 @@ class SyncRepository:
             "GSI4PK": {"S": self._namespace_id},
             "GSI4SK": {"S": schema.pk_audit(self._namespace_id, entity_id)},
         }
-        client.put_item(TableName=self.table_name, Item=item)
-        return event
+        return (event, item)
 
     def get_audit_events(
         self, entity_id: str, limit: int = 100, start_event_id: str | None = None
@@ -7104,16 +7120,21 @@ class SyncRepository:
             idempotency_key: Names this operation (1-64 characters: letters,
                 digits, ``.``, ``_``, ``:``, ``-``). A retry with the same key
                 within three days is applied once and returns the first call's
-                result. **Without a key, an error from this call leaves the
+                result, even when that call changed nothing (no bucket yet: it
+                is recorded, result 0). **Without a key, an error from this call leaves the
                 outcome unknown**: the reset may or may not have landed, and
                 retrying it may apply it twice. One residual: if the
                 entity is deleted and recreated *while* the call is in flight,
                 its record carries the old incarnation and a retry under the
-                new one is applied again, once. And a call made while the
-                entity has no META record reuses any record for the key, so
-                right after a ``delete_entity`` it can return the deleted
-                entity's result and apply nothing (an under-grant, never an
-                over-grant).
+                new one is applied again, once. And a record made while the
+                entity had no META record matches every incarnation, both
+                ways: a call with no META reuses any record for the key (right
+                after a ``delete_entity``, the deleted entity's), and a record
+                written before META existed outlives a later delete and
+                recreate (when ``delete_entity`` could not find it). Either
+                way the call returns the old result and applies nothing: an
+                under-grant, never an over-grant. Use a fresh key once the
+                entity exists.
 
         Returns:
             The shards written and, per limit, the tokens restored.
@@ -7151,12 +7172,13 @@ class SyncRepository:
         period.
 
         - A **quota** gains exactly the amount, spread over its shards by
-          the share of the allowance each one holds (``1 / gc``). What lands
-          above a shard's ceiling is recorded as allowance topped up this
-          period (``b_{name}_tu``) and lasts until the next reset or window
-          roll. That needs Lambdas at 0.17.0 or later (an older aggregator
-          clamps it away): the version is checked once per repository and
-          ``client_min_version`` is raised to 0.17.0.
+          the share of the allowance each one holds (``1 / gc``). Every
+          token a shard gains is recorded as allowance topped up this period
+          (``b_{name}_tu`` += its portion), whatever the shard held, and lasts
+          until the next reset or window roll. That needs Lambdas at 0.17.0
+          or later (an older aggregator clamps it away): the version is
+          checked once per repository and ``client_min_version`` is raised
+          to 0.17.0.
         - A **session** quota with no live window opens one now, so the
           purchase starts the session.
         - A **dripping** limit gains at most the room below its ceiling (a
@@ -7174,16 +7196,22 @@ class SyncRepository:
             idempotency_key: Names this operation (1-64 characters: letters,
                 digits, ``.``, ``_``, ``:``, ``-``) — a purchase id, say. A
                 retry with the same key within three days is applied once and
-                returns the first call's result. **Without a key, an error
+                returns the first call's result, even when that call changed
+                nothing (no bucket yet, or only dripping limits: it is
+                recorded, result 0). **Without a key, an error
                 from this call leaves the outcome unknown**: the tokens may or
                 may not have been granted, and retrying may grant them twice. One residual: if the
                 entity is deleted and recreated *while* the call is in flight,
                 its record carries the old incarnation and a retry under the
-                new one is applied again, once. And a call made while the
-                entity has no META record reuses any record for the key, so
-                right after a ``delete_entity`` it can return the deleted
-                entity's result and apply nothing (an under-grant, never an
-                over-grant).
+                new one is applied again, once. And a record made while the
+                entity had no META record matches every incarnation, both
+                ways: a call with no META reuses any record for the key (right
+                after a ``delete_entity``, the deleted entity's), and a record
+                written before META existed outlives a later delete and
+                recreate (when ``delete_entity`` could not find it). Either
+                way the call returns the old result and applies nothing: an
+                under-grant, never an over-grant. Use a fresh key once the
+                entity exists.
 
         Returns:
             The shards written and, per limit, the tokens granted.
@@ -7191,8 +7219,8 @@ class SyncRepository:
         Raises:
             ValidationError: An amount is not a positive integer, or a name is
                 not a limit configured for the pair.
-            VersionMismatchError: A quota top-up above the plan against Lambdas
-                predating 0.17.0.
+            VersionMismatchError: A quota top-up against Lambdas predating
+                0.17.0.
             ResourceDisabled: The bucket does not exist yet and the resource is
                 disabled for the entity.
             RateLimiterUnavailable: Another writer kept changing the bucket
@@ -7268,38 +7296,47 @@ class SyncRepository:
                     entity_id, resource, operation_id, operation, incarnation
                 )
                 if recorded is not None:
-                    return self._audited_if_mine(operation, recorded, token, principal)
+                    return recorded[0]
                 time.sleep(random.uniform(0, _OPERATION_RETRY_BASE_DELAY * 2**attempt))
             now_ms = self._now_ms()
             shards, raw = self._read_operation_shards(entity_id, resource, now_ms)
             if not shards:
                 if operation == bucket_ops.RESET:
-                    return BucketOperationResult(
+                    result = BucketOperationResult(
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
                     )
-                try:
-                    result, landed = self._top_up_new_bucket(
-                        entity_id,
-                        resource,
-                        resolved,
-                        source,
-                        requested,
-                        now_ms,
-                        operation_id,
-                        token,
-                        incarnation,
-                        entity,
-                        f"{token}-c{attempt}",
+                else:
+                    try:
+                        result, landed = self._top_up_new_bucket(
+                            entity_id,
+                            resource,
+                            resolved,
+                            source,
+                            requested,
+                            now_ms,
+                            operation_id,
+                            token,
+                            incarnation,
+                            entity,
+                            principal,
+                            f"{token}-c{attempt}",
+                        )
+                    except Exception:
+                        mine = self._landed_by(
+                            entity_id, resource, operation_id, operation, token, incarnation
+                        )
+                        if mine is None:
+                            raise
+                        return mine
+                    if not landed:
+                        continue
+                if result.shards or idempotency_key is None:
+                    return result
+                items = [
+                    self.build_operation_record(
+                        operation, operation_id, result, now_ms, token, incarnation
                     )
-                except Exception:
-                    mine = self._landed_by(
-                        entity_id, resource, operation_id, operation, token, incarnation
-                    )
-                    if mine is None:
-                        raise
-                    return self._audited(operation, mine, principal)
-                if not landed:
-                    continue
+                ]
             else:
                 top = max(shard.shard_count for shard in shards)
                 lagging = [shard for shard in shards if shard.shard_count < top]
@@ -7323,40 +7360,40 @@ class SyncRepository:
                 if plan.raises_ceiling:
                     self._require_top_up_readers()
                 result = BucketOperationResult(entity_id, resource, len(plan.writes), plan.amounts)
-                try:
-                    self.transact_write(
-                        [
-                            *(
-                                self.build_bucket_operation(entity_id, resource, write)
-                                for write in plan.writes
-                            ),
-                            self.build_operation_record(
-                                operation, operation_id, result, now_ms, token, incarnation
-                            ),
-                        ],
-                        client_request_token=f"{token}-{attempt}",
-                    )
-                except ClientError as e:
-                    if e.response.get("Error", {}).get("Code") in _OPERATION_RETRY_CODES:
-                        last_error = e
-                        continue
-                    mine = self._landed_by(
-                        entity_id, resource, operation_id, operation, token, incarnation
-                    )
-                    if mine is None:
-                        raise
-                    return self._audited(operation, mine, principal)
-                except Exception:
-                    mine = self._landed_by(
-                        entity_id, resource, operation_id, operation, token, incarnation
-                    )
-                    if mine is None:
-                        raise
-                    return self._audited(operation, mine, principal)
-            return self._audited(operation, result, principal)
+                ttl = self._operation_ttl(resolved, source, now_ms)
+                items = [
+                    *(
+                        self.build_bucket_operation(entity_id, resource, write, ttl)
+                        for write in plan.writes
+                    ),
+                    self.build_operation_record(
+                        operation, operation_id, result, now_ms, token, incarnation
+                    ),
+                ]
+            items.append(self._operation_audit(operation, result, principal))
+            try:
+                self.transact_write(items, client_request_token=f"{token}-{attempt}")
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") in _OPERATION_RETRY_CODES:
+                    last_error = e
+                    continue
+                mine = self._landed_by(
+                    entity_id, resource, operation_id, operation, token, incarnation
+                )
+                if mine is None:
+                    raise
+                return mine
+            except Exception:
+                mine = self._landed_by(
+                    entity_id, resource, operation_id, operation, token, incarnation
+                )
+                if mine is None:
+                    raise
+                return mine
+            return result
         recorded = self._operation_record(entity_id, resource, operation_id, operation, incarnation)
         if recorded is not None:
-            return self._audited_if_mine(operation, recorded, token, principal)
+            return recorded[0]
         raise RateLimiterUnavailable(
             f"Could not {operation.replace('_', ' ')} the bucket: it kept changing through {_OPERATION_MAX_ATTEMPTS} attempts",
             last_error,
@@ -7365,30 +7402,26 @@ class SyncRepository:
             resource=resource,
         )
 
-    def _audited(
+    def _operation_audit(
         self, operation: bucket_ops.Operation, result: BucketOperationResult, principal: str | None
-    ) -> BucketOperationResult:
-        """Audit an operation that landed, never failing the call (ADR-149).
+    ) -> dict[str, Any]:
+        """The ``Put`` of a reset or top-up's audit event, for its own transaction.
 
-        The caller would retry a reset or top-up that already happened, so a
-        failed audit write is logged, not raised.
+        Written with the shard writes and the operation record, so the grant
+        and its audit commit or fail together: a write whose response was lost
+        and that committed later is audited all the same, and a retry that
+        finds the record writes no second event (ADR-149, round-6 review).
         """
-        if result.shards:
-            try:
-                self._log_audit_event(
-                    action=AuditAction.BUCKET_RESET
-                    if operation == bucket_ops.RESET
-                    else AuditAction.BUCKET_TOPPED_UP,
-                    entity_id=result.entity_id,
-                    principal=principal,
-                    resource=result.resource,
-                    details={"amounts": dict(result.amounts), "shards": result.shards},
-                )
-            except Exception:
-                logger.warning(
-                    "%s landed but its audit event could not be written", operation, exc_info=True
-                )
-        return result
+        _event, item = self._build_audit_item(
+            action=AuditAction.BUCKET_RESET
+            if operation == bucket_ops.RESET
+            else AuditAction.BUCKET_TOPPED_UP,
+            entity_id=result.entity_id,
+            principal=principal,
+            resource=result.resource,
+            details={"amounts": dict(result.amounts), "shards": result.shards},
+        )
+        return {"Put": {"TableName": self.table_name, "Item": item}}
 
     def build_operation_record(
         self,
@@ -7505,32 +7538,10 @@ class SyncRepository:
                 entity_id, resource, operation_id, operation, incarnation
             )
         except Exception:
-            logger.warning(
-                "%s may have landed but its operation record could not be read; if it did, its audit event is missing",
-                operation,
-                exc_info=True,
-            )
             return None
         if recorded is None or recorded[1] != token:
             return None
         return recorded[0]
-
-    def _audited_if_mine(
-        self,
-        operation: bucket_ops.Operation,
-        recorded: tuple[BucketOperationResult, str | None],
-        token: str,
-        principal: str | None,
-    ) -> BucketOperationResult:
-        """Return a recorded result, auditing it only if this call wrote it.
-
-        Two calls with one idempotency key can race; only one transaction
-        commits, and only that call writes the audit event.
-        """
-        result, writer = recorded
-        if writer == token:
-            return self._audited(operation, result, principal)
-        return result
 
     def _get_item_consistent(self, pk: str, sk: str) -> dict[str, Any] | None:
         """One strongly consistent ``GetItem``."""
@@ -7601,6 +7612,7 @@ class SyncRepository:
         token: str,
         incarnation: str,
         entity: Entity | None,
+        principal: str | None,
         request_token: str,
     ) -> tuple[BucketOperationResult, bool]:
         """D5: a top-up with no bucket creates shard 0 holding its share plus the quota top-up.
@@ -7632,12 +7644,8 @@ class SyncRepository:
                 state.tokens_milli += amount * 1000
                 state.topped_up_milli = amount * 1000
         self._require_top_up_readers()
-        multiplier = self._bucket_ttl_refill_multiplier
-        ttl_seconds = (
-            None
-            if source in ("entity", "entity_default") or multiplier <= 0
-            else schema.calculate_bucket_ttl_seconds(resolved, multiplier)
-        )
+        ttl = self._operation_ttl(resolved, source, now_ms)
+        ttl_seconds = None if ttl is None else ttl - now_ms // 1000
         create = self.build_composite_create(
             entity_id=entity_id,
             resource=resource,
@@ -7659,6 +7667,7 @@ class SyncRepository:
                     self.build_operation_record(
                         bucket_ops.TOP_UP, operation_id, result, now_ms, token, incarnation
                     ),
+                    self._operation_audit(bucket_ops.TOP_UP, result, principal),
                 ],
                 client_request_token=request_token,
             )
@@ -7667,6 +7676,36 @@ class SyncRepository:
                 raise
             return (result, False)
         return (result, True)
+
+    def _operation_ttl(
+        self, resolved: list[Limit], source: ConfigSource | None, now_ms: int
+    ) -> int | None:
+        """The ``ttl`` (epoch seconds) a reset or top-up stamps, or None to leave it.
+
+        A bucket on resource or system defaults carries a ``ttl`` (ADR-136),
+        and a top-up that left it alone could be swept, purchase and all,
+        before the period it was bought for ends (round-6 review, P3). So the
+        write SETs the later of the acquire path's rule (``now`` + the slowest
+        recovery x the multiplier) and the end of every quota's current
+        period: a calendar quota's next reset edge, a session quota's window,
+        which ends at most ``reset_after`` from ``now`` (a window a top-up
+        opens, D4, included). An entity-level bucket carries no ``ttl`` and
+        gets none; with the multiplier at 0 nothing is stamped either.
+        """
+        seconds = schema.calculate_bucket_ttl_seconds(resolved, self._bucket_ttl_refill_multiplier)
+        if source in ("entity", "entity_default") or seconds is None:
+            return None
+        ttl = schema.calculate_ttl(now_ms, seconds)
+        for limit in resolved:
+            if limit.reset_after is not None:
+                period_end_ms: int | None = now_ms + int(limit.reset_after.total_seconds() * 1000)
+            elif limit.reset_schedule:
+                period_end_ms = schedule.next_reset_edge(limit.reset_schedule, now_ms=now_ms)
+            else:
+                continue
+            if period_end_ms is not None:
+                ttl = max(ttl, -(-period_end_ms // 1000))
+        return ttl
 
     def _require_top_up_readers(self) -> None:
         """Refuse a quota top-up above the plan the stack's readers would clamp (ADR-149).
@@ -7687,7 +7726,7 @@ class SyncRepository:
         self._top_up_readers_proven = True
 
     def build_bucket_operation(
-        self, entity_id: str, resource: str, write: bucket_ops.ShardWrite
+        self, entity_id: str, resource: str, write: bucket_ops.ShardWrite, ttl: int | None = None
     ) -> dict[str, Any]:
         """Build one shard's rf-locked reset or top-up ``Update`` (ADR-149 §4.2).
 
@@ -7696,13 +7735,15 @@ class SyncRepository:
         to force one materialising pass that clamps anything credited in
         between, plus the grant counts, windows, applied markers and top-ups the
         plan sets and the ``tu`` / ``wtc`` it removes. Conditioned on the
-        ``rf`` and ``shard_count`` read; ``tc``, ``disabled``, ``ttl`` and the
-        owner stamps are never touched. The call's operation record rides in
-        the same transaction (:meth:`build_operation_record`).
+        ``rf`` and ``shard_count`` read; ``tc``, ``disabled`` and the owner
+        stamps are never touched, and ``ttl`` only when one is given. The
+        call's operation record rides in the same transaction (:meth:`build_operation_record`).
 
         Tokens are positional (#634): ``#ot``/``:ot`` deltas, ``#og``/``:og``
         grant counts, ``#ow``/``:ow`` + ``#or``/``:or`` windows, ``#oa``/``:oa``
-        applied markers, ``#ou``/``:ou`` top-ups, ``#ox`` / ``#oy`` removals.
+        applied markers, ``#ou``/``:ou`` top-ups, ``#ox`` / ``#oy`` removals,
+        ``#ottl``/``:ottl`` the ``ttl`` (epoch seconds) when one is given: a
+        bucket on resource or system defaults (:meth:`_operation_ttl`).
         """
         names: dict[str, str] = {"#rf": schema.BUCKET_FIELD_RF, "#vu": schema.BUCKET_FIELD_VU}
         values: dict[str, Any] = {
@@ -7745,6 +7786,10 @@ class SyncRepository:
         for i, name in enumerate(sorted(write.cleared_window_marks)):
             names[f"#oy{i}"] = attr(name, schema.BUCKET_FIELD_WTC)
             remove_parts.append(f"#oy{i}")
+        if ttl is not None:
+            names["#ottl"] = "ttl"
+            values[":ottl"] = {"N": str(ttl)}
+            set_parts.append("#ottl = :ottl")
         names["#osc"] = "shard_count"
         if write.shard_count_stored:
             values[":osc"] = {"N": str(write.shard_count)}

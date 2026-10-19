@@ -166,10 +166,21 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
   failed every second call with the same key for ten minutes (third review). That exception and
   `TransactionInProgressException` (the SDK's retry of a transaction still running) are unclear
   outcomes like the others, resolved by the record, never raised to the caller. The record
-  also stores its **writer** (that nonce): a call audits only an operation its own transaction
-  committed, so two callers racing with one key write one audit event. Any other error after
-  the write (a read timeout, a dropped connection, a non-retryable 5xx) also reads the record:
-  if this call wrote it, the result is audited and returned, else the error is raised.
+  also stores its **writer** (that nonce), so a call can tell its own landed write from a
+  same-key duplicate's. Any other error after the write (a read timeout, a dropped connection,
+  a non-retryable 5xx) also reads the record: if this call wrote it, the result is returned,
+  else the error is raised.
+- **The audit event rides in the transaction (round-6 review).** The shard writes, the
+  operation record and the audit event `Put` are one `TransactWriteItems`, so a grant and its
+  audit commit or fail together and exactly one event exists per operation, however the call
+  ends. A separate post-commit write lost the event when a timed-out transaction committed
+  after the record read (P1: granted, 0 events), or when the record read failed too (the
+  former residual F3). A retry that finds the record writes nothing. At most 32 shard writes +
+  record + audit = 34 items, inside the limit of 100; the audit PK `{ns}/AUDIT#…` is inside
+  ns-full's `LeadingKeys`, and `PutItem` authorises a transaction's `Put`. The item is the one
+  `_log_audit_event` writes (`_build_audit_item`: the same `ttl` from the audit retention, the
+  same GSI4 keys), so archival is unchanged. An audit that cannot be built (the principal
+  lookup fails) now fails the call before any write.
 - **A record belongs to one incarnation of its entity.** `create_entity` stamps META with
   `incarnation` (a ULID); each call reads META once, strongly consistent (**+1 RCU per call**),
   and stores it on the record as `ent`. A record of another incarnation reads as absent and the
@@ -191,6 +202,13 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
   condition is `attribute_not_exists(PK) OR (:ent <> :legacy AND ent <> :ent AND ent <> :legacy)`.
   **Trade-off:** a caller with no META right after a delete gets the old entity's result
   instead of a new grant. That under-grants and never over-grants.
+- **Residual P2 — a pre-META record outlives a recreate (round-6 review, accepted).** The
+  second case of the same trade-off. A top-up with key K made before the entity had META
+  writes its record with `ent = "-"`; if shard 0 then expires, `delete_entity` cannot find the
+  record, and after `create_entity` a top-up with K matches it, returns the old result and
+  grants 0 (probe: `first={'cal': 5} recreated_result={'cal': 5} tk_after=0`). Behaviour is
+  kept: making `"-"` match one way only is what over-granted in round 5. It ends with the
+  record's three-day TTL; callers should use a fresh key once the entity exists.
   The create path reads META once, for both the identity and the cascade stamps (F4).
 - **Residual F2 — a delete and recreate during one call.** The call reads META, then writes;
   if the entity is deleted and recreated in between, the record carries the old incarnation
@@ -212,9 +230,6 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
   `delete_entity` could not find, above) therefore matches an entity recreated within the
   same second, and a top-up with the same key returns the old result and grants 0. It ends
   once #716 merges, because #716 writes a random `pinc` on every create.
-- **Residual F3 — a lost audit.** When a write's response is unclear and the record read that
-  would resolve it fails too, the error is raised (the caller retries with its key); if the
-  write had landed, its audit event is not written. Logged at WARNING, without the entity id.
 - **Known, out of scope (pre-existing in `delete_entity`):** `BatchWriteItem`'s
   `UnprocessedItems` is ignored, its META and GSI3 queries are not paginated, and the ns-full
   policy lacks `BatchWriteItem`. None is introduced by #470; each predates it.
@@ -223,11 +238,28 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
   first call's result and writes nothing (+1 RCU to read the record first). A key reused for the
   other kind of operation is a `ValidationError`; keys are 1-64 of `[A-Za-z0-9._:-]`. **Without
   a key, an error from these calls leaves the outcome unknown.**
+- **A keyed no-op is recorded too (round-6 review, P4).** A reset of a missing bucket, or a
+  top-up of dripping limits only with no bucket, writes nothing to a bucket. With a key it
+  still writes its operation record (result 0, same condition and incarnation rules) and its
+  audit event (zero amounts, so the trail shows the call happened), in one transaction; before,
+  a retry with the key after the bucket appeared applied the operation (probe:
+  `first={'rpm': 0}/0 retry={'rpm': 5}/1`). The retry now returns the first result, and the
+  key-kind check holds. Without a key a no-op still writes nothing.
 - **Nothing fails after the commit.** The principal is validated with the other inputs before
-  any I/O, and a failed audit write is logged, never raised.
+  any I/O, and the audit event is part of the commit itself.
 - `SET vu = 0`. This forces one materialising pass per shard on the next acquire. That pass
   clamps any credit that slipped in between the read and the write, and re-stamps the correct
   `vu` (validator finding 4; the same mechanism as #679).
+- **`SET ttl` on a bucket that carries one (round-6 review, P3).** A bucket on resource or
+  system defaults has a `ttl` (ADR-136), and a write that left it alone let DynamoDB sweep the
+  item, purchase and all, before the period it was bought for ended (probe: `ttl` 60 s out,
+  period end 12 h out). Every reset and top-up write on such a bucket, and D5's create, stamps
+  the later of the acquire path's `now + calculate_bucket_ttl_seconds(limits, multiplier)` and
+  the end of every quota's current period (a calendar quota's next reset edge; a session
+  quota's window, which ends at most `reset_after` from now, so a window a D4 top-up opens
+  never outlives its bucket). With the multiplier at 1 or more the first already covers the
+  second; the `max` keeps that true by construction. An entity-level bucket never gets a `ttl`,
+  and with the multiplier at 0 nothing is stamped. Same write, no extra cost.
 - **Condition:** `rf = :read_rf AND shard_count = :read_sc`, plus the existing I4 pin when `gc`
   is written.
 - **S = 1:** a single `UpdateItem`. `transact_write` already uses the single-item API, so this
@@ -339,11 +371,10 @@ writes `tu` must pass `_require_readers("0.17.0", …)` and ratchet `client_min_
 - **Manifest / provisioner / CFN:** **none.** These are one-off imperative events, not desired
   state. A manifest entry would re-apply on every `limits apply`.
 - **Audit:** `AuditAction.BUCKET_RESET` and `BUCKET_TOPPED_UP`, on `entity_id`, with
-  `resource`, the limits, the per-limit amounts, `shards`, and `principal`. Written after the
-  transaction commits, and only when at least one shard was written. Because it is written
-  after the commit, nothing in it may fail the call (the caller would retry an operation that
-  happened): the principal is validated with the other inputs before any I/O, and a failed
-  audit write is logged as a warning.
+  `resource`, the limits, the per-limit amounts, `shards`, and `principal`. Written in the
+  operation's own transaction, and only when at least one shard is written, so it commits
+  exactly when the operation does. The principal is validated with the other inputs before
+  any I/O.
 - **Docs:** user guide section in the #678 guide (plans, purchases, sessions);
   `docs/operations/rate-limits.md` runbook; CLI and API references; CLAUDE.md writer table.
 
@@ -358,17 +389,21 @@ Assumptions:
 - Transactional writes cost 2 WRU per item.
 - Prices are us-east-1 on-demand: $0.125/M RRU, $0.625/M WRU.
 
-Every write is one transaction of the shard updates plus the operation record (§4.2), so a
-one-shard operation is a 2-item transaction: 4 WRU where a bare `UpdateItem` was 1.
+Every write is one transaction of the shard updates, the operation record and the audit
+event (§4.2), so a one-shard operation is a 3-item transaction: 6 WRU where a bare
+`UpdateItem` was 1. The audit event costs 2 WRU in the transaction against 1 as a separate
+`PutItem` (+1 WCU per call), and saves the separate round trip.
 
-| Shards | Round trips | RCU | WCU (incl. 1 audit) | $/M operations | Afterwards (one slow pass per shard) |
+| Shards | Round trips | RCU | WCU (audit in the transaction) | $/M operations | Afterwards (one slow pass per shard) |
 |-------:|------------:|----:|-----:|----:|----:|
-| 1 | 4 (config, query, get, transaction) + audit | 3 | 5 | **$3.50** | +1 RCU +1 WCU ≈ +$0.75 |
-| 4 | 4 + audit | 6 | 11 | **$7.63** | ≈ +$3.00 |
-| 32 | 4 + audit | 34 | 67 | **$46.13** | ≈ +$24.00 |
+| 1 | 4 (config, query, get, transaction) | 3 | 6 | **$4.13** | +1 RCU +1 WCU ≈ +$0.75 |
+| 4 | 4 | 6 | 12 | **$8.25** | ≈ +$3.00 |
+| 32 | 4 | 34 | 68 | **$46.75** | ≈ +$24.00 |
 
 - **Entity identity:** +1 RCU on every call (the META read above).
-- **Idempotency key:** +1 RCU (the record is read first).
+- **Idempotency key:** +1 RCU (the record is read first). A keyed no-op (no bucket to write)
+  costs one 2-item transaction, the record and the audit event: 4 WRU, where it wrote nothing
+  before. Without a key it still writes nothing.
 - **After an unclear failure:** +1 RCU per retry to read the record.
 
 - **Gated top-up:** +1 RCU on the first call per repository (the version read, strongly

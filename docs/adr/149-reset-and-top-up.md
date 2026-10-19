@@ -61,9 +61,10 @@ process's rejection cache (ADR-147) and are audited. Details, costs and open dec
 - The aggregator and concurrent slow paths are excluded by the `rf` lock they already honour.
 
 **Negative:**
-- Cost is O(shards) reads and two write units per shard plus two for the operation record,
-  against one delete per shard in #471: even a one-shard operation is a two-item transaction
-  (4 WRU where one `UpdateItem` was 1).
+- Cost is O(shards) reads and two write units per shard, plus two for the operation record
+  and two for the audit event, which ride in the same transaction so a grant and its audit
+  commit together: even a one-shard operation is a three-item transaction (6 WRU where one
+  `UpdateItem` and a separate audit `PutItem` were 2), against one delete per shard in #471.
 - Without an idempotency key, an error from a reset or top-up leaves its outcome unknown to the
   caller; the operation record lives three days.
 - A record is tied to the entity's incarnation (#716's `pinc`), read before the write rather

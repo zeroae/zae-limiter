@@ -40,6 +40,7 @@ from zae_limiter.schema import (
     WCU_LIMIT_NAME,
     bucket_attr,
     calculate_bucket_ttl,
+    calculate_bucket_ttl_seconds,
     limit_attr,
     parse_bucket_attr,
     parse_bucket_sk,
@@ -9122,14 +9123,122 @@ class TestResetAndTopUp:
         ):
             await repo.top_up("e", "r", {"cal": 1})
 
-    async def test_an_audit_failure_after_the_commit_does_not_raise(self, repo, caplog):
+    async def test_an_audit_that_cannot_be_built_writes_nothing(self, repo):
+        """The audit event rides in the operation's transaction (round-6
+        review): when it cannot be built, nothing is written and the call
+        raises, rather than landing an unaudited reset."""
         await repo.set_limits("e", [_OP_RPM], resource="r")
         await _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
         repo._now_ms = lambda: _OP_T0
-        with patch.object(repo, "_log_audit_event", side_effect=RuntimeError("throttled")):
-            result = await repo.reset_bucket("e", "r")
-        assert result.shards == 1  # it landed, and the caller is told so
-        assert "audit event could not be written" in caplog.text
+        with (
+            patch.object(repo, "_build_audit_item", side_effect=RuntimeError("throttled")),
+            pytest.raises(RuntimeError),
+        ):
+            await repo.reset_bucket("e", "r")
+        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 0
+        assert [e for e in await repo.get_audit_events("e") if e.action == "bucket_reset"] == []
+
+    async def test_a_top_up_refreshes_a_default_buckets_ttl(self, repo):
+        """Round-6 review, P3: a top-up left a near-expiry `ttl` alone, so the
+        item and its purchase could be swept in 60 s with 12 h of the period
+        left. It now stamps the acquire path's ttl, never before the period end."""
+        await _stamp_deployed(repo)
+        await repo.set_resource_defaults("r", [_OP_CAL])
+        now_s = (_OP_T0 + 1) // 1000
+        await _op_put_shard(
+            repo, "e", "r", [_OP_CAL], tokens={"cal": 0}, extra={"ttl": {"N": str(now_s + 60)}}
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        await repo.top_up("e", "r", {"cal": 500})
+        item = await _op_item(repo, "e", "r")
+        ttl = int(item["ttl"]["N"])
+        period_end_s = (_OP_T0 // 86_400_000 + 1) * 86_400
+        assert ttl >= period_end_s
+        assert ttl == now_s + calculate_bucket_ttl_seconds([_OP_CAL], 7)
+
+    async def test_a_reset_refreshes_a_default_buckets_ttl(self, repo):
+        await repo.set_resource_defaults("r", [_OP_RPM])
+        now_s = (_OP_T0 + 1) // 1000
+        await _op_put_shard(
+            repo, "e", "r", [_OP_RPM], tokens={"rpm": 0}, extra={"ttl": {"N": str(now_s + 1)}}
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        await repo.reset_bucket("e", "r")
+        item = await _op_item(repo, "e", "r")
+        assert int(item["ttl"]["N"]) == now_s + calculate_bucket_ttl_seconds([_OP_RPM], 7)
+
+    async def test_a_top_up_adds_no_ttl_to_an_entity_bucket(self, repo):
+        """ADR-136: an entity-level bucket persists; a top-up gives it no ttl."""
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
+        repo._now_ms = lambda: _OP_T0 + 1
+        await repo.top_up("e", "r", {"cal": 5})
+        assert "ttl" not in await _op_item(repo, "e", "r")
+
+    async def test_a_window_a_top_up_opens_ends_before_its_ttl(self, repo):
+        """D4: a session top-up with no live window opens one; the bucket's
+        ttl outlives it."""
+        await _stamp_deployed(repo)
+        await repo.set_resource_defaults("r", [_OP_SES])
+        now_s = (_OP_T0 + 1) // 1000
+        await _op_put_shard(
+            repo, "e", "r", [_OP_SES], tokens={"ses": 0}, extra={"ttl": {"N": str(now_s + 60)}}
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        await repo.top_up("e", "r", {"ses": 5})
+        item = await _op_item(repo, "e", "r")
+        window_end_ms = _op_num(item, "ses", BUCKET_FIELD_WS) + 5 * 3_600_000
+        assert int(item["ttl"]["N"]) * 1000 >= window_end_ms
+
+    async def test_a_created_bucket_outlives_its_period(self, repo):
+        """D5's create takes the same rule, and a reset edge out of reach (a
+        leap day three years off) adds nothing to it."""
+        leap = Limit.quota("leap", 10, cron="0 0 29 2 *")
+        await _stamp_deployed(repo)
+        await repo.set_resource_defaults("r", [_OP_SES, leap])
+        repo._now_ms = lambda: _OP_T0
+        await repo.top_up("e", "r", {"ses": 5})
+        item = await _op_item(repo, "e", "r")
+        now_s = _OP_T0 // 1000
+        assert int(item["ttl"]["N"]) == now_s + calculate_bucket_ttl_seconds([_OP_SES, leap], 7)
+        assert int(item["ttl"]["N"]) * 1000 >= _op_num(item, "ses", BUCKET_FIELD_WS) + 18_000_000
+
+    async def test_a_keyed_no_op_top_up_is_recorded(self, repo):
+        """Round-6 review, P4: a keyed dripping-only top-up with no bucket wrote
+        nothing, so a retry with its key after the bucket appeared applied it
+        ({'rpm': 5}, 1 shard). The no-op now records itself, result 0."""
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        repo._now_ms = lambda: _OP_T0
+        first = await repo.top_up("e", "r", {"rpm": 5}, idempotency_key="k")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        again = await repo.top_up("e", "r", {"rpm": 5}, idempotency_key="k")
+        assert again == first
+        assert again.amounts == {"rpm": 0} and again.shards == 0
+        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 0
+        events = [e for e in await repo.get_audit_events("e") if e.action == "bucket_topped_up"]
+        assert [(e.details["amounts"], e.details["shards"]) for e in events] == [({"rpm": 0}, 0)]
+
+    async def test_a_keyed_no_op_reset_is_recorded(self, repo):
+        """The same for a reset of a missing bucket, and the record's kind
+        holds: the key cannot then be reused for a top-up."""
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        repo._now_ms = lambda: _OP_T0
+        first = await repo.reset_bucket("e", "r", idempotency_key="k")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        assert await repo.reset_bucket("e", "r", idempotency_key="k") == first
+        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 0
+        with pytest.raises(ValidationError):
+            await repo.top_up("e", "r", {"rpm": 5}, idempotency_key="k")
+        events = [e for e in await repo.get_audit_events("e") if e.action == "bucket_reset"]
+        assert len(events) == 1
+
+    async def test_an_unkeyed_no_op_writes_nothing(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        repo._now_ms = lambda: _OP_T0
+        with patch.object(repo, "transact_write", side_effect=AssertionError("write")):
+            assert (await repo.reset_bucket("e", "r")).shards == 0
+            assert (await repo.top_up("e", "r", {"rpm": 5})).shards == 0
 
     async def test_an_invalid_principal_is_refused_before_any_io(self, repo):
         with (
