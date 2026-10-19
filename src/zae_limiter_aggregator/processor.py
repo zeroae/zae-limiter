@@ -45,9 +45,9 @@ from zae_limiter.schema import (
     BUCKET_FIELD_WTC,
     BUCKET_PREFIX,
     BUCKET_SCHED_NONE,
+    MAX_SHARD_COUNT,
     SK_BUCKET,
     WCU_LIMIT_NAME,
-    WCU_SHARD_WARN_THRESHOLD,
     bucket_attr,
     gsi2_pk_resource,
     gsi2_sk_bucket,
@@ -309,6 +309,9 @@ def process_stream_records(
                     state,
                     wcu_tk_milli=wcu_info.tk_milli,
                     wcu_capacity_milli=wcu_info.cp_milli,
+                    wcu_refill_amount_milli=wcu_info.ra_milli,
+                    wcu_refill_period_ms=wcu_info.rp_ms,
+                    now_ms=now_ms,
                 )
             except Exception as e:
                 error_msg = f"Error in proactive sharding: {e}"
@@ -1354,12 +1357,27 @@ def try_proactive_shard(
     state: BucketRefillState,
     wcu_tk_milli: int,
     wcu_capacity_milli: int,
+    *,
+    wcu_refill_amount_milli: int = 0,
+    wcu_refill_period_ms: int = 0,
+    now_ms: int | None = None,
 ) -> bool:
     """Proactively double shard_count when wcu token level is low.
 
     Checks remaining wcu tokens against capacity. When tokens drop
     below 20% of capacity, the partition is under sustained write
     pressure and should be split.
+
+    The stored balance is projected to ``now_ms`` first, exactly as the
+    client's ``_shard_after_wcu_exhaustion`` does with ``try_consume``. Nobody
+    refills ``wcu`` on the fast path, so the stored value only says how many
+    writes landed since the last materialising pass — 800 of them over an
+    hour read as "under 20%" — not that the partition is hot now.
+
+    Never doubles at or past ``MAX_SHARD_COUNT`` (ADR-133), the cap the client
+    already honours. Without it the doubling fed itself: this write is a
+    MODIFY of shard 0 that still carries the low ``wcu`` balance, so the next
+    invocation read it and doubled again, without bound.
 
     Only acts on shard 0 (source of truth for shard_count).
     Uses conditional write to prevent double-bumping.
@@ -1369,6 +1387,11 @@ def try_proactive_shard(
         state: Aggregated bucket state
         wcu_tk_milli: Remaining wcu tokens in millitokens (from last NewImage)
         wcu_capacity_milli: wcu capacity in millitokens
+        wcu_refill_amount_milli: wcu refill amount in millitokens; with
+            ``wcu_refill_period_ms`` and ``now_ms``, projects the balance
+            from ``state.rf_ms`` to now. Omitted, the stored balance is used.
+        wcu_refill_period_ms: wcu refill period in milliseconds
+        now_ms: Current time (epoch milliseconds)
 
     Returns:
         True if shard_count was bumped, False otherwise
@@ -1379,11 +1402,31 @@ def try_proactive_shard(
     if wcu_capacity_milli <= 0:
         return False
 
+    if state.shard_count >= MAX_SHARD_COUNT:
+        logger.debug(
+            "Proactive shard skipped - at MAX_SHARD_COUNT",
+            entity_id=state.entity_id,
+            resource=state.resource,
+            shard_count=state.shard_count,
+            max_shard_count=MAX_SHARD_COUNT,
+        )
+        return False
+
+    if now_ms is not None and wcu_refill_period_ms > 0 and wcu_refill_amount_milli > 0:
+        wcu_tk_milli = refill_bucket(
+            tokens_milli=wcu_tk_milli,
+            last_refill_ms=state.rf_ms,
+            now_ms=now_ms,
+            capacity_milli=wcu_capacity_milli,
+            refill_amount_milli=wcu_refill_amount_milli,
+            refill_period_ms=wcu_refill_period_ms,
+        ).new_tokens_milli
+
     token_ratio = wcu_tk_milli / wcu_capacity_milli
     if token_ratio >= WCU_PROACTIVE_THRESHOLD_LOW:
         return False
 
-    new_count = state.shard_count * 2
+    new_count = min(state.shard_count * 2, MAX_SHARD_COUNT)
 
     try:
         table.update_item(
@@ -1406,13 +1449,13 @@ def try_proactive_shard(
             new_count=new_count,
             token_ratio=round(token_ratio, 2),
         )
-        if new_count > WCU_SHARD_WARN_THRESHOLD:
+        if new_count >= MAX_SHARD_COUNT:
             logger.warning(
-                "High shard count after proactive doubling",
+                "Shard count reached MAX_SHARD_COUNT after proactive doubling",
                 entity_id=state.entity_id,
                 resource=state.resource,
                 shard_count=new_count,
-                threshold=WCU_SHARD_WARN_THRESHOLD,
+                max_shard_count=MAX_SHARD_COUNT,
             )
         return True
     except ClientError as e:
@@ -1891,6 +1934,22 @@ def propagate_shard_count(
 
     if shard_id != 0:
         return 0  # Only propagate from source of truth
+
+    # A count past the cap is a runaway doubling (an aggregator predating the
+    # cap in `try_proactive_shard`), never a real split. Path 1 and Path 2 each
+    # write once per shard, so propagating it is O(new_count) writes: past a few
+    # thousand the invocation times out, the batch is redriven, and the event
+    # source stalls behind it until the records age out.
+    if new_count > MAX_SHARD_COUNT:
+        logger.warning(
+            "Shard count propagation skipped - above MAX_SHARD_COUNT",
+            entity_id=entity_id,
+            resource=resource,
+            old_count=old_count,
+            new_count=new_count,
+            max_shard_count=MAX_SHARD_COUNT,
+        )
+        return 0
 
     updated = 0
 
