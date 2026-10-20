@@ -75,6 +75,18 @@ twin must be generated from the async source (ADR-121).
 - A transactional commit costs 2 WCU per item, so a slow path covering several resources
   costs more than separate single-item writes would.
 - The 100-item cap bounds how many resources one acquire may name.
+- When the fast path ends in a 429, the landed parts are refunded first, then each part left
+  for the slow path is checked for `ResourceDisabled` (its own level and, when it cascades on
+  that resource, its parent's) so a 403 outranks the 429 even for a resource with no bucket
+  yet. That costs up to one uncached `resolve_access` (at most 1.5 RCU) per slow part, plus the
+  META read and the parent's `resolve_access` for a cascading one, on that path only. A failed
+  read keeps the 429. A cancelled acquire refunds every part that had landed.
+- A local rejection (ADR-147) answers from the first resource the cache knows is short, before
+  any other resource is read, so for up to `rejection_cache_ttl` a disabled resource later in
+  the request can be reported as a 429 instead of `ResourceDisabled`. It never admits; the 403
+  appears once the cached state expires.
+- A sync lease's exit writes run on the orchestration pool in `"threadpool"` / `"auto"` mode,
+  single-resource cascade leases included; nested gathers run in place, so it cannot deadlock.
 
 ## Alternatives Considered
 
