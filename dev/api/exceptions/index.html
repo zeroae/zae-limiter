@@ -1731,6 +1731,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#contended-retry-shortly" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        contended: retry shortly
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#kind-how-the-limit-recovers" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4470,6 +4481,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#contended-retry-shortly" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        contended: retry shortly
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#kind-how-the-limit-recovers" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4590,7 +4612,7 @@ except clause.</p>
 
 
 <a href="#zae_limiter.exceptions.RateLimitExceeded" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimitExceeded</span><span class="p">(</span><span class="n">statuses</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimitExceeded</span><span class="p">(</span><span class="n">statuses</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">contended</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -4661,6 +4683,21 @@ both passed and failed, to help callers understand the full picture.</p>
             <td>
               <div class="doc-md-description">
                 <p>The violation with longest retry time (bottleneck)</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.exceptions.RateLimitExceeded.contended">contended</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>True when the request was not rejected for lack of
+capacity but because its write kept colliding with concurrent
+DynamoDB transactions on the same bucket item (#724). Nothing was
+debited; <code>violations</code> may be empty, <code>primary_violation</code> is
+then the declared limit with the longest wait, and
+<code>retry_after_seconds</code> is short ("contended, retry shortly").</p>
               </div>
             </td>
           </tr>
@@ -5879,45 +5916,47 @@ and each bucket write are idempotent.</p>
 </span><span id="__span-4-24"><a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a>    <span class="c1"># Only the passed limits</span>
 </span><span id="__span-4-25"><a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Passed: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">e</span><span class="o">.</span><span class="n">passed</span><span class="p">)</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 </span><span id="__span-4-26"><a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a>
-</span><span id="__span-4-27"><a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a>    <span class="c1"># Primary bottleneck (longest wait time)</span>
-</span><span id="__span-4-28"><a id="__codelineno-4-28" name="__codelineno-4-28" href="#__codelineno-4-28"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Bottleneck: </span><span class="si">{</span><span class="n">e</span><span class="o">.</span><span class="n">primary_violation</span><span class="o">.</span><span class="n">limit_name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-</span><span id="__span-4-29"><a id="__codelineno-4-29" name="__codelineno-4-29" href="#__codelineno-4-29"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Total retry after: </span><span class="si">{</span><span class="n">e</span><span class="o">.</span><span class="n">retry_after_seconds</span><span class="si">}</span><span class="s2">s"</span><span class="p">)</span>
+</span><span id="__span-4-27"><a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a>    <span class="c1"># Primary bottleneck (longest wait time). Always set; prefer it to</span>
+</span><span id="__span-4-28"><a id="__codelineno-4-28" name="__codelineno-4-28" href="#__codelineno-4-28"></a>    <span class="c1"># `e.violations[0]`, which is empty on a contended 429 (see below)</span>
+</span><span id="__span-4-29"><a id="__codelineno-4-29" name="__codelineno-4-29" href="#__codelineno-4-29"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Bottleneck: </span><span class="si">{</span><span class="n">e</span><span class="o">.</span><span class="n">primary_violation</span><span class="o">.</span><span class="n">limit_name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</span><span id="__span-4-30"><a id="__codelineno-4-30" name="__codelineno-4-30" href="#__codelineno-4-30"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Total retry after: </span><span class="si">{</span><span class="n">e</span><span class="o">.</span><span class="n">retry_after_seconds</span><span class="si">}</span><span class="s2">s"</span><span class="p">)</span>
 </span></code></pre></div>
 <h3 id="as_dict-output">as_dict() Output<a class="headerlink" href="#as_dict-output" title="Permanent link">&para;</a></h3>
 <p>The <code>as_dict()</code> method returns a dictionary suitable for API responses:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"rate_limit_exceeded"</span><span class="p">,</span>
 </span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="s2">"message"</span><span class="p">:</span> <span class="s2">"Rate limit exceeded for user-123/api: [rpm]. Retry after 45.2s"</span><span class="p">,</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="s2">"retry_after_seconds"</span><span class="p">:</span> <span class="mf">45.2</span><span class="p">,</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="s2">"retry_after_ms"</span><span class="p">:</span> <span class="mi">45200</span><span class="p">,</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="s2">"limits"</span><span class="p">:</span> <span class="p">[</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>        <span class="p">{</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>            <span class="s2">"entity_id"</span><span class="p">:</span> <span class="s2">"user-123"</span><span class="p">,</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>            <span class="s2">"resource"</span><span class="p">:</span> <span class="s2">"api"</span><span class="p">,</span>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>            <span class="s2">"limit_name"</span><span class="p">:</span> <span class="s2">"rpm"</span><span class="p">,</span>
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>            <span class="s2">"kind"</span><span class="p">:</span> <span class="s2">"rate"</span><span class="p">,</span>
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>            <span class="s2">"capacity"</span><span class="p">:</span> <span class="mi">100</span><span class="p">,</span>
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>            <span class="s2">"refill_amount"</span><span class="p">:</span> <span class="mi">100</span><span class="p">,</span>
-</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>            <span class="s2">"refill_period_seconds"</span><span class="p">:</span> <span class="mi">60</span><span class="p">,</span>
-</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>            <span class="s2">"available"</span><span class="p">:</span> <span class="o">-</span><span class="mi">5</span><span class="p">,</span>
-</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>            <span class="s2">"requested"</span><span class="p">:</span> <span class="mi">10</span><span class="p">,</span>
-</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>            <span class="s2">"exceeded"</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
-</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>            <span class="s2">"retry_after_seconds"</span><span class="p">:</span> <span class="mf">45.2</span><span class="p">,</span>
-</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a>        <span class="p">},</span>
-</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>        <span class="p">{</span>
-</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>            <span class="s2">"entity_id"</span><span class="p">:</span> <span class="s2">"user-123"</span><span class="p">,</span>
-</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a>            <span class="s2">"resource"</span><span class="p">:</span> <span class="s2">"api"</span><span class="p">,</span>
-</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a>            <span class="s2">"limit_name"</span><span class="p">:</span> <span class="s2">"rpd"</span><span class="p">,</span>
-</span><span id="__span-5-24"><a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a>            <span class="s2">"kind"</span><span class="p">:</span> <span class="s2">"quota"</span><span class="p">,</span>
-</span><span id="__span-5-25"><a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a>            <span class="s2">"capacity"</span><span class="p">:</span> <span class="mi">10000</span><span class="p">,</span>
-</span><span id="__span-5-26"><a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a>            <span class="s2">"resets_at_ms"</span><span class="p">:</span> <span class="mi">1789531200000</span><span class="p">,</span>
-</span><span id="__span-5-27"><a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a>            <span class="s2">"available"</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
-</span><span id="__span-5-28"><a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a>            <span class="s2">"requested"</span><span class="p">:</span> <span class="mi">500</span><span class="p">,</span>
-</span><span id="__span-5-29"><a id="__codelineno-5-29" name="__codelineno-5-29" href="#__codelineno-5-29"></a>            <span class="s2">"exceeded"</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
-</span><span id="__span-5-30"><a id="__codelineno-5-30" name="__codelineno-5-30" href="#__codelineno-5-30"></a>            <span class="s2">"retry_after_seconds"</span><span class="p">:</span> <span class="mf">29000.0</span><span class="p">,</span>
-</span><span id="__span-5-31"><a id="__codelineno-5-31" name="__codelineno-5-31" href="#__codelineno-5-31"></a>        <span class="p">},</span>
-</span><span id="__span-5-32"><a id="__codelineno-5-32" name="__codelineno-5-32" href="#__codelineno-5-32"></a>    <span class="p">],</span>
-</span><span id="__span-5-33"><a id="__codelineno-5-33" name="__codelineno-5-33" href="#__codelineno-5-33"></a><span class="p">}</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="s2">"contended"</span><span class="p">:</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="s2">"retry_after_seconds"</span><span class="p">:</span> <span class="mf">45.2</span><span class="p">,</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="s2">"retry_after_ms"</span><span class="p">:</span> <span class="mi">45200</span><span class="p">,</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="s2">"limits"</span><span class="p">:</span> <span class="p">[</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>        <span class="p">{</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>            <span class="s2">"entity_id"</span><span class="p">:</span> <span class="s2">"user-123"</span><span class="p">,</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>            <span class="s2">"resource"</span><span class="p">:</span> <span class="s2">"api"</span><span class="p">,</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>            <span class="s2">"limit_name"</span><span class="p">:</span> <span class="s2">"rpm"</span><span class="p">,</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>            <span class="s2">"kind"</span><span class="p">:</span> <span class="s2">"rate"</span><span class="p">,</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>            <span class="s2">"capacity"</span><span class="p">:</span> <span class="mi">100</span><span class="p">,</span>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>            <span class="s2">"refill_amount"</span><span class="p">:</span> <span class="mi">100</span><span class="p">,</span>
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>            <span class="s2">"refill_period_seconds"</span><span class="p">:</span> <span class="mi">60</span><span class="p">,</span>
+</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>            <span class="s2">"available"</span><span class="p">:</span> <span class="o">-</span><span class="mi">5</span><span class="p">,</span>
+</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>            <span class="s2">"requested"</span><span class="p">:</span> <span class="mi">10</span><span class="p">,</span>
+</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>            <span class="s2">"exceeded"</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a>            <span class="s2">"retry_after_seconds"</span><span class="p">:</span> <span class="mf">45.2</span><span class="p">,</span>
+</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>        <span class="p">},</span>
+</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>        <span class="p">{</span>
+</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a>            <span class="s2">"entity_id"</span><span class="p">:</span> <span class="s2">"user-123"</span><span class="p">,</span>
+</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a>            <span class="s2">"resource"</span><span class="p">:</span> <span class="s2">"api"</span><span class="p">,</span>
+</span><span id="__span-5-24"><a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a>            <span class="s2">"limit_name"</span><span class="p">:</span> <span class="s2">"rpd"</span><span class="p">,</span>
+</span><span id="__span-5-25"><a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a>            <span class="s2">"kind"</span><span class="p">:</span> <span class="s2">"quota"</span><span class="p">,</span>
+</span><span id="__span-5-26"><a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a>            <span class="s2">"capacity"</span><span class="p">:</span> <span class="mi">10000</span><span class="p">,</span>
+</span><span id="__span-5-27"><a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a>            <span class="s2">"resets_at_ms"</span><span class="p">:</span> <span class="mi">1789531200000</span><span class="p">,</span>
+</span><span id="__span-5-28"><a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a>            <span class="s2">"available"</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
+</span><span id="__span-5-29"><a id="__codelineno-5-29" name="__codelineno-5-29" href="#__codelineno-5-29"></a>            <span class="s2">"requested"</span><span class="p">:</span> <span class="mi">500</span><span class="p">,</span>
+</span><span id="__span-5-30"><a id="__codelineno-5-30" name="__codelineno-5-30" href="#__codelineno-5-30"></a>            <span class="s2">"exceeded"</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-5-31"><a id="__codelineno-5-31" name="__codelineno-5-31" href="#__codelineno-5-31"></a>            <span class="s2">"retry_after_seconds"</span><span class="p">:</span> <span class="mf">29000.0</span><span class="p">,</span>
+</span><span id="__span-5-32"><a id="__codelineno-5-32" name="__codelineno-5-32" href="#__codelineno-5-32"></a>        <span class="p">},</span>
+</span><span id="__span-5-33"><a id="__codelineno-5-33" name="__codelineno-5-33" href="#__codelineno-5-33"></a>    <span class="p">],</span>
+</span><span id="__span-5-34"><a id="__codelineno-5-34" name="__codelineno-5-34" href="#__codelineno-5-34"></a><span class="p">}</span>
 </span></code></pre></div>
 <div class="admonition note">
 <p class="admonition-title">Single <code>limits</code> array</p>
@@ -5925,6 +5964,29 @@ and each bucket write are idempotent.</p>
 returned in a single <code>limits</code> array. Limits you did not name in <code>consume</code> are
 never reported, since they never gate admission. Use the <code>exceeded</code> field to
 distinguish between violations and passed limits.</p>
+</div>
+<h4 id="contended-retry-shortly"><code>contended</code>: retry shortly<a class="headerlink" href="#contended-retry-shortly" title="Permanent link">&para;</a></h4>
+<p>A <code>RateLimitExceeded</code> with <code>contended == True</code> does not mean the entity is out of
+capacity. Its write kept colliding with concurrent DynamoDB transactions on the same
+bucket item (<code>TransactionConflictException</code>), so the limiter gave up after a few
+retries instead of treating short-lived contention as an outage. Nothing was debited.
+<code>retry_after_seconds</code> is short (about 0.1 s). Return it as a 429 like any other
+rejection; the client should simply retry soon.</p>
+<div class="admonition warning">
+<p class="admonition-title"><code>violations</code> can be empty</p>
+<p>On a contended 429 every status has <code>exceeded: false</code>, so <code>e.violations</code> is an
+<strong>empty list</strong> and <code>e.violations[0]</code> raises <code>IndexError</code>. <code>primary_violation</code> is
+always set: on a contended 429 it is the declared limit with the longest wait.
+Check <code>contended</code> first, or read <code>primary_violation</code> / <code>retry_after_seconds</code>,
+which are safe for every <code>RateLimitExceeded</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimitExceeded</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">describe</span><span class="p">(</span><span class="n">e</span><span class="p">:</span> <span class="n">RateLimitExceeded</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="k">if</span> <span class="n">e</span><span class="o">.</span><span class="n">contended</span><span class="p">:</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>        <span class="k">return</span> <span class="sa">f</span><span class="s2">"busy, retry in </span><span class="si">{</span><span class="n">e</span><span class="o">.</span><span class="n">retry_after_seconds</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2">s"</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    <span class="k">return</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">e</span><span class="o">.</span><span class="n">primary_violation</span><span class="o">.</span><span class="n">limit_name</span><span class="si">}</span><span class="s2"> exhausted"</span>
+</span></code></pre></div>
 </div>
 <h4 id="kind-how-the-limit-recovers"><code>kind</code>: how the limit recovers<a class="headerlink" href="#kind-how-the-limit-recovers" title="Permanent link">&para;</a></h4>
 <p>Each entry carries a <code>kind</code>, and the fields describing recovery differ by kind.

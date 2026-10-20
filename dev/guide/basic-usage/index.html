@@ -4435,6 +4435,13 @@ This parameter is now deprecated - limits are always resolved automatically.</p>
 </span><span id="__span-13-21"><a id="__codelineno-13-21" name="__codelineno-13-21" href="#__codelineno-13-21"></a>    <span class="c1"># For API responses</span>
 </span><span id="__span-13-22"><a id="__codelineno-13-22" name="__codelineno-13-22" href="#__codelineno-13-22"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">e</span><span class="o">.</span><span class="n">as_dict</span><span class="p">())</span>
 </span></code></pre></div>
+<p>A rejection can also mean "contended, retry shortly": when concurrent DynamoDB
+transactions keep colliding with the request's write, <code>acquire()</code> raises
+<code>RateLimitExceeded</code> with <code>e.contended == True</code>, nothing debited, no limit marked
+exceeded and a <code>retry_after_seconds</code> of about 0.1 s. Its <code>violations</code> list is
+therefore <strong>empty</strong>: never index <code>e.violations[0]</code>. Check <code>e.contended</code> first, or use
+<code>e.primary_violation</code> and <code>e.retry_after_seconds</code>, which are set on every
+rejection. See <a href="../../api/exceptions/#contended-retry-shortly"><code>contended</code></a>.</p>
 <p>Each entry in <code>as_dict()</code>'s <code>limits</code> array carries a <code>kind</code> — <code>"rate"</code>, which reports
 <code>refill_amount</code> and <code>refill_period_seconds</code>, or <code>"quota"</code>, which reports <code>resets_at_ms</code> and no
 drip fields at all. Read <code>kind</code> rather than inferring the shape from the fields present. See
