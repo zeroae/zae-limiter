@@ -1281,8 +1281,8 @@ recommended options **provisionally** (see `docs/plans/2026-10-09-multi-resource
   degraded lease. `lease.resources` lists them, primary first. The #455 warning names the
   handle's resource (`_unknown_keys_by_resource`).
 - **Independent writes are concurrent** (D7, applies to every lease): `_commit_adjustments`
-  and `_rollback` send each item as its own `write_each([item])` through one gather
-  (`Lease._write_independently`), tracking which landed — #682 needs *which*, not the order.
+  and `_rollback` send each item as its own `write_credit(...)` through one gather
+  (`Lease._write_credits_independently`), tracking which landed — #682 needs *which*, not the order.
 - **Sync twin:** `SyncRateLimiter` and `SyncLease` gather too; the generator injects a
   `_run_in_executor` into both (`_ORCHESTRATOR_REPOSITORY_ATTR`) that delegates to
   `zae_limiter._parallel.run_parallel` (hand-written). It honours the repository's
