@@ -45,9 +45,9 @@ from zae_limiter.schema import (
     BUCKET_FIELD_WTC,
     BUCKET_PREFIX,
     BUCKET_SCHED_NONE,
+    MAX_SHARD_COUNT,
     SK_BUCKET,
     WCU_LIMIT_NAME,
-    WCU_SHARD_WARN_THRESHOLD,
     bucket_attr,
     gsi2_pk_resource,
     gsi2_sk_bucket,
@@ -309,6 +309,9 @@ def process_stream_records(
                     state,
                     wcu_tk_milli=wcu_info.tk_milli,
                     wcu_capacity_milli=wcu_info.cp_milli,
+                    wcu_refill_amount_milli=wcu_info.ra_milli,
+                    wcu_refill_period_ms=wcu_info.rp_ms,
+                    now_ms=now_ms,
                 )
             except Exception as e:
                 error_msg = f"Error in proactive sharding: {e}"
@@ -725,6 +728,11 @@ def aggregate_bucket_states(
             # records for one key arrive in order, so the last image is the
             # closest thing to the item's current state.
             bucket_states[key].rf_ms = parsed.rf_ms
+            # A doubling later in the batch must reach the refill: it targets
+            # `cp // shard_count`, and the first record's count would top this
+            # shard up to the old, larger share while the new shards are
+            # created holding theirs (1265 against 1000 until the next pass).
+            bucket_states[key].shard_count = parsed.shard_count
             bucket_states[key].sched = parsed.sched
             bucket_states[key].sched_compact = parsed.sched_compact
             bucket_states[key].reset_sched = parsed.reset_sched
@@ -961,12 +969,19 @@ def try_refill_bucket(
     # name (#634) — `NAME_PATTERN` allows `.` and `-`, and an inline
     # `b_rpm.v2_tk` parses as a nested document path.
     refilled: list[str] = []
+    # (alias, placeholder, `tk` as read) for every raise this write computes
+    # from the image: pinned on `tk <= read` below (#730).
+    raised: list[tuple[str, str, int]] = []
     # Limits this pass leaves unclamped — a quota it does not reset or roll (it
     # never drips, so `refill_bucket` never clamps it) — with their ceilings.
     # `vu` is not re-stamped while one is above its ceiling, and a re-stamp is
     # pinned on each staying within it (#679, #681, see below).
     unclamped: list[tuple[str, int]] = []
     over_ceiling: list[str] = []
+    # `wcu`'s refill when the threshold below would skip it: credited if this
+    # write happens for another limit, since that write moves `rf` (see after
+    # the loop). `(delta, tk as read)`.
+    deferred_wcu: tuple[int, int] | None = None
 
     for limit_name, info in state.limits.items():
         if limit_name == WCU_LIMIT_NAME:
@@ -1057,6 +1072,8 @@ def try_refill_bucket(
                 add_parts.append(f"#wtk{idx} :wd{idx}")
                 expr_names[f"#wtk{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
                 expr_values[f":wd{idx}"] = roll_delta
+                if roll_delta > 0:
+                    raised.append((f"#wtk{idx}", f":wk{idx}", info.tk_milli))
                 # Pin the window being restored (see the condition below).
                 expr_names[f"#wws{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_WS)
                 expr_values[f":ews{idx}"] = window[0]
@@ -1091,6 +1108,8 @@ def try_refill_bucket(
                     add_parts.append(f"#rt{idx} :rd{idx}")
                     expr_names[f"#rt{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
                     expr_values[f":rd{idx}"] = reset_delta
+                    if reset_delta > 0:
+                        raised.append((f"#rt{idx}", f":rk{idx}", info.tk_milli))
                     refilled.append(limit_name)
                 continue
 
@@ -1126,6 +1145,8 @@ def try_refill_bucket(
             projected = result.new_tokens_milli
             consumption_estimate = max(0, info.tc_delta)
             if projected >= consumption_estimate:
+                if limit_name == WCU_LIMIT_NAME:
+                    deferred_wcu = (refill_delta, info.tk_milli)
                 continue
         # A negative delta is a clamp: the bucket holds more than its effective
         # cap after a shrink (set_limits, a shard doubling, or a schedule
@@ -1141,6 +1162,8 @@ def try_refill_bucket(
         add_parts.append(f"#rt{idx} :rd{idx}")
         expr_names[f"#rt{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
         expr_values[f":rd{idx}"] = refill_delta
+        if refill_delta > 0:
+            raised.append((f"#rt{idx}", f":rk{idx}", info.tk_milli))
         refilled.append(limit_name)
 
     if not any_needs_refill:
@@ -1150,6 +1173,28 @@ def try_refill_bucket(
             resource=state.resource,
         )
         return False
+
+    # This write moves `rf`, and every limit on the item refills from `rf`, so
+    # a limit left out of it forfeits everything it accrued since the last
+    # stamp. `wcu` was always left out by the threshold above. Its `tc` does
+    # move (the fast path ADDs one token to `#wcu_tc` per write), but a batch holds
+    # at most BatchSize (100) records, so its `tc_delta` is at most 100 tokens,
+    # while its projection from the unmoved `rf` is back near its 1000-token
+    # capacity within a second (it refills 1000/s): `projected >= tc_delta`
+    # skipped it on every pass, and nothing on the fast path refills it.
+    # Its stored balance then
+    # drained by one token per write for good, and read as a hot partition
+    # after ~800 writes however slowly they came. Credited only here, never as
+    # a reason to write: a `wcu`-only refill would spend a write to record
+    # capacity that refill from the unmoved `rf` already accounts for.
+    if deferred_wcu is not None:
+        wcu_delta, wcu_read_tk = deferred_wcu
+        idx = len(refilled)
+        add_parts.append(f"#rt{idx} :rd{idx}")
+        expr_names[f"#rt{idx}"] = bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK)
+        expr_values[f":rd{idx}"] = wcu_delta
+        raised.append((f"#rt{idx}", f":rk{idx}", wcu_read_tk))
+        refilled.append(WCU_LIMIT_NAME)
 
     # Build single UpdateItem for the composite bucket
     # ADD is commutative with concurrent speculative writes (Issue #317)
@@ -1231,6 +1276,16 @@ def try_refill_bucket(
     # lost lock. One term per rolled limit, positional aliases only.
     for idx in range(len(rolled)):
         condition += f" AND #wws{idx} = :ews{idx}"
+
+    # A raise is computed from the image's `tk`. A refund or release landing
+    # since moves neither `rf` nor `vu`, so the refill would stack on top of
+    # it (#730: 15 admitted against a quota of 10). Speculative debits only
+    # lower `tk`, so `tk` above the image means a credit: the write fails its
+    # condition and is skipped like any lost lock. A trim (delta <= 0) is not
+    # pinned, so it still clamps. Positional tokens (#634).
+    for alias, token, read_tk in raised:
+        condition += f" AND {alias} <= {token}"
+        expr_values[token] = read_tk
 
     # ADR-145 I3/I4: a reset or roll this write applies re-grants that quota
     # at the item's count, so it stamps `gc` in the same write — and pins the
@@ -1335,12 +1390,35 @@ def try_proactive_shard(
     state: BucketRefillState,
     wcu_tk_milli: int,
     wcu_capacity_milli: int,
+    *,
+    wcu_refill_amount_milli: int = 0,
+    wcu_refill_period_ms: int = 0,
+    now_ms: int | None = None,
 ) -> bool:
     """Proactively double shard_count when wcu token level is low.
 
     Checks remaining wcu tokens against capacity. When tokens drop
     below 20% of capacity, the partition is under sustained write
     pressure and should be split.
+
+    The stored balance is projected to ``now_ms`` first, exactly as the
+    client's ``_shard_after_wcu_exhaustion`` does with ``try_consume``. Nobody
+    refills ``wcu`` on the fast path, so the stored value only says how many
+    writes landed since the last materialising pass — 800 of them over an
+    hour read as "under 20%" — not that the partition is hot now.
+
+    Never doubles at or past ``MAX_SHARD_COUNT`` (ADR-133), the cap the client
+    already honours. Without it the doubling fed itself: this write is a
+    MODIFY of shard 0 that still carries the low ``wcu`` balance, so the next
+    invocation read it and doubled again, without bound.
+
+    A backstop, not the primary protection. The client doubles on its own
+    the moment a write finds ``wcu`` exhausted (``_shard_after_wcu_exhaustion``),
+    and that is what protects a hot shard. Projected to now, the balance this
+    reads is low only when a materialising pass stamped ``rf`` less than
+    0.2 s before this invocation's clock (``wcu`` refills 1000/s; the
+    threshold is 200), so the aggregator rarely doubles before the client
+    already has.
 
     Only acts on shard 0 (source of truth for shard_count).
     Uses conditional write to prevent double-bumping.
@@ -1350,6 +1428,11 @@ def try_proactive_shard(
         state: Aggregated bucket state
         wcu_tk_milli: Remaining wcu tokens in millitokens (from last NewImage)
         wcu_capacity_milli: wcu capacity in millitokens
+        wcu_refill_amount_milli: wcu refill amount in millitokens; with
+            ``wcu_refill_period_ms`` and ``now_ms``, projects the balance
+            from ``state.rf_ms`` to now. Omitted, the stored balance is used.
+        wcu_refill_period_ms: wcu refill period in milliseconds
+        now_ms: Current time (epoch milliseconds)
 
     Returns:
         True if shard_count was bumped, False otherwise
@@ -1360,11 +1443,31 @@ def try_proactive_shard(
     if wcu_capacity_milli <= 0:
         return False
 
+    if state.shard_count >= MAX_SHARD_COUNT:
+        logger.debug(
+            "Proactive shard skipped - at MAX_SHARD_COUNT",
+            entity_id=state.entity_id,
+            resource=state.resource,
+            shard_count=state.shard_count,
+            max_shard_count=MAX_SHARD_COUNT,
+        )
+        return False
+
+    if now_ms is not None and wcu_refill_period_ms > 0 and wcu_refill_amount_milli > 0:
+        wcu_tk_milli = refill_bucket(
+            tokens_milli=wcu_tk_milli,
+            last_refill_ms=state.rf_ms,
+            now_ms=now_ms,
+            capacity_milli=wcu_capacity_milli,
+            refill_amount_milli=wcu_refill_amount_milli,
+            refill_period_ms=wcu_refill_period_ms,
+        ).new_tokens_milli
+
     token_ratio = wcu_tk_milli / wcu_capacity_milli
     if token_ratio >= WCU_PROACTIVE_THRESHOLD_LOW:
         return False
 
-    new_count = state.shard_count * 2
+    new_count = min(state.shard_count * 2, MAX_SHARD_COUNT)
 
     try:
         table.update_item(
@@ -1387,13 +1490,13 @@ def try_proactive_shard(
             new_count=new_count,
             token_ratio=round(token_ratio, 2),
         )
-        if new_count > WCU_SHARD_WARN_THRESHOLD:
+        if new_count >= MAX_SHARD_COUNT:
             logger.warning(
-                "High shard count after proactive doubling",
+                "Shard count reached MAX_SHARD_COUNT after proactive doubling",
                 entity_id=state.entity_id,
                 resource=state.resource,
                 shard_count=new_count,
-                threshold=WCU_SHARD_WARN_THRESHOLD,
+                max_shard_count=MAX_SHARD_COUNT,
             )
         return True
     except ClientError as e:
@@ -1872,6 +1975,22 @@ def propagate_shard_count(
 
     if shard_id != 0:
         return 0  # Only propagate from source of truth
+
+    # A count past the cap is a runaway doubling (an aggregator predating the
+    # cap in `try_proactive_shard`), never a real split. Path 1 and Path 2 each
+    # write once per shard, so propagating it is O(new_count) writes: past a few
+    # thousand the invocation times out, the batch is redriven, and the event
+    # source stalls behind it until the records age out.
+    if new_count > MAX_SHARD_COUNT:
+        logger.warning(
+            "Shard count propagation skipped - above MAX_SHARD_COUNT",
+            entity_id=entity_id,
+            resource=resource,
+            old_count=old_count,
+            new_count=new_count,
+            max_shard_count=MAX_SHARD_COUNT,
+        )
+        return 0
 
     updated = 0
 

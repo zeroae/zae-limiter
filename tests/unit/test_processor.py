@@ -10,7 +10,7 @@ import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
 
 from zae_limiter.schedule import ScheduleEntry, decode, decode_reset
-from zae_limiter.schema import BUCKET_SCHED_NONE
+from zae_limiter.schema import BUCKET_SCHED_NONE, MAX_SHARD_COUNT
 from zae_limiter_aggregator.processor import (
     BucketRefillState,
     ConsumptionDelta,
@@ -1144,6 +1144,67 @@ class TestTryRefillBucket:
         assert "ADD" in call_kwargs["UpdateExpression"]
         assert "SET rf = :new_rf" in call_kwargs["UpdateExpression"]
 
+    @staticmethod
+    def _wcu(tk_milli: int) -> LimitRefillInfo:
+        # `tc_delta=0` isolates the refill credit: a batch's real wcu
+        # `tc_delta` (at most 100 writes) never beats its projection either.
+        return LimitRefillInfo(
+            tc_delta=0, tk_milli=tk_milli, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=1000
+        )
+
+    def test_a_refill_that_moves_rf_credits_wcu(self) -> None:
+        """`wcu` rides along on a write that moves `rf`, or it forfeits its accrual.
+
+        Left out, its stored balance drained one token per write for good and
+        read as a hot partition after ~800 writes, at any rate.
+        """
+        mock_table = MagicMock()
+        state = self._make_state(
+            rf_ms=1704067195000,  # 5s ago
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=20000000,
+                    tk_milli=5000000,
+                    cp_milli=100000000,
+                    ra_milli=100000000,
+                    rp_ms=60000,
+                ),
+                "wcu": self._wcu(150_000),
+            },
+        )
+
+        assert try_refill_bucket(mock_table, state, 1704067200000) is True
+
+        kwargs = mock_table.update_item.call_args[1]
+        names, values = kwargs["ExpressionAttributeNames"], kwargs["ExpressionAttributeValues"]
+        alias = next(a for a, attr in names.items() if attr == "b_wcu_tk")
+        idx = alias.removeprefix("#rt")
+        assert f"{alias} :rd{idx}" in kwargs["UpdateExpression"]
+        assert values[f":rd{idx}"] == 1_000_000 - 150_000  # refilled to capacity
+        # Pinned on the balance read, like every raise (#730).
+        assert f"{alias} <= :rk{idx}" in kwargs["ConditionExpression"]
+        assert values[f":rk{idx}"] == 150_000
+
+    def test_wcu_alone_never_causes_a_write(self) -> None:
+        """A `wcu`-only refill is skipped: `rf` does not move, so nothing is forfeited."""
+        mock_table = MagicMock()
+        state = self._make_state(
+            rf_ms=1704067195000,
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=1000000,
+                    tk_milli=100000000,  # full
+                    cp_milli=100000000,
+                    ra_milli=100000000,
+                    rp_ms=60000,
+                ),
+                "wcu": self._wcu(150_000),
+            },
+        )
+
+        assert try_refill_bucket(mock_table, state, 1704067200000) is False
+        mock_table.update_item.assert_not_called()
+
     def test_refill_skipped_when_tokens_sufficient(self) -> None:
         """Skips refill when projected tokens >= consumption."""
         mock_table = MagicMock()
@@ -2033,18 +2094,85 @@ class TestTryProactiveShard:
         call_kwargs = mock_table.update_item.call_args[1]
         assert call_kwargs["ExpressionAttributeValues"][":new"] == 4
 
-    def test_warns_above_threshold(self, capsys) -> None:
-        """Proactive sharding logs warning when new count exceeds threshold."""
+    def test_never_doubles_at_max_shard_count(self) -> None:
+        """At MAX_SHARD_COUNT the aggregator stops, exactly as the client does.
+
+        It used to double to 64 here and keep going: its own write is a MODIFY
+        of shard 0 still carrying the low wcu balance, so every invocation
+        doubled again, without bound.
+        """
         mock_table = MagicMock()
-        state = self._make_state(shard_id=0, shard_count=32)
+        state = self._make_state(shard_count=MAX_SHARD_COUNT)
+
+        result = try_proactive_shard(mock_table, state, 0, 1_000_000)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+    def test_never_doubles_a_count_already_past_the_cap(self) -> None:
+        """An item a runaway left at 2048 is not doubled again."""
+        mock_table = MagicMock()
+        state = self._make_state(shard_count=2048)
+
+        assert try_proactive_shard(mock_table, state, 0, 1_000_000) is False
+        mock_table.update_item.assert_not_called()
+
+    def test_warns_on_reaching_max_shard_count(self, capsys) -> None:
+        """The doubling that lands on the cap is written and warned about."""
+        mock_table = MagicMock()
+        state = self._make_state(shard_id=0, shard_count=MAX_SHARD_COUNT // 2)
 
         result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
 
         assert result is True
+        call_kwargs = mock_table.update_item.call_args[1]
+        assert call_kwargs["ExpressionAttributeValues"][":new"] == MAX_SHARD_COUNT
         captured = capsys.readouterr().out
         assert '"level": "WARNING"' in captured
-        assert "High shard count" in captured
-        assert '"shard_count": 64' in captured
+        assert "MAX_SHARD_COUNT" in captured
+        assert f'"shard_count": {MAX_SHARD_COUNT}' in captured
+
+    def test_projects_the_stored_balance_to_now(self) -> None:
+        """A low stored wcu balance whose refill has restored it is not hot.
+
+        Nobody refills wcu on the fast path, so the stored value counts writes
+        since the last materialising pass, not writes per second. The client
+        projects it before doubling (`_shard_after_wcu_exhaustion`); so must
+        the aggregator.
+        """
+        mock_table = MagicMock()
+        state = self._make_state()  # rf_ms = 1704067200000
+
+        result = try_proactive_shard(
+            mock_table,
+            state,
+            100_000,
+            1_000_000,
+            wcu_refill_amount_milli=1_000_000,
+            wcu_refill_period_ms=1000,
+            now_ms=state.rf_ms + 2000,
+        )
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+    def test_projection_still_doubles_under_sustained_pressure(self) -> None:
+        """Projected to an instant with too little refill, the balance is still low."""
+        mock_table = MagicMock()
+        state = self._make_state()
+
+        result = try_proactive_shard(
+            mock_table,
+            state,
+            0,
+            1_000_000,
+            wcu_refill_amount_milli=1_000_000,
+            wcu_refill_period_ms=1000,
+            now_ms=state.rf_ms + 100,  # +100 tokens of refill: 10%
+        )
+
+        assert result is True
+        assert mock_table.update_item.call_args[1]["ExpressionAttributeValues"][":new"] == 2
 
     def test_batch_size_independent(self) -> None:
         """Token level is invariant to BatchSize (unlike tc_delta)."""
@@ -2056,6 +2184,167 @@ class TestTryProactiveShard:
         result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
 
         assert result is True  # 10% remaining < 20% threshold
+
+
+class TestProactiveShardingFeedback:
+    """The aggregator's own doubling write must not drive the next doubling.
+
+    `SET shard_count` on shard 0 is a MODIFY that still carries the low stored
+    wcu balance, so each invocation used to read its own write and double
+    again — 2048 and far beyond in production. Real bucket items on moto, the
+    aggregator fed the stream records its own writes produce.
+    """
+
+    TABLE = "test-rate-limits"
+
+    def _shard0_after_traffic(self, sync_repository):
+        import boto3
+
+        from zae_limiter import Limit, SyncRateLimiter
+
+        limiter = SyncRateLimiter(repository=sync_repository)
+        limiter.create_entity("user-1")
+        limiter.set_limits("user-1", [Limit.per_minute("rpm", 1_000_000)], resource="api")
+        with limiter.acquire("user-1", "api", {"rpm": 1}):
+            pass
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(self.TABLE)
+        key = {"PK": "", "SK": "#STATE"}
+        key["PK"] = next(
+            i["PK"] for i in table.scan()["Items"] if i["PK"].endswith("BUCKET#user-1#api#0")
+        )
+        # 850 fast-path writes since the last materialising pass: each ADDs -1
+        # to wcu and nothing refills it, however long they took.
+        table.update_item(
+            Key=key,
+            UpdateExpression="ADD b_wcu_tk :d",
+            ExpressionAttributeValues={":d": -850_000},
+        )
+        return table, key
+
+    @staticmethod
+    def _record(old: dict, new: dict) -> dict:
+        from boto3.dynamodb.types import TypeSerializer
+
+        ser = TypeSerializer()
+        return {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "OldImage": {k: ser.serialize(v) for k, v in old.items()},
+                "NewImage": {k: ser.serialize(v) for k, v in new.items()},
+            },
+        }
+
+    def _run(self, table, key, now_s: float, invocations: int) -> list[int]:
+        counts = []
+        prev = table.get_item(Key=key)["Item"]
+        rec = self._record(prev, prev)
+        clock = MagicMock()
+        clock.time.return_value = now_s
+        clock.perf_counter.return_value = 0.0
+        with patch("zae_limiter_aggregator.processor.time_module", clock):
+            for _ in range(invocations):
+                process_stream_records([rec], self.TABLE, windows=[])
+                cur = table.get_item(Key=key)["Item"]
+                counts.append(int(cur.get("shard_count", 1)))
+                rec = self._record(prev, cur)
+                prev = cur
+        return counts
+
+    def test_self_fed_doubling_stops_at_max_shard_count(self, sync_repository) -> None:
+        table, key = self._shard0_after_traffic(sync_repository)
+        rf_s = int(table.get_item(Key=key)["Item"]["rf"]) / 1000
+
+        # Clock frozen at `rf`: the projection restores nothing, so only the
+        # cap can stop it.
+        counts = self._run(table, key, now_s=rf_s, invocations=8)
+
+        assert counts == [2, 4, 8, 16, 32, 32, 32, 32]
+        items = [i for i in table.scan()["Items"] if "BUCKET#user-1#api#" in i["PK"]]
+        assert len(items) == MAX_SHARD_COUNT
+        assert all(int(i["shard_count"]) == MAX_SHARD_COUNT for i in items)
+
+    def test_a_stale_low_balance_does_not_double_at_all(self, sync_repository) -> None:
+        table, key = self._shard0_after_traffic(sync_repository)
+        rf_s = int(table.get_item(Key=key)["Item"]["rf"]) / 1000
+
+        # Two seconds after the last materialising pass, wcu (1000/s) is full.
+        counts = self._run(table, key, now_s=rf_s + 2, invocations=3)
+
+        assert counts == [1, 1, 1]
+
+
+class TestRefillAtTheBatchsLatestShardCount:
+    """A batch carrying a doubling refills shard 0 toward its new share.
+
+    `aggregate_bucket_states` kept the first record's `shard_count` for a
+    bucket and ignored a later record in the same batch that doubled it, so the
+    refill topped shard 0 up to the whole capacity while shard 1 was created
+    holding its own share: 765 + 500 = 1265 against a limit of 1000 until the
+    next pass trimmed it. Real items on moto, the batch built from them.
+    """
+
+    TABLE = "test-rate-limits"
+
+    @staticmethod
+    def _record(old: dict, new: dict) -> dict:
+        from boto3.dynamodb.types import TypeSerializer
+
+        ser = TypeSerializer()
+        return {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "OldImage": {k: ser.serialize(v) for k, v in old.items()},
+                "NewImage": {k: ser.serialize(v) for k, v in new.items()},
+            },
+        }
+
+    def test_shards_never_exceed_the_limit_after_a_doubling_batch(self, sync_repository) -> None:
+        import boto3
+
+        from zae_limiter import Limit, SyncRateLimiter
+
+        limiter = SyncRateLimiter(repository=sync_repository)
+        limiter.create_entity("user-1")
+        limiter.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="api")
+        with limiter.acquire("user-1", "api", {"rpm": 1}):
+            pass
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(self.TABLE)
+        pk = next(i["PK"] for i in table.scan()["Items"] if i["PK"].endswith("BUCKET#user-1#api#0"))
+        key = {"PK": pk, "SK": "#STATE"}
+        item0 = table.get_item(Key=key)["Item"]
+
+        # Record 1: 899 more tokens spent on shard 0 (tk 100, 900 consumed).
+        table.update_item(
+            Key=key,
+            UpdateExpression="ADD b_rpm_tk :d, b_rpm_tc :c",
+            ExpressionAttributeValues={":d": -899_000, ":c": 899_000},
+        )
+        item1 = table.get_item(Key=key)["Item"]
+        # Record 2: a client doubles shard 0 to 2 (no `rf`, no `tk` change).
+        table.update_item(
+            Key=key,
+            UpdateExpression="SET shard_count = :n",
+            ExpressionAttributeValues={":n": 2},
+        )
+        item2 = table.get_item(Key=key)["Item"]
+
+        # 40 s after `rf`: 666 tokens of refill, short of the 900 consumed, so
+        # the refill is written.
+        clock = MagicMock()
+        clock.time.return_value = int(item2["rf"]) / 1000 + 40
+        clock.perf_counter.return_value = 0.0
+        with patch("zae_limiter_aggregator.processor.time_module", clock):
+            result = process_stream_records(
+                [self._record(item0, item1), self._record(item1, item2)],
+                self.TABLE,
+                windows=[],
+            )
+        assert result.errors == []
+
+        shards = [i for i in table.scan()["Items"] if "BUCKET#user-1#api#" in i["PK"]]
+        assert len(shards) == 2  # shard 1 created by the propagation
+        total_milli = sum(int(i["b_rpm_tk"]) for i in shards)
+        assert total_milli <= 1000 * 1000, total_milli
 
 
 class TestPropagateShardsCount:
@@ -2107,6 +2396,31 @@ class TestPropagateShardsCount:
         put_pks = {c.kwargs["Item"]["PK"] for c in mock_table.put_item.call_args_list}
         assert "ns1/BUCKET#user-1#gpt-4#2" in put_pks
         assert "ns1/BUCKET#user-1#gpt-4#3" in put_pks
+
+    def test_a_count_above_max_shard_count_is_not_propagated(self) -> None:
+        """A runaway count is never propagated: Path 1 and Path 2 write once per
+        shard, so 2048 -> 4096 is ~4000 writes in one invocation, and past a few
+        thousand the invocation times out and stalls the event source."""
+        mock_table = MagicMock()
+        record = self._make_shard_change_record(
+            old_shard_count=MAX_SHARD_COUNT,
+            new_shard_count=MAX_SHARD_COUNT * 2,
+        )
+
+        assert propagate_shard_count(mock_table, record) == 0
+        mock_table.update_item.assert_not_called()
+        mock_table.put_item.assert_not_called()
+        mock_table.get_item.assert_not_called()
+
+    def test_a_doubling_onto_max_shard_count_is_propagated(self) -> None:
+        """The cap itself is a legal count."""
+        mock_table = MagicMock()
+        record = self._make_shard_change_record(
+            old_shard_count=MAX_SHARD_COUNT // 2,
+            new_shard_count=MAX_SHARD_COUNT,
+        )
+
+        assert propagate_shard_count(mock_table, record) == MAX_SHARD_COUNT - 1
 
     def test_no_change_no_propagation(self) -> None:
         """No propagation when shard_count unchanged."""
@@ -2635,7 +2949,7 @@ class TestAggregatorRestampsVu:
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
         kwargs = table.update_item.call_args.kwargs
         assert kwargs["ConditionExpression"] == (
-            "rf = :expected_rf AND #vu = :expected_vu AND #sched = :expected_sched"
+            "rf = :expected_rf AND #vu = :expected_vu AND #rt0 <= :rk0 AND #sched = :expected_sched"
         )
         assert kwargs["ExpressionAttributeValues"][":expected_sched"] == BUSINESS_COMPACT
         assert kwargs["ExpressionAttributeNames"]["#sched"] == "sched"
@@ -2651,7 +2965,10 @@ class TestAggregatorRestampsVu:
         state = _sched_state(sched=BUSINESS)
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
         kwargs = table.update_item.call_args.kwargs
-        assert kwargs["ConditionExpression"] == ("rf = :expected_rf AND attribute_not_exists(#vu)")
+        # Plus the refill's own pin on the balance it read (#730 R5).
+        assert kwargs["ConditionExpression"] == (
+            "rf = :expected_rf AND attribute_not_exists(#vu) AND #rt0 <= :rk0"
+        )
         assert "#sched" not in kwargs["ExpressionAttributeNames"]
 
     def test_the_vu_pin_matches_the_stamp_the_image_carried(self) -> None:
