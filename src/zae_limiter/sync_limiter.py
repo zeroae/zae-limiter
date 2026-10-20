@@ -2039,6 +2039,18 @@ class SyncRateLimiter:
                 else:
                     slow_parts.append((resource, consume, shard, shard_count, parent_shard))
             if errors:
+                if not any(isinstance(error, ResourceDisabled) for error in errors):
+                    for part_resource, *_rest in slow_parts:
+                        access = self._repository.resolve_access(entity_id, part_resource)
+                        if access.disabled:
+                            errors.append(
+                                ResourceDisabled(
+                                    entity_id=entity_id,
+                                    resource=part_resource,
+                                    level=access.disabled_level or "resource",
+                                )
+                            )
+                            break
                 self._refund(landed)
                 raise self._combined_error(errors, landed)
         else:

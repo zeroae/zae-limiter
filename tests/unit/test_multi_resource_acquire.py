@@ -179,6 +179,25 @@ class TestAllOrNone:
         with pytest.raises(ResourceDisabled):
             await _admit(limiter, rpm=500)
 
+    async def test_disabled_outranks_a_fast_rejection_that_comes_first(self, repo, speculative):
+        """A disabled resource with no bucket yet is only found by the slow
+        path, after the fast path already rejected another resource: the 403
+        still wins (ADR-148)."""
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        await repo.create_entity("fresh", parent_id=None, name="fresh")
+        await repo.set_limits("fresh", [Limit.custom("rpm", 1, **SLOW)], "search")
+        async with limiter.acquire("fresh", "search", {"rpm": 1}):
+            pass  # search is now exhausted, budget has no bucket
+        await repo.disable_resource("budget")
+
+        with pytest.raises(ResourceDisabled) as exc_info:
+            async with limiter.acquire(
+                "fresh", "search", {"rpm": 1}, also={"budget": {"weekly": 1}}
+            ):
+                pytest.fail("a disabled resource must not admit")
+
+        assert exc_info.value.resource == "budget"
+
     async def test_a_backend_error_refunds_and_blocks(self, repo, speculative):
         limiter = RateLimiter(repository=repo, speculative_writes=speculative)
         await _admit(limiter)

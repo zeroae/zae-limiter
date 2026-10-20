@@ -2569,6 +2569,22 @@ class RateLimiter:
                 else:
                     slow_parts.append((resource, consume, shard, shard_count, parent_shard))
             if errors:
+                # ResourceDisabled outranks a 429 whatever the order (ADR-148),
+                # but a disabled resource with no bucket yet is only found by
+                # the slow path, which a fast-path error skips: ask it here.
+                # Paid only on this error path, one uncached read per part.
+                if not any(isinstance(error, ResourceDisabled) for error in errors):
+                    for part_resource, *_rest in slow_parts:
+                        access = await self._repository.resolve_access(entity_id, part_resource)
+                        if access.disabled:
+                            errors.append(
+                                ResourceDisabled(
+                                    entity_id=entity_id,
+                                    resource=part_resource,
+                                    level=access.disabled_level or "resource",
+                                )
+                            )
+                            break
                 await self._refund(landed)
                 raise self._combined_error(errors, landed)
         else:

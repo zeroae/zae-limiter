@@ -165,6 +165,21 @@ class TestAllOrNone:
         with pytest.raises(ResourceDisabled):
             _admit(limiter, rpm=500)
 
+    def test_disabled_outranks_a_fast_rejection_that_comes_first(self, repo, speculative):
+        """A disabled resource with no bucket yet is only found by the slow
+        path, after the fast path already rejected another resource: the 403
+        still wins (ADR-148)."""
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        repo.create_entity("fresh", parent_id=None, name="fresh")
+        repo.set_limits("fresh", [Limit.custom("rpm", 1, **SLOW)], "search")
+        with limiter.acquire("fresh", "search", {"rpm": 1}):
+            pass
+        repo.disable_resource("budget")
+        with pytest.raises(ResourceDisabled) as exc_info:
+            with limiter.acquire("fresh", "search", {"rpm": 1}, also={"budget": {"weekly": 1}}):
+                pytest.fail("a disabled resource must not admit")
+        assert exc_info.value.resource == "budget"
+
     def test_a_backend_error_refunds_and_blocks(self, repo, speculative):
         limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
         _admit(limiter)
