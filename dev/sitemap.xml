@@ -241,6 +241,10 @@
          <lastmod>2026-10-20</lastmod>
     </url>
     <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/148-multi-resource-acquire/</loc>
+         <lastmod>2026-10-20</lastmod>
+    </url>
+    <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/</loc>
          <lastmod>2026-10-20</lastmod>
     </url>
@@ -294,6 +298,10 @@
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/guide/llm-integration/</loc>
+         <lastmod>2026-10-20</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/guide/multi-resource/</loc>
          <lastmod>2026-10-20</lastmod>
     </url>
     <url>
