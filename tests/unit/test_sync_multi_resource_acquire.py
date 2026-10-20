@@ -9,6 +9,7 @@ Changes should be made to the source file, then regenerated.
 import sys
 import warnings
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 import pytest
 from botocore.exceptions import ClientError
@@ -700,6 +701,59 @@ class TestContentionAcrossResources:
         assert exc_info.value.contended is True
         assert {s.resource for s in exc_info.value.statuses} == {"search", "budget"}
         assert _ledger(repo) == before
+
+
+class TestContendedQuotaMoveAcrossResources:
+    """A quota slot zeroed by contended moves, beside another resource (#724, ADR-148)."""
+
+    QUOTA = Limit.quota("rpd", 1000, cron="0 0 * * *")
+
+    @pytest.mark.parametrize("on_unavailable", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    def test_a_zero_grant_after_contended_moves_is_a_contended_429(self, repo, on_unavailable):
+        now_ms = repo._now_ms()
+        repo._now_ms = lambda: now_ms
+        repo.set_resource_defaults("daily", [self.QUOTA])
+        repo.set_resource_cascade("daily", False)
+        repo.create_entity("solo", parent_id=None, name="solo")
+        state = BucketState.from_limit("solo", "daily", self.QUOTA, now_ms)
+        vu, _reset = SyncRateLimiter._materialisation_stamps(self.QUOTA, state, now_ms)
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "solo", "daily", [state], now_ms, shard_id=0, shard_count=1, vu=vu
+                )
+            ]
+        )
+        assert repo.bump_shard_count("solo", "daily", 1) == 2
+        real = repo.transact_write
+
+        def moves_conflict(items):
+            if len(items) > 1:
+                raise ClientError(
+                    {
+                        "Error": {"Code": "TransactionCanceledException", "Message": "busy"},
+                        "CancellationReasons": [{"Code": "None"}, {"Code": "TransactionConflict"}],
+                    },
+                    "TransactWriteItems",
+                )
+            return real(items)
+
+        repo.transact_write = moves_conflict
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with limiter.acquire(
+                    "solo",
+                    "daily",
+                    {"rpd": 1},
+                    on_unavailable=on_unavailable,
+                    also={"budget": {"weekly": 10}},
+                ):
+                    pytest.fail("a contended acquire must not admit")
+        assert exc_info.value.contended is True
+        assert exc_info.value.violations == []
+        assert _consumed(repo, "solo", "daily") == {"rpd": 0}
+        assert _consumed(repo, "solo", "budget") == {}
 
 
 class TestDisabledCheckOnTheRejectionPath:
