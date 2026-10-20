@@ -1999,6 +1999,7 @@ class SyncRateLimiter:
         landed: list[SyncLease] = []
         slow_parts: list[_SlowPart] = []
         if self._speculative_writes:
+            landed_so_far: list[SyncLease] = []
             now_ms = self._repository._now_ms()
             prechecks: list[tuple[str, dict[str, int], tuple[frozenset[int], frozenset[int]]]] = []
             for resource, consume in parts:
@@ -2014,20 +2015,27 @@ class SyncRateLimiter:
                 resource: str, consume: dict[str, int], avoid: tuple[frozenset[int], frozenset[int]]
             ) -> tuple[SyncLease | None, int, int | None, int | None] | Exception:
                 try:
-                    return self._try_speculative_acquire(
+                    outcome = self._try_speculative_acquire(
                         entity_id=entity_id, resource=resource, consume=consume, prechecked=avoid
                     )
                 except Exception as exc:
                     return exc
+                if outcome[0] is not None:
+                    landed_so_far.append(outcome[0])
+                return outcome
 
-            outcomes = self._run_in_executor(
-                *[
-                    lambda resource=resource, consume=consume, avoid=avoid: _attempt(
-                        resource, consume, avoid
-                    )
-                    for resource, consume, avoid in prechecks
-                ]
-            )
+            try:
+                outcomes = self._run_in_executor(
+                    *[
+                        lambda resource=resource, consume=consume, avoid=avoid: _attempt(
+                            resource, consume, avoid
+                        )
+                        for resource, consume, avoid in prechecks
+                    ]
+                )
+            except BaseException:
+                self._refund(landed_so_far)
+                raise
             errors: list[Exception] = []
             for (resource, consume), outcome in zip(parts, outcomes, strict=True):
                 if isinstance(outcome, Exception):

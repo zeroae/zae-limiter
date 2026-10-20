@@ -2532,6 +2532,7 @@ class RateLimiter:
         slow_parts: list[_SlowPart] = []
 
         if self._speculative_writes:
+            landed_so_far: list[Lease] = []
             now_ms = self._repository._now_ms()
             prechecks: list[tuple[str, dict[str, int], tuple[frozenset[int], frozenset[int]]]] = []
             for resource, consume in parts:
@@ -2549,15 +2550,24 @@ class RateLimiter:
                 avoid: tuple[frozenset[int], frozenset[int]],
             ) -> tuple[Lease | None, int, int | None, int | None] | Exception:
                 try:
-                    return await self._try_speculative_acquire(
+                    outcome = await self._try_speculative_acquire(
                         entity_id=entity_id, resource=resource, consume=consume, prechecked=avoid
                     )
                 except Exception as exc:
                     return exc
+                # Recorded the moment it lands: a cancellation of the gather
+                # below discards every outcome, and these debits are written.
+                if outcome[0] is not None:
+                    landed_so_far.append(outcome[0])
+                return outcome
 
-            outcomes = await asyncio.gather(
-                *[_attempt(resource, consume, avoid) for resource, consume, avoid in prechecks]
-            )
+            try:
+                outcomes = await asyncio.gather(
+                    *[_attempt(resource, consume, avoid) for resource, consume, avoid in prechecks]
+                )
+            except BaseException:
+                await self._refund(landed_so_far)
+                raise
             errors: list[Exception] = []
             for (resource, consume), outcome in zip(parts, outcomes, strict=True):
                 if isinstance(outcome, Exception):

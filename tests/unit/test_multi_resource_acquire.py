@@ -7,6 +7,7 @@ debit and every refund moves, so "nothing debited" means the counter is back
 where it started.
 """
 
+import asyncio
 import sys
 import warnings
 from datetime import UTC, datetime
@@ -316,6 +317,41 @@ class TestFastAndSlowTogether:
 
         with pytest.raises(RateLimiterUnavailable):
             await _admit(limiter)
+
+        assert await _ledger(repo) == before
+
+    async def test_a_cancelled_acquire_refunds_the_fast_wins(self, repo):
+        limiter = RateLimiter(repository=repo)
+        await _admit(limiter)
+        before = await _ledger(repo)
+        search_landed = asyncio.Event()
+        budget_blocked = asyncio.Event()
+        real = repo.speculative_consume
+
+        async def speculative_consume(entity_id, resource, *args, **kwargs):
+            if resource == "budget":
+                await search_landed.wait()
+                budget_blocked.set()
+                await asyncio.Event().wait()  # never returns: the caller is cancelled
+            result = await real(entity_id, resource, *args, **kwargs)
+            search_landed.set()
+            return result
+
+        repo.speculative_consume = speculative_consume
+
+        async def acquire():
+            async with limiter.acquire(
+                "user", "search", {"rpm": 1}, also={"budget": {"weekly": 1}}
+            ):
+                pytest.fail("a cancelled acquire must not admit")
+
+        task = asyncio.ensure_future(acquire())
+        await budget_blocked.wait()
+        await asyncio.sleep(0)  # let search's outcome be recorded
+        assert await _ledger(repo) != before  # search's debit is written
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
         assert await _ledger(repo) == before
 

@@ -287,6 +287,8 @@ TEST_SKIP_FUNCTIONS = {
     "test_close_cleans_up_client",
     # Uses asyncio.Barrier + asyncio.gather for concurrent leases - no sync equivalent
     "test_concurrent_adjust_no_lost_tokens",
+    # Cancels a task mid-gather; a sync call cannot be cancelled
+    "test_a_cancelled_acquire_refunds_the_fast_wins",
 }
 
 TEST_METHOD_NAME_REWRITES = {
