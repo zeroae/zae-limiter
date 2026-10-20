@@ -93,23 +93,37 @@ class RateLimitExceeded(RateLimitError):  # noqa: N818
         passed: Only the limits that passed
         retry_after_seconds: Time until ALL requested capacity is available
         primary_violation: The violation with longest retry time (bottleneck)
+        contended: True when the request was not rejected for lack of
+            capacity but because its write kept colliding with concurrent
+            DynamoDB transactions on the same bucket item (#724). Nothing was
+            debited; ``violations`` may be empty, ``primary_violation`` is
+            then the declared limit with the longest wait, and
+            ``retry_after_seconds`` is short ("contended, retry shortly").
     """
 
-    def __init__(self, statuses: list["LimitStatus"]) -> None:
+    def __init__(self, statuses: list["LimitStatus"], *, contended: bool = False) -> None:
         self.statuses = statuses
         self.violations = [s for s in statuses if s.exceeded]
         self.passed = [s for s in statuses if not s.exceeded]
+        self.contended = contended
 
-        if not self.violations:
+        candidates = self.violations or (statuses if contended else [])
+        if not candidates:
             raise ValueError("RateLimitExceeded requires at least one violation")
 
-        self.primary_violation = max(self.violations, key=lambda v: v.retry_after_seconds)
+        self.primary_violation = max(candidates, key=lambda v: v.retry_after_seconds)
         self.retry_after_seconds = self.primary_violation.retry_after_seconds
 
         super().__init__(self._format_message())
 
     def _format_message(self) -> str:
         v = self.primary_violation
+        if self.contended and not self.violations:
+            return (
+                f"Rate limiter contended for {v.entity_id}/{v.resource}: "
+                f"concurrent transactions on the bucket. "
+                f"Retry after {self.retry_after_seconds:.1f}s"
+            )
         exceeded_names = ", ".join(s.limit_name for s in self.violations)
         return (
             f"Rate limit exceeded for {v.entity_id}/{v.resource}: "
@@ -191,6 +205,7 @@ class RateLimitExceeded(RateLimitError):  # noqa: N818
         return {
             "error": "rate_limit_exceeded",
             "message": str(self),
+            "contended": self.contended,
             "retry_after_seconds": self.retry_after_seconds,
             "retry_after_ms": int(self.retry_after_seconds * 1000),
             "limits": [

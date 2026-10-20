@@ -1053,6 +1053,14 @@ class TestForgetAfterTheWriteLands:
         )
 
     async def test_a_state_stored_between_build_and_write_is_forgotten(self, repo):
+        client = await repo._get_client()
+        await client.put_item(  # a refund lands only on an item that exists (#721)
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
         refund = repo.build_composite_adjust("u", "r", {"rpm": -1000}, shard_id=0)
         self._store_short(repo)  # an acquire races in after the build
         assert len(repo._rejection_cache) == 1
