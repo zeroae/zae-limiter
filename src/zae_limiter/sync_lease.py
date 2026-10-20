@@ -429,6 +429,14 @@ class SyncLease:
 
     def __post_init__(self) -> None:
         self._index_declared()
+        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
+        for entry in self.entries:
+            groups.setdefault((entry.entity_id, entry.resource, entry._shard_id), []).append(entry)
+        for group_entries in groups.values():
+            read_rf = next((e._original_rf_ms for e in group_entries if e._original_rf_ms), None)
+            image = credit_image([e.state for e in group_entries], rf=read_rf)
+            for entry in group_entries:
+                entry._image = entry._period_image = image
 
     def _index_declared(self) -> None:
         """Index declared limit names, lease-wide and per resource."""
@@ -443,14 +451,6 @@ class SyncLease:
             for entry in self.entries
             if entry._declared and (primary is None or entry.resource == primary)
         )
-        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
-        for entry in self.entries:
-            groups.setdefault((entry.entity_id, entry.resource, entry._shard_id), []).append(entry)
-        for group_entries in groups.values():
-            read_rf = next((e._original_rf_ms for e in group_entries if e._original_rf_ms), None)
-            image = credit_image([e.state for e in group_entries], rf=read_rf)
-            for entry in group_entries:
-                entry._image = entry._period_image = image
 
     def _bind_resources(self, resources: tuple[str, ...]) -> None:
         """Record the resources this lease covers, primary first (ADR-148)."""

@@ -22,7 +22,7 @@ from zae_limiter import (
     ValidationError,
     __version__,
 )
-from zae_limiter.models import Limit, QuotaDonorDebit
+from zae_limiter.models import BucketState, Limit, QuotaDonorDebit
 from zae_limiter.sync_lease import LeaseEntry, QuotaMoveLostError, SyncLease
 from zae_limiter.version import get_schema_version
 
@@ -456,7 +456,21 @@ class TestLeaseWithoutBoundResources:
 
     def test_resources_come_from_its_entries(self):
         entries = [
-            LeaseEntry(entity_id="e", resource=name, limit=Limit.per_minute("rpm", 10), state=None)
+            LeaseEntry(
+                entity_id="e",
+                resource=name,
+                limit=Limit.per_minute("rpm", 10),
+                state=BucketState(
+                    entity_id="e",
+                    resource=name,
+                    limit_name="rpm",
+                    tokens_milli=10000,
+                    last_refill_ms=0,
+                    capacity_milli=10000,
+                    refill_amount_milli=10000,
+                    refill_period_ms=60000,
+                ),
+            )
             for name in ("a", "b", "a")
         ]
         lease = SyncLease(repository=None, entries=entries)

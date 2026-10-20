@@ -543,20 +543,6 @@ class Lease:
 
     def __post_init__(self) -> None:
         self._index_declared()
-
-    def _index_declared(self) -> None:
-        """Index declared limit names, lease-wide and per resource."""
-        by_resource: dict[str, set[str]] = {}
-        for entry in self.entries:
-            if entry._declared:
-                by_resource.setdefault(entry.resource, set()).add(entry.limit.name)
-        self._declared_by_resource = {r: frozenset(names) for r, names in by_resource.items()}
-        primary = self._primary
-        self._declared_names = frozenset(
-            entry.limit.name
-            for entry in self.entries
-            if entry._declared and (primary is None or entry.resource == primary)
-        )
         # Each state is the item as read or as a speculative write returned it
         # (ALL_NEW), so together they are the item's image until
         # `_commit_initial` writes a new one (#721). A state not read off an
@@ -571,6 +557,20 @@ class Lease:
             image = credit_image([e.state for e in group_entries], rf=read_rf)
             for entry in group_entries:
                 entry._image = entry._period_image = image
+
+    def _index_declared(self) -> None:
+        """Index declared limit names, lease-wide and per resource."""
+        by_resource: dict[str, set[str]] = {}
+        for entry in self.entries:
+            if entry._declared:
+                by_resource.setdefault(entry.resource, set()).add(entry.limit.name)
+        self._declared_by_resource = {r: frozenset(names) for r, names in by_resource.items()}
+        primary = self._primary
+        self._declared_names = frozenset(
+            entry.limit.name
+            for entry in self.entries
+            if entry._declared and (primary is None or entry.resource == primary)
+        )
 
     def _bind_resources(self, resources: tuple[str, ...]) -> None:
         """Record the resources this lease covers, primary first (ADR-148)."""

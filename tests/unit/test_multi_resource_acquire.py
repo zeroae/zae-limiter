@@ -24,7 +24,7 @@ from zae_limiter import (
     __version__,
 )
 from zae_limiter.lease import Lease, LeaseEntry, QuotaMoveLostError
-from zae_limiter.models import Limit, QuotaDonorDebit
+from zae_limiter.models import BucketState, Limit, QuotaDonorDebit
 from zae_limiter.version import get_schema_version
 
 # Refill of 1 token/hour keeps refill negligible over a test.
@@ -506,7 +506,16 @@ class TestLeaseWithoutBoundResources:
                 entity_id="e",
                 resource=name,
                 limit=Limit.per_minute("rpm", 10),
-                state=None,
+                state=BucketState(
+                    entity_id="e",
+                    resource=name,
+                    limit_name="rpm",
+                    tokens_milli=10_000,
+                    last_refill_ms=0,
+                    capacity_milli=10_000,
+                    refill_amount_milli=10_000,
+                    refill_period_ms=60_000,
+                ),
             )
             for name in ("a", "b", "a")
         ]
