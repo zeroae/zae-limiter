@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792434971748,
+  "lastUpdate": 1792460724700,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -60101,6 +60101,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.000124411886081451",
             "extra": "mean: 5.680016396550743 msec\nrounds: 174"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "161c1359bfb9ad6b81de2d4f8f88a428e53aaacb",
+          "message": "build(deps-dev): bump ruff from 0.16.10 to 0.17.0 in the dev-dependencies group (#740)\n\nBumps the dev-dependencies group with 1 update:\n[ruff](https://github.com/astral-sh/ruff).\n\nUpdates `ruff` from 0.16.10 to 0.17.0\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/astral-sh/ruff/releases\">ruff's\nreleases</a>.</em></p>\n<blockquote>\n<h2>0.17.0</h2>\n<h2>Release Notes</h2>\n<p>Released on 2026-10-09.</p>\n<p>The executables in our macOS and Windows release archives and\n<code>ruff</code> wheels are now code-signed. macOS executables are\nsigned with an Apple Developer ID certificate and notarized by Apple.\nWindows executables have timestamped Authenticode signatures from Azure\nArtifact Signing. This enables verification of the release publisher and\nbinary integrity, supports publisher-based allowlisting, and should\nreduce security warnings and antivirus false positives.</p>\n<h3>Breaking changes</h3>\n<ul>\n<li>\n<p>Update the default and latest Python versions for 3.15 (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28792\">#28792</a>)</p>\n<p>Ruff now defaults to Python 3.11 instead of 3.10 when no Python\nversion is configured through <a\nhref=\"https://docs.astral.sh/ruff/settings/#target-version\"><code>target-version</code></a>\nor <a\nhref=\"https://docs.astral.sh/ruff/configuration/#inferring-the-python-version\"><code>requires-python</code></a>.\nWhen checking for syntax errors without a configured Python version,\nRuff now defaults to Python 3.15 instead of 3.14.</p>\n</li>\n<li>\n<p>Update the default rule set (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28786\">#28786</a>)</p>\n<p>Several of the <code>flake8-datetimez</code> rules (<a\nhref=\"https://docs.astral.sh/ruff/rules/call-datetime-without-tzinfo/\"><code>DTZ001</code></a>,\n<a\nhref=\"https://docs.astral.sh/ruff/rules/call-datetime-now-without-tzinfo/\"><code>DTZ005</code></a>,\n<a\nhref=\"https://docs.astral.sh/ruff/rules/call-datetime-fromtimestamp/\"><code>DTZ006</code></a>,\n<a\nhref=\"https://docs.astral.sh/ruff/rules/call-datetime-strptime-without-zone/\"><code>DTZ007</code></a>,\n<a\nhref=\"https://docs.astral.sh/ruff/rules/call-date-today/\"><code>DTZ011</code></a>,\n<a\nhref=\"https://docs.astral.sh/ruff/rules/call-date-fromtimestamp/\"><code>DTZ012</code></a>,\nand <a\nhref=\"https://docs.astral.sh/ruff/rules/datetime-min-max/\"><code>DTZ901</code></a>)\nare no longer enabled by default, while <a\nhref=\"https://docs.astral.sh/ruff/rules/undefined-local-with-nested-import-star-usage/\"><code>undefined-local-with-nested-import-star-usage</code></a>\n(<code>F406</code>), which corresponds to a syntax error, is now enabled\nby default.</p>\n</li>\n<li>\n<p>Update Rust crate quick-junit to 0.8.0 (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/27295\">#27295</a>)</p>\n<p>JUnit output now uses a <code>skipped</code> attribute instead of\n<code>disabled</code> on <code>&lt;testsuite&gt;</code> elements and\nincludes a <code>skipped</code> attribute on the root\n<code>&lt;testsuites&gt;</code> element.</p>\n</li>\n<li>\n<p>[<code>flake8-import-conventions</code>] Add <code>datetime as\ndt</code> as a conventional alias (<code>ICN001</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28790\">#28790</a>)</p>\n</li>\n<li>\n<p>Support Unicode dummy variable names (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28722\">#28722</a>)</p>\n<p>The default <a\nhref=\"https://docs.astral.sh/ruff/settings/#lint_dummy-variable-rgx\"><code>lint.dummy-variable-rgx</code></a>\nnow recognizes underscore-prefixed Unicode names, such as\n<code>_次</code>, as dummy variables.</p>\n</li>\n<li>\n<p>Update to Unicode 17 (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/21229\">#21229</a>,\n<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28784\">#28784</a>)</p>\n<p>Ruff now uses Unicode 17 data for identifier normalization and named\ncharacter escapes (<code>&quot;\\N{...}&quot;</code>).</p>\n</li>\n<li>\n<p>Always show unsafe and display-only fixes in the CLI (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/27810\">#27810</a>)</p>\n<p>The default <code>full</code> output format now shows unsafe fixes\nand suggestions requiring manual review, regardless of the <a\nhref=\"https://docs.astral.sh/ruff/settings/#unsafe-fixes\"><code>unsafe-fixes</code></a>\nsetting. Actually applying unsafe fixes still requires explicit\nopt-in.</p>\n</li>\n<li>\n<p>Remove the Python dependency from conda-forge builds (<a\nhref=\"https://redirect.github.com/conda-forge/ruff-feedstock/pull/361\">conda-forge/ruff-feedstock#361</a>)</p>\n<p>The conda-forge build no longer depends on Python, now supports\nlinux-riscv64, win-arm64, and linux-ppc64le platforms, and now includes\nshell completions. However, no longer depending on Python means that\n<code>python -m ruff</code> and <code>import ruff</code> will no longer\nwork. Use <code>ruff</code> directly from <code>PATH</code> instead.\nPyPI installations and those from the standalone installer are\nunaffected.</p>\n</li>\n<li>\n<p>Remove support for ruff-lsp (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28750\">#28750</a>)</p>\n<p>Support for <code>ruff-lsp</code>, the legacy Python language server\n<a\nhref=\"https://github.com/astral-sh/ruff/releases/tag/0.9.5\">deprecated\nin Ruff v0.9.5</a>, has been removed. The Ruff VS Code extension now\nalways uses the native language server; <code>ruff.nativeServer</code>\nis deprecated and ignored. See the <a\nhref=\"https://docs.astral.sh/ruff/editors/migration/\">migration\nguide</a>.</p>\n</li>\n</ul>\n<h3>Stabilization</h3>\n<p>The following rules have been stabilized and are no longer in\npreview:</p>\n<ul>\n<li><a\nhref=\"https://docs.astral.sh/ruff/rules/lazy-import-mismatch\"><code>lazy-import-mismatch</code></a>\n(<code>TID254</code>)</li>\n<li><a\nhref=\"https://docs.astral.sh/ruff/rules/lazy-import-immediately-resolved\"><code>lazy-import-immediately-resolved</code></a>\n(<code>TID255</code>)</li>\n<li><a\nhref=\"https://docs.astral.sh/ruff/rules/os-path-commonprefix\"><code>os-path-commonprefix</code></a>\n(<code>RUF071</code>)</li>\n</ul>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/astral-sh/ruff/blob/main/CHANGELOG.md\">ruff's\nchangelog</a>.</em></p>\n<blockquote>\n<h2>0.17.0</h2>\n<p>Released on 2026-10-09.</p>\n<p>The executables in our macOS and Windows release archives and\n<code>ruff</code> wheels are now code-signed.\nmacOS executables are signed with an Apple Developer ID certificate and\nnotarized by Apple. Windows\nexecutables have timestamped Authenticode signatures from Azure Artifact\nSigning. This enables\nverification of the release publisher and binary integrity, supports\npublisher-based allowlisting,\nand should reduce security warnings and antivirus false positives.</p>\n<h3>Breaking changes</h3>\n<ul>\n<li>\n<p>Update the default and latest Python versions for 3.15 (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28792\">#28792</a>)</p>\n<p>Ruff now defaults to Python 3.11 instead of 3.10 when no Python\nversion is configured through\n<a\nhref=\"https://docs.astral.sh/ruff/settings/#target-version\"><code>target-version</code></a>\nor\n<a\nhref=\"https://docs.astral.sh/ruff/configuration/#inferring-the-python-version\"><code>requires-python</code></a>.\nWhen\nchecking for syntax errors without a configured Python version, Ruff now\ndefaults to Python 3.15\ninstead of 3.14.</p>\n</li>\n<li>\n<p>Update the default rule set (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28786\">#28786</a>)</p>\n<p>Several of the <code>flake8-datetimez</code> rules\n(<a\nhref=\"https://docs.astral.sh/ruff/rules/call-datetime-without-tzinfo/\"><code>DTZ001</code></a>,\n<a\nhref=\"https://docs.astral.sh/ruff/rules/call-datetime-now-without-tzinfo/\"><code>DTZ005</code></a>,\n<a\nhref=\"https://docs.astral.sh/ruff/rules/call-datetime-fromtimestamp/\"><code>DTZ006</code></a>,\n<a\nhref=\"https://docs.astral.sh/ruff/rules/call-datetime-strptime-without-zone/\"><code>DTZ007</code></a>,\n<a\nhref=\"https://docs.astral.sh/ruff/rules/call-date-today/\"><code>DTZ011</code></a>,\n<a\nhref=\"https://docs.astral.sh/ruff/rules/call-date-fromtimestamp/\"><code>DTZ012</code></a>,\nand\n<a\nhref=\"https://docs.astral.sh/ruff/rules/datetime-min-max/\"><code>DTZ901</code></a>)\nare no longer enabled by default,\nwhile <a\nhref=\"https://docs.astral.sh/ruff/rules/undefined-local-with-nested-import-star-usage/\"><code>undefined-local-with-nested-import-star-usage</code></a>\n(<code>F406</code>), which corresponds to a syntax error, is now enabled\nby default.</p>\n</li>\n<li>\n<p>Update Rust crate quick-junit to 0.8.0 (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/27295\">#27295</a>)</p>\n<p>JUnit output now uses a <code>skipped</code> attribute instead of\n<code>disabled</code> on <code>&lt;testsuite&gt;</code> elements and\nincludes a <code>skipped</code> attribute on the root\n<code>&lt;testsuites&gt;</code> element.</p>\n</li>\n<li>\n<p>[<code>flake8-import-conventions</code>] Add <code>datetime as\ndt</code> as a conventional alias (<code>ICN001</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28790\">#28790</a>)</p>\n</li>\n<li>\n<p>Support Unicode dummy variable names (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28722\">#28722</a>)</p>\n<p>The default <a\nhref=\"https://docs.astral.sh/ruff/settings/#lint_dummy-variable-rgx\"><code>lint.dummy-variable-rgx</code></a>\nnow recognizes underscore-prefixed Unicode names, such as\n<code>_次</code>, as dummy variables.</p>\n</li>\n<li>\n<p>Update to Unicode 17 (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/21229\">#21229</a>,\n<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28784\">#28784</a>)</p>\n<p>Ruff now uses Unicode 17 data for identifier normalization and named\ncharacter escapes (<code>&quot;\\N{...}&quot;</code>).</p>\n</li>\n<li>\n<p>Always show unsafe and display-only fixes in the CLI (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/27810\">#27810</a>)</p>\n</li>\n</ul>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/5b27c1ccfaa230fb195855f5cf3404a21e3379cd\"><code>5b27c1c</code></a>\nBump version to 0.17.0 (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29259\">#29259</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/8f362bf4cb5dbad095ac416602496705d41fc843\"><code>8f362bf</code></a>\nIntegrate vendored Unicode names into Ruff</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/88a50d695c1142294bb4c780fad47d3306173885\"><code>88a50d6</code></a>\nRevert upstream Unicode loose matching</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/276832aa91f2086a6ec880884fcdd987991cddf2\"><code>276832a</code></a>\nRevert upstream Unicode alias normalization</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/26911caa2800758779965510d2f222b438abbb38\"><code>26911ca</code></a>\nVendor unicode_names2 from upstream</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/27e3797508d1a7ad69e4900d51e38d78785aaf73\"><code>27e3797</code></a>\n[<code>ruff</code>] Stabilize <code>os-path-commonprefix</code>\n(<code>RUF071</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/28764\">#28764</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/bbb52c1267cf39aba67e54c2b5800878d23073a9\"><code>bbb52c1</code></a>\n[<code>flake8-tidy-imports</code>] Stabilize\n<code>lazy-import-immediately-resolved</code> (`TID255...</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/5aa9cbd3a49d32b24ac21fa7797ca87a330792a2\"><code>5aa9cbd</code></a>\n[<code>flake8-tidy-imports</code>] Stabilize\n<code>lazy-import-mismatch</code> (<code>TID254</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/28760\">#28760</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/dba1bc893aedfeea2064c4e8e764135f0d44dc3f\"><code>dba1bc8</code></a>\n[<code>flake8-import-conventions</code>] Add <code>datetime as dt</code>\nas a conventional alias (`...</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/ef23c9c39eb3029bab0139c3ea7ae6d95c4131e0\"><code>ef23c9c</code></a>\nUpdate default and latest Python versions for 3.15 (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/28792\">#28792</a>)</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/astral-sh/ruff/compare/0.16.10...0.17.0\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=ruff&package-manager=pip&previous-version=0.16.10&new-version=0.17.0)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore <dependency name> major version` will close this\ngroup update PR and stop Dependabot creating any more for the specific\ndependency's major version (unless you unignore this specific\ndependency's major version or upgrade to it yourself)\n- `@dependabot ignore <dependency name> minor version` will close this\ngroup update PR and stop Dependabot creating any more for the specific\ndependency's minor version (unless you unignore this specific\ndependency's minor version or upgrade to it yourself)\n- `@dependabot ignore <dependency name>` will close this group update PR\nand stop Dependabot creating any more for the specific dependency\n(unless you unignore this specific dependency or upgrade to it yourself)\n- `@dependabot unignore <dependency name>` will remove all of the ignore\nconditions of the specified dependency\n- `@dependabot unignore <dependency name> <ignore condition>` will\nremove the ignore condition of the specified dependency and ignore\nconditions\n\n\n</details>",
+          "timestamp": "2026-10-19T21:43:54-04:00",
+          "tree_id": "3920ac5a7919b75c47bd34b6a96763120ed06e19",
+          "url": "https://github.com/zeroae/zae-limiter/commit/161c1359bfb9ad6b81de2d4f8f88a428e53aaacb"
+        },
+        "date": 1792460723621,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 163.09515801084962,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007105772334973583",
+            "extra": "mean: 6.131389872000227 msec\nrounds: 125"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 149.01138956925686,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00047912293220907855",
+            "extra": "mean: 6.710896414634295 msec\nrounds: 123"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 91.32162889589685,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004831145525632014",
+            "extra": "mean: 10.950308399995379 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 138.0871207015113,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009191657633709187",
+            "extra": "mean: 7.241804991803665 msec\nrounds: 122"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 156.58327709682794,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008758216623258527",
+            "extra": "mean: 6.386378025423622 msec\nrounds: 118"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 166.11260678534052,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0010325646557499636",
+            "extra": "mean: 6.020012685083275 msec\nrounds: 181"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 92.46021863054739,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001889223013768215",
+            "extra": "mean: 10.815462204300001 msec\nrounds: 93"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 171.03017184386616,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0013494997913899923",
+            "extra": "mean: 5.846921564885653 msec\nrounds: 131"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 152.28620765707444,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005729488090698842",
+            "extra": "mean: 6.566582853332648 msec\nrounds: 75"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 102.24655011444479,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007683467770591994",
+            "extra": "mean: 9.780281084111863 msec\nrounds: 107"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 182.09154343700868,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001413914509739588",
+            "extra": "mean: 5.491743225000079 msec\nrounds: 120"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 154.37482573920823,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016602112215747768",
+            "extra": "mean: 6.477740105691463 msec\nrounds: 123"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 138.28241247701803,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009205051083518028",
+            "extra": "mean: 7.23157762500127 msec\nrounds: 120"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 182.91909307720607,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012003271676497961",
+            "extra": "mean: 5.466897868217192 msec\nrounds: 129"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 183.21126492896553,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000131480901655917",
+            "extra": "mean: 5.458179661538382 msec\nrounds: 130"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 90.79591792447631,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004559888940254486",
+            "extra": "mean: 11.01371100000108 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 90.1805208415866,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00043682895721120244",
+            "extra": "mean: 11.088869199997475 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 181.00411884661244,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011751100329805198",
+            "extra": "mean: 5.524736157233117 msec\nrounds: 159"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 134.3591853785161,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015518897295255707",
+            "extra": "mean: 7.4427364022995866 msec\nrounds: 87"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 92.36560957660669,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00023226857616985867",
+            "extra": "mean: 10.826540360464081 msec\nrounds: 86"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 17.47264539423161,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0018205841893363017",
+            "extra": "mean: 57.23231814285766 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 17.97695110948919,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005067730693041421",
+            "extra": "mean: 55.626785315789554 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 59.07461692633021,
+            "unit": "iter/sec",
+            "range": "stddev: 0.029793453492897096",
+            "extra": "mean: 16.92774413157961 msec\nrounds: 38"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 92.40563643049913,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00022010286549344326",
+            "extra": "mean: 10.821850686046929 msec\nrounds: 86"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 76.42541622371785,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015830695155792085",
+            "extra": "mean: 13.084652323943251 msec\nrounds: 71"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 114.97382196370819,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00125505678433111",
+            "extra": "mean: 8.697632060241094 msec\nrounds: 83"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 90.35368906407578,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00019329481258243276",
+            "extra": "mean: 11.067616722221866 msec\nrounds: 90"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 93.51703285650531,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014314414716784526",
+            "extra": "mean: 10.693239182795963 msec\nrounds: 93"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 118.30589628731776,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005337391095665705",
+            "extra": "mean: 8.452664079999863 msec\nrounds: 75"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 135.50251093226817,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012686792070881186",
+            "extra": "mean: 7.379937044117631 msec\nrounds: 136"
           }
         ]
       }
