@@ -10,6 +10,7 @@ import sys
 import warnings
 
 import pytest
+from botocore.exceptions import ClientError
 
 from zae_limiter import (
     LeaseExpiredError,
@@ -22,7 +23,7 @@ from zae_limiter import (
     ValidationError,
     __version__,
 )
-from zae_limiter.models import BucketState, Limit, QuotaDonorDebit
+from zae_limiter.models import BucketState, Limit, LimitStatus, QuotaDonorDebit
 from zae_limiter.sync_lease import LeaseEntry, QuotaMoveLostError, SyncLease
 from zae_limiter.version import get_schema_version
 
@@ -477,3 +478,77 @@ class TestLeaseWithoutBoundResources:
         assert lease.resources == ("a", "b")
         assert lease.consumed == {"rpm": 0}
         assert lease.resource("b").consumed == {"rpm": 0}
+
+
+def _conflict() -> ClientError:
+    """What a write meeting an in-flight transaction raises; moto never does (#724)."""
+    return ClientError(
+        {"Error": {"Code": "TransactionConflictException", "Message": "ongoing"}}, "UpdateItem"
+    )
+
+
+def _contended_429(entity_id, resource, limit_name) -> RateLimitExceeded:
+    """The 429 a busy table produces: nothing exceeded, ``contended``."""
+    status = LimitStatus(
+        entity_id=entity_id,
+        resource=resource,
+        limit_name=limit_name,
+        limit=Limit.custom(limit_name, 100, **SLOW),
+        available=0,
+        requested=1,
+        exceeded=False,
+        retry_after_seconds=0.1,
+    )
+    return RateLimitExceeded([status], contended=True)
+
+
+class TestContentionAcrossResources:
+    """A busy table is a contended 429 across resources too (#724, ADR-148)."""
+
+    @pytest.mark.parametrize("on_unavailable", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    def test_a_contended_slow_commit_after_a_fast_win_is_a_contended_429(
+        self, repo, on_unavailable
+    ):
+        limiter = SyncRateLimiter(repository=repo)
+        _admit(limiter)
+        repo.set_limits("user", [Limit.custom("weekly", 1000, **SLOW)], "budget")
+        before = _ledger(repo)
+
+        def transact_write(items):
+            raise _conflict()
+
+        repo.transact_write = transact_write
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with limiter.acquire(
+                "user",
+                "search",
+                {"rpm": 1},
+                on_unavailable=on_unavailable,
+                also={"budget": {"weekly": 10}},
+            ):
+                pytest.fail("a contended acquire must not admit")
+        assert exc_info.value.contended is True
+        assert _ledger(repo) == before
+
+    @pytest.mark.parametrize("on_unavailable", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    def test_contention_while_planning_is_a_contended_429(self, repo, on_unavailable):
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=False)
+        _admit(limiter)
+        before = _ledger(repo)
+
+        def do_acquire(**kwargs):
+            raise _contended_429("user", kwargs["resource"], "rpm")
+
+        limiter._do_acquire = do_acquire
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with limiter.acquire(
+                "user",
+                "search",
+                {"rpm": 1},
+                on_unavailable=on_unavailable,
+                also={"budget": {"weekly": 10}},
+            ):
+                pytest.fail("a contended acquire must not admit")
+        assert exc_info.value.contended is True
+        assert {s.resource for s in exc_info.value.statuses} == {"search", "budget"}
+        assert _ledger(repo) == before

@@ -2050,7 +2050,9 @@ class SyncRateLimiter:
                 self._refund(landed)
                 if not landed:
                     raise
-                raise RateLimitExceeded(exc.statuses + self._admitted_statuses(landed)) from exc
+                raise RateLimitExceeded(
+                    exc.statuses + self._admitted_statuses(landed), contended=exc.contended
+                ) from exc
             except BaseException:
                 self._refund(landed)
                 raise
@@ -2207,7 +2209,10 @@ class SyncRateLimiter:
         rejections = [error for error in errors if isinstance(error, RateLimitExceeded)]
         if rejections:
             statuses = [status for error in rejections for status in error.statuses]
-            return RateLimitExceeded(statuses + self._admitted_statuses(admitted))
+            return RateLimitExceeded(
+                statuses + self._admitted_statuses(admitted),
+                contended=all(error.contended for error in rejections),
+            )
         return errors[0]
 
     def _do_acquire(

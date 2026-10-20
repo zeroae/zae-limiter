@@ -2582,7 +2582,9 @@ class RateLimiter:
                 if not landed:
                     raise
                 # The resources the fast path admitted were evaluated too.
-                raise RateLimitExceeded(exc.statuses + self._admitted_statuses(landed)) from exc
+                raise RateLimitExceeded(
+                    exc.statuses + self._admitted_statuses(landed), contended=exc.contended
+                ) from exc
             except BaseException:
                 await self._refund(landed)
                 raise
@@ -2746,7 +2748,12 @@ class RateLimiter:
         rejections = [error for error in errors if isinstance(error, RateLimitExceeded)]
         if rejections:
             statuses = [status for error in rejections for status in error.statuses]
-            return RateLimitExceeded(statuses + self._admitted_statuses(admitted))
+            # Contended only when every rejection was: a real violation
+            # anywhere makes the combined 429 an ordinary one (#724).
+            return RateLimitExceeded(
+                statuses + self._admitted_statuses(admitted),
+                contended=all(error.contended for error in rejections),
+            )
         return errors[0]
 
     async def _do_acquire(
