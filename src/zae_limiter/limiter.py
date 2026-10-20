@@ -2688,7 +2688,7 @@ class RateLimiter:
             # Without moves a plan is at most 2 bucket items per resource, so
             # MAX_ACQUIRE_RESOURCES keeps the re-plan under the limit.
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return await plan_and_commit(True, moves_contended)
+                return await plan_and_commit(True, moves_contended, redone)
             marks = [plan._cache_mark for plan in planned]
             lease = Lease(
                 repository=self._repository,

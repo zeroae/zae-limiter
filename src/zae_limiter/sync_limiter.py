@@ -2141,7 +2141,7 @@ class SyncRateLimiter:
                         self._commit_rejected_moves(plan.entries, plan._carriers)
                 raise error
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return plan_and_commit(True, moves_contended)
+                return plan_and_commit(True, moves_contended, redone)
             marks = [plan._cache_mark for plan in planned]
             lease = SyncLease(
                 repository=self._repository,
