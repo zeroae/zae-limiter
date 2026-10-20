@@ -900,6 +900,45 @@ class TestDisabledCheckOnTheRejectionPath:
         }
         assert await _ledger(repo) == before
 
+    async def test_a_part_that_does_not_cascade_keeps_the_429(self, repo):
+        await repo.set_resource_defaults("extra", [Limit.custom("daily", 1000, **SLOW)])
+        await repo.set_resource_cascade("extra", False)
+        limiter = RateLimiter(repository=repo)
+        await _admit(limiter)  # extra has no bucket: a slow part that cannot cascade
+        before = await _ledger(repo)
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with limiter.acquire(
+                "user",
+                "search",
+                {"rpm": 1},
+                also={"budget": {"weekly": 5000}, "extra": {"daily": 1}},
+            ):
+                pytest.fail("a rejected acquire must not admit")
+
+        assert {s.resource for s in exc_info.value.violations} == {"budget"}
+        assert await _ledger(repo) == before
+
+    async def test_an_entity_without_a_cascade_keeps_the_429(self, repo):
+        """No policy on the resource and no cascade on the entity's META."""
+        await repo.set_resource_defaults("extra", [Limit.custom("daily", 1000, **SLOW)])
+        limiter = RateLimiter(repository=repo)
+        async with limiter.acquire("org", "search", {"rpm": 1}, also={"budget": {"weekly": 1}}):
+            pass  # org has search and budget buckets; extra has none
+        before = await _ledger(repo)
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with limiter.acquire(
+                "org",
+                "search",
+                {"rpm": 1},
+                also={"budget": {"weekly": 5000}, "extra": {"daily": 1}},
+            ):
+                pytest.fail("a rejected acquire must not admit")
+
+        assert {s.resource for s in exc_info.value.violations} == {"budget"}
+        assert await _ledger(repo) == before
+
     async def test_a_disabled_cascade_parent_outranks_the_429(self, repo):
         await repo.set_resource_defaults("images", [Limit.custom("daily", 1000, **SLOW)])
         await repo.disable_entity("org", resource="images")

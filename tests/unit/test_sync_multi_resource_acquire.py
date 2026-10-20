@@ -785,6 +785,41 @@ class TestDisabledCheckOnTheRejectionPath:
         }
         assert _ledger(repo) == before
 
+    def test_a_part_that_does_not_cascade_keeps_the_429(self, repo):
+        repo.set_resource_defaults("extra", [Limit.custom("daily", 1000, **SLOW)])
+        repo.set_resource_cascade("extra", False)
+        limiter = SyncRateLimiter(repository=repo)
+        _admit(limiter)
+        before = _ledger(repo)
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with limiter.acquire(
+                "user",
+                "search",
+                {"rpm": 1},
+                also={"budget": {"weekly": 5000}, "extra": {"daily": 1}},
+            ):
+                pytest.fail("a rejected acquire must not admit")
+        assert {s.resource for s in exc_info.value.violations} == {"budget"}
+        assert _ledger(repo) == before
+
+    def test_an_entity_without_a_cascade_keeps_the_429(self, repo):
+        """No policy on the resource and no cascade on the entity's META."""
+        repo.set_resource_defaults("extra", [Limit.custom("daily", 1000, **SLOW)])
+        limiter = SyncRateLimiter(repository=repo)
+        with limiter.acquire("org", "search", {"rpm": 1}, also={"budget": {"weekly": 1}}):
+            pass
+        before = _ledger(repo)
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with limiter.acquire(
+                "org",
+                "search",
+                {"rpm": 1},
+                also={"budget": {"weekly": 5000}, "extra": {"daily": 1}},
+            ):
+                pytest.fail("a rejected acquire must not admit")
+        assert {s.resource for s in exc_info.value.violations} == {"budget"}
+        assert _ledger(repo) == before
+
     def test_a_disabled_cascade_parent_outranks_the_429(self, repo):
         repo.set_resource_defaults("images", [Limit.custom("daily", 1000, **SLOW)])
         repo.disable_entity("org", resource="images")
