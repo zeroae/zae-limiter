@@ -5,7 +5,7 @@ import logging
 import random
 import warnings
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import InitVar, dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from .bucket import (
@@ -540,9 +540,16 @@ class Lease:
     _unknown_keys_by_resource: dict[str, frozenset[str]] = field(default_factory=dict)
     # Declared limit names per resource, for `resource(name)` handles.
     _declared_by_resource: dict[str, frozenset[str]] = field(init=False, default_factory=dict)
+    # False when the entries are already committed (a combined multi-resource
+    # lease, ADR-148): their credit images are the post-write ones, and
+    # recomputing them from the entries' states, which are the pre-write ones,
+    # would replace them (#721).
+    compute_images: InitVar[bool] = True
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, compute_images: bool = True) -> None:
         self._index_declared()
+        if not compute_images:
+            return
         # Each state is the item as read or as a speculative write returned it
         # (ALL_NEW), so together they are the item's image until
         # `_commit_initial` writes a new one (#721). A state not read off an

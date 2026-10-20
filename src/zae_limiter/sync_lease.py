@@ -11,7 +11,7 @@ import random
 import time
 import warnings
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import InitVar, dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from .bucket import (
@@ -426,9 +426,12 @@ class SyncLease:
     _resources: tuple[str, ...] = ()
     _unknown_keys_by_resource: dict[str, frozenset[str]] = field(default_factory=dict)
     _declared_by_resource: dict[str, frozenset[str]] = field(init=False, default_factory=dict)
+    compute_images: InitVar[bool] = True
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, compute_images: bool = True) -> None:
         self._index_declared()
+        if not compute_images:
+            return
         groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in self.entries:
             groups.setdefault((entry.entity_id, entry.resource, entry._shard_id), []).append(entry)

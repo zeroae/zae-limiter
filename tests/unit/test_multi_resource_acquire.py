@@ -9,6 +9,7 @@ where it started.
 
 import sys
 import warnings
+from datetime import UTC, datetime
 
 import pytest
 from botocore.exceptions import ClientError
@@ -26,6 +27,7 @@ from zae_limiter import (
 )
 from zae_limiter.lease import Lease, LeaseEntry, QuotaMoveLostError
 from zae_limiter.models import BucketState, Limit, LimitStatus, QuotaDonorDebit
+from zae_limiter.schema import BUCKET_FIELD_TK, bucket_attr, pk_bucket, sk_state
 from zae_limiter.version import get_schema_version
 
 # Refill of 1 token/hour keeps refill negligible over a test.
@@ -524,6 +526,79 @@ class TestLeaseWithoutBoundResources:
         assert lease.resources == ("a", "b")
         assert lease.consumed == {"rpm": 0}
         assert lease.resource("b").consumed == {"rpm": 0}
+
+
+MIDNIGHT = int(datetime(2026, 10, 10, 0, 0, 0, tzinfo=UTC).timestamp() * 1000)
+
+
+class TestCombinedLeaseKeepsCreditImages:
+    """Combining committed leases must not recompute their credit images (#721).
+
+    The images are what a refund pins (and, for a quota, the period it stays
+    in). ``Lease.__post_init__`` recomputes them from the entries' states,
+    which after a write are the *pre*-write ones: rebuilding the combined lease
+    replaced the post-write images and a quota refund was dropped.
+    """
+
+    @staticmethod
+    async def _daily_budget(repo, now):
+        repo._now_ms = lambda: now[0]
+        await repo.set_resource_defaults("budget", [Limit.quota("weekly", 1000, cron="0 0 * * *")])
+
+    @staticmethod
+    async def _tokens(repo, entity_id="user"):
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "budget", 0)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return int(response["Item"][bucket_attr("weekly", BUCKET_FIELD_TK)]["N"])
+
+    async def test_a_quota_refund_after_a_slow_path_create_lands(self, repo):
+        now = [MIDNIGHT - 3_600_000]
+        await self._daily_budget(repo, now)
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+
+        with pytest.raises(RuntimeError):
+            async with limiter.acquire(
+                "user", "search", {"rpm": 1}, also={"budget": {"weekly": 10}}
+            ):
+                raise RuntimeError("body failed")
+
+        assert await _consumed(repo, "user", "budget") == {"weekly": 0}
+        assert await self._tokens(repo) == 1_000_000
+
+    async def test_a_quota_refund_after_the_pass_reset_it_lands(self, repo):
+        now = [MIDNIGHT - 1000]
+        await self._daily_budget(repo, now)
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+        await _admit(limiter, weekly=1)  # yesterday: 999 left
+        now[0] = MIDNIGHT + 1000  # the next pass applies the reset edge
+
+        with pytest.raises(RuntimeError):
+            async with limiter.acquire(
+                "user", "search", {"rpm": 1}, also={"budget": {"weekly": 10}}
+            ):
+                raise RuntimeError("body failed")
+
+        # Reset to 1000, debited 10, refunded 10; `tc` is not reset by the edge.
+        assert await _consumed(repo, "user", "budget") == {"weekly": 1}
+        assert await self._tokens(repo) == 1_000_000
+
+    async def test_a_released_quota_after_a_slow_path_create_lands(self, repo):
+        now = [MIDNIGHT - 3_600_000]
+        await self._daily_budget(repo, now)
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+
+        async with limiter.acquire(
+            "user", "search", {"rpm": 1}, also={"budget": {"weekly": 10}}
+        ) as lease:
+            await lease.resource("budget").release(weekly=10)
+
+        assert await self._tokens(repo) == 1_000_000
 
 
 def _conflict() -> ClientError:

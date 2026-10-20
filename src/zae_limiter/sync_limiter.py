@@ -2064,6 +2064,7 @@ class SyncRateLimiter:
             entries=[entry for part in landed for entry in part.entries],
             _unknown_keys=unknown.get(parts[0][0], frozenset()),
             _unknown_keys_by_resource=unknown,
+            compute_images=False,
         )
         lease._initial_committed = True
         return lease
@@ -2167,7 +2168,7 @@ class SyncRateLimiter:
         entries = [entry for lease in leases for entry in lease.entries]
         if not entries:
             return
-        refund = SyncLease(repository=self._repository, entries=entries)
+        refund = SyncLease(repository=self._repository, entries=entries, compute_images=False)
         refund._initial_committed = True
         refund._rollback()
 
