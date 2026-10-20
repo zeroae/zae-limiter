@@ -2732,6 +2732,8 @@ class RateLimiter:
     async def _find_disabled(self, entity_id: str, resources: list[str]) -> ResourceDisabled | None:
         """The first ``ResourceDisabled`` among resources the fast path left (ADR-148).
 
+        Each resource's own level, then its parent's when it cascades there.
+
         A failed read stops the search and answers None: the caller keeps the
         error it already had rather than replacing a 429 with a backend error.
         """
@@ -2743,6 +2745,23 @@ class RateLimiter:
                         entity_id=entity_id,
                         resource=resource,
                         level=access.disabled_level or "resource",
+                    )
+                if access.cascade is False:
+                    continue
+                # The slow path would gate the parent too (ADR-125, ADR-146):
+                # its 403 outranks the child's 429 for a resource with no
+                # bucket yet, exactly as in a single-resource acquire.
+                entity = await self._repository.get_entity(entity_id)
+                if entity is None or not effective_cascade(access.cascade, entity):
+                    continue
+                parent_id = entity.parent_id
+                assert parent_id is not None  # effective_cascade is False without one
+                parent_access = await self._repository.resolve_access(parent_id, resource)
+                if parent_access.disabled:
+                    return ResourceDisabled(
+                        entity_id=parent_id,
+                        resource=resource,
+                        level=parent_access.disabled_level or "resource",
                     )
         except Exception:
             return None

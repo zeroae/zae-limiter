@@ -730,3 +730,20 @@ class TestDisabledCheckOnTheRejectionPath:
             ("budget", "weekly")
         }
         assert _ledger(repo) == before
+
+    def test_a_disabled_cascade_parent_outranks_the_429(self, repo):
+        repo.set_resource_defaults("images", [Limit.custom("daily", 1000, **SLOW)])
+        repo.disable_entity("org", resource="images")
+        limiter = SyncRateLimiter(repository=repo)
+        _admit(limiter)
+        before = _ledger(repo)
+        with pytest.raises(ResourceDisabled) as single:
+            with limiter.acquire("user", "images", {"daily": 1}):
+                pytest.fail("a disabled parent must not admit")
+        assert single.value.entity_id == "org"
+        with pytest.raises(ResourceDisabled) as exc_info:
+            with limiter.acquire("user", "budget", {"weekly": 5000}, also={"images": {"daily": 1}}):
+                pytest.fail("a disabled parent must not admit")
+        assert exc_info.value.entity_id == "org"
+        assert exc_info.value.resource == "images"
+        assert _ledger(repo) == before

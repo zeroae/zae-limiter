@@ -803,3 +803,29 @@ class TestDisabledCheckOnTheRejectionPath:
             ("budget", "weekly")
         }
         assert await _ledger(repo) == before
+
+    async def test_a_disabled_cascade_parent_outranks_the_429(self, repo):
+        await repo.set_resource_defaults("images", [Limit.custom("daily", 1000, **SLOW)])
+        await repo.disable_entity("org", resource="images")
+        limiter = RateLimiter(repository=repo)
+        await _admit(limiter)  # budget now has a bucket; images has none
+        before = await _ledger(repo)
+
+        # One resource alone already reports the parent, not the child.
+        with pytest.raises(ResourceDisabled) as single:
+            async with limiter.acquire("user", "images", {"daily": 1}):
+                pytest.fail("a disabled parent must not admit")
+        assert single.value.entity_id == "org"
+
+        with pytest.raises(ResourceDisabled) as exc_info:
+            async with limiter.acquire(
+                "user",
+                "budget",
+                {"weekly": 5000},
+                also={"images": {"daily": 1}},
+            ):
+                pytest.fail("a disabled parent must not admit")
+
+        assert exc_info.value.entity_id == "org"
+        assert exc_info.value.resource == "images"
+        assert await _ledger(repo) == before

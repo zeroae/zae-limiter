@@ -2181,6 +2181,8 @@ class SyncRateLimiter:
     def _find_disabled(self, entity_id: str, resources: list[str]) -> ResourceDisabled | None:
         """The first ``ResourceDisabled`` among resources the fast path left (ADR-148).
 
+        Each resource's own level, then its parent's when it cascades there.
+
         A failed read stops the search and answers None: the caller keeps the
         error it already had rather than replacing a 429 with a backend error.
         """
@@ -2192,6 +2194,20 @@ class SyncRateLimiter:
                         entity_id=entity_id,
                         resource=resource,
                         level=access.disabled_level or "resource",
+                    )
+                if access.cascade is False:
+                    continue
+                entity = self._repository.get_entity(entity_id)
+                if entity is None or not effective_cascade(access.cascade, entity):
+                    continue
+                parent_id = entity.parent_id
+                assert parent_id is not None
+                parent_access = self._repository.resolve_access(parent_id, resource)
+                if parent_access.disabled:
+                    return ResourceDisabled(
+                        entity_id=parent_id,
+                        resource=resource,
+                        level=parent_access.disabled_level or "resource",
                     )
         except Exception:
             return None
