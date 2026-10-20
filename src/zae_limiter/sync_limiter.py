@@ -2110,7 +2110,7 @@ class SyncRateLimiter:
                 return exc
 
         def plan_and_commit(
-            disable_moves: bool, moves_contended: bool = False
+            disable_moves: bool, moves_contended: bool = False, redone: bool = False
         ) -> tuple[SyncLease, dict[str, frozenset[str]]]:
             outcomes = self._run_in_executor(
                 *[
@@ -2135,7 +2135,12 @@ class SyncRateLimiter:
                 _carriers=[carrier for plan in planned for carrier in plan._carriers],
                 _cache_mark=None if None in marks else min(m for m in marks if m is not None),
             )
-            lease._commit_initial()
+            try:
+                lease._commit_initial()
+            except PeriodNotAppliedError:
+                if redone:
+                    raise
+                return plan_and_commit(disable_moves, moves_contended, True)
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }

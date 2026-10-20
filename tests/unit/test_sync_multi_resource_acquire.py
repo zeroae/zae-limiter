@@ -26,7 +26,7 @@ from zae_limiter import (
 )
 from zae_limiter.models import BucketState, Limit, LimitStatus, QuotaDonorDebit
 from zae_limiter.schema import BUCKET_FIELD_TK, bucket_attr, pk_bucket, sk_state
-from zae_limiter.sync_lease import LeaseEntry, QuotaMoveLostError, SyncLease
+from zae_limiter.sync_lease import LeaseEntry, PeriodNotAppliedError, QuotaMoveLostError, SyncLease
 from zae_limiter.version import get_schema_version
 
 SLOW = dict(refill_amount=1, refill_period_seconds=3600)
@@ -356,6 +356,48 @@ class TestSlowPathPlanning:
         limiter._do_acquire = do_acquire
         _admit(limiter)
         assert passes[-1] == (True, contended)
+
+    @pytest.mark.parametrize("losses", [1, 2])
+    def test_an_unapplied_period_is_redone_once(self, repo, monkeypatch, losses):
+        """The retry found a quota period nobody applied (#743): the combined
+        commit re-plans once from a fresh read, and a second loss stands."""
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=False)
+        status = LimitStatus(
+            entity_id="user",
+            resource="budget",
+            limit_name="weekly",
+            limit=Limit.custom("weekly", 1000, **SLOW),
+            available=0,
+            requested=10,
+            exceeded=True,
+            retry_after_seconds=1.0,
+        )
+        real = SyncLease._commit_initial
+        left = [losses]
+
+        def commit_initial(self):
+            if left[0] and len({entry.resource for entry in self.entries}) > 1:
+                left[0] -= 1
+                raise PeriodNotAppliedError([status])
+            return real(self)
+
+        monkeypatch.setattr(SyncLease, "_commit_initial", commit_initial)
+        planned: list[str] = []
+        real_do = limiter._do_acquire
+
+        def do_acquire(**kwargs):
+            planned.append(kwargs["resource"])
+            return real_do(**kwargs)
+
+        limiter._do_acquire = do_acquire
+        if losses == 1:
+            _admit(limiter)
+            assert _ledger(repo) == ({"rpm": 1}, {"rpm": 1}, {"weekly": 10}, {})
+        else:
+            with pytest.raises(RateLimitExceeded):
+                _admit(limiter)
+            assert _ledger(repo) == ({}, {}, {}, {})
+        assert len(planned) == 4
 
     def test_a_rejected_part_does_not_lose_another_parts_move(self, repo):
         """ADR-145 I5: a planned move commits with nothing consumed on rejection."""

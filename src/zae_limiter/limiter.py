@@ -2643,7 +2643,7 @@ class RateLimiter:
                 return exc
 
         async def plan_and_commit(
-            disable_moves: bool, moves_contended: bool = False
+            disable_moves: bool, moves_contended: bool = False, redone: bool = False
         ) -> tuple[Lease, dict[str, frozenset[str]]]:
             # One name per part keeps the sync twin's lambda on one line (#513).
             outcomes = await asyncio.gather(
@@ -2672,7 +2672,15 @@ class RateLimiter:
                 _carriers=[carrier for plan in planned for carrier in plan._carriers],
                 _cache_mark=None if None in marks else min(m for m in marks if m is not None),
             )
-            await lease._commit_initial()
+            try:
+                await lease._commit_initial()
+            except PeriodNotAppliedError:
+                # The retry found a quota period nobody has applied (#743):
+                # redo the pass once from a fresh read, which applies it. A
+                # second loss stands as the rejection it was raised as.
+                if redone:
+                    raise
+                return await plan_and_commit(disable_moves, moves_contended, True)
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }
