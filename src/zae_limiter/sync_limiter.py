@@ -2039,19 +2039,13 @@ class SyncRateLimiter:
                 else:
                     slow_parts.append((resource, consume, shard, shard_count, parent_shard))
             if errors:
-                if not any(isinstance(error, ResourceDisabled) for error in errors):
-                    for part_resource, *_rest in slow_parts:
-                        access = self._repository.resolve_access(entity_id, part_resource)
-                        if access.disabled:
-                            errors.append(
-                                ResourceDisabled(
-                                    entity_id=entity_id,
-                                    resource=part_resource,
-                                    level=access.disabled_level or "resource",
-                                )
-                            )
-                            break
                 self._refund(landed)
+                if any(isinstance(error, RateLimitExceeded) for error in errors) and (
+                    not any(isinstance(error, ResourceDisabled) for error in errors)
+                ):
+                    disabled = self._find_disabled(entity_id, [part[0] for part in slow_parts])
+                    if disabled is not None:
+                        errors.append(disabled)
                 raise self._combined_error(errors, landed)
         else:
             slow_parts = [(resource, consume, None, None, None) for resource, consume in parts]
@@ -2183,6 +2177,25 @@ class SyncRateLimiter:
             if entry._donor_debit is not None
         }
         return len(buckets) + len(donors)
+
+    def _find_disabled(self, entity_id: str, resources: list[str]) -> ResourceDisabled | None:
+        """The first ``ResourceDisabled`` among resources the fast path left (ADR-148).
+
+        A failed read stops the search and answers None: the caller keeps the
+        error it already had rather than replacing a 429 with a backend error.
+        """
+        try:
+            for resource in resources:
+                access = self._repository.resolve_access(entity_id, resource)
+                if access.disabled:
+                    return ResourceDisabled(
+                        entity_id=entity_id,
+                        resource=resource,
+                        level=access.disabled_level or "resource",
+                    )
+        except Exception:
+            return None
+        return None
 
     def _refund(self, leases: list[SyncLease]) -> None:
         """Refund every debit these committed leases wrote, concurrently (ADR-148).

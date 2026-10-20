@@ -700,3 +700,33 @@ class TestContentionAcrossResources:
         assert exc_info.value.contended is True
         assert {s.resource for s in exc_info.value.statuses} == {"search", "budget"}
         assert _ledger(repo) == before
+
+
+class TestDisabledCheckOnTheRejectionPath:
+    """The look for a disabled resource must never cost the 429 (ADR-148)."""
+
+    @pytest.mark.parametrize("on_unavailable", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    def test_a_failed_check_keeps_the_429_and_the_refund(self, repo, on_unavailable):
+        repo.set_resource_defaults("extra", [Limit.custom("daily", 1000, **SLOW)])
+        repo.set_resource_cascade("extra", False)
+        limiter = SyncRateLimiter(repository=repo)
+        _admit(limiter)
+        before = _ledger(repo)
+
+        def resolve_access(*args, **kwargs):
+            raise RuntimeError("throttled")
+
+        repo.resolve_access = resolve_access
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with limiter.acquire(
+                "user",
+                "search",
+                {"rpm": 1},
+                on_unavailable=on_unavailable,
+                also={"budget": {"weekly": 5000}, "extra": {"daily": 1}},
+            ):
+                pytest.fail("a rejected acquire must not admit")
+        assert {(s.resource, s.limit_name) for s in exc_info.value.violations} == {
+            ("budget", "weekly")
+        }
+        assert _ledger(repo) == before

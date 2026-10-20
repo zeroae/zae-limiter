@@ -2569,23 +2569,21 @@ class RateLimiter:
                 else:
                     slow_parts.append((resource, consume, shard, shard_count, parent_shard))
             if errors:
+                # Refund first: nothing below may leave a debit behind.
+                await self._refund(landed)
                 # ResourceDisabled outranks a 429 whatever the order (ADR-148),
                 # but a disabled resource with no bucket yet is only found by
-                # the slow path, which a fast-path error skips: ask it here.
-                # Paid only on this error path, one uncached read per part.
-                if not any(isinstance(error, ResourceDisabled) for error in errors):
-                    for part_resource, *_rest in slow_parts:
-                        access = await self._repository.resolve_access(entity_id, part_resource)
-                        if access.disabled:
-                            errors.append(
-                                ResourceDisabled(
-                                    entity_id=entity_id,
-                                    resource=part_resource,
-                                    level=access.disabled_level or "resource",
-                                )
-                            )
-                            break
-                await self._refund(landed)
+                # the slow path, which a fast-path error skips: ask it here,
+                # and only when there is a 429 to outrank. One uncached read
+                # per part, paid on this error path alone.
+                if any(isinstance(error, RateLimitExceeded) for error in errors) and not any(
+                    isinstance(error, ResourceDisabled) for error in errors
+                ):
+                    disabled = await self._find_disabled(
+                        entity_id, [part[0] for part in slow_parts]
+                    )
+                    if disabled is not None:
+                        errors.append(disabled)
                 raise self._combined_error(errors, landed)
         else:
             slow_parts = [(resource, consume, None, None, None) for resource, consume in parts]
@@ -2730,6 +2728,25 @@ class RateLimiter:
             if entry._donor_debit is not None
         }
         return len(buckets) + len(donors)
+
+    async def _find_disabled(self, entity_id: str, resources: list[str]) -> ResourceDisabled | None:
+        """The first ``ResourceDisabled`` among resources the fast path left (ADR-148).
+
+        A failed read stops the search and answers None: the caller keeps the
+        error it already had rather than replacing a 429 with a backend error.
+        """
+        try:
+            for resource in resources:
+                access = await self._repository.resolve_access(entity_id, resource)
+                if access.disabled:
+                    return ResourceDisabled(
+                        entity_id=entity_id,
+                        resource=resource,
+                        level=access.disabled_level or "resource",
+                    )
+        except Exception:
+            return None
+        return None
 
     async def _refund(self, leases: list[Lease]) -> None:
         """Refund every debit these committed leases wrote, concurrently (ADR-148).
