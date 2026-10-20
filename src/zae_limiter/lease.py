@@ -56,6 +56,9 @@ _CONFLICT_BASE_DELAY_S = 0.025  # 25ms cap, doubling each retry: 25ms, 50ms, 100
 # real wait rounds to 0.0, and a 429 saying "retry after 0" is read as "retry
 # now" — a hot loop driven by the rejection itself.
 _MIN_RETRY_AFTER_S = 0.001
+# The wait a contention 429 quotes (#724): the commit kept colliding with
+# concurrent transactions on the same item, which clear in milliseconds.
+_CONTENTION_RETRY_AFTER_S = 0.1
 
 if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol
@@ -457,7 +460,14 @@ class QuotaMoveLostError(Exception):
     since it was read, or the recipient raced — or kept conflicting past its
     retries. It rolled back whole, donor untouched, so the plan is stale and
     the acquire re-plans from a fresh read (design §6 step 6). Not exported.
+
+    ``contended`` is True when the move was lost to write conflicts rather
+    than to a failed condition: the donor was busy, not spent (#724).
     """
+
+    def __init__(self, *, contended: bool = False) -> None:
+        super().__init__("quota move lost" + (" to contention" if contended else ""))
+        self.contended = contended
 
 
 def _mark_granted(entry: LeaseEntry) -> None:
@@ -1165,8 +1175,12 @@ class Lease:
                     if donor_items:
                         # A move that kept conflicting wrote nothing; the
                         # caller re-plans it rather than seeing a raw error.
-                        raise QuotaMoveLostError from exc
-                    raise  # exhausted retries, propagate
+                        raise QuotaMoveLostError(contended=True) from exc
+                    # Sustained contention, not an outage (#724): the
+                    # transaction did not apply, so nothing was debited.
+                    # Reaching `on_unavailable` would admit without limit
+                    # under ALLOW; a short 429 asks the caller to retry.
+                    raise _contention_rejection(self.entries, now_ms) from exc
                 raise  # other errors propagate unchanged
 
         if condition_failed and donor_items:
@@ -1270,10 +1284,15 @@ class Lease:
                 if not retry_items:
                     break
                 try:
-                    retry_attrs = await repo.transact_write(retry_items)
+                    retry_attrs = await _transact_retrying_conflict(repo, retry_items)
                     break
                 except Exception as retry_exc:
                     if not _is_condition_check_failure(retry_exc):
+                        if _is_transaction_conflict(retry_exc):
+                            # Every write in a transaction lands or none does,
+                            # and a single-item one is all there is: nothing
+                            # was debited (#724).
+                            raise _contention_rejection(self.entries, now_ms) from retry_exc
                         raise
                     codes = _get_cancellation_reason_codes(retry_exc)
                     downgraded: list[dict[str, Any]] = []
@@ -1557,6 +1576,12 @@ class Lease:
         self-trimming credit per bucket item (``write_credit``, #721): a reset
         edge or a refill to capacity that landed since the debit can no longer
         lift the balance above the ceiling where the fast path would spend it.
+
+        Each refund is written on its own (#729): one that fails after its
+        retries — a transaction conflict or throttling on a busy item — is
+        logged and the rest are still attempted, so a stuck child refund
+        cannot leave the parent debited for work that never happened. Never
+        raises: a rollback failure must not mask the caller's exception.
         """
         if self._committed or self._rolled_back:
             return
@@ -1569,17 +1594,19 @@ class Lease:
 
         # Negate only what was written on enter
         writes = self._adjust_writes(lambda entry: -entry._initial_consumed * 1000)
-        try:
-            for entity_id, resource, shard_id, deltas, ceilings, pin in writes:
+        for entity_id, resource, shard_id, deltas, ceilings, pin in writes:
+            try:
                 await write_credit(
                     self.repository, entity_id, resource, deltas, shard_id, ceilings, pin
                 )
-        except Exception:
-            logger.warning(
-                "Failed to rollback consumed tokens for entities: %s",
-                [write[:3] for write in writes],
-                exc_info=True,
-            )
+            except Exception as exc:
+                # Never the entity id: it is routinely an API key.
+                logger.warning(
+                    "Failed to roll back consumed tokens for resource=%s shard=%d (%s)",
+                    resource,
+                    shard_id,
+                    type(exc).__name__,
+                )
 
     def _adjust_writes(self, delta_of: Callable[[LeaseEntry], int]) -> list[_CreditWrite]:
         """One ``(entity, resource, shard, deltas, ceilings, pin)`` per bucket item touched.
@@ -1816,7 +1843,32 @@ def _is_transaction_conflict(exc: Exception) -> bool:
     reason_codes = _get_cancellation_reason_codes(exc)
     if reason_codes is not None:
         return "TransactionConflict" in reason_codes
+    # A one-item commit goes out as a plain UpdateItem / PutItem
+    # (`transact_write`), where the same collision surfaces as its own error
+    # code rather than a cancellation reason (#724).
+    if hasattr(exc, "response"):
+        error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        return bool(error_code == "TransactionConflictException")
     return False
+
+
+async def _transact_retrying_conflict(
+    repo: "RepositoryProtocol", items: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """``transact_write`` retried with full jitter on a transaction conflict (#724).
+
+    A conflict rolls the whole write back, so re-sending it is safe. Returns
+    what ``transact_write`` returns (a single update's ``ALL_NEW`` image). The
+    last attempt's error propagates unchanged.
+    """
+    for attempt in range(_CONFLICT_MAX_RETRIES):
+        try:
+            return await repo.transact_write(items)
+        except Exception as exc:
+            if not _is_transaction_conflict(exc) or _is_condition_check_failure(exc):
+                raise
+            await asyncio.sleep(random.uniform(0, _CONFLICT_BASE_DELAY_S * (2**attempt)))
+    return await repo.transact_write(items)
 
 
 def _applied_windows(group: list[LeaseEntry]) -> dict[str, int]:
@@ -2018,6 +2070,41 @@ def _build_retry_failure_statuses(
         if any(status.exceeded for status in from_items):
             return from_items
     return _retry_statuses(entries, now_ms, None)
+
+
+def _contention_rejection(
+    entries: list[LeaseEntry], now_ms: int, consume: dict[str, int] | None = None
+) -> RateLimitExceeded:
+    """A short 429 for a commit that kept conflicting (#724).
+
+    One status per declared entry, from the in-memory state, none marked
+    exceeded: the request was not short of capacity, it lost to concurrent
+    transactions on the same items. Nothing was debited.
+
+    ``requested`` is what the caller asked for (``consume``), not what the
+    entry was admitted for: a slot granted 0 after its moves were lost
+    admits nothing (``consumed == 0``) and must still report the request.
+    Without ``consume`` the admitted amount stands in, which on the commit
+    path is the same number.
+    """
+    statuses = [
+        LimitStatus(
+            entity_id=entry.entity_id,
+            resource=entry.resource,
+            limit_name=entry.limit.name,
+            limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+            # Nothing was written, so the balance is the one before this
+            # pass's in-memory debit: `_admit_limit` took `consumed` whole
+            # tokens off `tokens_milli` when it admitted the entry.
+            available=(entry.state.tokens_milli + entry.consumed * 1000) // 1000,
+            requested=(consume or {}).get(entry.limit.name, entry.consumed),
+            exceeded=False,
+            retry_after_seconds=_CONTENTION_RETRY_AFTER_S,
+            resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
+        )
+        for entry in [e for e in entries if e._declared] or entries
+    ]
+    return RateLimitExceeded(statuses, contended=True)
 
 
 def _retry_statuses(

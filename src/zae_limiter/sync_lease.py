@@ -56,6 +56,7 @@ from .schema import (
 _CONFLICT_MAX_RETRIES = 3
 _CONFLICT_BASE_DELAY_S = 0.025
 _MIN_RETRY_AFTER_S = 0.001
+_CONTENTION_RETRY_AFTER_S = 0.1
 if TYPE_CHECKING:
     from .sync_repository_protocol import SyncRepositoryProtocol
 logger = logging.getLogger(__name__)
@@ -380,7 +381,14 @@ class QuotaMoveLostError(Exception):
     since it was read, or the recipient raced — or kept conflicting past its
     retries. It rolled back whole, donor untouched, so the plan is stale and
     the acquire re-plans from a fresh read (design §6 step 6). Not exported.
+
+    ``contended`` is True when the move was lost to write conflicts rather
+    than to a failed condition: the donor was busy, not spent (#724).
     """
+
+    def __init__(self, *, contended: bool = False) -> None:
+        super().__init__("quota move lost" + (" to contention" if contended else ""))
+        self.contended = contended
 
 
 def _mark_granted(entry: LeaseEntry) -> None:
@@ -876,8 +884,8 @@ class SyncLease:
                         time.sleep(delay)
                         continue
                     if donor_items:
-                        raise QuotaMoveLostError from exc
-                    raise
+                        raise QuotaMoveLostError(contended=True) from exc
+                    raise _contention_rejection(self.entries, now_ms) from exc
                 raise
         if condition_failed and donor_items:
             raise QuotaMoveLostError from condition_exc
@@ -945,10 +953,12 @@ class SyncLease:
                 if not retry_items:
                     break
                 try:
-                    retry_attrs = repo.transact_write(retry_items)
+                    retry_attrs = _transact_retrying_conflict(repo, retry_items)
                     break
                 except Exception as retry_exc:
                     if not _is_condition_check_failure(retry_exc):
+                        if _is_transaction_conflict(retry_exc):
+                            raise _contention_rejection(self.entries, now_ms) from retry_exc
                         raise
                     codes = _get_cancellation_reason_codes(retry_exc)
                     downgraded: list[dict[str, Any]] = []
@@ -1184,6 +1194,12 @@ class SyncLease:
         self-trimming credit per bucket item (``write_credit``, #721): a reset
         edge or a refill to capacity that landed since the debit can no longer
         lift the balance above the ceiling where the fast path would spend it.
+
+        Each refund is written on its own (#729): one that fails after its
+        retries — a transaction conflict or throttling on a busy item — is
+        logged and the rest are still attempted, so a stuck child refund
+        cannot leave the parent debited for work that never happened. Never
+        raises: a rollback failure must not mask the caller's exception.
         """
         if self._committed or self._rolled_back:
             return
@@ -1191,15 +1207,16 @@ class SyncLease:
         if not self._initial_committed:
             return
         writes = self._adjust_writes(lambda entry: -entry._initial_consumed * 1000)
-        try:
-            for entity_id, resource, shard_id, deltas, ceilings, pin in writes:
+        for entity_id, resource, shard_id, deltas, ceilings, pin in writes:
+            try:
                 write_credit(self.repository, entity_id, resource, deltas, shard_id, ceilings, pin)
-        except Exception:
-            logger.warning(
-                "Failed to rollback consumed tokens for entities: %s",
-                [write[:3] for write in writes],
-                exc_info=True,
-            )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to roll back consumed tokens for resource=%s shard=%d (%s)",
+                    resource,
+                    shard_id,
+                    type(exc).__name__,
+                )
 
     def _adjust_writes(self, delta_of: Callable[[LeaseEntry], int]) -> list[_CreditWrite]:
         """One ``(entity, resource, shard, deltas, ceilings, pin)`` per bucket item touched.
@@ -1433,7 +1450,29 @@ def _is_transaction_conflict(exc: Exception) -> bool:
     reason_codes = _get_cancellation_reason_codes(exc)
     if reason_codes is not None:
         return "TransactionConflict" in reason_codes
+    if hasattr(exc, "response"):
+        error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        return bool(error_code == "TransactionConflictException")
     return False
+
+
+def _transact_retrying_conflict(
+    repo: "SyncRepositoryProtocol", items: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """``transact_write`` retried with full jitter on a transaction conflict (#724).
+
+    A conflict rolls the whole write back, so re-sending it is safe. Returns
+    what ``transact_write`` returns (a single update's ``ALL_NEW`` image). The
+    last attempt's error propagates unchanged.
+    """
+    for attempt in range(_CONFLICT_MAX_RETRIES):
+        try:
+            return repo.transact_write(items)
+        except Exception as exc:
+            if not _is_transaction_conflict(exc) or _is_condition_check_failure(exc):
+                raise
+            time.sleep(random.uniform(0, _CONFLICT_BASE_DELAY_S * 2**attempt))
+    return repo.transact_write(items)
 
 
 def _applied_windows(group: list[LeaseEntry]) -> dict[str, int]:
@@ -1632,6 +1671,38 @@ def _build_retry_failure_statuses(
         if any(status.exceeded for status in from_items):
             return from_items
     return _retry_statuses(entries, now_ms, None)
+
+
+def _contention_rejection(
+    entries: list[LeaseEntry], now_ms: int, consume: dict[str, int] | None = None
+) -> RateLimitExceeded:
+    """A short 429 for a commit that kept conflicting (#724).
+
+    One status per declared entry, from the in-memory state, none marked
+    exceeded: the request was not short of capacity, it lost to concurrent
+    transactions on the same items. Nothing was debited.
+
+    ``requested`` is what the caller asked for (``consume``), not what the
+    entry was admitted for: a slot granted 0 after its moves were lost
+    admits nothing (``consumed == 0``) and must still report the request.
+    Without ``consume`` the admitted amount stands in, which on the commit
+    path is the same number.
+    """
+    statuses = [
+        LimitStatus(
+            entity_id=entry.entity_id,
+            resource=entry.resource,
+            limit_name=entry.limit.name,
+            limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+            available=(entry.state.tokens_milli + entry.consumed * 1000) // 1000,
+            requested=(consume or {}).get(entry.limit.name, entry.consumed),
+            exceeded=False,
+            retry_after_seconds=_CONTENTION_RETRY_AFTER_S,
+            resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
+        )
+        for entry in [e for e in entries if e._declared] or entries
+    ]
+    return RateLimitExceeded(statuses, contended=True)
 
 
 def _retry_statuses(

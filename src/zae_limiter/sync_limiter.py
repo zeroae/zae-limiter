@@ -58,10 +58,13 @@ from .schedule import effective_params, next_boundary, prev_reset_edge, retry_af
 from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 from .sync_config_cache import ConfigSource
 from .sync_lease import (
+    _CONTENTION_RETRY_AFTER_S,
     LeaseEntry,
     PeriodNotAppliedError,
     QuotaMoveLostError,
     SyncLease,
+    _contention_rejection,
+    _is_transaction_conflict,
     credit_ceilings,
     credit_image,
     write_credit,
@@ -820,7 +823,8 @@ class SyncRateLimiter:
             self._check_speculative_failure(result, consume, now_ms)
             observed_count = (
                 None
-                if result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+                if result.failure_reason
+                in (SpeculativeFailureReason.BUCKET_MISSING, SpeculativeFailureReason.CONTENTION)
                 else result.shard_count
             )
             return (None, result.shard_id, observed_count, parent_hint)
@@ -1205,6 +1209,15 @@ class SyncRateLimiter:
         credit self-trimming (#721): a reset edge or a refill to capacity that
         landed after the debit cannot lift the balance above the ceiling where
         another process's fast path would spend it.
+
+        Best-effort, like ``SyncLease._rollback``: a refund that fails — a
+        transaction conflict that outlasted its retries (#724), or any other
+        write error — is logged and swallowed, and the caller goes on to its
+        429 or slow path exactly as if it had landed. Raising here reached
+        ``on_unavailable``: a degraded lease (no limiting) against an exhausted
+        parent under ALLOW, ``RateLimiterUnavailable`` under BLOCK. A refund
+        must never turn a rejection into an admission; a lost one costs the
+        entity the tokens of one request.
         """
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
         image = credit_image(buckets or ())
@@ -1216,7 +1229,15 @@ class SyncRateLimiter:
             image,
         )
         pin = image.pin if image is not None else None
-        write_credit(self._repository, entity_id, resource, deltas, shard_id, ceilings, pin)
+        try:
+            write_credit(self._repository, entity_id, resource, deltas, shard_id, ceilings, pin)
+        except Exception as exc:
+            logger.warning(
+                "Speculative compensation failed for resource=%s shard=%d; the debit stands (%s)",
+                resource,
+                shard_id,
+                type(exc).__name__,
+            )
 
     @staticmethod
     def _check_speculative_failure(
@@ -1306,6 +1327,7 @@ class SyncRateLimiter:
             if retry.failure_reason in (
                 SpeculativeFailureReason.BUCKET_MISSING,
                 SpeculativeFailureReason.SCHEDULE_BOUNDARY,
+                SpeculativeFailureReason.CONTENTION,
             ):
                 slow_path_shard = new_shard
                 break
@@ -1817,9 +1839,14 @@ class SyncRateLimiter:
         against a zero balance, or `RateLimitExceeded`. Never
         `RateLimiterUnavailable`, which under ALLOW would admit without limit.
         Nothing was written by either lost attempt.
+
+        When the second loss was to write conflicts, a rejection caused only
+        by the slot's zero grant is the contended 429 (#724): the table was
+        busy, the quota is not spent, so the caller is told to retry shortly
+        rather than at the next reset edge.
         """
 
-        def plan_and_commit(disable_moves: bool) -> SyncLease:
+        def plan_and_commit(disable_moves: bool, moves_contended: bool = False) -> SyncLease:
             lease = self._do_acquire(
                 entity_id=entity_id,
                 resource=resource,
@@ -1829,6 +1856,7 @@ class SyncRateLimiter:
                 shard_count=shard_count,
                 parent_shard_id=parent_shard_id,
                 disable_moves=disable_moves,
+                moves_contended=moves_contended,
             )
             try:
                 lease._commit_initial()
@@ -1842,6 +1870,7 @@ class SyncRateLimiter:
                     shard_count=shard_count,
                     parent_shard_id=parent_shard_id,
                     disable_moves=disable_moves,
+                    moves_contended=moves_contended,
                 )
                 lease._commit_initial()
             return lease
@@ -1852,9 +1881,9 @@ class SyncRateLimiter:
             pass
         try:
             return plan_and_commit(False)
-        except QuotaMoveLostError:
-            pass
-        return plan_and_commit(True)
+        except QuotaMoveLostError as lost:
+            moves_contended = lost.contended
+        return plan_and_commit(True, moves_contended)
 
     def _do_acquire(
         self,
@@ -1866,6 +1895,7 @@ class SyncRateLimiter:
         shard_count: int | None = None,
         parent_shard_id: int | None = None,
         disable_moves: bool = False,
+        moves_contended: bool = False,
     ) -> SyncLease:
         """Internal acquire implementation (the slow path).
 
@@ -1874,6 +1904,10 @@ class SyncRateLimiter:
                 (design §6 step 6): a quota whose slot a sibling covers gets 0
                 this time instead of a move, and no donor debit rides. Only
                 under-admits, for the rest of the period at most.
+            moves_contended: With ``disable_moves``, the move was lost to
+                write conflicts (#724). A rejection whose every violation is a
+                limit zeroed here is then the contended 429, not an exhausted
+                one.
             shard_id: Child shard the speculative fast path selected, so this
                 path reads and — if missing — creates that same shard
                 (issue #439). None draws one from the cached shard_count.
@@ -1888,6 +1922,7 @@ class SyncRateLimiter:
         rejection_cache = getattr(self._repository, "_rejection_cache", None)
         cache_mark = rejection_cache.mark() if rejection_cache is not None else None
         now_ms = self._repository._now_ms()
+        zeroed: set[tuple[str, str]] = set()
         child_shard, child_shard_count = self._repository.select_shard(
             entity_id, resource, shard_id, shard_count
         )
@@ -1975,14 +2010,35 @@ class SyncRateLimiter:
                 else [limit for limit in entity_limits[eid] if limit.is_quota]
             )
             plan_count = seed_shard_count if any_existing else eid_shard_count
-            grant_count, grants, donor_debits = (
-                self._repository.plan_quota_shard(
-                    eid, resource, quota_needing, eid_shard, plan_count, now_ms
+            try:
+                grant_count, grants, donor_debits = (
+                    self._repository.plan_quota_shard(
+                        eid, resource, quota_needing, eid_shard, plan_count, now_ms
+                    )
+                    if quota_needing and plan_count > 1
+                    else (plan_count, {}, [])
                 )
-                if quota_needing and plan_count > 1
-                else (plan_count, {}, [])
-            )
+            except Exception as exc:
+                if not _is_transaction_conflict(exc):
+                    raise
+                if any(status.exceeded for status in statuses):
+                    break
+                raise self._planning_contention(
+                    eid,
+                    resource,
+                    entity_limits[eid],
+                    consume,
+                    existing_buckets,
+                    now_ms,
+                    statuses,
+                    plan_count,
+                ) from exc
             if disable_moves:
+                zeroed |= {
+                    (eid, name)
+                    for name, grant in grants.items()
+                    if grant.donor_shard is not None and grant.tokens_milli > 0
+                }
                 grants = {
                     name: grant
                     if grant.donor_shard is None
@@ -2122,6 +2178,8 @@ class SyncRateLimiter:
         if violations:
             if any(entry._donor_debit is not None for entry in entries):
                 self._commit_rejected_moves(entries, carriers)
+            if moves_contended and all((v.entity_id, v.limit_name) in zeroed for v in violations):
+                raise _contention_rejection(entries, now_ms, consume)
             raise RateLimitExceeded(statuses)
         return SyncLease(
             repository=self._repository,
@@ -2154,6 +2212,61 @@ class SyncRateLimiter:
             (b.entity_id, b.resource, b.limit_name): b for b in buckets
         }
         return (entity, bucket_dict)
+
+    @staticmethod
+    def _planning_contention(
+        entity_id: str,
+        resource: str,
+        limits: list[Limit],
+        consume: dict[str, int],
+        existing: dict[tuple[str, str, str], BucketState],
+        now_ms: int,
+        prior: list[LimitStatus],
+        plan_count: int,
+    ) -> RateLimitExceeded:
+        """The contended 429 for a conflict during quota planning (#729).
+
+        ``prior`` holds the statuses already gathered on this pass — the
+        child's, when the conflict is on the cascade parent — none of them a
+        violation (the caller raises the ordinary 429 otherwise). They are
+        reported first, as everywhere else, ahead of this level's.
+
+        Each limit is narrowed with ``Limit.per_shard`` like every other
+        status (#475): at the shard count of the state already read, as
+        ``_admit_limit`` does, and for a slot with no state (a quota being
+        planned) at ``plan_count``, the count this acquire was planning it at
+        — the share it would have been given, never an undivided capacity.
+
+        Raised before any lease entry exists, so the statuses come from the
+        resolved limits: one per limit named in ``consume``, none exceeded,
+        each waiting ``_CONTENTION_RETRY_AFTER_S``. ``available`` is the stored
+        balance where the item has one; a slot still being planned has none.
+
+        When no resolved limit is named in ``consume`` — a cascade parent whose
+        limits share no name with the request — every resolved limit is
+        reported, requesting ``consume.get(name, 0)``. An empty list made the
+        constructor raise ``ValueError``, which reached ``on_unavailable``: a
+        degraded lease under ALLOW (#729).
+        """
+        reported = [limit for limit in limits if limit.name in consume] or limits
+        statuses = []
+        for limit in reported:
+            state = existing.get((entity_id, resource, limit.name))
+            statuses.append(
+                LimitStatus(
+                    entity_id=entity_id,
+                    resource=resource,
+                    limit_name=limit.name,
+                    limit=limit.per_shard(
+                        state.report_shard_count if state is not None else plan_count, now_ms
+                    ),
+                    available=state.tokens_milli // 1000 if state is not None else 0,
+                    requested=consume.get(limit.name, 0),
+                    exceeded=False,
+                    retry_after_seconds=_CONTENTION_RETRY_AFTER_S,
+                )
+            )
+        return RateLimitExceeded([*prior, *statuses], contended=True)
 
     def _commit_rejected_moves(self, entries: list[LeaseEntry], carriers: list[LeaseEntry]) -> None:
         """Commit a rejected pass's quota moves with nothing consumed (ADR-145 I5).
