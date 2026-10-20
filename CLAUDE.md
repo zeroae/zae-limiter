@@ -71,6 +71,8 @@ Native sync code is generated from async source via AST transformation (see ADR-
 
 All explicit modes warn (not error) when conditions are suboptimal. Auto mode silently selects the best strategy without warnings. Resolution happens once at `SyncRepository.__init__` time (not per-call). Usage:
 
+A sync lease's exit writes (`_write_credits_independently`) run on the orchestration pool in `"threadpool"` / `"auto"` mode, single-resource cascade leases included (ADR-148); nested gathers run in place, so this cannot deadlock.
+
 **`asyncio.gather` takes no keywords in generator-covered source (#491).** `_run_in_executor(*funcs)` accepts positional callables only, so a keyword would be dropped and the sync twin would silently diverge — `return_exceptions=True` would generate a twin that raises on the first sibling failure and abandons the rest. Generation now **aborts** (`UnsupportedAsyncConstructError`, exit 1) naming the file, line and keyword. Use the portable rewrite instead, which is faithful under all four strategies (a translated keyword would not be — serial abandons siblings):
 
 ```python
@@ -1259,7 +1261,7 @@ recommended options **provisionally** (see `docs/plans/2026-10-09-multi-resource
   with a non-empty `also` (D8) is a `ValidationError`. An empty `also` takes today's path.
 - **Fast path** (`_acquire_resources`): `_rejection_precheck` for **every** resource before
   any write (a known-short one raises with 0 calls), then `_try_speculative_acquire` for all
-  of them through one `asyncio.gather` with the `_safe` wrapper (D4), its `prechecked=`
+  of them through one `asyncio.gather` with the `_attempt` wrapper (D4), its `prechecked=`
   argument carrying the cache answer. Wins are kept (D3); `None` outcomes, with their shard
   hints, go to the slow path.
 - **Slow path** (`_slow_acquire_resources`): every part planned by `_do_acquire` concurrently,
@@ -1273,6 +1275,17 @@ recommended options **provisionally** (see `docs/plans/2026-10-09-multi-resource
   A rejection carries every rejected resource's statuses plus the passed statuses of the
   resources admitted meanwhile (`_admitted_statuses`: the `ALL_NEW` image or the planned
   state) — evaluated resources only (D5).
+  When the fast path ends in a 429, the landed parts are refunded first, then each part left
+  for the slow path is checked for `ResourceDisabled` (`_find_disabled`) — its own level and,
+  when it cascades on that resource, its parent's — so a 403 outranks the 429 even for a
+  resource with no bucket yet. Paid only on that path: up to one uncached `resolve_access`
+  (≤ 1.5 RCU) per slow part, plus the META read and the parent's `resolve_access` for a
+  cascading one. A failed read keeps the 429. A cancelled acquire refunds every part that had
+  landed.
+  A local rejection (ADR-147) answers from the first resource the cache knows is short, before
+  any other resource is read, so for up to `rejection_cache_ttl` a disabled resource later in
+  the request can be reported as a 429 instead of `ResourceDisabled`. It never admits; the 403
+  appears once the cached state expires.
 - **Refunds** (`_refund`): the landed fast-path leases merged into one and rolled back.
 - **Lease** (D2): `lease.adjust/consume/release/consumed` are scoped to the primary resource
   (`Lease._bind_resources`, `_primary`); a lease never bound keeps the old all-entries meaning.
@@ -1281,8 +1294,8 @@ recommended options **provisionally** (see `docs/plans/2026-10-09-multi-resource
   degraded lease. `lease.resources` lists them, primary first. The #455 warning names the
   handle's resource (`_unknown_keys_by_resource`).
 - **Independent writes are concurrent** (D7, applies to every lease): `_commit_adjustments`
-  and `_rollback` send each item as its own `write_each([item])` through one gather
-  (`Lease._write_independently`), tracking which landed — #682 needs *which*, not the order.
+  and `_rollback` send each item as its own `write_credit(...)` through one gather
+  (`Lease._write_credits_independently`), tracking which landed — #682 needs *which*, not the order.
 - **Sync twin:** `SyncRateLimiter` and `SyncLease` gather too; the generator injects a
   `_run_in_executor` into both (`_ORCHESTRATOR_REPOSITORY_ATTR`) that delegates to
   `zae_limiter._parallel.run_parallel` (hand-written). It honours the repository's

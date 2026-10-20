@@ -2532,6 +2532,7 @@ class RateLimiter:
         slow_parts: list[_SlowPart] = []
 
         if self._speculative_writes:
+            landed_so_far: list[Lease] = []
             now_ms = self._repository._now_ms()
             prechecks: list[tuple[str, dict[str, int], tuple[frozenset[int], frozenset[int]]]] = []
             for resource, consume in parts:
@@ -2549,15 +2550,24 @@ class RateLimiter:
                 avoid: tuple[frozenset[int], frozenset[int]],
             ) -> tuple[Lease | None, int, int | None, int | None] | Exception:
                 try:
-                    return await self._try_speculative_acquire(
+                    outcome = await self._try_speculative_acquire(
                         entity_id=entity_id, resource=resource, consume=consume, prechecked=avoid
                     )
                 except Exception as exc:
                     return exc
+                # Recorded the moment it lands: a cancellation of the gather
+                # below discards every outcome, and these debits are written.
+                if outcome[0] is not None:
+                    landed_so_far.append(outcome[0])
+                return outcome
 
-            outcomes = await asyncio.gather(
-                *[_attempt(resource, consume, avoid) for resource, consume, avoid in prechecks]
-            )
+            try:
+                outcomes = await asyncio.gather(
+                    *[_attempt(resource, consume, avoid) for resource, consume, avoid in prechecks]
+                )
+            except BaseException:
+                await self._refund(landed_so_far)
+                raise
             errors: list[Exception] = []
             for (resource, consume), outcome in zip(parts, outcomes, strict=True):
                 if isinstance(outcome, Exception):
@@ -2569,7 +2579,21 @@ class RateLimiter:
                 else:
                     slow_parts.append((resource, consume, shard, shard_count, parent_shard))
             if errors:
+                # Refund first: nothing below may leave a debit behind.
                 await self._refund(landed)
+                # ResourceDisabled outranks a 429 whatever the order (ADR-148),
+                # but a disabled resource with no bucket yet is only found by
+                # the slow path, which a fast-path error skips: ask it here,
+                # and only when there is a 429 to outrank. One uncached read
+                # per part, paid on this error path alone.
+                if any(isinstance(error, RateLimitExceeded) for error in errors) and not any(
+                    isinstance(error, ResourceDisabled) for error in errors
+                ):
+                    disabled = await self._find_disabled(
+                        entity_id, [part[0] for part in slow_parts]
+                    )
+                    if disabled is not None:
+                        errors.append(disabled)
                 raise self._combined_error(errors, landed)
         else:
             slow_parts = [(resource, consume, None, None, None) for resource, consume in parts]
@@ -2582,7 +2606,9 @@ class RateLimiter:
                 if not landed:
                     raise
                 # The resources the fast path admitted were evaluated too.
-                raise RateLimitExceeded(exc.statuses + self._admitted_statuses(landed)) from exc
+                raise RateLimitExceeded(
+                    exc.statuses + self._admitted_statuses(landed), contended=exc.contended
+                ) from exc
             except BaseException:
                 await self._refund(landed)
                 raise
@@ -2595,6 +2621,7 @@ class RateLimiter:
             entries=[entry for part in landed for entry in part.entries],
             _unknown_keys=unknown.get(parts[0][0], frozenset()),
             _unknown_keys_by_resource=unknown,
+            compute_images=False,
         )
         lease._initial_committed = True
         return lease
@@ -2620,7 +2647,9 @@ class RateLimiter:
             ``consume`` keys that named no configured limit (Issue #455).
         """
 
-        async def _plan(part: _SlowPart, disable_moves: bool) -> Lease | Exception:
+        async def _plan(
+            part: _SlowPart, disable_moves: bool, moves_contended: bool
+        ) -> Lease | Exception:
             resource, consume, shard, shard_count, parent_shard = part
             try:
                 return await self._do_acquire(
@@ -2632,13 +2661,18 @@ class RateLimiter:
                     shard_count=shard_count,
                     parent_shard_id=parent_shard,
                     disable_moves=disable_moves,
+                    moves_contended=moves_contended,
                 )
             except Exception as exc:
                 return exc
 
-        async def plan_and_commit(disable_moves: bool) -> tuple[Lease, dict[str, frozenset[str]]]:
+        async def plan_and_commit(
+            disable_moves: bool, moves_contended: bool = False, redone: bool = False
+        ) -> tuple[Lease, dict[str, frozenset[str]]]:
             # One name per part keeps the sync twin's lambda on one line (#513).
-            outcomes = await asyncio.gather(*[_plan(part, disable_moves) for part in slow_parts])
+            outcomes = await asyncio.gather(
+                *[_plan(part, disable_moves, moves_contended) for part in slow_parts]
+            )
             planned = [outcome for outcome in outcomes if isinstance(outcome, Lease)]
             errors = [outcome for outcome in outcomes if not isinstance(outcome, Lease)]
             if errors:
@@ -2654,7 +2688,7 @@ class RateLimiter:
             # Without moves a plan is at most 2 bucket items per resource, so
             # MAX_ACQUIRE_RESOURCES keeps the re-plan under the limit.
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return await plan_and_commit(True)
+                return await plan_and_commit(True, moves_contended, redone)
             marks = [plan._cache_mark for plan in planned]
             lease = Lease(
                 repository=self._repository,
@@ -2662,7 +2696,15 @@ class RateLimiter:
                 _carriers=[carrier for plan in planned for carrier in plan._carriers],
                 _cache_mark=None if None in marks else min(m for m in marks if m is not None),
             )
-            await lease._commit_initial()
+            try:
+                await lease._commit_initial()
+            except PeriodNotAppliedError:
+                # The retry found a quota period nobody has applied (#743):
+                # redo the pass once from a fresh read, which applies it. A
+                # second loss stands as the rejection it was raised as.
+                if redone:
+                    raise
+                return await plan_and_commit(disable_moves, moves_contended, True)
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }
@@ -2674,9 +2716,11 @@ class RateLimiter:
             pass  # stale plan: re-read and re-plan once
         try:
             return await plan_and_commit(False)
-        except QuotaMoveLostError:
-            pass
-        return await plan_and_commit(True)
+        except QuotaMoveLostError as lost:
+            # The loss that sends the slot to 0: one to contention is a busy
+            # donor, not a spent one (#724), exactly as in `_slow_acquire`.
+            moves_contended = lost.contended
+        return await plan_and_commit(True, moves_contended)
 
     @staticmethod
     def _transaction_items(planned: list[Lease]) -> int:
@@ -2695,6 +2739,44 @@ class RateLimiter:
         }
         return len(buckets) + len(donors)
 
+    async def _find_disabled(self, entity_id: str, resources: list[str]) -> ResourceDisabled | None:
+        """The first ``ResourceDisabled`` among resources the fast path left (ADR-148).
+
+        Each resource's own level, then its parent's when it cascades there.
+
+        A failed read stops the search and answers None: the caller keeps the
+        error it already had rather than replacing a 429 with a backend error.
+        """
+        try:
+            for resource in resources:
+                access = await self._repository.resolve_access(entity_id, resource)
+                if access.disabled:
+                    return ResourceDisabled(
+                        entity_id=entity_id,
+                        resource=resource,
+                        level=access.disabled_level or "resource",
+                    )
+                if access.cascade is False:
+                    continue
+                # The slow path would gate the parent too (ADR-125, ADR-146):
+                # its 403 outranks the child's 429 for a resource with no
+                # bucket yet, exactly as in a single-resource acquire.
+                entity = await self._repository.get_entity(entity_id)
+                if entity is None or not effective_cascade(access.cascade, entity):
+                    continue
+                parent_id = entity.parent_id
+                assert parent_id is not None  # effective_cascade is False without one
+                parent_access = await self._repository.resolve_access(parent_id, resource)
+                if parent_access.disabled:
+                    return ResourceDisabled(
+                        entity_id=parent_id,
+                        resource=resource,
+                        level=parent_access.disabled_level or "resource",
+                    )
+        except Exception:
+            return None
+        return None
+
     async def _refund(self, leases: list[Lease]) -> None:
         """Refund every debit these committed leases wrote, concurrently (ADR-148).
 
@@ -2704,7 +2786,7 @@ class RateLimiter:
         entries = [entry for lease in leases for entry in lease.entries]
         if not entries:
             return
-        refund = Lease(repository=self._repository, entries=entries)
+        refund = Lease(repository=self._repository, entries=entries, compute_images=False)
         refund._initial_committed = True
         await refund._rollback()
 
@@ -2746,7 +2828,12 @@ class RateLimiter:
         rejections = [error for error in errors if isinstance(error, RateLimitExceeded)]
         if rejections:
             statuses = [status for error in rejections for status in error.statuses]
-            return RateLimitExceeded(statuses + self._admitted_statuses(admitted))
+            # Contended only when every rejection was: a real violation
+            # anywhere makes the combined 429 an ordinary one (#724).
+            return RateLimitExceeded(
+                statuses + self._admitted_statuses(admitted),
+                contended=all(error.contended for error in rejections),
+            )
         return errors[0]
 
     async def _do_acquire(

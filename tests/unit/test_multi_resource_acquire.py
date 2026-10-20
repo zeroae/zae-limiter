@@ -7,10 +7,14 @@ debit and every refund moves, so "nothing debited" means the counter is back
 where it started.
 """
 
+import asyncio
 import sys
 import warnings
+from datetime import UTC, datetime
+from unittest.mock import patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from zae_limiter import (
     LeaseExpiredError,
@@ -23,8 +27,9 @@ from zae_limiter import (
     ValidationError,
     __version__,
 )
-from zae_limiter.lease import Lease, LeaseEntry, QuotaMoveLostError
-from zae_limiter.models import BucketState, Limit, QuotaDonorDebit
+from zae_limiter.lease import Lease, LeaseEntry, PeriodNotAppliedError, QuotaMoveLostError
+from zae_limiter.models import BucketState, Limit, LimitStatus, QuotaDonorDebit
+from zae_limiter.schema import BUCKET_FIELD_TK, bucket_attr, pk_bucket, sk_state
 from zae_limiter.version import get_schema_version
 
 # Refill of 1 token/hour keeps refill negligible over a test.
@@ -176,6 +181,25 @@ class TestAllOrNone:
         with pytest.raises(ResourceDisabled):
             await _admit(limiter, rpm=500)
 
+    async def test_disabled_outranks_a_fast_rejection_that_comes_first(self, repo, speculative):
+        """A disabled resource with no bucket yet is only found by the slow
+        path, after the fast path already rejected another resource: the 403
+        still wins (ADR-148)."""
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        await repo.create_entity("fresh", parent_id=None, name="fresh")
+        await repo.set_limits("fresh", [Limit.custom("rpm", 1, **SLOW)], "search")
+        async with limiter.acquire("fresh", "search", {"rpm": 1}):
+            pass  # search is now exhausted, budget has no bucket
+        await repo.disable_resource("budget")
+
+        with pytest.raises(ResourceDisabled) as exc_info:
+            async with limiter.acquire(
+                "fresh", "search", {"rpm": 1}, also={"budget": {"weekly": 1}}
+            ):
+                pytest.fail("a disabled resource must not admit")
+
+        assert exc_info.value.resource == "budget"
+
     async def test_a_backend_error_refunds_and_blocks(self, repo, speculative):
         limiter = RateLimiter(repository=repo, speculative_writes=speculative)
         await _admit(limiter)
@@ -297,6 +321,41 @@ class TestFastAndSlowTogether:
 
         assert await _ledger(repo) == before
 
+    async def test_a_cancelled_acquire_refunds_the_fast_wins(self, repo):
+        limiter = RateLimiter(repository=repo)
+        await _admit(limiter)
+        before = await _ledger(repo)
+        search_landed = asyncio.Event()
+        budget_blocked = asyncio.Event()
+        real = repo.speculative_consume
+
+        async def speculative_consume(entity_id, resource, *args, **kwargs):
+            if resource == "budget":
+                await search_landed.wait()
+                budget_blocked.set()
+                await asyncio.Event().wait()  # never returns: the caller is cancelled
+            result = await real(entity_id, resource, *args, **kwargs)
+            search_landed.set()
+            return result
+
+        repo.speculative_consume = speculative_consume
+
+        async def acquire():
+            async with limiter.acquire(
+                "user", "search", {"rpm": 1}, also={"budget": {"weekly": 1}}
+            ):
+                pytest.fail("a cancelled acquire must not admit")
+
+        task = asyncio.ensure_future(acquire())
+        await budget_blocked.wait()
+        await asyncio.sleep(0)  # let search's outcome be recorded
+        assert await _ledger(repo) != before  # search's debit is written
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert await _ledger(repo) == before
+
 
 def _count_transactions(repo):
     """Record the item count of every transact_write."""
@@ -362,6 +421,80 @@ class TestSlowPathPlanning:
 
         assert calls == [False, False, False, False, True, True]
         assert await _ledger(repo) == ({"rpm": 1}, {"rpm": 1}, {"weekly": 10}, {})
+
+    @pytest.mark.parametrize("contended", [True, False])
+    async def test_the_second_loss_decides_whether_the_zeroed_plan_is_contended(
+        self, repo, monkeypatch, contended
+    ):
+        """A move lost to write conflicts is a busy donor, not a spent one
+        (#724): the zeroed re-plan must hear which, as in `_slow_acquire`."""
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+        real = Lease._commit_initial
+        # `pop()` takes from the end: the first loss is never contended, the
+        # second (the one that zeroes the slot) is `contended`.
+        losses = [QuotaMoveLostError(contended=contended), QuotaMoveLostError(contended=False)]
+
+        async def commit_initial(self):
+            if losses and len({entry.resource for entry in self.entries}) > 1:
+                raise losses.pop()
+            return await real(self)
+
+        monkeypatch.setattr(Lease, "_commit_initial", commit_initial)
+        passes: list[tuple[bool, bool]] = []
+        real_do = limiter._do_acquire
+
+        async def do_acquire(**kwargs):
+            passes.append((kwargs["disable_moves"], kwargs.get("moves_contended", False)))
+            return await real_do(**kwargs)
+
+        limiter._do_acquire = do_acquire
+
+        await _admit(limiter)
+
+        assert passes[-1] == (True, contended)
+
+    @pytest.mark.parametrize("losses", [1, 2])
+    async def test_an_unapplied_period_is_redone_once(self, repo, monkeypatch, losses):
+        """The retry found a quota period nobody applied (#743): the combined
+        commit re-plans once from a fresh read, and a second loss stands."""
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+        status = LimitStatus(
+            entity_id="user",
+            resource="budget",
+            limit_name="weekly",
+            limit=Limit.custom("weekly", 1000, **SLOW),
+            available=0,
+            requested=10,
+            exceeded=True,
+            retry_after_seconds=1.0,
+        )
+        real = Lease._commit_initial
+        left = [losses]
+
+        async def commit_initial(self):
+            if left[0] and len({entry.resource for entry in self.entries}) > 1:
+                left[0] -= 1
+                raise PeriodNotAppliedError([status])
+            return await real(self)
+
+        monkeypatch.setattr(Lease, "_commit_initial", commit_initial)
+        planned: list[str] = []
+        real_do = limiter._do_acquire
+
+        async def do_acquire(**kwargs):
+            planned.append(kwargs["resource"])
+            return await real_do(**kwargs)
+
+        limiter._do_acquire = do_acquire
+
+        if losses == 1:
+            await _admit(limiter)
+            assert await _ledger(repo) == ({"rpm": 1}, {"rpm": 1}, {"weekly": 10}, {})
+        else:
+            with pytest.raises(RateLimitExceeded):
+                await _admit(limiter)
+            assert await _ledger(repo) == ({}, {}, {}, {})
+        assert len(planned) == 4  # two parts, planned twice: never a third time
 
     async def test_a_rejected_part_does_not_lose_another_parts_move(self, repo):
         """ADR-145 I5: a planned move commits with nothing consumed on rejection."""
@@ -523,3 +656,311 @@ class TestLeaseWithoutBoundResources:
         assert lease.resources == ("a", "b")
         assert lease.consumed == {"rpm": 0}
         assert lease.resource("b").consumed == {"rpm": 0}
+
+
+MIDNIGHT = int(datetime(2026, 10, 10, 0, 0, 0, tzinfo=UTC).timestamp() * 1000)
+
+
+class TestCombinedLeaseKeepsCreditImages:
+    """Combining committed leases must not recompute their credit images (#721).
+
+    The images are what a refund pins (and, for a quota, the period it stays
+    in). ``Lease.__post_init__`` recomputes them from the entries' states,
+    which after a write are the *pre*-write ones: rebuilding the combined lease
+    replaced the post-write images and a quota refund was dropped.
+    """
+
+    @staticmethod
+    async def _daily_budget(repo, now):
+        repo._now_ms = lambda: now[0]
+        await repo.set_resource_defaults("budget", [Limit.quota("weekly", 1000, cron="0 0 * * *")])
+
+    @staticmethod
+    async def _tokens(repo, entity_id="user"):
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "budget", 0)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return int(response["Item"][bucket_attr("weekly", BUCKET_FIELD_TK)]["N"])
+
+    async def test_a_quota_refund_after_a_slow_path_create_lands(self, repo):
+        now = [MIDNIGHT - 3_600_000]
+        await self._daily_budget(repo, now)
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+
+        with pytest.raises(RuntimeError):
+            async with limiter.acquire(
+                "user", "search", {"rpm": 1}, also={"budget": {"weekly": 10}}
+            ):
+                raise RuntimeError("body failed")
+
+        assert await _consumed(repo, "user", "budget") == {"weekly": 0}
+        assert await self._tokens(repo) == 1_000_000
+
+    async def test_a_quota_refund_after_the_pass_reset_it_lands(self, repo):
+        now = [MIDNIGHT - 1000]
+        await self._daily_budget(repo, now)
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+        await _admit(limiter, weekly=1)  # yesterday: 999 left
+        now[0] = MIDNIGHT + 1000  # the next pass applies the reset edge
+
+        with pytest.raises(RuntimeError):
+            async with limiter.acquire(
+                "user", "search", {"rpm": 1}, also={"budget": {"weekly": 10}}
+            ):
+                raise RuntimeError("body failed")
+
+        # Reset to 1000, debited 10, refunded 10; `tc` is not reset by the edge.
+        assert await _consumed(repo, "user", "budget") == {"weekly": 1}
+        assert await self._tokens(repo) == 1_000_000
+
+    async def test_a_released_quota_after_a_slow_path_create_lands(self, repo):
+        now = [MIDNIGHT - 3_600_000]
+        await self._daily_budget(repo, now)
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+
+        async with limiter.acquire(
+            "user", "search", {"rpm": 1}, also={"budget": {"weekly": 10}}
+        ) as lease:
+            await lease.resource("budget").release(weekly=10)
+
+        assert await self._tokens(repo) == 1_000_000
+
+
+def _conflict() -> ClientError:
+    """What a write meeting an in-flight transaction raises; moto never does (#724)."""
+    return ClientError(
+        {"Error": {"Code": "TransactionConflictException", "Message": "ongoing"}}, "UpdateItem"
+    )
+
+
+def _contended_429(entity_id, resource, limit_name) -> RateLimitExceeded:
+    """The 429 a busy table produces: nothing exceeded, ``contended``."""
+    status = LimitStatus(
+        entity_id=entity_id,
+        resource=resource,
+        limit_name=limit_name,
+        limit=Limit.custom(limit_name, 100, **SLOW),
+        available=0,
+        requested=1,
+        exceeded=False,
+        retry_after_seconds=0.1,
+    )
+    return RateLimitExceeded([status], contended=True)
+
+
+class TestContentionAcrossResources:
+    """A busy table is a contended 429 across resources too (#724, ADR-148)."""
+
+    @pytest.mark.parametrize("on_unavailable", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    async def test_a_contended_slow_commit_after_a_fast_win_is_a_contended_429(
+        self, repo, on_unavailable
+    ):
+        limiter = RateLimiter(repository=repo)
+        await _admit(limiter)
+        # An entity-level change leaves budget's bucket needing a slow pass.
+        await repo.set_limits("user", [Limit.custom("weekly", 1000, **SLOW)], "budget")
+        before = await _ledger(repo)
+
+        async def transact_write(items):
+            raise _conflict()
+
+        repo.transact_write = transact_write
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with limiter.acquire(
+                "user",
+                "search",
+                {"rpm": 1},
+                on_unavailable=on_unavailable,
+                also={"budget": {"weekly": 10}},
+            ):
+                pytest.fail("a contended acquire must not admit")
+
+        assert exc_info.value.contended is True
+        assert await _ledger(repo) == before
+
+    @pytest.mark.parametrize("on_unavailable", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    async def test_contention_while_planning_is_a_contended_429(self, repo, on_unavailable):
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+        await _admit(limiter)
+        before = await _ledger(repo)
+
+        async def do_acquire(**kwargs):
+            raise _contended_429("user", kwargs["resource"], "rpm")
+
+        limiter._do_acquire = do_acquire
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with limiter.acquire(
+                "user",
+                "search",
+                {"rpm": 1},
+                on_unavailable=on_unavailable,
+                also={"budget": {"weekly": 10}},
+            ):
+                pytest.fail("a contended acquire must not admit")
+
+        assert exc_info.value.contended is True
+        assert {s.resource for s in exc_info.value.statuses} == {"search", "budget"}
+        assert await _ledger(repo) == before
+
+
+class TestContendedQuotaMoveAcrossResources:
+    """A quota slot zeroed by contended moves, beside another resource (#724, ADR-148)."""
+
+    QUOTA = Limit.quota("rpd", 1000, cron="0 0 * * *")
+
+    @pytest.mark.parametrize("on_unavailable", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    async def test_a_zero_grant_after_contended_moves_is_a_contended_429(
+        self, repo, on_unavailable
+    ):
+        now_ms = repo._now_ms()
+        repo._now_ms = lambda: now_ms
+        await repo.set_resource_defaults("daily", [self.QUOTA])
+        await repo.set_resource_cascade("daily", False)
+        await repo.create_entity("solo", parent_id=None, name="solo")
+        # Shard 0 holds the whole quota at count 1, then the count doubles to 2,
+        # so a draw on shard 1 plans a move off shard 0.
+        state = BucketState.from_limit("solo", "daily", self.QUOTA, now_ms)
+        vu, _reset = RateLimiter._materialisation_stamps(self.QUOTA, state, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "solo", "daily", [state], now_ms, shard_id=0, shard_count=1, vu=vu
+                )
+            ]
+        )
+        assert await repo.bump_shard_count("solo", "daily", 1) == 2
+        real = repo.transact_write
+
+        async def moves_conflict(items):
+            if len(items) > 1:  # a transaction carrying a donor debit
+                raise ClientError(
+                    {
+                        "Error": {"Code": "TransactionCanceledException", "Message": "busy"},
+                        "CancellationReasons": [{"Code": "None"}, {"Code": "TransactionConflict"}],
+                    },
+                    "TransactWriteItems",
+                )
+            return await real(items)
+
+        repo.transact_write = moves_conflict
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with limiter.acquire(
+                    "solo",
+                    "daily",
+                    {"rpd": 1},
+                    on_unavailable=on_unavailable,
+                    also={"budget": {"weekly": 10}},
+                ):
+                    pytest.fail("a contended acquire must not admit")
+
+        assert exc_info.value.contended is True
+        assert exc_info.value.violations == []
+        assert await _consumed(repo, "solo", "daily") == {"rpd": 0}
+        assert await _consumed(repo, "solo", "budget") == {}
+
+
+class TestDisabledCheckOnTheRejectionPath:
+    """The look for a disabled resource must never cost the 429 (ADR-148)."""
+
+    @pytest.mark.parametrize("on_unavailable", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    async def test_a_failed_check_keeps_the_429_and_the_refund(self, repo, on_unavailable):
+        await repo.set_resource_defaults("extra", [Limit.custom("daily", 1000, **SLOW)])
+        await repo.set_resource_cascade("extra", False)
+        limiter = RateLimiter(repository=repo)
+        await _admit(limiter)  # search and budget now have buckets; extra has none
+        before = await _ledger(repo)
+
+        async def resolve_access(*args, **kwargs):
+            raise RuntimeError("throttled")
+
+        repo.resolve_access = resolve_access
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with limiter.acquire(
+                "user",
+                "search",
+                {"rpm": 1},
+                on_unavailable=on_unavailable,
+                also={"budget": {"weekly": 5000}, "extra": {"daily": 1}},
+            ):
+                pytest.fail("a rejected acquire must not admit")
+
+        assert {(s.resource, s.limit_name) for s in exc_info.value.violations} == {
+            ("budget", "weekly")
+        }
+        assert await _ledger(repo) == before
+
+    async def test_a_part_that_does_not_cascade_keeps_the_429(self, repo):
+        await repo.set_resource_defaults("extra", [Limit.custom("daily", 1000, **SLOW)])
+        await repo.set_resource_cascade("extra", False)
+        limiter = RateLimiter(repository=repo)
+        await _admit(limiter)  # extra has no bucket: a slow part that cannot cascade
+        before = await _ledger(repo)
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with limiter.acquire(
+                "user",
+                "search",
+                {"rpm": 1},
+                also={"budget": {"weekly": 5000}, "extra": {"daily": 1}},
+            ):
+                pytest.fail("a rejected acquire must not admit")
+
+        assert {s.resource for s in exc_info.value.violations} == {"budget"}
+        assert await _ledger(repo) == before
+
+    async def test_an_entity_without_a_cascade_keeps_the_429(self, repo):
+        """No policy on the resource and no cascade on the entity's META."""
+        await repo.set_resource_defaults("extra", [Limit.custom("daily", 1000, **SLOW)])
+        limiter = RateLimiter(repository=repo)
+        async with limiter.acquire("org", "search", {"rpm": 1}, also={"budget": {"weekly": 1}}):
+            pass  # org has search and budget buckets; extra has none
+        before = await _ledger(repo)
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with limiter.acquire(
+                "org",
+                "search",
+                {"rpm": 1},
+                also={"budget": {"weekly": 5000}, "extra": {"daily": 1}},
+            ):
+                pytest.fail("a rejected acquire must not admit")
+
+        assert {s.resource for s in exc_info.value.violations} == {"budget"}
+        assert await _ledger(repo) == before
+
+    async def test_a_disabled_cascade_parent_outranks_the_429(self, repo):
+        await repo.set_resource_defaults("images", [Limit.custom("daily", 1000, **SLOW)])
+        await repo.disable_entity("org", resource="images")
+        limiter = RateLimiter(repository=repo)
+        await _admit(limiter)  # budget now has a bucket; images has none
+        before = await _ledger(repo)
+
+        # One resource alone already reports the parent, not the child.
+        with pytest.raises(ResourceDisabled) as single:
+            async with limiter.acquire("user", "images", {"daily": 1}):
+                pytest.fail("a disabled parent must not admit")
+        assert single.value.entity_id == "org"
+
+        with pytest.raises(ResourceDisabled) as exc_info:
+            async with limiter.acquire(
+                "user",
+                "budget",
+                {"weekly": 5000},
+                also={"images": {"daily": 1}},
+            ):
+                pytest.fail("a disabled parent must not admit")
+
+        assert exc_info.value.entity_id == "org"
+        assert exc_info.value.resource == "images"
+        assert await _ledger(repo) == before

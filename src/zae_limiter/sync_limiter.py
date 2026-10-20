@@ -1999,6 +1999,7 @@ class SyncRateLimiter:
         landed: list[SyncLease] = []
         slow_parts: list[_SlowPart] = []
         if self._speculative_writes:
+            landed_so_far: list[SyncLease] = []
             now_ms = self._repository._now_ms()
             prechecks: list[tuple[str, dict[str, int], tuple[frozenset[int], frozenset[int]]]] = []
             for resource, consume in parts:
@@ -2014,20 +2015,27 @@ class SyncRateLimiter:
                 resource: str, consume: dict[str, int], avoid: tuple[frozenset[int], frozenset[int]]
             ) -> tuple[SyncLease | None, int, int | None, int | None] | Exception:
                 try:
-                    return self._try_speculative_acquire(
+                    outcome = self._try_speculative_acquire(
                         entity_id=entity_id, resource=resource, consume=consume, prechecked=avoid
                     )
                 except Exception as exc:
                     return exc
+                if outcome[0] is not None:
+                    landed_so_far.append(outcome[0])
+                return outcome
 
-            outcomes = self._run_in_executor(
-                *[
-                    lambda resource=resource, consume=consume, avoid=avoid: _attempt(
-                        resource, consume, avoid
-                    )
-                    for resource, consume, avoid in prechecks
-                ]
-            )
+            try:
+                outcomes = self._run_in_executor(
+                    *[
+                        lambda resource=resource, consume=consume, avoid=avoid: _attempt(
+                            resource, consume, avoid
+                        )
+                        for resource, consume, avoid in prechecks
+                    ]
+                )
+            except BaseException:
+                self._refund(landed_so_far)
+                raise
             errors: list[Exception] = []
             for (resource, consume), outcome in zip(parts, outcomes, strict=True):
                 if isinstance(outcome, Exception):
@@ -2040,6 +2048,12 @@ class SyncRateLimiter:
                     slow_parts.append((resource, consume, shard, shard_count, parent_shard))
             if errors:
                 self._refund(landed)
+                if any(isinstance(error, RateLimitExceeded) for error in errors) and (
+                    not any(isinstance(error, ResourceDisabled) for error in errors)
+                ):
+                    disabled = self._find_disabled(entity_id, [part[0] for part in slow_parts])
+                    if disabled is not None:
+                        errors.append(disabled)
                 raise self._combined_error(errors, landed)
         else:
             slow_parts = [(resource, consume, None, None, None) for resource, consume in parts]
@@ -2050,7 +2064,9 @@ class SyncRateLimiter:
                 self._refund(landed)
                 if not landed:
                     raise
-                raise RateLimitExceeded(exc.statuses + self._admitted_statuses(landed)) from exc
+                raise RateLimitExceeded(
+                    exc.statuses + self._admitted_statuses(landed), contended=exc.contended
+                ) from exc
             except BaseException:
                 self._refund(landed)
                 raise
@@ -2062,6 +2078,7 @@ class SyncRateLimiter:
             entries=[entry for part in landed for entry in part.entries],
             _unknown_keys=unknown.get(parts[0][0], frozenset()),
             _unknown_keys_by_resource=unknown,
+            compute_images=False,
         )
         lease._initial_committed = True
         return lease
@@ -2087,7 +2104,9 @@ class SyncRateLimiter:
             ``consume`` keys that named no configured limit (Issue #455).
         """
 
-        def _plan(part: _SlowPart, disable_moves: bool) -> SyncLease | Exception:
+        def _plan(
+            part: _SlowPart, disable_moves: bool, moves_contended: bool
+        ) -> SyncLease | Exception:
             resource, consume, shard, shard_count, parent_shard = part
             try:
                 return self._do_acquire(
@@ -2099,13 +2118,19 @@ class SyncRateLimiter:
                     shard_count=shard_count,
                     parent_shard_id=parent_shard,
                     disable_moves=disable_moves,
+                    moves_contended=moves_contended,
                 )
             except Exception as exc:
                 return exc
 
-        def plan_and_commit(disable_moves: bool) -> tuple[SyncLease, dict[str, frozenset[str]]]:
+        def plan_and_commit(
+            disable_moves: bool, moves_contended: bool = False, redone: bool = False
+        ) -> tuple[SyncLease, dict[str, frozenset[str]]]:
             outcomes = self._run_in_executor(
-                *[lambda part=part: _plan(part, disable_moves) for part in slow_parts]
+                *[
+                    lambda part=part: _plan(part, disable_moves, moves_contended)
+                    for part in slow_parts
+                ]
             )
             planned = [outcome for outcome in outcomes if isinstance(outcome, SyncLease)]
             errors = [outcome for outcome in outcomes if not isinstance(outcome, SyncLease)]
@@ -2116,7 +2141,7 @@ class SyncRateLimiter:
                         self._commit_rejected_moves(plan.entries, plan._carriers)
                 raise error
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return plan_and_commit(True)
+                return plan_and_commit(True, moves_contended, redone)
             marks = [plan._cache_mark for plan in planned]
             lease = SyncLease(
                 repository=self._repository,
@@ -2124,7 +2149,12 @@ class SyncRateLimiter:
                 _carriers=[carrier for plan in planned for carrier in plan._carriers],
                 _cache_mark=None if None in marks else min(m for m in marks if m is not None),
             )
-            lease._commit_initial()
+            try:
+                lease._commit_initial()
+            except PeriodNotAppliedError:
+                if redone:
+                    raise
+                return plan_and_commit(disable_moves, moves_contended, True)
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }
@@ -2136,9 +2166,9 @@ class SyncRateLimiter:
             pass
         try:
             return plan_and_commit(False)
-        except QuotaMoveLostError:
-            pass
-        return plan_and_commit(True)
+        except QuotaMoveLostError as lost:
+            moves_contended = lost.contended
+        return plan_and_commit(True, moves_contended)
 
     @staticmethod
     def _transaction_items(planned: list[SyncLease]) -> int:
@@ -2156,6 +2186,41 @@ class SyncRateLimiter:
         }
         return len(buckets) + len(donors)
 
+    def _find_disabled(self, entity_id: str, resources: list[str]) -> ResourceDisabled | None:
+        """The first ``ResourceDisabled`` among resources the fast path left (ADR-148).
+
+        Each resource's own level, then its parent's when it cascades there.
+
+        A failed read stops the search and answers None: the caller keeps the
+        error it already had rather than replacing a 429 with a backend error.
+        """
+        try:
+            for resource in resources:
+                access = self._repository.resolve_access(entity_id, resource)
+                if access.disabled:
+                    return ResourceDisabled(
+                        entity_id=entity_id,
+                        resource=resource,
+                        level=access.disabled_level or "resource",
+                    )
+                if access.cascade is False:
+                    continue
+                entity = self._repository.get_entity(entity_id)
+                if entity is None or not effective_cascade(access.cascade, entity):
+                    continue
+                parent_id = entity.parent_id
+                assert parent_id is not None
+                parent_access = self._repository.resolve_access(parent_id, resource)
+                if parent_access.disabled:
+                    return ResourceDisabled(
+                        entity_id=parent_id,
+                        resource=resource,
+                        level=parent_access.disabled_level or "resource",
+                    )
+        except Exception:
+            return None
+        return None
+
     def _refund(self, leases: list[SyncLease]) -> None:
         """Refund every debit these committed leases wrote, concurrently (ADR-148).
 
@@ -2165,7 +2230,7 @@ class SyncRateLimiter:
         entries = [entry for lease in leases for entry in lease.entries]
         if not entries:
             return
-        refund = SyncLease(repository=self._repository, entries=entries)
+        refund = SyncLease(repository=self._repository, entries=entries, compute_images=False)
         refund._initial_committed = True
         refund._rollback()
 
@@ -2207,7 +2272,10 @@ class SyncRateLimiter:
         rejections = [error for error in errors if isinstance(error, RateLimitExceeded)]
         if rejections:
             statuses = [status for error in rejections for status in error.statuses]
-            return RateLimitExceeded(statuses + self._admitted_statuses(admitted))
+            return RateLimitExceeded(
+                statuses + self._admitted_statuses(admitted),
+                contended=all(error.contended for error in rejections),
+            )
         return errors[0]
 
     def _do_acquire(
