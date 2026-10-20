@@ -330,6 +330,33 @@ class TestSlowPathPlanning:
         assert calls == [False, False, False, False, True, True]
         assert _ledger(repo) == ({"rpm": 1}, {"rpm": 1}, {"weekly": 10}, {})
 
+    @pytest.mark.parametrize("contended", [True, False])
+    def test_the_second_loss_decides_whether_the_zeroed_plan_is_contended(
+        self, repo, monkeypatch, contended
+    ):
+        """A move lost to write conflicts is a busy donor, not a spent one
+        (#724): the zeroed re-plan must hear which, as in `_slow_acquire`."""
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=False)
+        real = SyncLease._commit_initial
+        losses = [QuotaMoveLostError(contended=contended), QuotaMoveLostError(contended=False)]
+
+        def commit_initial(self):
+            if losses and len({entry.resource for entry in self.entries}) > 1:
+                raise losses.pop()
+            return real(self)
+
+        monkeypatch.setattr(SyncLease, "_commit_initial", commit_initial)
+        passes: list[tuple[bool, bool]] = []
+        real_do = limiter._do_acquire
+
+        def do_acquire(**kwargs):
+            passes.append((kwargs["disable_moves"], kwargs.get("moves_contended", False)))
+            return real_do(**kwargs)
+
+        limiter._do_acquire = do_acquire
+        _admit(limiter)
+        assert passes[-1] == (True, contended)
+
     def test_a_rejected_part_does_not_lose_another_parts_move(self, repo):
         """ADR-145 I5: a planned move commits with nothing consumed on rejection."""
         limiter = SyncRateLimiter(repository=repo, speculative_writes=False)

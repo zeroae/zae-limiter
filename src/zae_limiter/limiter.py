@@ -2623,7 +2623,9 @@ class RateLimiter:
             ``consume`` keys that named no configured limit (Issue #455).
         """
 
-        async def _plan(part: _SlowPart, disable_moves: bool) -> Lease | Exception:
+        async def _plan(
+            part: _SlowPart, disable_moves: bool, moves_contended: bool
+        ) -> Lease | Exception:
             resource, consume, shard, shard_count, parent_shard = part
             try:
                 return await self._do_acquire(
@@ -2635,13 +2637,18 @@ class RateLimiter:
                     shard_count=shard_count,
                     parent_shard_id=parent_shard,
                     disable_moves=disable_moves,
+                    moves_contended=moves_contended,
                 )
             except Exception as exc:
                 return exc
 
-        async def plan_and_commit(disable_moves: bool) -> tuple[Lease, dict[str, frozenset[str]]]:
+        async def plan_and_commit(
+            disable_moves: bool, moves_contended: bool = False
+        ) -> tuple[Lease, dict[str, frozenset[str]]]:
             # One name per part keeps the sync twin's lambda on one line (#513).
-            outcomes = await asyncio.gather(*[_plan(part, disable_moves) for part in slow_parts])
+            outcomes = await asyncio.gather(
+                *[_plan(part, disable_moves, moves_contended) for part in slow_parts]
+            )
             planned = [outcome for outcome in outcomes if isinstance(outcome, Lease)]
             errors = [outcome for outcome in outcomes if not isinstance(outcome, Lease)]
             if errors:
@@ -2657,7 +2664,7 @@ class RateLimiter:
             # Without moves a plan is at most 2 bucket items per resource, so
             # MAX_ACQUIRE_RESOURCES keeps the re-plan under the limit.
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return await plan_and_commit(True)
+                return await plan_and_commit(True, moves_contended)
             marks = [plan._cache_mark for plan in planned]
             lease = Lease(
                 repository=self._repository,
@@ -2677,9 +2684,11 @@ class RateLimiter:
             pass  # stale plan: re-read and re-plan once
         try:
             return await plan_and_commit(False)
-        except QuotaMoveLostError:
-            pass
-        return await plan_and_commit(True)
+        except QuotaMoveLostError as lost:
+            # The loss that sends the slot to 0: one to contention is a busy
+            # donor, not a spent one (#724), exactly as in `_slow_acquire`.
+            moves_contended = lost.contended
+        return await plan_and_commit(True, moves_contended)
 
     @staticmethod
     def _transaction_items(planned: list[Lease]) -> int:

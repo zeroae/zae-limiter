@@ -2090,7 +2090,9 @@ class SyncRateLimiter:
             ``consume`` keys that named no configured limit (Issue #455).
         """
 
-        def _plan(part: _SlowPart, disable_moves: bool) -> SyncLease | Exception:
+        def _plan(
+            part: _SlowPart, disable_moves: bool, moves_contended: bool
+        ) -> SyncLease | Exception:
             resource, consume, shard, shard_count, parent_shard = part
             try:
                 return self._do_acquire(
@@ -2102,13 +2104,19 @@ class SyncRateLimiter:
                     shard_count=shard_count,
                     parent_shard_id=parent_shard,
                     disable_moves=disable_moves,
+                    moves_contended=moves_contended,
                 )
             except Exception as exc:
                 return exc
 
-        def plan_and_commit(disable_moves: bool) -> tuple[SyncLease, dict[str, frozenset[str]]]:
+        def plan_and_commit(
+            disable_moves: bool, moves_contended: bool = False
+        ) -> tuple[SyncLease, dict[str, frozenset[str]]]:
             outcomes = self._run_in_executor(
-                *[lambda part=part: _plan(part, disable_moves) for part in slow_parts]
+                *[
+                    lambda part=part: _plan(part, disable_moves, moves_contended)
+                    for part in slow_parts
+                ]
             )
             planned = [outcome for outcome in outcomes if isinstance(outcome, SyncLease)]
             errors = [outcome for outcome in outcomes if not isinstance(outcome, SyncLease)]
@@ -2119,7 +2127,7 @@ class SyncRateLimiter:
                         self._commit_rejected_moves(plan.entries, plan._carriers)
                 raise error
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return plan_and_commit(True)
+                return plan_and_commit(True, moves_contended)
             marks = [plan._cache_mark for plan in planned]
             lease = SyncLease(
                 repository=self._repository,
@@ -2139,9 +2147,9 @@ class SyncRateLimiter:
             pass
         try:
             return plan_and_commit(False)
-        except QuotaMoveLostError:
-            pass
-        return plan_and_commit(True)
+        except QuotaMoveLostError as lost:
+            moves_contended = lost.contended
+        return plan_and_commit(True, moves_contended)
 
     @staticmethod
     def _transaction_items(planned: list[SyncLease]) -> int:
