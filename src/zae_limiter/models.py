@@ -1212,6 +1212,14 @@ class BucketState:
     stored_vu_ms: int | None = None
     # True only for a state read off an item, where `stored_vu_ms` is known.
     stored_vu_read: bool = False
+    # The raw schedule strings on the item as this state was read (#721), or
+    # `None` when the state was not read off an item. Item level: (`sched`,
+    # `rsched`, `sched_tz`); this limit's own overrides: (`b_{name}_sched`,
+    # `b_{name}_rsched`); each `None` when absent. A refund pins them: a
+    # schedule-only change moves the ceiling without moving `cp`, `gc`,
+    # `shard_count` or (when the next boundary is unchanged) `vu`.
+    stored_item_sched_raw: tuple[str | None, str | None, str | None] | None = None
+    stored_sched_raw: tuple[str | None, str | None] | None = None
 
     @property
     def tokens(self) -> int:
@@ -2194,6 +2202,106 @@ class QuotaGrant:
     donor_shard: int | None
     tokens_milli: int
     donor_grant_count: int | None = None
+
+
+@dataclass(frozen=True)
+class CreditCeiling:
+    """What a self-trimming credit (#721) checks one credited limit against.
+
+    ``ceiling_milli`` is ``BucketState.ceiling_milli`` from the caller's state.
+    That state can be stale, so the write also pins what the ceiling was
+    computed from and can be lowered by: the stored base capacity
+    (``b_{name}_cp``, moved by a limit change), the quota grant count
+    (``b_{name}_gc``, moved by a re-grant; ``None`` = absent) and the limit's
+    own schedule overrides (``b_{name}_sched``, ``b_{name}_rsched``, each
+    ``None`` = absent; a schedule-only change). ``sched_raw`` is ``None`` when
+    the state was not read off the item: then nothing can be pinned and the
+    credit is trimmed outright.
+    """
+
+    ceiling_milli: int
+    capacity_milli: int
+    grant_count: int | None
+    sched_raw: tuple[str | None, str | None] | None = None
+    # A quota's credit belongs to the period its debit was made in (#721):
+    # `quota` marks one, and `quota_period` says how to tell the period has
+    # not moved since -- `None` on a quota means it cannot be told, and the
+    # credit is dropped rather than land in a period that did not spend it.
+    quota: bool = False
+    quota_period: "QuotaPeriodPin | None" = None
+
+
+@dataclass(frozen=True)
+class QuotaPeriodPin:
+    """How a quota credit checks it still lands in its debit's period (#721).
+
+    A calendar quota: the item's ``rf`` is still before ``reset_edge_ms``, the
+    first reset edge after the ``rf`` the lease saw (a reset pass stamps ``rf``
+    at or past the edge; ``None`` when no edge is in reach). A session quota:
+    the window start and applied marker (``b_{name}_ws`` / ``b_{name}_wa``)
+    are still the ones the lease saw, each ``None`` when absent.
+
+    A calendar quota's edge is computed from the reset cron the lease held, so
+    ``reset_sched_raw`` pins the stored strings that cron came from — the
+    item's ``rsched`` and ``sched_tz`` and the limit's ``b_{name}_rsched`` —
+    each ``None`` when absent. A reset-schedule change under an open lease can
+    fire a reset before the old edge; it moves one of these, and the credit is
+    dropped.
+    """
+
+    reset_edge_ms: int | None = None
+    window: tuple[int | None, int | None] | None = None
+    reset_sched_raw: tuple[str | None, str | None, str | None] | None = None
+
+
+#: (``shard_count``, ``vu``, (``sched``, ``rsched``, ``sched_tz``)) of a bucket
+#: item as a lease last wrote or read it, each ``None`` = absent: what a
+#: self-trimming credit (#721) pins beside its ``CreditCeiling``s.
+CreditPin = tuple[int, int | None, tuple[str | None, str | None, str | None]]
+
+
+@dataclass(frozen=True)
+class CreditLimitImage:
+    """One limit on a bucket item as a lease last wrote or read it (#721).
+
+    What a self-trimming credit pins for that limit: the stored base capacity
+    (``b_{name}_cp``), the quota grant count (``b_{name}_gc``), the schedule
+    overrides (``b_{name}_sched``, ``b_{name}_rsched``) and the session window
+    (``b_{name}_ws``, ``b_{name}_wa``), each ``None`` when absent.
+    """
+
+    capacity_milli: int
+    grant_count: int | None
+    sched_raw: tuple[str | None, str | None]
+    window_start_ms: int | None = None
+    window_applied_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class CreditImage:
+    """A bucket item as a lease last wrote or read it (#721).
+
+    Built from the item the lease read (or a speculative write returned), the
+    ``Put`` it created, the values its rf-locked write stamped, or the
+    ``ALL_NEW`` image of its consumption-only retry. A refund pins it: every
+    write that can lower the ceiling the refund is checked against moves one
+    of these attributes. ``None`` in place of an image means nothing is known.
+    """
+
+    shard_count: int
+    vu: int | None
+    item_sched: tuple[str | None, str | None, str | None]
+    rf: int
+    limits: tuple[tuple[str, CreditLimitImage], ...]
+
+    @property
+    def pin(self) -> CreditPin:
+        """The item-level part, as ``build_composite_adjust`` takes it."""
+        return (self.shard_count, self.vu, self.item_sched)
+
+    def limit(self, name: str) -> CreditLimitImage | None:
+        """The named limit's image, or ``None`` when the item does not carry it."""
+        return next((image for limit_name, image in self.limits if limit_name == name), None)
 
 
 @dataclass(frozen=True)

@@ -29,7 +29,18 @@ from .exceptions import (
     ValidationError,
     VersionMismatchError,
 )
-from .lease import Lease, LeaseEntry, QuotaMoveLostError
+from .lease import (
+    _CONTENTION_RETRY_AFTER_S,
+    Lease,
+    LeaseEntry,
+    PeriodNotAppliedError,
+    QuotaMoveLostError,
+    _contention_rejection,
+    _is_transaction_conflict,
+    credit_ceilings,
+    credit_image,
+    write_credit,
+)
 from .models import (
     AuditEvent,
     Availability,
@@ -68,6 +79,21 @@ logger = logging.getLogger(__name__)
 #: own configuration": the per-resource level and the entity-wide ``_default_``
 #: level (ADR-136).
 _ENTITY_CONFIG_SOURCES: frozenset[str] = frozenset({"entity", "entity_default"})
+
+#: The most resources one ``acquire()`` may debit: the primary plus ``also``
+#: (ADR-148). Each resource is at most two bucket items in the slow path's one
+#: ``TransactWriteItems`` (its own and a cascade parent's), so 16 leaves room
+#: under DynamoDB's 100-item limit for ADR-145 donor debits.
+MAX_ACQUIRE_RESOURCES = 16
+
+#: DynamoDB's ``TransactWriteItems`` item limit. A multi-resource slow path
+#: whose plan would exceed it is re-planned without quota moves (ADR-148).
+_MAX_TRANSACT_ITEMS = 100
+
+#: One resource the multi-resource fast path could not settle, with the hints
+#: it hands the slow path: ``(resource, consume, shard, shard_count,
+#: parent_shard)`` — see :meth:`RateLimiter._try_speculative_acquire`.
+_SlowPart = tuple[str, dict[str, int], int | None, int | None, int | None]
 
 
 def _is_custom_config(config_source: str | None) -> bool:
@@ -749,6 +775,8 @@ class RateLimiter:
         limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
         on_unavailable: OnUnavailable | None = None,
+        *,
+        also: dict[str, dict[str, int]] | None = None,
     ) -> AsyncIterator[Lease]:
         """
         Acquire rate limit capacity.
@@ -760,26 +788,50 @@ class RateLimiter:
         entity creation time via ``create_entity(cascade=True)``. When enabled,
         acquire() automatically consumes from both the entity and its parent.
 
+        Several resources can be debited in one acquire, all or none
+        (ADR-148): name the extra ones in ``also``. Each resolves its own
+        limits, ``disabled`` flag, cascade policy, shards and quota grants
+        exactly as a single-resource acquire does. When any resource is
+        rejected, disabled or unavailable, every debit the acquire wrote is
+        refunded before the exception reaches the caller. The yielded lease
+        covers every resource: its own ``adjust()``, ``consume()``,
+        ``release()`` and ``consumed`` act on ``resource``, and
+        ``lease.resource(name)`` reaches each of the others.
+
         Args:
             entity_id: Entity to acquire capacity for
             resource: Resource being accessed (e.g., "gpt-4")
             consume: Amounts to consume by limit name
-            limits: Override stored config with explicit limits (optional)
+            limits: Override stored config with explicit limits (optional).
+                Cannot be combined with ``also``.
             use_stored_limits: DEPRECATED - limits are now always resolved from
                 stored config. This parameter will be removed in v1.0.
             on_unavailable: Override default on_unavailable behavior
+            also: Further resources to debit in the same acquire, mapping each
+                resource name to its amounts by limit name (optional). At most
+                ``MAX_ACQUIRE_RESOURCES - 1`` entries, none naming
+                ``resource``.
 
         Yields:
             Lease for managing additional consumption
 
         Raises:
-            RateLimitExceeded: If any limit would be exceeded
+            RateLimitExceeded: If any limit would be exceeded. With ``also``,
+                carries a status for every declared limit of every resource
+                the decision evaluated, each tagged with its resource.
+            ResourceDisabled: If the resource — or, with ``also``, any of the
+                resources — is disabled. Outranks ``RateLimitExceeded``.
             RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
-            ValidationError: If no limits configured at any level
+            ValidationError: If no limits configured at any level, or ``also``
+                is invalid (a bad or repeated resource name, too many
+                resources, or combined with ``limits``)
             VersionMismatchError: If ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638). Never subject to
                 ``on_unavailable``.
         """
+        # Before any I/O: a bad `also` is the caller's error (ADR-148).
+        parts = self._acquire_parts(resource, consume, limits, also)
+
         await self._ensure_initialized()
 
         # Deprecation warning for use_stored_limits
@@ -819,8 +871,13 @@ class RateLimiter:
             slow_path_shard_count: int | None = None
             slow_path_parent_shard: int | None = None
 
+            # Several resources, all or none (ADR-148): arrives committed, and
+            # refunded whole if anything failed.
+            if len(parts) > 1:
+                lease = await self._acquire_resources(entity_id, parts)
+
             # Try speculative fast path first (issue #315)
-            if self._speculative_writes:
+            elif self._speculative_writes:
                 (
                     lease,
                     slow_path_shard,
@@ -886,7 +943,9 @@ class RateLimiter:
                     resource=resource,
                 ) from e
 
-        # Lease committed - manage the context
+        # Lease committed - manage the context. The lease-level methods act on
+        # the primary resource; the others through `lease.resource()`.
+        lease._bind_resources(tuple(name for name, _amounts in parts))
         try:
             yield lease
             await lease._commit_adjustments()
@@ -905,6 +964,7 @@ class RateLimiter:
         resource: str,
         consume: dict[str, int],
         use_rejection_cache: bool = True,
+        prechecked: tuple[frozenset[int], frozenset[int]] | None = None,
     ) -> tuple[Lease | None, int, int | None, int | None]:
         """Try the speculative fast path for acquire (issue #315).
 
@@ -925,6 +985,8 @@ class RateLimiter:
 
         ``use_rejection_cache`` is False when the caller passed ``limits=``:
         the cached states describe the stored parameters, not an override.
+        ``prechecked`` is the ``(avoid, avoid_parent)`` answer of
+        :meth:`_rejection_precheck` taken by the caller, which then skips it.
 
         Raises:
             RateLimitExceeded: If the bucket is truly exhausted (refill
@@ -935,21 +997,16 @@ class RateLimiter:
         now_ms = self._repository._now_ms()
 
         # Shards the last state seen says cannot fit this request (ADR-147).
-        # Raises here, with no write, when that is every shard.
+        # Raises here, with no write, when that is every shard. A
+        # multi-resource acquire checks every resource before any write and
+        # hands the answer in as `prechecked` (ADR-148).
         avoid: frozenset[int] = frozenset()
         avoid_parent: frozenset[int] = frozenset()
-        if use_rejection_cache:
-            try:
-                avoid = frozenset(self._known_short_shards(entity_id, resource, consume, now_ms)[0])
-            except RateLimitExceeded:
-                # A local rejection does no I/O, so without this a caller that
-                # retries a 429 at once never hands control back: every other
-                # task on the event loop (or thread, or greenlet) stalls until
-                # the cached state expires (#704: 2 of ~200 ticks, 1 s gaps).
-                await asyncio.sleep(0)
-                raise
-            avoid_parent = frozenset(
-                self._known_short_parent_shards(entity_id, resource, consume, now_ms)
+        if prechecked is not None:
+            avoid, avoid_parent = prechecked
+        elif use_rejection_cache:
+            avoid, avoid_parent = await self._rejection_precheck(
+                entity_id, resource, consume, now_ms
             )
 
         # Repository handles cache check and parallel writes (issue #318).
@@ -1001,7 +1058,11 @@ class RateLimiter:
                 debited = result.debited_parent_id or result.parent_id
                 assert debited is not None  # set by repository cache path
                 await self._compensate_speculative(
-                    debited, resource, consume, result.parent_result.shard_id
+                    debited,
+                    resource,
+                    consume,
+                    result.parent_result.shard_id,
+                    result.parent_result.buckets,
                 )
 
             # Disabled: no shard retry or doubling can help (ADR-125).
@@ -1107,9 +1168,11 @@ class RateLimiter:
             self._check_speculative_failure(result, consume, now_ms)
             # BUCKET_MISSING has no image to read a shard_count from; let the
             # slow path fall back to the entity cache in that case.
+            # CONTENTION (#724) has no image either.
             observed_count = (
                 None
-                if result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+                if result.failure_reason
+                in (SpeculativeFailureReason.BUCKET_MISSING, SpeculativeFailureReason.CONTENTION)
                 else result.shard_count
             )
             return None, result.shard_id, observed_count, parent_hint
@@ -1166,6 +1229,7 @@ class RateLimiter:
                     resource,
                     consume,
                     parent_result.shard_id,
+                    parent_result.buckets,
                 )
             result.parent_result = None
             # Refunded: from here on the only parent this call can debit is
@@ -1255,6 +1319,37 @@ class RateLimiter:
             entry._initial_consumed = entry.consumed
         return lease, result.shard_id, result.shard_count, None
 
+    async def _rejection_precheck(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        now_ms: int,
+    ) -> tuple[frozenset[int], frozenset[int]]:
+        """Consult the rejection cache for one resource before any write (ADR-147).
+
+        Returns:
+            ``(avoid, avoid_parent)``: the child shards and the parent shards
+            the last state seen says cannot fit ``consume``.
+
+        Raises:
+            RateLimitExceeded: With no DynamoDB call, when the cache already
+                knows the server would reject.
+        """
+        try:
+            avoid = frozenset(self._known_short_shards(entity_id, resource, consume, now_ms)[0])
+        except RateLimitExceeded:
+            # A local rejection does no I/O, so without this a caller that
+            # retries a 429 at once never hands control back: every other
+            # task on the event loop (or thread, or greenlet) stalls until
+            # the cached state expires (#704: 2 of ~200 ticks, 1 s gaps).
+            await asyncio.sleep(0)
+            raise
+        avoid_parent = frozenset(
+            self._known_short_parent_shards(entity_id, resource, consume, now_ms)
+        )
+        return avoid, avoid_parent
+
     async def _handle_nested_parent_failure(
         self,
         entity_id: str,
@@ -1302,7 +1397,9 @@ class RateLimiter:
         # retry can help (ADR-125). The child's speculatively consumed tokens
         # must be returned before the exception propagates.
         if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
-            await self._compensate_child(entity_id, resource, consume, result.shard_id)
+            await self._compensate_child(
+                entity_id, resource, consume, result.shard_id, result.buckets
+            )
             raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
 
         # A closed schedule window on the parent is not a rejection either
@@ -1316,23 +1413,31 @@ class RateLimiter:
         # shard is left unpinned: every shard crosses the boundary at once, so
         # pinning this one buys nothing and would concentrate the writes.
         if parent_result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY:
-            await self._compensate_child(entity_id, resource, consume, result.shard_id)
+            await self._compensate_child(
+                entity_id, resource, consume, result.shard_id, result.buckets
+            )
             return None, parent_hint
 
         if parent_result.old_buckets is None:
-            await self._compensate_child(entity_id, resource, consume, result.shard_id)
+            await self._compensate_child(
+                entity_id, resource, consume, result.shard_id, result.buckets
+            )
             return None, parent_hint
 
         parent_names = {b.limit_name for b in parent_result.old_buckets}
         if not all(name in parent_names for name in consume):
-            await self._compensate_child(entity_id, resource, consume, result.shard_id)
+            await self._compensate_child(
+                entity_id, resource, consume, result.shard_id, result.buckets
+            )
             return None, parent_hint
 
         would_help, parent_statuses = would_refill_satisfy(
             parent_result.old_buckets, consume, now_ms
         )
         if not would_help:
-            await self._compensate_child(entity_id, resource, consume, result.shard_id)
+            await self._compensate_child(
+                entity_id, resource, consume, result.shard_id, result.buckets
+            )
             child_statuses = declared_statuses(result.buckets, consume, now_ms)
             raise RateLimitExceeded(child_statuses + parent_statuses)
 
@@ -1355,7 +1460,9 @@ class RateLimiter:
                 # shard does not exist yet: a parent-only attempt could only
                 # resolve limits, read a miss and return None. Hand the child
                 # straight to the full slow path, which creates it.
-                await self._compensate_child(entity_id, resource, consume, result.shard_id)
+                await self._compensate_child(
+                    entity_id, resource, consume, result.shard_id, result.buckets
+                )
                 return None, parent_shard
 
         # Refill would help — build child entries for parent-only slow path
@@ -1395,13 +1502,15 @@ class RateLimiter:
                 parent_shard_count,
             )
         except Exception:
-            await self._compensate_child(entity_id, resource, consume, result.shard_id)
+            await self._compensate_child(
+                entity_id, resource, consume, result.shard_id, result.buckets
+            )
             raise
 
         if parent_lease is not None:
             return parent_lease, parent_hint
 
-        await self._compensate_child(entity_id, resource, consume, result.shard_id)
+        await self._compensate_child(entity_id, resource, consume, result.shard_id, result.buckets)
         return None, parent_hint
 
     async def _shard_after_wcu_exhaustion(
@@ -1449,9 +1558,10 @@ class RateLimiter:
         resource: str,
         consume: dict[str, int],
         shard_id: int,
+        buckets: "list[BucketState] | None" = None,
     ) -> None:
         """Compensate a speculatively consumed child by adding tokens back."""
-        await self._compensate_speculative(entity_id, resource, consume, shard_id)
+        await self._compensate_speculative(entity_id, resource, consume, shard_id, buckets)
 
     def _shortfall(
         self,
@@ -1612,21 +1722,54 @@ class RateLimiter:
         resource: str,
         consume: dict[str, int],
         shard_id: int,
+        buckets: "list[BucketState] | None" = None,
     ) -> None:
         """Compensate a speculative write by adding consumed tokens back.
 
         The credit must land on the shard the speculative debit hit
         (GHSA-76rv): crediting shard 0 leaves the debited shard short and
         mints tokens on a shard that served nothing.
+
+        ``buckets`` is the debit's ``ALL_NEW`` image. Its ceilings make the
+        credit self-trimming (#721): a reset edge or a refill to capacity that
+        landed after the debit cannot lift the balance above the ceiling where
+        another process's fast path would spend it.
+
+        Best-effort, like ``Lease._rollback``: a refund that fails — a
+        transaction conflict that outlasted its retries (#724), or any other
+        write error — is logged and swallowed, and the caller goes on to its
+        429 or slow path exactly as if it had landed. Raising here reached
+        ``on_unavailable``: a degraded lease (no limiting) against an exhausted
+        parent under ALLOW, ``RateLimiterUnavailable`` under BLOCK. A refund
+        must never turn a rejection into an admission; a lost one costs the
+        entity the tokens of one request.
         """
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
-        compensate_item = self._repository.build_composite_adjust(
-            entity_id=entity_id,
-            resource=resource,
-            deltas=deltas,
-            shard_id=shard_id,
+        # The debit's image is the item as of that write: a speculative debit
+        # moves none of what is pinned, so a later writer that did fails the
+        # pin (#721). `credit_image` skips `wcu`, which always reads as one
+        # shard and would fail the pin on every sharded entity.
+        image = credit_image(buckets or ())
+        ceilings = credit_ceilings(
+            [(b.limit_name, b) for b in buckets or ()],
+            deltas,
+            self._repository._now_ms(),
+            image,
+            image,
         )
-        await self._repository.write_each([compensate_item])
+        pin = image.pin if image is not None else None
+        try:
+            await write_credit(
+                self._repository, entity_id, resource, deltas, shard_id, ceilings, pin
+            )
+        except Exception as exc:
+            # The entity id is not logged: entity ids are routinely API keys.
+            logger.warning(
+                "Speculative compensation failed for resource=%s shard=%d; the debit stands (%s)",
+                resource,
+                shard_id,
+                type(exc).__name__,
+            )
 
     @staticmethod
     def _check_speculative_failure(
@@ -1723,7 +1866,9 @@ class RateLimiter:
                 # was the first shard's. A child-only lease here would skip the
                 # parent, so undo the debit and let the slow path commit child
                 # and parent together on this shard.
-                await self._compensate_speculative(entity_id, resource, consume, new_shard)
+                await self._compensate_speculative(
+                    entity_id, resource, consume, new_shard, retry.buckets
+                )
                 slow_path_shard = new_shard
                 break
             if retry.success:
@@ -1734,11 +1879,14 @@ class RateLimiter:
             if retry.failure_reason in (
                 SpeculativeFailureReason.BUCKET_MISSING,
                 SpeculativeFailureReason.SCHEDULE_BOUNDARY,
+                SpeculativeFailureReason.CONTENTION,
             ):
                 # Probing further shards costs 1 RT + 1 WCU each; a missing
                 # shard is one the slow path will create with a fresh share,
                 # and a boundary-expired one is a shard the slow path will
-                # re-materialise. Both are "the fast path cannot settle this,
+                # re-materialise. A contended one (#724) is one the slow
+                # path reads and commits under its own conflict retry. All
+                # are "the fast path cannot settle this,
                 # but the slow path can" — falling through to the caller's
                 # fast rejection instead would reject on the first shard's
                 # stale balance while this one was about to be refilled.
@@ -2367,9 +2515,14 @@ class RateLimiter:
         against a zero balance, or `RateLimitExceeded`. Never
         `RateLimiterUnavailable`, which under ALLOW would admit without limit.
         Nothing was written by either lost attempt.
+
+        When the second loss was to write conflicts, a rejection caused only
+        by the slot's zero grant is the contended 429 (#724): the table was
+        busy, the quota is not spent, so the caller is told to retry shortly
+        rather than at the next reset edge.
         """
 
-        async def plan_and_commit(disable_moves: bool) -> Lease:
+        async def plan_and_commit(disable_moves: bool, moves_contended: bool = False) -> Lease:
             lease = await self._do_acquire(
                 entity_id=entity_id,
                 resource=resource,
@@ -2379,8 +2532,26 @@ class RateLimiter:
                 shard_count=shard_count,
                 parent_shard_id=parent_shard_id,
                 disable_moves=disable_moves,
+                moves_contended=moves_contended,
             )
-            await lease._commit_initial()
+            try:
+                await lease._commit_initial()
+            except PeriodNotAppliedError:
+                # The retry found a quota period nobody has applied (#743):
+                # redo the pass once from a fresh read, which applies it. A
+                # second loss stands as the rejection it was raised as.
+                lease = await self._do_acquire(
+                    entity_id=entity_id,
+                    resource=resource,
+                    limits_override=limits_override,
+                    consume=consume,
+                    shard_id=shard_id,
+                    shard_count=shard_count,
+                    parent_shard_id=parent_shard_id,
+                    disable_moves=disable_moves,
+                    moves_contended=moves_contended,
+                )
+                await lease._commit_initial()
             return lease
 
         try:
@@ -2389,12 +2560,393 @@ class RateLimiter:
             pass  # stale plan: re-read and re-plan once
         try:
             return await plan_and_commit(False)
-        except QuotaMoveLostError:
-            pass
+        except QuotaMoveLostError as lost:
+            # The loss that sends the slot to 0. A first loss to contention
+            # followed by a donor spent since is a genuinely spent donor.
+            moves_contended = lost.contended
         # Lost twice: this pass grants the covered slot nothing and carries no
         # move (design §6 step 6), so the commit cannot lose one again — it
         # admits against a zero balance or is rejected, never unavailable.
-        return await plan_and_commit(True)
+        return await plan_and_commit(True, moves_contended)
+
+    # -------------------------------------------------------------------------
+    # Multi-resource acquire (ADR-148)
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _acquire_parts(
+        resource: str,
+        consume: dict[str, int],
+        limits: list[Limit] | None,
+        also: dict[str, dict[str, int]] | None,
+    ) -> list[tuple[str, dict[str, int]]]:
+        """The ``(resource, consume)`` parts of one acquire, primary first (ADR-148).
+
+        Validated before any I/O. An empty or absent ``also`` is a
+        single-resource acquire, on today's path.
+
+        Raises:
+            ValidationError: For a bad resource name, the primary resource
+                named in ``also``, more than ``MAX_ACQUIRE_RESOURCES``
+                resources, or ``also`` combined with ``limits``.
+        """
+        if not also:
+            return [(resource, consume)]
+        # A list of limits names no resource, so it cannot say which of the
+        # resources it overrides; guessing is how a budget gets the wrong
+        # limit (decision D8).
+        if limits is not None:
+            raise ValidationError(
+                "also",
+                ", ".join(also),
+                "cannot be combined with limits=; a limits override has no resource",
+            )
+        if 1 + len(also) > MAX_ACQUIRE_RESOURCES:
+            raise ValidationError(
+                "also",
+                ", ".join(also),
+                f"at most {MAX_ACQUIRE_RESOURCES} resources per acquire, got {1 + len(also)}",
+            )
+        validate_resource(resource)
+        for name in also:
+            validate_resource(name)
+        # DynamoDB rejects two operations on one item in a transaction, and a
+        # resource debited twice would be a different request anyway.
+        if resource in also:
+            raise ValidationError(
+                "also", resource, "names the primary resource; each resource appears once"
+            )
+        return [(resource, consume), *also.items()]
+
+    async def _acquire_resources(
+        self,
+        entity_id: str,
+        parts: list[tuple[str, dict[str, int]]],
+    ) -> Lease:
+        """Debit several resources for one entity, all or none (ADR-148).
+
+        1. Every resource is checked against the rejection cache before any
+           write; one known short rejects with no DynamoDB call.
+        2. The fast path runs for every resource at once
+           (:meth:`_try_speculative_acquire`, unchanged: its own shard retry,
+           cascade write and parent refund).
+        3. Resources it admitted keep their debit (decision D3); the ones it
+           could not settle are planned and committed together in one
+           transaction (:meth:`_slow_acquire_resources`).
+        4. Any rejection, disable or error refunds every debit that landed
+           before it propagates.
+
+        Returns:
+            One committed lease covering every resource.
+        """
+        validate_identifier(entity_id, "entity_id")
+        landed: list[Lease] = []
+        slow_parts: list[_SlowPart] = []
+
+        if self._speculative_writes:
+            landed_so_far: list[Lease] = []
+            now_ms = self._repository._now_ms()
+            prechecks: list[tuple[str, dict[str, int], tuple[frozenset[int], frozenset[int]]]] = []
+            for resource, consume in parts:
+                prechecks.append(
+                    (
+                        resource,
+                        consume,
+                        await self._rejection_precheck(entity_id, resource, consume, now_ms),
+                    )
+                )
+
+            async def _attempt(
+                resource: str,
+                consume: dict[str, int],
+                avoid: tuple[frozenset[int], frozenset[int]],
+            ) -> tuple[Lease | None, int, int | None, int | None] | Exception:
+                try:
+                    outcome = await self._try_speculative_acquire(
+                        entity_id=entity_id, resource=resource, consume=consume, prechecked=avoid
+                    )
+                except Exception as exc:
+                    return exc
+                # Recorded the moment it lands: a cancellation of the gather
+                # below discards every outcome, and these debits are written.
+                if outcome[0] is not None:
+                    landed_so_far.append(outcome[0])
+                return outcome
+
+            try:
+                outcomes = await asyncio.gather(
+                    *[_attempt(resource, consume, avoid) for resource, consume, avoid in prechecks]
+                )
+            except BaseException:
+                await self._refund(landed_so_far)
+                raise
+            errors: list[Exception] = []
+            for (resource, consume), outcome in zip(parts, outcomes, strict=True):
+                if isinstance(outcome, Exception):
+                    errors.append(outcome)
+                    continue
+                part_lease, shard, shard_count, parent_shard = outcome
+                if part_lease is not None:
+                    landed.append(part_lease)
+                else:
+                    slow_parts.append((resource, consume, shard, shard_count, parent_shard))
+            if errors:
+                # Refund first: nothing below may leave a debit behind.
+                await self._refund(landed)
+                # ResourceDisabled outranks a 429 whatever the order (ADR-148),
+                # but a disabled resource with no bucket yet is only found by
+                # the slow path, which a fast-path error skips: ask it here,
+                # and only when there is a 429 to outrank. One uncached read
+                # per part, paid on this error path alone.
+                if any(isinstance(error, RateLimitExceeded) for error in errors) and not any(
+                    isinstance(error, ResourceDisabled) for error in errors
+                ):
+                    disabled = await self._find_disabled(
+                        entity_id, [part[0] for part in slow_parts]
+                    )
+                    if disabled is not None:
+                        errors.append(disabled)
+                raise self._combined_error(errors, landed)
+        else:
+            slow_parts = [(resource, consume, None, None, None) for resource, consume in parts]
+
+        if slow_parts:
+            try:
+                slow_lease, unknown = await self._slow_acquire_resources(entity_id, slow_parts)
+            except RateLimitExceeded as exc:
+                await self._refund(landed)
+                if not landed:
+                    raise
+                # The resources the fast path admitted were evaluated too.
+                raise RateLimitExceeded(
+                    exc.statuses + self._admitted_statuses(landed), contended=exc.contended
+                ) from exc
+            except BaseException:
+                await self._refund(landed)
+                raise
+            landed.append(slow_lease)
+        else:
+            unknown = {}
+
+        lease = Lease(
+            repository=self._repository,
+            entries=[entry for part in landed for entry in part.entries],
+            _unknown_keys=unknown.get(parts[0][0], frozenset()),
+            _unknown_keys_by_resource=unknown,
+            compute_images=False,
+        )
+        lease._initial_committed = True
+        return lease
+
+    async def _slow_acquire_resources(
+        self, entity_id: str, slow_parts: list[_SlowPart]
+    ) -> tuple[Lease, dict[str, frozenset[str]]]:
+        """Plan the resources the fast path could not settle; commit them together.
+
+        Each part is planned by :meth:`_do_acquire`, as a single-resource slow
+        path would plan it, and the plans are committed in **one**
+        ``TransactWriteItems`` with their ADR-145 donor debits. A plan whose
+        items would exceed DynamoDB's limit is re-planned without moves (an
+        under-admission, never a failure); a lost move re-plans every part
+        once, then once more without moves, exactly as :meth:`_slow_acquire`.
+
+        When a part is rejected or disabled, the other parts' planned quota
+        moves are committed with nothing consumed (ADR-145 I5), and nothing
+        else is written.
+
+        Returns:
+            ``(lease, unknown)``: the committed lease, and each resource's
+            ``consume`` keys that named no configured limit (Issue #455).
+        """
+
+        async def _plan(
+            part: _SlowPart, disable_moves: bool, moves_contended: bool
+        ) -> Lease | Exception:
+            resource, consume, shard, shard_count, parent_shard = part
+            try:
+                return await self._do_acquire(
+                    entity_id=entity_id,
+                    resource=resource,
+                    limits_override=None,
+                    consume=consume,
+                    shard_id=shard,
+                    shard_count=shard_count,
+                    parent_shard_id=parent_shard,
+                    disable_moves=disable_moves,
+                    moves_contended=moves_contended,
+                )
+            except Exception as exc:
+                return exc
+
+        async def plan_and_commit(
+            disable_moves: bool, moves_contended: bool = False, redone: bool = False
+        ) -> tuple[Lease, dict[str, frozenset[str]]]:
+            # One name per part keeps the sync twin's lambda on one line (#513).
+            outcomes = await asyncio.gather(
+                *[_plan(part, disable_moves, moves_contended) for part in slow_parts]
+            )
+            planned = [outcome for outcome in outcomes if isinstance(outcome, Lease)]
+            errors = [outcome for outcome in outcomes if not isinstance(outcome, Lease)]
+            if errors:
+                # Built first: committing a move zeroes the plan's consumption,
+                # and the statuses report what each part was admitted with.
+                error = self._combined_error(errors, planned)
+                # A rejected part committed its own moves already; the parts
+                # that planned fine must not lose theirs either (ADR-145).
+                for plan in planned:
+                    if any(entry._donor_debit is not None for entry in plan.entries):
+                        await self._commit_rejected_moves(plan.entries, plan._carriers)
+                raise error
+            # Without moves a plan is at most 2 bucket items per resource, so
+            # MAX_ACQUIRE_RESOURCES keeps the re-plan under the limit.
+            if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
+                return await plan_and_commit(True, moves_contended, redone)
+            marks = [plan._cache_mark for plan in planned]
+            lease = Lease(
+                repository=self._repository,
+                entries=[entry for plan in planned for entry in plan.entries],
+                _carriers=[carrier for plan in planned for carrier in plan._carriers],
+                _cache_mark=None if None in marks else min(m for m in marks if m is not None),
+            )
+            try:
+                await lease._commit_initial()
+            except PeriodNotAppliedError:
+                # The retry found a quota period nobody has applied (#743):
+                # redo the pass once from a fresh read, which applies it. A
+                # second loss stands as the rejection it was raised as.
+                if redone:
+                    raise
+                return await plan_and_commit(disable_moves, moves_contended, True)
+            unknown = {
+                part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
+            }
+            return lease, unknown
+
+        try:
+            return await plan_and_commit(False)
+        except QuotaMoveLostError:
+            pass  # stale plan: re-read and re-plan once
+        try:
+            return await plan_and_commit(False)
+        except QuotaMoveLostError as lost:
+            # The loss that sends the slot to 0: one to contention is a busy
+            # donor, not a spent one (#724), exactly as in `_slow_acquire`.
+            moves_contended = lost.contended
+        return await plan_and_commit(True, moves_contended)
+
+    @staticmethod
+    def _transaction_items(planned: list[Lease]) -> int:
+        """Items one commit of these plans writes: bucket items plus donor debits."""
+        buckets = {
+            (entry.entity_id, entry.resource, entry._shard_id)
+            for plan in planned
+            for entry in (*plan.entries, *plan._carriers)
+        }
+        # One donor debit per donor shard, however many quotas move off it.
+        donors = {
+            (entry.entity_id, entry.resource, entry._donor_debit.shard_id)
+            for plan in planned
+            for entry in plan.entries
+            if entry._donor_debit is not None
+        }
+        return len(buckets) + len(donors)
+
+    async def _find_disabled(self, entity_id: str, resources: list[str]) -> ResourceDisabled | None:
+        """The first ``ResourceDisabled`` among resources the fast path left (ADR-148).
+
+        Each resource's own level, then its parent's when it cascades there.
+
+        A failed read stops the search and answers None: the caller keeps the
+        error it already had rather than replacing a 429 with a backend error.
+        """
+        try:
+            for resource in resources:
+                access = await self._repository.resolve_access(entity_id, resource)
+                if access.disabled:
+                    return ResourceDisabled(
+                        entity_id=entity_id,
+                        resource=resource,
+                        level=access.disabled_level or "resource",
+                    )
+                if access.cascade is False:
+                    continue
+                # The slow path would gate the parent too (ADR-125, ADR-146):
+                # its 403 outranks the child's 429 for a resource with no
+                # bucket yet, exactly as in a single-resource acquire.
+                entity = await self._repository.get_entity(entity_id)
+                if entity is None or not effective_cascade(access.cascade, entity):
+                    continue
+                parent_id = entity.parent_id
+                assert parent_id is not None  # effective_cascade is False without one
+                parent_access = await self._repository.resolve_access(parent_id, resource)
+                if parent_access.disabled:
+                    return ResourceDisabled(
+                        entity_id=parent_id,
+                        resource=resource,
+                        level=parent_access.disabled_level or "resource",
+                    )
+        except Exception:
+            return None
+        return None
+
+    async def _refund(self, leases: list[Lease]) -> None:
+        """Refund every debit these committed leases wrote, concurrently (ADR-148).
+
+        Best effort, like any rollback: a failed refund is logged, never
+        raised over the exception that caused it.
+        """
+        entries = [entry for lease in leases for entry in lease.entries]
+        if not entries:
+            return
+        refund = Lease(repository=self._repository, entries=entries, compute_images=False)
+        refund._initial_committed = True
+        await refund._rollback()
+
+    def _admitted_statuses(self, leases: list[Lease]) -> list[LimitStatus]:
+        """The passed statuses of resources admitted on the way to a rejection.
+
+        From each declared entry's state as admitted: the ``ALL_NEW`` image of
+        a fast-path write, or the planned state of a slow-path one.
+        """
+        now_ms = self._repository._now_ms()
+        return [
+            LimitStatus(
+                entity_id=entry.entity_id,
+                resource=entry.resource,
+                limit_name=entry.limit.name,
+                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                available=calculate_available(entry.state, now_ms),
+                requested=entry.consumed,
+                exceeded=False,
+                retry_after_seconds=0.0,
+                resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
+            )
+            for lease in leases
+            for entry in lease.entries
+            if entry._declared
+        ]
+
+    def _combined_error(self, errors: list[Exception], admitted: list[Lease]) -> Exception:
+        """The one exception a multi-resource acquire raises (ADR-148).
+
+        ``ResourceDisabled`` outranks ``RateLimitExceeded``, which outranks
+        anything else. Every rejection's statuses are combined with the
+        passed statuses of the resources admitted meanwhile, so
+        ``retry_after_seconds`` is the wait until every resource can admit.
+        """
+        for error in errors:
+            if isinstance(error, ResourceDisabled):
+                return error
+        rejections = [error for error in errors if isinstance(error, RateLimitExceeded)]
+        if rejections:
+            statuses = [status for error in rejections for status in error.statuses]
+            # Contended only when every rejection was: a real violation
+            # anywhere makes the combined 429 an ordinary one (#724).
+            return RateLimitExceeded(
+                statuses + self._admitted_statuses(admitted),
+                contended=all(error.contended for error in rejections),
+            )
+        return errors[0]
 
     async def _do_acquire(
         self,
@@ -2406,6 +2958,7 @@ class RateLimiter:
         shard_count: int | None = None,
         parent_shard_id: int | None = None,
         disable_moves: bool = False,
+        moves_contended: bool = False,
     ) -> Lease:
         """Internal acquire implementation (the slow path).
 
@@ -2414,6 +2967,10 @@ class RateLimiter:
                 (design §6 step 6): a quota whose slot a sibling covers gets 0
                 this time instead of a move, and no donor debit rides. Only
                 under-admits, for the rest of the period at most.
+            moves_contended: With ``disable_moves``, the move was lost to
+                write conflicts (#724). A rejection whose every violation is a
+                limit zeroed here is then the contended 429, not an exhausted
+                one.
             shard_id: Child shard the speculative fast path selected, so this
                 path reads and — if missing — creates that same shard
                 (issue #439). None draws one from the cached shard_count.
@@ -2433,6 +2990,8 @@ class RateLimiter:
         cache_mark = rejection_cache.mark() if rejection_cache is not None else None
 
         now_ms = self._repository._now_ms()
+        # (entity, limit) slots `disable_moves` granted 0 instead of a move.
+        zeroed: set[tuple[str, str]] = set()
 
         # The shard is part of a bucket's identity (GHSA-76rv). Resolve it
         # once here and carry it through the read, the LeaseEntry and the
@@ -2597,14 +3156,45 @@ class RateLimiter:
                 else [limit for limit in entity_limits[eid] if limit.is_quota]
             )
             plan_count = seed_shard_count if any_existing else eid_shard_count
-            grant_count, grants, donor_debits = (
-                await self._repository.plan_quota_shard(
-                    eid, resource, quota_needing, eid_shard, plan_count, now_ms
+            try:
+                grant_count, grants, donor_debits = (
+                    await self._repository.plan_quota_shard(
+                        eid, resource, quota_needing, eid_shard, plan_count, now_ms
+                    )
+                    if quota_needing and plan_count > 1
+                    else (plan_count, {}, [])
                 )
-                if quota_needing and plan_count > 1
-                else (plan_count, {}, [])
-            )
+            except Exception as exc:
+                if not _is_transaction_conflict(exc):
+                    raise
+                # The grant-size freeze on a lagging sibling kept conflicting
+                # (#729): the table is busy, nothing was debited. A short 429,
+                # never `on_unavailable`, which under ALLOW admits unlimited.
+                # A real violation already found (the child's, when this is
+                # the parent) outranks "busy": its wait is the true one, and a
+                # 0.1 s retry would only re-pay this planning at 10 Hz. Stop
+                # here and let the ordinary rejection below report it.
+                if any(status.exceeded for status in statuses):
+                    break
+                raise self._planning_contention(
+                    eid,
+                    resource,
+                    entity_limits[eid],
+                    consume,
+                    existing_buckets,
+                    now_ms,
+                    statuses,
+                    plan_count,
+                ) from exc
             if disable_moves:
+                # Only a slot whose donor held tokens to move: one whose donor
+                # was already empty gets 0 because the quota is spent, and its
+                # rejection is the ordinary exhausted 429, not contention.
+                zeroed |= {
+                    (eid, name)
+                    for name, grant in grants.items()
+                    if grant.donor_shard is not None and grant.tokens_milli > 0
+                }
                 grants = {
                     name: (
                         grant
@@ -2879,6 +3469,10 @@ class RateLimiter:
         if violations:
             if any(entry._donor_debit is not None for entry in entries):
                 await self._commit_rejected_moves(entries, carriers)
+            if moves_contended and all((v.entity_id, v.limit_name) in zeroed for v in violations):
+                # Short only because a busy donor's move was given up (#724):
+                # nothing is debited, and the quota is not spent.
+                raise _contention_rejection(entries, now_ms, consume)
             raise RateLimitExceeded(statuses)
 
         return Lease(
@@ -2918,6 +3512,61 @@ class RateLimiter:
             (b.entity_id, b.resource, b.limit_name): b for b in buckets
         }
         return entity, bucket_dict
+
+    @staticmethod
+    def _planning_contention(
+        entity_id: str,
+        resource: str,
+        limits: list[Limit],
+        consume: dict[str, int],
+        existing: dict[tuple[str, str, str], BucketState],
+        now_ms: int,
+        prior: list[LimitStatus],
+        plan_count: int,
+    ) -> RateLimitExceeded:
+        """The contended 429 for a conflict during quota planning (#729).
+
+        ``prior`` holds the statuses already gathered on this pass — the
+        child's, when the conflict is on the cascade parent — none of them a
+        violation (the caller raises the ordinary 429 otherwise). They are
+        reported first, as everywhere else, ahead of this level's.
+
+        Each limit is narrowed with ``Limit.per_shard`` like every other
+        status (#475): at the shard count of the state already read, as
+        ``_admit_limit`` does, and for a slot with no state (a quota being
+        planned) at ``plan_count``, the count this acquire was planning it at
+        — the share it would have been given, never an undivided capacity.
+
+        Raised before any lease entry exists, so the statuses come from the
+        resolved limits: one per limit named in ``consume``, none exceeded,
+        each waiting ``_CONTENTION_RETRY_AFTER_S``. ``available`` is the stored
+        balance where the item has one; a slot still being planned has none.
+
+        When no resolved limit is named in ``consume`` — a cascade parent whose
+        limits share no name with the request — every resolved limit is
+        reported, requesting ``consume.get(name, 0)``. An empty list made the
+        constructor raise ``ValueError``, which reached ``on_unavailable``: a
+        degraded lease under ALLOW (#729).
+        """
+        reported = [limit for limit in limits if limit.name in consume] or limits
+        statuses = []
+        for limit in reported:
+            state = existing.get((entity_id, resource, limit.name))
+            statuses.append(
+                LimitStatus(
+                    entity_id=entity_id,
+                    resource=resource,
+                    limit_name=limit.name,
+                    limit=limit.per_shard(
+                        state.report_shard_count if state is not None else plan_count, now_ms
+                    ),
+                    available=state.tokens_milli // 1000 if state is not None else 0,
+                    requested=consume.get(limit.name, 0),
+                    exceeded=False,
+                    retry_after_seconds=_CONTENTION_RETRY_AFTER_S,
+                )
+            )
+        return RateLimitExceeded([*prior, *statuses], contended=True)
 
     async def _commit_rejected_moves(
         self, entries: list[LeaseEntry], carriers: list[LeaseEntry]
