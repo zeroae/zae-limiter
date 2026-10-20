@@ -67,6 +67,36 @@ class TestRateLimitExceeded:
         with pytest.raises(ValueError, match="requires at least one violation"):
             RateLimitExceeded([passed_status])
 
+    def test_contended_with_no_violations(self) -> None:
+        """A contention 429 (#724) needs no violation and says so."""
+        status = self._make_status(exceeded=False, retry_after=0.1)
+        exc = RateLimitExceeded([status], contended=True)
+
+        assert exc.contended is True
+        assert exc.violations == []
+        assert exc.passed == [status]
+        assert exc.primary_violation is status
+        assert exc.retry_after_seconds == 0.1
+        assert "contended" in str(exc)
+        assert exc.as_dict()["contended"] is True
+
+    def test_contended_with_no_statuses_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="requires at least one violation"):
+            RateLimitExceeded([], contended=True)
+
+    def test_contended_with_a_violation_reports_it(self) -> None:
+        status = self._make_status(exceeded=True, retry_after=3.0)
+        exc = RateLimitExceeded([status], contended=True)
+
+        assert exc.violations == [status]
+        assert "Rate limit exceeded" in str(exc)
+
+    def test_not_contended_by_default(self) -> None:
+        exc = RateLimitExceeded([self._make_status()])
+
+        assert exc.contended is False
+        assert exc.as_dict()["contended"] is False
+
     def test_single_violation(self) -> None:
         """Single violation sets properties correctly."""
         status = self._make_status(retry_after=10.0)
