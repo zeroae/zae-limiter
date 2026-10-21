@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Date:** 2026-10-09
 **Issue:** [#470](https://github.com/zeroae/zae-limiter/issues/470)
-**Related:** [ADR-125](125-resource-disable.md), [ADR-137](137-quota-limits-reset-not-drip.md), [ADR-139](139-duration-reset-windows.md), [ADR-140](140-duration-window-shard-coherence.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-147](147-client-side-rejection-cache.md), [#471](https://github.com/zeroae/zae-limiter/pull/471), [#674](https://github.com/zeroae/zae-limiter/issues/674)
+**Related:** [ADR-125](125-resource-disable.md), [ADR-137](137-reset-replaces-drip.md), [ADR-139](139-duration-reset-windows.md), [ADR-140](140-duration-window-shard-coherence.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-147](147-client-side-rejection-cache.md), [#471](https://github.com/zeroae/zae-limiter/pull/471), [#674](https://github.com/zeroae/zae-limiter/issues/674)
 
 ## Context
 
