@@ -4321,6 +4321,11 @@
 <td>number of records deleted</td>
 </tr>
 <tr>
+<td><code>entity_parent_changed</code></td>
+<td>Moving an entity to a new parent (<code>set_parent</code>)</td>
+<td>old_parent_id, parent_id, pgen, buckets_stamped</td>
+</tr>
+<tr>
 <td><code>limits_set</code></td>
 <td>Configuring limits</td>
 <td>all limit configurations</td>
@@ -4373,6 +4378,11 @@
 <td><code>ENTITY_DELETED</code></td>
 <td><code>"entity_deleted"</code></td>
 <td>Entity was deleted</td>
+</tr>
+<tr>
+<td><code>ENTITY_PARENT_CHANGED</code></td>
+<td><code>"entity_parent_changed"</code></td>
+<td>Entity was moved to a new parent</td>
 </tr>
 <tr>
 <td><code>LIMITS_SET</code></td>

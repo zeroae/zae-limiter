@@ -1569,6 +1569,28 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.Entity.parent_generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;parent_generation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.Entity.incarnation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;incarnation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.Entity.is_parent" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2576,6 +2598,23 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label=" SpeculativeResult">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.SpeculativeResult.stamp_is_policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;stamp_is_policy
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
         
@@ -5214,6 +5253,28 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.Entity.parent_generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;parent_generation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.Entity.incarnation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;incarnation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.Entity.is_parent" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6221,6 +6282,23 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label=" SpeculativeResult">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.SpeculativeResult.stamp_is_policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;stamp_is_policy
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
         
@@ -7486,7 +7564,7 @@ it.</p>
   </span>
 
 <a href="#zae_limiter.models.Entity" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Entity</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">metadata</span><span class="o">=</span><span class="n"><span title="dict">dict</span></span><span class="p">(),</span> <span class="n">created_at</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Entity</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">metadata</span><span class="o">=</span><span class="n"><span title="dict">dict</span></span><span class="p">(),</span> <span class="n">created_at</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_generation</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">incarnation</span><span class="o">=</span><span class="s1">'-'</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -7517,6 +7595,65 @@ in Repository.create_entity() at the API boundary.</p>
 
 
 
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.Entity.parent_generation" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">parent_generation</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-class-attribute"><code>class-attribute</code></small>
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+<a href="#zae_limiter.models.Entity.parent_generation" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">parent_generation</span> <span class="o">=</span> <span class="n"><span title="dataclasses.field">field</span></span><span class="p">(</span><span class="n"><span title="dataclasses.field(default)">default</span></span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n"><span title="dataclasses.field(compare)">compare</span></span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>The entity's parent generation (ADR-150): raised by every move to a new parent.</p>
+<p>Starts at the creation instant in epoch ms, so a recreated entity is never
+below a bucket its predecessor left behind; 0 for an entity created before
+v0.17. Every bucket write of the entity's <code>parent_id</code> carries it, so a
+writer that read an older generation can never put a previous parent back.
+Not part of equality: two reads of one entity are equal across a move's
+generation only through <code>parent_id</code>.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.Entity.incarnation" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">incarnation</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-class-attribute"><code>class-attribute</code></small>
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+<a href="#zae_limiter.models.Entity.incarnation" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">incarnation</span> <span class="o">=</span> <span class="n"><span title="dataclasses.field">field</span></span><span class="p">(</span><span class="n"><span title="dataclasses.field(default)">default</span></span><span class="o">=</span><span class="s1">'-'</span><span class="p">,</span> <span class="n"><span title="dataclasses.field(compare)">compare</span></span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>A random token naming this creation of the entity (ADR-150).</p>
+<p>A generation is comparable only within one incarnation, so a bucket left
+behind by a deleted predecessor never outranks the recreated entity. <code>"-"</code>
+for an entity created before v0.17, which had none.</p>
+
+    </div>
+
+</div>
 
 <div class="doc doc-object doc-attribute">
 
@@ -10750,7 +10887,7 @@ property.</p>
   </span>
 
 <a href="#zae_limiter.repository_protocol.SpeculativeResult" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SpeculativeResult</span><span class="p">(</span><span class="n">success</span><span class="p">,</span> <span class="n">buckets</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">old_buckets</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_result</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">failure_reason</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SpeculativeResult</span><span class="p">(</span><span class="n">success</span><span class="p">,</span> <span class="n">buckets</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">old_buckets</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_result</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">failure_reason</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pgen</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">debited_parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -10878,6 +11015,34 @@ shards when the <code>wcu</code> limit is exhausted.</p>
               </div>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.repository_protocol.SpeculativeResult.pgen">pgen</span></code></td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The parent generation stamped on the item (ADR-150), or None
+when the item carries none. A stamp with a generation is
+authoritative for <code>cascade</code> and <code>parent_id</code> even when it names
+no parent.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.repository_protocol.SpeculativeResult.debited_parent_id">debited_parent_id</span></code></td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>On the warm parallel cascade path, the parent the
+nested write in <code>parent_result</code> went to: the cached parent, which
+the item's <code>parent_id</code> can contradict after a move (ADR-150).
+None when no parallel parent write was issued.</p>
+              </div>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -10898,6 +11063,34 @@ shards when the <code>wcu</code> limit is exhausted.</p>
 
 
 
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.repository_protocol.SpeculativeResult.stamp_is_policy" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">stamp_is_policy</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.repository_protocol.SpeculativeResult.stamp_is_policy" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">stamp_is_policy</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Whether the item's <code>cascade</code> / <code>parent_id</code> stamp can be trusted.</p>
+<p>A stamp carrying a parent generation is authoritative (ADR-150); one
+without is trusted only when it carries a <code>parent_id</code> (ADR-146: a
+<code>cascade=False</code> with no <code>parent_id</code> and no generation is a bucket an
+older version created for a parent from its child's view, #684).</p>
+
+    </div>
+
+</div>
 
 
 

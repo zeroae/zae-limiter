@@ -1385,6 +1385,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.set_parent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;set_parent
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.limiter.RateLimiter.get_audit_events" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1815,6 +1826,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_children
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.sync_limiter.SyncRateLimiter.set_parent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;set_parent
       
     </span>
   </a>
@@ -5082,6 +5104,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.set_parent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;set_parent
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.limiter.RateLimiter.get_audit_events" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5512,6 +5545,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_children
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.sync_limiter.SyncRateLimiter.set_parent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;set_parent
       
     </span>
   </a>
@@ -7191,6 +7235,177 @@ else:
     <div class="doc doc-contents ">
 
         <p>Get all children of a parent entity.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.limiter.RateLimiter.set_parent" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">set_parent</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.limiter.RateLimiter.set_parent" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_parent</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">parent_id</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Move an entity to a new parent, or to no parent (ADR-150).</p>
+<p>Takes effect on the next acquire in every process: the entity's bucket
+items are restamped, and a process whose cache still names the old
+parent learns the new one from the item on its next call, refunding
+the old parent. Consumption already charged to the old parent, including
+by leases open across the move, stays there. Whether the entity debits
+the new parent follows its cascade policy (ADR-146) or its own
+<code>cascade</code> flag, which a move does not change.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity to move.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>parent_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The new parent, which must exist, or None for no parent.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>principal</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Caller identity for audit logging (optional).</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Number of bucket items restamped.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The move would make the entity its own ancestor.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            EntityNotFoundError (zae_limiter.exceptions.EntityNotFoundError)" href="../exceptions/#zae_limiter.exceptions.EntityNotFoundError">EntityNotFoundError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The entity or the new parent does not exist.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            VersionMismatchError (zae_limiter.exceptions.VersionMismatchError)" href="../exceptions/#zae_limiter.exceptions.VersionMismatchError">VersionMismatchError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The stack's Lambdas predate parent moves.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            FanoutIncomplete (zae_limiter.exceptions.FanoutIncomplete)" href="../exceptions/#zae_limiter.exceptions.FanoutIncomplete">FanoutIncomplete</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The move landed but restamping stopped part-way;
+repeating the call finishes it.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
     </div>
@@ -10546,6 +10761,173 @@ else:
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.sync_limiter.SyncRateLimiter.set_parent" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">set_parent</span>
+
+
+<a href="#zae_limiter.sync_limiter.SyncRateLimiter.set_parent" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_parent</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">parent_id</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Move an entity to a new parent, or to no parent (ADR-150).</p>
+<p>Takes effect on the next acquire in every process: the entity's bucket
+items are restamped, and a process whose cache still names the old
+parent learns the new one from the item on its next call, refunding
+the old parent. Consumption already charged to the old parent, including
+by leases open across the move, stays there. Whether the entity debits
+the new parent follows its cascade policy (ADR-146) or its own
+<code>cascade</code> flag, which a move does not change.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity to move.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>parent_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The new parent, which must exist, or None for no parent.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>principal</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Caller identity for audit logging (optional).</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Number of bucket items restamped.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The move would make the entity its own ancestor.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            EntityNotFoundError (zae_limiter.exceptions.EntityNotFoundError)" href="../exceptions/#zae_limiter.exceptions.EntityNotFoundError">EntityNotFoundError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The entity or the new parent does not exist.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            VersionMismatchError (zae_limiter.exceptions.VersionMismatchError)" href="../exceptions/#zae_limiter.exceptions.VersionMismatchError">VersionMismatchError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The stack's Lambdas predate parent moves.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            FanoutIncomplete (zae_limiter.exceptions.FanoutIncomplete)" href="../exceptions/#zae_limiter.exceptions.FanoutIncomplete">FanoutIncomplete</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The move landed but restamping stopped part-way;
+repeating the call finishes it.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.sync_limiter.SyncRateLimiter.get_audit_events" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">get_audit_events</span>
 
@@ -13003,7 +13385,7 @@ methods act on the primary resource and <code>resource(name)</code> reaches the 
   </span>
 
 <a href="#zae_limiter.lease.Lease" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Lease</span><span class="p">(</span><span class="n">repository</span><span class="p">,</span> <span class="n">entries</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_rolled_back</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_initial_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">degraded</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_unknown_keys</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">_carriers</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_cache_mark</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">_resources</span><span class="o">=</span><span class="p">(),</span> <span class="n">_unknown_keys_by_resource</span><span class="o">=</span><span class="n"><span title="dict">dict</span></span><span class="p">(),</span> <span class="n">compute_images</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Lease</span><span class="p">(</span><span class="n">repository</span><span class="p">,</span> <span class="n">entries</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_rolled_back</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_initial_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">degraded</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_unknown_keys</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">_carriers</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_cache_mark</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">_owner_task</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">_owner_checks</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_resources</span><span class="o">=</span><span class="p">(),</span> <span class="n">_unknown_keys_by_resource</span><span class="o">=</span><span class="n"><span title="dict">dict</span></span><span class="p">(),</span> <span class="n">compute_images</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -13399,7 +13781,7 @@ reach the others through :meth:<code>resource</code> (ADR-148).</p>
   </span>
 
 <a href="#zae_limiter.sync_lease.SyncLease" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncLease</span><span class="p">(</span><span class="n">repository</span><span class="p">,</span> <span class="n">entries</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_rolled_back</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_initial_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">degraded</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_unknown_keys</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">_carriers</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_cache_mark</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">_resources</span><span class="o">=</span><span class="p">(),</span> <span class="n">_unknown_keys_by_resource</span><span class="o">=</span><span class="n"><span title="dict">dict</span></span><span class="p">(),</span> <span class="n">compute_images</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncLease</span><span class="p">(</span><span class="n">repository</span><span class="p">,</span> <span class="n">entries</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_rolled_back</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_initial_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">degraded</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_unknown_keys</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">_carriers</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_cache_mark</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">_owner_task</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">_owner_checks</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_resources</span><span class="o">=</span><span class="p">(),</span> <span class="n">_unknown_keys_by_resource</span><span class="o">=</span><span class="n"><span title="dict">dict</span></span><span class="p">(),</span> <span class="n">compute_images</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">

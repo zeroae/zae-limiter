@@ -707,6 +707,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#moving-an-entity-to-a-new-parent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Moving an Entity to a New Parent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#limitations" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3881,6 +3892,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#moving-an-entity-to-a-new-parent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Moving an Entity to a New Parent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#limitations" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4209,10 +4231,49 @@ first if the call is refused.</p>
 </span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">1_000</span><span class="p">)],</span>
 </span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="p">)</span>
 </span></code></pre></div>
+<h2 id="moving-an-entity-to-a-new-parent">Moving an Entity to a New Parent<a class="headerlink" href="#moving-an-entity-to-a-new-parent" title="Permanent link">&para;</a></h2>
+<p>Use <code>set_parent()</code> to move an entity under another parent, for example a user who changes
+organisation, or pass <code>None</code> to make it a root entity:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">"org-north"</span><span class="p">)</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">"org-south"</span><span class="p">)</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-bob"</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="s2">"org-north"</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="c1"># Bob changes organisation: his calls now count against org-south</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_parent</span><span class="p">(</span><span class="s2">"user-bob"</span><span class="p">,</span> <span class="s2">"org-south"</span><span class="p">)</span>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="c1"># Bob no longer has a parent</span>
+</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_parent</span><span class="p">(</span><span class="s2">"user-bob"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+<p>The move takes effect on the next acquire in every process:</p>
+<ul>
+<li><strong>Its buckets are restamped at once.</strong> <code>set_parent()</code> returns how many.</li>
+<li><strong>Other processes learn it from the next call.</strong> A process that still has the old parent
+  cached debits it once, sees the new parent on the entity's bucket, refunds the old parent and
+  debits the new one in the same call.</li>
+<li><strong>A bucket created while the move lands is re-checked.</strong> An acquire that creates a bucket
+  reads the entity's parent once more after its write (1 RCU, once per bucket created) and
+  restamps the bucket if a move overtook it. The read runs in the background while your code
+  inside <code>acquire()</code> runs, so it adds no latency, and it is finished when the <code>async with</code>
+  block exits. If it fails or is cancelled, that bucket's next acquire takes the slow path,
+  which restamps it. Cancelling only that read never replaces your own exception.</li>
+<li><strong>Nothing already debited moves.</strong> Usage charged to the old parent stays there, including
+  usage from leases opened before the move: their adjustments and rollbacks land on the old
+  parent, where the tokens were taken.</li>
+<li><strong>Cascade follows the policy, not the move.</strong> The new parent is debited wherever the entity
+  cascades — its <a href="#cascade-per-resource">cascade policy</a>, or the <code>cascade</code> flag it was created
+  with. A root entity created with <code>cascade=False</code> and moved under a parent does not cascade
+  until you set a policy, for example <code>set_entity_cascade("user-123", True)</code>.</li>
+</ul>
+<p><code>set_parent()</code> raises <code>EntityNotFoundError</code> when the entity or the new parent does not exist,
+and <code>ValidationError</code> when the move would make the entity its own ancestor. If restamping stops
+part-way it raises <code>FanoutIncomplete</code>; the move itself landed, and calling <code>set_parent()</code> again
+with the same arguments finishes it. It needs a stack whose Lambdas are 0.17.0 or later
+(<code>VersionMismatchError</code> otherwise; run <code>zae-limiter upgrade</code>). Each move is recorded as an
+<code>entity_parent_changed</code> <a href="../../infra/auditing/">audit event</a>.</p>
 <h2 id="limitations">Limitations<a class="headerlink" href="#limitations" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Two levels only</strong>: Parent → Child (no grandparents)</li>
-<li><strong>Single parent</strong>: Each entity can have at most one parent</li>
+<li><strong>Single parent</strong>: Each entity can have at most one parent at a time; <a href="#moving-an-entity-to-a-new-parent"><code>set_parent()</code></a> moves it</li>
 <li><strong>Cascade defaults per entity</strong>: Set <code>cascade=True</code> on <code>create_entity()</code> to enable it for every resource; a <a href="#cascade-per-resource">cascade policy</a> can override it per resource</li>
 </ul>
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
