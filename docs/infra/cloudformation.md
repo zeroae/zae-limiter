@@ -310,6 +310,7 @@ AggregatorRole:
                 - dynamodb:PutItem
                 - dynamodb:UpdateItem
                 - dynamodb:Query
+                - dynamodb:ConditionCheckItem  # a shard clone's META pin (ADR-150)
               Resource: !GetAtt Table.Arn
             - Effect: Allow
               Action:
@@ -333,7 +334,7 @@ The template creates three IAM managed policies by default for different access 
 
 | Policy | Suffix | Use Case | DynamoDB Permissions |
 |--------|--------|----------|---------------------|
-| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, TransactWriteItems |
+| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, TransactWriteItems, ConditionCheckItem |
 | `FullAccessPolicy` | `-full` | Ops teams managing config | All of the above + PutItem, DeleteItem, UpdateItem, BatchWriteItem, Scan, DescribeTable |
 | `ReadOnlyPolicy` | `-read` | Monitoring and dashboards | GetItem, BatchGetItem, Query, Scan, DescribeTable |
 
@@ -347,10 +348,18 @@ The template creates three IAM managed policies by default for different access 
 | `Scan` | Y | -- | Y |
 | `DescribeTable` | Y | -- | Y |
 | `TransactWriteItems` | -- | Y | Y |
+| `ConditionCheckItem` | -- | Y | Y |
 | `PutItem` | -- | -- | Y |
 | `UpdateItem` | -- | -- | Y |
 | `DeleteItem` | -- | -- | Y |
 | `BatchWriteItem` | -- | -- | Y |
+
+!!! warning "`dynamodb:ConditionCheckItem` is required from v0.17.0"
+    A bucket create is one transaction that also checks the owner entity's record
+    (ADR-150), so every principal that acquires — and the aggregator's role, which
+    pre-creates shards — needs `dynamodb:ConditionCheckItem` on the table. The policies
+    and roles this template creates grant it after `zae-limiter upgrade` or `deploy`;
+    custom IAM must add it, or bucket creates fail with `AccessDeniedException`.
 
 ### IAM Roles (Opt-In)
 

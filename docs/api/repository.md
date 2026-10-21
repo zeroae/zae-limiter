@@ -142,6 +142,16 @@ Implement this protocol to use a different storage backend (e.g., for testing).
     reaches the item, and any reset-schedule change on the item drops the
     in-flight quota refunds (one per open lease per change).
 
+!!! warning "Changed in v0.17.0: moving an entity (ADR-150)"
+    A custom backend must implement `set_parent`, `build_owner_check` and
+    `restamp_owner_if_current`. The lease appends one `build_owner_check` item
+    (a condition-only transaction item that writes nothing) per owner whose bucket
+    a commit creates, after the bucket items and donor debits: it must fail the
+    transaction, with a per-item cancellation reason, when the owner's META no
+    longer holds the parent generation and incarnation the pass read (or now
+    exists when the pass read none). The lease calls `restamp_owner_if_current`
+    when the slow path's owner stamp lost its pin to another incarnation.
+
 ::: zae_limiter.repository_protocol.RepositoryProtocol
     options:
       show_root_heading: true

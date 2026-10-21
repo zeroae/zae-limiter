@@ -64,7 +64,8 @@ The stack creates three IAM managed policies by default:
 
 The Lambda aggregator processes DynamoDB Stream events for usage aggregation, proactive bucket refill, and audit archival. It uses a separate execution role with least-privilege permissions:
 
-- `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `Query`
+- `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `Query`, `ConditionCheckItem` (a shard
+  clone is pinned to its owner's META, ADR-150)
 - `s3:PutObject` (when audit archival is enabled)
 
 #### Permission Boundaries
@@ -205,6 +206,7 @@ response = sts.assume_role(
                         "dynamodb:BatchGetItem",
                         "dynamodb:Query",
                         "dynamodb:UpdateItem",
+                        "dynamodb:ConditionCheckItem",
                     ],
                     "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/shared-table",
                     "Condition": {
@@ -239,7 +241,8 @@ aws iam create-policy --policy-name my-multi-ns-policy \
       \"Effect\": \"Allow\",
       \"Action\": [
         \"dynamodb:GetItem\", \"dynamodb:BatchGetItem\",
-        \"dynamodb:Query\", \"dynamodb:UpdateItem\"
+        \"dynamodb:Query\", \"dynamodb:UpdateItem\",
+        \"dynamodb:ConditionCheckItem\"
       ],
       \"Resource\": \"arn:aws:dynamodb:us-east-1:123456789012:table/shared-table\",
       \"Condition\": {

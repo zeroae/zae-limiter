@@ -501,7 +501,9 @@ The command refuses a parent that does not exist and a move that would make the 
 ancestor, and exits 1 for either. If restamping stops part-way (throttling, for example), it
 exits 1 with the number of buckets restamped: the move itself landed, and re-running the same
 command finishes it. It needs a stack whose Lambdas are 0.17.0 or later and raises the stack's
-minimum client version to 0.17.0.
+minimum client version to 0.17.0. Restart every client after upgrading, before the first move:
+a process that opened the stack with an older version keeps debiting the old parent until it
+reopens it.
 
 ## Namespace Lifecycle
 

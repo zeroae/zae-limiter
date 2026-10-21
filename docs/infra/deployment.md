@@ -409,6 +409,7 @@ The Lambda function has minimal permissions:
 - dynamodb:PutItem
 - dynamodb:UpdateItem
 - dynamodb:Query
+- dynamodb:ConditionCheckItem
 ```
 
 When X-Ray tracing is enabled, additional permissions are granted:
@@ -477,9 +478,16 @@ The stack creates three managed IAM policies by default for different access pat
 
 | Policy | Suffix | Use Case | DynamoDB Permissions |
 |--------|--------|----------|---------------------|
-| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, TransactWriteItems |
+| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, TransactWriteItems, ConditionCheckItem |
 | `FullAccessPolicy` | `-full` | Ops teams managing config | All of the above + PutItem, DeleteItem, UpdateItem, BatchWriteItem, Scan, DescribeTable |
 | `ReadOnlyPolicy` | `-read` | Monitoring and dashboards | GetItem, BatchGetItem, Query, Scan, DescribeTable |
+
+!!! warning "`dynamodb:ConditionCheckItem` is required from v0.17.0"
+    A bucket create is one transaction that also checks the owner entity's record
+    (ADR-150), so every principal that acquires — and the aggregator's role, which
+    pre-creates shards — needs `dynamodb:ConditionCheckItem` on the table. The policies
+    and roles this template creates grant it after `zae-limiter upgrade` or `deploy`;
+    custom IAM must add it, or bucket creates fail with `AccessDeniedException`.
 
 ### Enabling/Disabling IAM Resources
 
