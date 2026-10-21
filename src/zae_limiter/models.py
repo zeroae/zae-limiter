@@ -1213,6 +1213,9 @@ class BucketState:
     # grant this period, millitokens. `None` when the item carries none. Raises
     # the ceiling (`ceiling_milli`) until the next reset or roll clears it.
     topped_up_milli: int | None = None
+    # `b_{name}_rn` (ADR-149): operator resets this calendar quota shard has
+    # taken; `None` before the first. A refund pins it to stay in its period.
+    reset_number: int | None = None
     # The item's `vu` as this state was read, epoch ms; `None` when the item
     # carries none (or the state was not read off an item). The slow path's
     # rf-locked write pins it whenever it sets or removes `vu`, so a `vu = 0` a
@@ -2293,12 +2296,15 @@ class QuotaPeriodPin:
     item's ``rsched`` and ``sched_tz`` and the limit's ``b_{name}_rsched`` —
     each ``None`` when absent. A reset-schedule change under an open lease can
     fire a reset before the old edge; it moves one of these, and the credit is
-    dropped.
+    dropped. An operator reset (ADR-149) starts a period with no edge at all,
+    so a calendar quota also pins ``reset_number`` (``b_{name}_rn``, ``None``
+    when absent), which every such reset increments.
     """
 
     reset_edge_ms: int | None = None
     window: tuple[int | None, int | None] | None = None
     reset_sched_raw: tuple[str | None, str | None, str | None] | None = None
+    reset_number: int | None = None
 
 
 #: (``shard_count``, ``vu``, (``sched``, ``rsched``, ``sched_tz``)) of a bucket
@@ -2314,8 +2320,8 @@ class CreditLimitImage:
     What a self-trimming credit pins for that limit: the stored base capacity
     (``b_{name}_cp``), the quota grant count (``b_{name}_gc``), the schedule
     overrides (``b_{name}_sched``, ``b_{name}_rsched``), the session window
-    (``b_{name}_ws``, ``b_{name}_wa``) and the quota top-up
-    (``b_{name}_tu``, ADR-149), each ``None`` when absent.
+    (``b_{name}_ws``, ``b_{name}_wa``), and the quota top-up and reset count
+    (``b_{name}_tu``, ``b_{name}_rn``, ADR-149), each ``None`` when absent.
     """
 
     capacity_milli: int
@@ -2324,6 +2330,7 @@ class CreditLimitImage:
     window_start_ms: int | None = None
     window_applied_ms: int | None = None
     topped_up_milli: int | None = None
+    reset_number: int | None = None
 
 
 @dataclass(frozen=True)

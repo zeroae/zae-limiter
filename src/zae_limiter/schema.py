@@ -164,6 +164,15 @@ BUCKET_FIELD_GC = "gc"  # b_{name}_gc — grant count, per limit, per shard
 # the fast path.
 BUCKET_FIELD_TU = "tu"  # b_{name}_tu — topped-up allowance, millitokens
 
+# `b_{name}_rn` (ADR-149): how many operator resets this calendar quota shard
+# has taken, a counter `Repository.reset_bucket` ADDs 1 to. A reset starts a new
+# period without crossing a cron edge, so the period guard of a refund (`rf`
+# before the next edge, #721) cannot see it; every calendar quota refund also
+# pins this counter and is dropped when it moved, exactly like a refund across
+# an edge. Absent until the first reset. A session quota needs none: its reset
+# moves `ws` / `wa`, which its refunds already pin.
+BUCKET_FIELD_RN = "rn"  # b_{name}_rn — operator reset count, calendar quotas
+
 # The operation record of a reset or top-up (ADR-149): one item per call, in the
 # shard-0 bucket's partition (`PK = pk_bucket(..., 0)`, `SK = #OP#{id}`), Put
 # under `attribute_not_exists(PK)` in the same transaction as the shard writes.

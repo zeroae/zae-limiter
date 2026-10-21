@@ -76,6 +76,9 @@ class ShardWrite:
     cleared_top_ups: set[str] = field(default_factory=set)
     # `REMOVE b_{name}_wtc`: a session reset leaves no pending roll to charge.
     cleared_window_marks: set[str] = field(default_factory=set)
+    # `ADD b_{name}_rn 1`: a calendar quota reset starts a period no cron edge
+    # marks, so a refund of an earlier debit must see it moved (F1, #721).
+    reset_numbers: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -318,6 +321,7 @@ def _reset(limit: Limit, state: BucketState, write: ShardWrite, now_ms: int) -> 
         state.grant_count = state.shard_count
         state.topped_up_milli = None
         state.tokens_milli = state.reset_target_milli(now_ms)
+        write.reset_numbers.add(limit.name)
         return state.tokens_milli
     # A session quota: the window is ended **and applied**, never removed — a
     # rollover fan-out from a window opened before the reset is guarded by

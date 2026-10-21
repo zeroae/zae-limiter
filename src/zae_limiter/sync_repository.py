@@ -243,8 +243,9 @@ def _credit_period_terms(
     Calendar: the item's ``rf`` is still before the first reset edge after the
     one the lease saw (a reset pass stamps ``rf`` at or past it), and the
     reset schedule that edge came from is still the item's (``rsched``,
-    ``sched_tz``, ``b_{name}_rsched``). Session: the window start and applied
-    marker are still the ones the lease saw. Tokens are positional (#634).
+    ``sched_tz``, ``b_{name}_rsched``), and no operator reset has landed since
+    (``b_{name}_rn``, ADR-149). Session: the window start and applied marker
+    are still the ones the lease saw. Tokens are positional (#634).
     """
     terms: list[str] = []
     if period.reset_edge_ms is not None:
@@ -262,6 +263,12 @@ def _credit_period_terms(
                 terms.append(_pin_string(alias, token, raw, values))
         names[f"#bqo{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED)
         terms.append(_pin_string(f"#bqo{i}", f":bqo{i}", own_rsched, values))
+        names[f"#bqn{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RN)
+        if period.reset_number is None:
+            terms.append(f"attribute_not_exists(#bqn{i})")
+        else:
+            values[f":bqn{i}"] = {"N": str(period.reset_number)}
+            terms.append(f"#bqn{i} = :bqn{i}")
     if period.window is not None:
         for code, field, number in zip(
             ("w", "a"), (schema.BUCKET_FIELD_WS, schema.BUCKET_FIELD_WA), period.window, strict=True
@@ -6151,6 +6158,8 @@ class SyncRepository:
             grant_count = self._decode_stored_window_int(gc_name, item.get(gc_name, {}).get("N"))
             tu_name = schema.bucket_attr(name, schema.BUCKET_FIELD_TU)
             topped_up = self._decode_stored_window_int(tu_name, item.get(tu_name, {}).get("N"))
+            rn_name = schema.bucket_attr(name, schema.BUCKET_FIELD_RN)
+            reset_number = self._decode_stored_window_int(rn_name, item.get(rn_name, {}).get("N"))
             is_wcu = name == schema.WCU_LIMIT_NAME
             sched = (
                 () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_SCHED, item_sched, False)
@@ -6178,6 +6187,7 @@ class SyncRepository:
                     window_consumed_mark_milli=window_consumed_mark,
                     grant_count=grant_count,
                     topped_up_milli=topped_up,
+                    reset_number=reset_number,
                     stored_vu_ms=stored_vu,
                     stored_vu_read=True,
                     stored_item_sched_raw=(item_sched, item_rsched, raw_sched_tz),
@@ -8469,6 +8479,7 @@ class SyncRepository:
         Tokens are positional (#634): ``#ot``/``:ot`` deltas, ``#og``/``:og``
         grant counts, ``#ow``/``:ow`` + ``#or``/``:or`` windows, ``#oa``/``:oa``
         applied markers, ``#ou``/``:ou`` top-ups, ``#ox`` / ``#oy`` removals,
+        ``#on``/``:on`` the calendar quota reset counters (``b_{name}_rn``),
         ``#ottl``/``:ottl`` the ``ttl`` (epoch seconds) when one is given: a
         bucket on resource or system defaults (:meth:`_operation_ttl`), or
         ``REMOVE #ottl`` with ``remove_ttl``: an entity-level bucket (ADR-136).
@@ -8515,6 +8526,10 @@ class SyncRepository:
         for i, name in enumerate(sorted(write.cleared_window_marks)):
             names[f"#oy{i}"] = attr(name, schema.BUCKET_FIELD_WTC)
             remove_parts.append(f"#oy{i}")
+        for i, name in enumerate(sorted(write.reset_numbers)):
+            names[f"#on{i}"] = attr(name, schema.BUCKET_FIELD_RN)
+            values[f":on{i}"] = {"N": "1"}
+            add_parts.append(f"#on{i} :on{i}")
         if ttl is not None:
             names["#ottl"] = "ttl"
             values[":ottl"] = {"N": str(ttl)}

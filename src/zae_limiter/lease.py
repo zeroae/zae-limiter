@@ -34,6 +34,7 @@ from .schema import (
     BUCKET_FIELD_GC,
     BUCKET_FIELD_PINC,
     BUCKET_FIELD_RF,
+    BUCKET_FIELD_RN,
     BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
@@ -252,7 +253,8 @@ def credit_ceiling(
     cron the lease held, so the period also pins the stored strings that cron
     came from (``item_sched``'s ``rsched`` / ``sched_tz`` and the limit's own
     ``b_{name}_rsched``, from the same image as the ceiling); without them the
-    credit is dropped too.
+    credit is dropped too. An operator reset (ADR-149) crosses no edge, so it
+    also pins the reset count ``b_{name}_rn`` from the newest view.
 
     The one place the ceiling and its pins are decided, with
     ``Repository._credit_limit_terms`` the one place they become condition
@@ -273,6 +275,9 @@ def credit_ceiling(
             period = QuotaPeriodPin(
                 reset_edge_ms=next_reset_edge(state.reset_sched, now_ms=rf_ms),
                 reset_sched_raw=(item_sched[1], item_sched[2], limit_image.sched_raw[1]),
+                # An operator reset crosses no edge (ADR-149): pin its count,
+                # from the newest view, like `rf_ms`.
+                reset_number=period_limit.reset_number if period_limit is not None else None,
             )
     if limit_image is None:
         return CreditCeiling(
@@ -1989,8 +1994,10 @@ def _limit_image(
         sched_raw=sched_raw if sched_raw is not None else (state.stored_sched_raw or (None, None)),
         window_start_ms=window_start_ms,
         window_applied_ms=window_applied_ms,
-        # Only a quota carries a top-up (ADR-149), as `report_top_up_milli` reads it.
+        # Only a quota carries a top-up or a reset count (ADR-149), as
+        # `report_top_up_milli` reads it.
         topped_up_milli=state.topped_up_milli if state.is_quota_state is True else None,
+        reset_number=state.reset_number if state.is_quota_state is True else None,
     )
 
 
@@ -2060,6 +2067,7 @@ def credit_image_from_item(item: Any) -> CreditImage | None:
                     window_start_ms=num(bucket_attr(name, BUCKET_FIELD_WS)),
                     window_applied_ms=num(bucket_attr(name, BUCKET_FIELD_WA)),
                     topped_up_milli=num(bucket_attr(name, BUCKET_FIELD_TU)),
+                    reset_number=num(bucket_attr(name, BUCKET_FIELD_RN)),
                 ),
             )
         )

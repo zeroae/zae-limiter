@@ -383,11 +383,10 @@ class TestRefundAfterATopUpEnded:
             await repo.reset_bucket("e", "r")
             clock[0] += 1
 
-        vu, admitted = await self._refund_into_new_period(limiter, clock, reset)
-        assert vu == 0  # the credit above C // gc forced a clamping pass
-        # The new period admits its 10 plus, until the refund write trims
-        # itself (#721), the one old-period token the clamp cannot tell apart.
-        assert admitted <= 11
+        _vu_after, admitted = await self._refund_into_new_period(limiter, clock, reset)
+        # The reset moved `b_cal_rn`, so the quota credit's period guard drops
+        # the old period's refund outright, as across an edge (F1).
+        assert admitted <= 10
 
     async def test_after_the_period_edge(self, limiter, clock):
         async def edge(repo):
@@ -397,6 +396,70 @@ class TestRefundAfterATopUpEnded:
         # #721: the quota credit's period guard drops the old period's refund
         # outright, so no clamping pass (`vu = 0`) is needed.
         assert admitted <= 10
+
+
+class TestRefundAcrossAReset:
+    """Stack C review, F1: an operator reset of a calendar quota crosses no cron
+    edge, so it bumps `b_{name}_rn`; a refund of a debit made before it is then
+    dropped, exactly like one across an edge, instead of landing in the new
+    period (15 admitted against 10)."""
+
+    @pytest.mark.parametrize("speculative", [True, False])
+    async def test_a_pre_reset_refund_is_dropped(self, limiter, clock, speculative):
+        repo = limiter._repository
+        lim = RateLimiter(repository=repo, speculative_writes=speculative)
+        await limiter.set_limits("e", [CAL], resource="r")
+        with pytest.raises(RuntimeError):
+            async with lim.acquire("e", "r", {"cal": 5}):  # old period: 5 spent
+                clock[0] += 1
+                await repo.reset_bucket("e", "r")  # a new period: 10
+                clock[0] += 1
+                assert await _try(lim, "e", {"cal": 5})
+                clock[0] += 1
+                raise RuntimeError("body fails")  # the old 5 must not come back
+        clock[0] += 1
+        assert await _drain(lim, "e", "cal") == 5
+
+    async def test_a_refund_after_the_reset_still_lands(self, limiter, clock):
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        await repo.reset_bucket("e", "r")
+        clock[0] += 1
+        with pytest.raises(RuntimeError):
+            async with limiter.acquire("e", "r", {"cal": 5}):  # debited after it
+                clock[0] += 1
+                raise RuntimeError("body fails")
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 10
+
+    async def test_a_multi_resource_refund_drops_only_the_reset_quota(self, limiter, clock):
+        """ADR-148: one lease over `r` (a rate limit) and `budget` (the quota);
+        the reset drops the quota's refund, and `r`'s refund still lands."""
+        repo = limiter._repository
+        await limiter.set_limits("e", [RPM], resource="r")
+        await limiter.set_limits("e", [CAL], resource="budget")
+        with pytest.raises(RuntimeError):
+            async with limiter.acquire("e", "r", {"rpm": 4}, also={"budget": {"cal": 5}}):
+                clock[0] += 1
+                await repo.reset_bucket("e", "budget")
+                clock[0] += 1
+                await _spend(limiter, "e", {"cal": 5}, resource="budget")
+                clock[0] += 1
+                raise RuntimeError("body fails")
+        clock[0] += 1
+        budget = 0
+        while budget < 100 and await _try_on(limiter, "e", {"cal": 1}, "budget"):
+            budget += 1
+        assert budget == 5
+        assert await _drain(limiter, "e", "rpm") == 10
+
+
+async def _try_on(lim, entity, amounts, resource):
+    try:
+        await _spend(lim, entity, amounts, resource)
+        return True
+    except RateLimitExceeded:
+        return False
 
 
 async def _vu(repo, entity, resource="r", shard=0):
