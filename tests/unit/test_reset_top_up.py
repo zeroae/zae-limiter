@@ -393,9 +393,10 @@ class TestRefundAfterATopUpEnded:
         async def edge(repo):
             clock[0] += DAY  # past midnight
 
-        vu, admitted = await self._refund_into_new_period(limiter, clock, edge)
-        assert vu == 0
-        assert admitted <= 11  # the no-top-up baseline today; 10 after #721
+        _vu_after, admitted = await self._refund_into_new_period(limiter, clock, edge)
+        # #721: the quota credit's period guard drops the old period's refund
+        # outright, so no clamping pass (`vu = 0`) is needed.
+        assert admitted <= 10
 
 
 async def _vu(repo, entity, resource="r", shard=0):
@@ -477,13 +478,15 @@ class TestRefundsUnderALiveTopUp:
         clock[0] += 1
         assert await _try(limiter, "e", {"cal": 1})  # the forced pass clears vu
         forced = []
-        real = repo.build_vu_reset
+        real = repo.build_composite_adjust
 
         def counting(*a, **k):
-            forced.append(1)
+            # #721: a credit above the ceiling is re-issued trimmed (`vu = 0`).
+            if k.get("trim"):
+                forced.append(1)
             return real(*a, **k)
 
-        repo.build_vu_reset = counting
+        repo.build_composite_adjust = counting
         for _ in range(10):
             clock[0] += 1
             async with limiter.acquire("e", "r", {"cal": 10}) as lease:

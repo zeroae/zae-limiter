@@ -100,7 +100,7 @@ Run 'zae-limiter upgrade' to update Lambda.
 For minor updates (Lambda code, no schema changes):
 
 ```bash
-# Upgrade Lambda to match client version
+# Apply this version's stack template, then upgrade Lambda to match the client
 zae-limiter upgrade --name limiter --region us-east-1
 ```
 

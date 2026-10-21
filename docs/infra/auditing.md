@@ -10,6 +10,7 @@ The audit system automatically logs:
 |--------|---------|------------------|
 | `entity_created` | Creating an entity | name, parent_id, metadata |
 | `entity_deleted` | Deleting an entity | number of records deleted |
+| `entity_parent_changed` | Moving an entity to a new parent (`set_parent`) | old_parent_id, parent_id, pgen, buckets_stamped |
 | `limits_set` | Configuring limits | all limit configurations |
 | `limits_deleted` | Removing limits | resource name |
 
@@ -44,6 +45,7 @@ event = AuditEvent(
 |----------|-------|-------------|
 | `ENTITY_CREATED` | `"entity_created"` | New entity was created |
 | `ENTITY_DELETED` | `"entity_deleted"` | Entity was deleted |
+| `ENTITY_PARENT_CHANGED` | `"entity_parent_changed"` | Entity was moved to a new parent |
 | `LIMITS_SET` | `"limits_set"` | Limits were configured |
 | `LIMITS_DELETED` | `"limits_deleted"` | Limits were removed |
 

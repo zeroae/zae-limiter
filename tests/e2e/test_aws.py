@@ -17,7 +17,7 @@ IMPORTANT: These tests require:
 2. The --run-aws pytest flag
 
 To run:
-    pytest tests/test_e2e_aws.py --run-aws -v
+    pytest tests/e2e/test_aws.py --run-aws -v
 
 WARNING: These tests create real AWS resources and may incur charges.
 Resources are cleaned up after tests, but verify via AWS Console.
@@ -43,9 +43,9 @@ pytestmark = [pytest.mark.aws, pytest.mark.e2e]
 # - snapshots: Tests that verify usage snapshot creation
 #
 # Usage:
-#   pytest tests/test_e2e_aws.py --run-aws -v                    # Run all
-#   pytest tests/test_e2e_aws.py --run-aws -v -m "not slow"      # Skip slow tests
-#   pytest tests/test_e2e_aws.py --run-aws -v -m "not monitoring"  # Skip monitoring tests
+#   pytest tests/e2e/test_aws.py --run-aws -v                    # Run all
+#   pytest tests/e2e/test_aws.py --run-aws -v -m "not slow"      # Skip slow tests
+#   pytest tests/e2e/test_aws.py --run-aws -v -m "not monitoring"  # Skip monitoring tests
 
 
 # AWS-specific fixtures that don't depend on localstack_endpoint
@@ -1867,3 +1867,379 @@ class TestE2EAWSBoundaryWithoutRoleNameFormat:
         # The boundary is set, so its export is emitted; the format is not.
         assert outputs["PermissionBoundaryArn"] == "arn:aws:iam::aws:policy/PowerUserAccess"
         assert "RoleNameFormat" not in outputs
+
+
+class TestE2EAWSAcquirePolicies:
+    """The template's acquire policies can run ``acquire()`` (#750, ADR-152).
+
+    AWS authorises each ``Put`` / ``Update`` inside ``TransactWriteItems`` by
+    the underlying ``dynamodb:PutItem`` / ``dynamodb:UpdateItem`` action, not
+    by ``TransactWriteItems``. Before ADR-152 the acquire-only policy granted
+    neither and the namespace-scoped one lacked ``PutItem``, so a principal
+    holding only one of them could not write a bucket. moto and LocalStack do
+    not evaluate IAM, so only a real-AWS test can see it.
+
+    Each test runs as a principal holding **only** the policy under test and
+    walks every write ``acquire()`` makes: a bucket create (``Put`` plus the
+    owner's ``ConditionCheck``), the speculative ``UpdateItem``, an adjustment
+    ``UpdateItem``, a fast rejection, and a cascade that creates the parent's
+    bucket in the same transaction. ``on_unavailable=BLOCK`` turns a denied
+    write into ``RateLimiterUnavailable`` rather than a silent admission.
+    """
+
+    RESOURCE = "api"
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def acquire_policy_stack(self, unique_name_class):
+        """A stack with the optional IAM roles, no aggregator and no provisioner."""
+        repo = await (
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .enable_aggregator(False)
+            .enable_provisioner(False)
+            .enable_alarms(False)
+            .usage_retention_days(1)
+            .create_iam_roles(True)
+            .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
+            .role_name_format("PowerUserPB-{}")
+            .policy_name_format("PowerUserPB-{}")
+            .build()
+        )
+
+        yield repo
+
+        try:
+            await repo.delete_stack()
+        except Exception as e:
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.close()
+
+    @staticmethod
+    def _outputs(stack_name: str) -> dict[str, str]:
+        import boto3
+
+        cfn = boto3.client("cloudformation", region_name="us-east-1")
+        stack = cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
+        return {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+
+    @staticmethod
+    def _caller_partition_and_account() -> tuple[str, str]:
+        """Read the partition and account off the caller's ARN, never hardcoded."""
+        import boto3
+
+        arn = boto3.client("sts", region_name="us-east-1").get_caller_identity()["Arn"]
+        parts = arn.split(":")
+        return parts[1], parts[4]
+
+    async def _seed(self, admin_repo: Repository, namespace: str) -> str:
+        """Register ``namespace`` and give ``api`` an ``rpm`` of 2 per day there.
+
+        Per day, so the third request is rejected deterministically however
+        long the test takes. Entities are created with the caller's (admin)
+        credentials: the policies under test do not cover entity management.
+        """
+        namespace_id = await admin_repo.register_namespace(namespace)
+        repo = await admin_repo.namespace(namespace)
+        await repo.set_resource_defaults(self.RESOURCE, [Limit.per_day("rpm", 2)])
+        await repo.create_entity("solo")
+        await repo.create_entity("parent")
+        await repo.create_entity("child", parent_id="parent", cascade=True)
+        return namespace_id
+
+    @staticmethod
+    def _assume(role_arn: str, *, timeout: float = 60.0) -> dict[str, str]:
+        """Assume ``role_arn``, retrying while a new role propagates through IAM."""
+        import boto3
+        from botocore.exceptions import ClientError
+
+        sts = boto3.client("sts", region_name="us-east-1")
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                creds = sts.assume_role(RoleArn=role_arn, RoleSessionName="zael-e2e-750")[
+                    "Credentials"
+                ]
+                return {
+                    "AWS_ACCESS_KEY_ID": creds["AccessKeyId"],
+                    "AWS_SECRET_ACCESS_KEY": creds["SecretAccessKey"],
+                    "AWS_SESSION_TOKEN": creds["SessionToken"],
+                }
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "AccessDenied" or time.monotonic() > deadline:
+                    raise
+                time.sleep(3)
+
+    @staticmethod
+    def _become(monkeypatch, credentials: dict[str, str]) -> None:
+        """Make the assumed role the only credentials a new session can find.
+
+        ``Repository.connect()`` takes no credentials, so they go through the
+        environment, and the profile goes with them so nothing else is found.
+        """
+        monkeypatch.delenv("AWS_PROFILE", raising=False)
+        monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
+        for key, value in credentials.items():
+            monkeypatch.setenv(key, value)
+
+    async def _connect(self, stack: str, namespace: str, *, timeout: float = 60.0) -> Repository:
+        """Connect as the assumed role, retrying while a fresh grant propagates.
+
+        ``connect()`` only reads, which every acquire policy has always
+        allowed, so a retry here waits out IAM propagation without masking a
+        denied write.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                return await Repository.connect(
+                    namespace,
+                    stack=stack,
+                    region="us-east-1",
+                    # Every rejection must reach DynamoDB, not the local cache.
+                    rejection_cache_ttl=0,
+                )
+            except Exception:
+                if time.monotonic() > deadline:
+                    raise
+                await asyncio.sleep(3)
+
+    async def _exercise(self, stack: str, namespace: str) -> None:
+        from zae_limiter import OnUnavailable, RateLimitExceeded
+
+        block = OnUnavailable.BLOCK
+        repo = await self._connect(stack, namespace)
+        try:
+            limiter = RateLimiter(repository=repo)
+
+            # First acquire on a fresh entity: the speculative UpdateItem misses,
+            # the slow path creates the bucket (Put + the owner's ConditionCheck).
+            async with limiter.acquire(
+                "solo", self.RESOURCE, consume={"rpm": 1}, on_unavailable=block
+            ):
+                pass
+
+            # Second: the speculative UpdateItem lands, then an adjustment
+            # UpdateItem on exit. The bucket ends at 2 - 1 - 1 - 1 = -1.
+            async with limiter.acquire(
+                "solo", self.RESOURCE, consume={"rpm": 1}, on_unavailable=block
+            ) as lease:
+                await lease.adjust(rpm=1)
+
+            # Third: a fast rejection, never RateLimiterUnavailable.
+            with pytest.raises(RateLimitExceeded):
+                async with limiter.acquire(
+                    "solo", self.RESOURCE, consume={"rpm": 1}, on_unavailable=block
+                ):
+                    pass
+
+            # A cascading child's first acquire creates its own bucket and the
+            # parent's in one transaction.
+            async with limiter.acquire(
+                "child", self.RESOURCE, consume={"rpm": 1}, on_unavailable=block
+            ):
+                pass
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_app_role_with_acq_can_acquire(
+        self, acquire_policy_stack, unique_name_class, monkeypatch
+    ):
+        """The stack's app role (AcquireOnlyPolicy only) runs every acquire() write."""
+        namespace = "acq-policy"
+        await self._seed(acquire_policy_stack, namespace)
+
+        role_arn = self._outputs(unique_name_class)["AppRoleArn"]
+        assert role_arn.endswith(f":role/PowerUserPB-{unique_name_class}-app")
+
+        self._become(monkeypatch, self._assume(role_arn))
+        await self._exercise(unique_name_class, namespace)
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_role_with_ns_acq_can_acquire(
+        self, acquire_policy_stack, unique_name_class, monkeypatch
+    ):
+        """A role holding only NamespaceAcquirePolicy runs every acquire() write.
+
+        The stack creates no namespace-scoped role, so the test makes one,
+        tagged with the namespace id the policy's ``LeadingKeys`` condition
+        reads, and deletes it afterwards.
+        """
+        import json
+
+        import boto3
+
+        namespace = "ns-acq-policy"
+        namespace_id = await self._seed(acquire_policy_stack, namespace)
+
+        policy_arn = self._outputs(unique_name_class)["NamespaceAcquirePolicyArn"]
+        partition, account = self._caller_partition_and_account()
+
+        iam = boto3.client("iam")
+        role_name = f"PowerUserPB-{unique_name_class}-nsacq"
+        assert len(role_name) <= 64
+        iam.create_role(
+            RoleName=role_name,
+            PermissionsBoundary=f"arn:{partition}:iam::aws:policy/PowerUserAccess",
+            AssumeRolePolicyDocument=json.dumps(
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {"AWS": f"arn:{partition}:iam::{account}:root"},
+                            "Action": "sts:AssumeRole",
+                        }
+                    ],
+                }
+            ),
+            Tags=[{"Key": "zael_namespace_id", "Value": namespace_id}],
+        )
+        try:
+            iam.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+            role_arn = f"arn:{partition}:iam::{account}:role/{role_name}"
+
+            self._become(monkeypatch, self._assume(role_arn))
+            await self._exercise(unique_name_class, namespace)
+        finally:
+            try:
+                iam.detach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+            finally:
+                iam.delete_role(RoleName=role_name)
+
+
+class TestE2EAWSUpgradeAppliesTemplate:
+    """``zae-limiter upgrade`` brings a stack deployed by v0.16.0 up to this
+    template, so its managed policies grant the v0.17.0 actions (#752).
+
+    The stack is created from the v0.16.0 template, read from the ``v0.16.0``
+    tag (``git fetch --tags`` if missing), and stamped as running v0.16.0
+    Lambdas. It has no aggregator, provisioner or alarms, so it holds only the
+    table and the managed policies. ``plain`` is what an operator runs and
+    ``force`` the same steps with ``--force``: the template, then the (absent)
+    Lambda pushes, the version record and the tags.
+    """
+
+    POLICY_ACTIONS = {"dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"}
+
+    @staticmethod
+    def _v0160_template() -> str:
+        import subprocess
+        from pathlib import Path
+
+        try:
+            return subprocess.run(
+                ["git", "show", "v0.16.0:src/zae_limiter/infra/cfn_template.yaml"],
+                check=True,
+                capture_output=True,
+                text=True,
+                cwd=Path(__file__).resolve().parent,
+            ).stdout
+        except (OSError, subprocess.CalledProcessError) as e:
+            pytest.fail(f"needs the v0.16.0 tag (git fetch --tags): {e}")
+
+    @staticmethod
+    def _acquire_policy_actions(stack: str) -> set[str]:
+        import boto3
+
+        cfn = boto3.client("cloudformation", region_name="us-east-1")
+        outputs = cfn.describe_stacks(StackName=stack)["Stacks"][0].get("Outputs", [])
+        arn = next(o["OutputValue"] for o in outputs if o["OutputKey"] == "AcquireOnlyPolicyArn")
+        iam = boto3.client("iam", region_name="us-east-1")
+        version = iam.get_policy(PolicyArn=arn)["Policy"]["DefaultVersionId"]
+        document = iam.get_policy_version(PolicyArn=arn, VersionId=version)["PolicyVersion"][
+            "Document"
+        ]
+        actions: set[str] = set()
+        for statement in document["Statement"]:
+            listed = statement.get("Action", [])
+            actions.update([listed] if isinstance(listed, str) else listed)
+        return actions
+
+    @pytest.mark.parametrize("flags", [(), ("--force",)], ids=["plain", "force"])
+    def test_upgrade_grants_the_v0170_actions(self, unique_name, flags):
+        import contextlib
+        from unittest.mock import patch
+
+        import boto3
+        from click.testing import CliRunner
+
+        from zae_limiter.cli import cli
+        from zae_limiter.infra.stack_manager import StackManager
+        from zae_limiter.version import get_schema_version
+
+        old_template = self._v0160_template()
+        stack_options = StackOptions(
+            enable_aggregator=False,
+            enable_provisioner=False,
+            enable_alarms=False,
+            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
+            role_name_format="PowerUserPB-{}",
+            policy_name_format="PowerUserPB-{}",
+        )
+
+        async def create() -> None:
+            with patch.object(StackManager, "_load_template", return_value=old_template):
+                repo = await (
+                    Repository.builder()
+                    .stack(unique_name)
+                    .region("us-east-1")
+                    .stack_options(stack_options)
+                    .build()
+                )
+            try:
+                # What a v0.16.0 deploy leaves behind.
+                await repo.set_version_record(
+                    schema_version=get_schema_version(), lambda_version="0.16.0"
+                )
+            finally:
+                await repo.close()
+
+        async def delete() -> None:
+            async with StackManager(unique_name, "us-east-1") as manager:
+                await manager.delete_stack(unique_name)
+
+        # What CloudFormation said the change would do, for the record (#752).
+        # Absent before the fix, when there is no change set to describe.
+        seen: list[dict] = []
+        original = getattr(StackManager, "_describe_change_set", None)
+
+        async def record(self, client, change_set_id, stack_name):
+            described = await original(self, client, change_set_id, stack_name)
+            seen.extend(c.get("ResourceChange", {}) for c in described.get("Changes", []))
+            return described
+
+        try:
+            asyncio.run(create())
+            before = self._acquire_policy_actions(unique_name)
+            assert not self.POLICY_ACTIONS <= before, "the stack was not created from v0.16.0"
+
+            spy = (
+                patch.object(StackManager, "_describe_change_set", record)
+                if original
+                else contextlib.nullcontext()
+            )
+            with spy:
+                result = CliRunner().invoke(
+                    cli, ["upgrade", "--name", unique_name, "--region", "us-east-1", *flags]
+                )
+            print(result.output)
+            for change in seen:
+                print(
+                    "change set:",
+                    change.get("Action"),
+                    change.get("LogicalResourceId"),
+                    change.get("ResourceType"),
+                    "Replacement",
+                    change.get("Replacement"),
+                )
+
+            assert result.exit_code == 0, result.output
+            after = self._acquire_policy_actions(unique_name)
+            assert self.POLICY_ACTIONS <= after, sorted(after)
+            cfn = boto3.client("cloudformation", region_name="us-east-1")
+            status = cfn.describe_stacks(StackName=unique_name)["Stacks"][0]["StackStatus"]
+            assert status == "UPDATE_COMPLETE"
+        finally:
+            asyncio.run(delete())

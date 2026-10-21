@@ -310,6 +310,7 @@ AggregatorRole:
                 - dynamodb:PutItem
                 - dynamodb:UpdateItem
                 - dynamodb:Query
+                - dynamodb:ConditionCheckItem  # a shard clone's META pin (ADR-150)
               Resource: !GetAtt Table.Arn
             - Effect: Allow
               Action:
@@ -333,8 +334,8 @@ The template creates three IAM managed policies by default for different access 
 
 | Policy | Suffix | Use Case | DynamoDB Permissions |
 |--------|--------|----------|---------------------|
-| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, TransactWriteItems |
-| `FullAccessPolicy` | `-full` | Ops teams managing config | All of the above + PutItem, DeleteItem, UpdateItem, BatchWriteItem, Scan, DescribeTable |
+| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, ConditionCheckItem, PutItem, UpdateItem |
+| `FullAccessPolicy` | `-full` | Ops teams managing config | All of the above + DeleteItem, BatchWriteItem, Scan, DescribeTable |
 | `ReadOnlyPolicy` | `-read` | Monitoring and dashboards | GetItem, BatchGetItem, Query, Scan, DescribeTable |
 
 ### Permission Matrix
@@ -346,11 +347,39 @@ The template creates three IAM managed policies by default for different access 
 | `Query` | Y | Y | Y |
 | `Scan` | Y | -- | Y |
 | `DescribeTable` | Y | -- | Y |
-| `TransactWriteItems` | -- | Y | Y |
-| `PutItem` | -- | -- | Y |
-| `UpdateItem` | -- | -- | Y |
+| `ConditionCheckItem` | -- | Y | Y |
+| `PutItem` | -- | Y | Y |
+| `UpdateItem` | -- | Y | Y |
 | `DeleteItem` | -- | -- | Y |
 | `BatchWriteItem` | -- | -- | Y |
+
+!!! warning "`dynamodb:ConditionCheckItem` is required from v0.17.0"
+    A bucket create is one transaction that also checks the owner entity's record
+    (ADR-150), so every principal that acquires — and the aggregator's role, which
+    pre-creates shards — needs `dynamodb:ConditionCheckItem` on the table. The policies
+    and roles this template creates grant it once the stack runs the v0.17.0 template: a
+    new `deploy`, or `zae-limiter upgrade` on an existing stack, which applies the new
+    template (and refuses a change that would replace or remove a resource). Run
+    `zae-limiter upgrade` on each stack before rolling out v0.17.0 clients; custom IAM
+    must add it. Without it a bucket create is denied, and `acquire()` raises
+    `PermissionDenied` under `BLOCK` and `ALLOW` alike
+    ([ALLOW never covers permission errors](../guide/unavailability.md#allow-never-covers-permission-errors)).
+
+!!! warning "`AcquireOnlyPolicy` gains `PutItem` and `UpdateItem` in v0.17.0"
+    AWS authorises each `Put` and `Update` inside a `TransactWriteItems` by
+    `dynamodb:PutItem` / `dynamodb:UpdateItem`, not by `TransactWriteItems`
+    ([AWS docs](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html)).
+    Before v0.17.0 `AcquireOnlyPolicy` granted neither, so a principal holding only it
+    (including the `{stack}-app` role) could not write a bucket, and
+    `NamespaceAcquirePolicy` lacked `PutItem`, so it could never create one (ADR-152).
+    The policies no longer list `dynamodb:TransactWriteItems`: IAM defines no such action
+    ([service reference](https://servicereference.us-east-1.amazonaws.com/v1/dynamodb/dynamodb.json)),
+    so it never granted anything.
+    A stack deployed earlier keeps its old policies until its template is updated:
+    `zae-limiter upgrade` applies the new template through a CloudFormation change set
+    (and refuses a change that would replace or remove a resource), so run it on each
+    stack before rolling out v0.17.0 clients. Custom IAM modelled on the old policies
+    must add both actions.
 
 ### IAM Roles (Opt-In)
 

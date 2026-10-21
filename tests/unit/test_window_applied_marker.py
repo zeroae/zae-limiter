@@ -455,8 +455,11 @@ class TestAPendingRollChargesWhatWasSpentMeanwhile:
             assert await _slow_acquire(limiter, "u", 1, T1 + 20_000) == 1
         finally:
             repo.transact_write = real
-        assert await _num(repo, "u", 1, WA) == T0, "the retry applies no roll"
-        assert await _num(repo, "u", 1, TK) == 2_000
+        # The retry applies no roll, so it must not spend the ended window's
+        # leftover either (#743): its `wa` guard fails and the pass is redone
+        # from a fresh read, which rolls the shard and charges the request there.
+        assert await _num(repo, "u", 1, WA) == T1
+        assert await _num(repo, "u", 1, TK) == 4_000  # the share, less this request
         assert 1 + await _drain_shard_1(limiter, "u", T1 + 30_000, fast=False) == 5
 
     async def test_adjust_debt_on_a_pending_shard_is_charged(self, limiter):

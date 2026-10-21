@@ -38,7 +38,7 @@ The CLI respects standard AWS environment variables:
 Most data-access commands accept `--namespace` / `-N` to scope operations to a specific namespace. When omitted, operations default to the `"default"` namespace.
 
 !!! note "Namespace registration"
-    Commands that **write** (`set-*`, `delete-*`, `entity create`, `disable` / `enable` / `clear-disabled`, `set-cascade` / `clear-cascade`, `limits apply`) register the namespace if it does not exist yet. Commands that only **read** never do: they exit 1 and name the register command (see [Read-Only Commands](#read-only-commands)).
+    Commands that **write** (`set-*`, `delete-*`, `entity create`, `disable` / `enable` / `clear-disabled`, `set-cascade` / `clear-cascade`, `entity set-parent`, `limits apply`) register the namespace if it does not exist yet. Commands that only **read** never do: they exit 1 and name the register command (see [Read-Only Commands](#read-only-commands)).
 
 ```bash
 # Entity operations in a specific namespace
@@ -89,6 +89,17 @@ deployed no Lambda code) is refused the same way, as `run unknown`.
 
 Every other command intends to write and keeps its behaviour: `deploy` and `upgrade` provision
 and update, and the data commands that write register a missing namespace.
+
+`upgrade` applies this version's CloudFormation template to an existing stack before it pushes
+Lambda code, so the stack's IAM policies match the client (`deploy` leaves an existing stack's
+template alone). Unlike the other writing commands it does not connect through
+`Repository.open()`: it never auto-updates the Lambdas on connect (that would push code before
+the template) and never provisions a missing stack. Its steps are the template, the Lambda code,
+the version record, then the stack tags; it reports "already up to date" when the template has
+nothing to change and the Lambdas already run this version. The template goes through a change set; a change that would replace or remove a
+resource is refused, nothing is applied, no code is pushed, and the command exits 1 naming each
+resource. `--lambda-only` skips the template. Run `zae-limiter upgrade` on each stack before
+rolling out v0.17.0 clients: their bucket writes need IAM actions the v0.16.0 policies lack.
 
 ## Declarative Limits
 
@@ -471,6 +482,39 @@ clearing a policy needs a stack whose Lambdas are 0.16.0 or later — otherwise 
 
 `resource get-defaults` and `entity get-limits` print `Cascade: on (explicit)` or
 `Cascade: off (explicit)` when that level sets a policy, and nothing when it inherits.
+
+## Moving an Entity to a New Parent
+
+`entity set-parent` moves an entity under another parent, or makes it a root entity. Give
+exactly one of `--parent` or `--none`. See [ADR-150](adr/150-move-entity-to-new-parent.md).
+
+```bash
+# Move a user to another organisation
+zae-limiter entity set-parent user-123 --parent org-b
+
+# Make a user a root entity
+zae-limiter entity set-parent user-123 --none
+```
+
+```
+Moved entity 'user-123' from org-a to org-b (3 buckets stamped)
+```
+
+The move is eager, like a cascade policy change: the entity's buckets are restamped at once,
+and every process debits the new parent from its next acquire. Usage already charged to the old
+parent stays there, including by leases open across the move. Whether the entity debits its new
+parent follows its [cascade policy](#cascade-policy-per-resource), falling back to the
+`--cascade` flag it was created with, which the move does not change. A root entity created
+without `--cascade` and moved under a parent therefore does not cascade until you run
+`entity set-cascade ID on`.
+
+The command refuses a parent that does not exist and a move that would make the entity its own
+ancestor, and exits 1 for either. If restamping stops part-way (throttling, for example), it
+exits 1 with the number of buckets restamped: the move itself landed, and re-running the same
+command finishes it. It needs a stack whose Lambdas are 0.17.0 or later and raises the stack's
+minimum client version to 0.17.0. Restart every client after upgrading, before the first move:
+a process that opened the stack with an older version keeps debiting the old parent until it
+reopens it.
 
 ## Namespace Lifecycle
 

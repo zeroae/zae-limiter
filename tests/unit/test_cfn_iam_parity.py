@@ -71,6 +71,9 @@ def _snake_to_iam_action(method_name: str) -> str:
 # Table management (create_table, delete_table, describe_table) and
 # waiters (get_waiter) are excluded — they use different IAM actions
 # and are not relevant to the App/Admin/ReadOnly role policies.
+# transact_write_items / transact_get_items are excluded too: IAM defines no
+# action for them, and each item inside is authorised by its own PutItem,
+# UpdateItem, DeleteItem, GetItem or ConditionCheckItem (ADR-152).
 _DYNAMODB_DATA_METHODS = {
     "get_item",
     "put_item",
@@ -80,8 +83,13 @@ _DYNAMODB_DATA_METHODS = {
     "scan",
     "batch_get_item",
     "batch_write_item",
-    "transact_write_items",
-    "transact_get_items",
+}
+
+# Not IAM actions: absent from the DynamoDB service reference
+# (https://servicereference.us-east-1.amazonaws.com/v1/dynamodb/dynamodb.json).
+_UNDEFINED_TRANSACTION_ACTIONS = {
+    "dynamodb:TransactWriteItems",
+    "dynamodb:TransactGetItems",
 }
 
 
@@ -133,28 +141,67 @@ class TestIAMRoleParity:
             f"Add them to the FullAccessPolicy in cfn_template.yaml."
         )
 
-    def test_acquire_only_policy_covers_read_and_transact_operations(self) -> None:
-        """AcquireOnlyPolicy should have read + transact operations for acquire() workflow.
+    def test_acquire_only_policy_covers_every_acquire_write(self) -> None:
+        """AcquireOnlyPolicy must grant every item action acquire() writes with (ADR-152).
 
         AcquireOnlyPolicy is for applications running acquire() only. It needs:
         - Read operations: GetItem, BatchGetItem, Query
-        - Write: TransactWriteItems (atomic bucket updates)
+        - PutItem: every bucket create, alone or inside a transaction
+        - UpdateItem: the speculative write, adjustments, rollbacks, and every
+          Update inside the slow path's transaction
+        - ConditionCheckItem: a bucket create's META pin (ADR-150)
 
-        It intentionally excludes PutItem, DeleteItem, UpdateItem,
-        BatchWriteItem (entity creation and config management).
+        AWS authorises each Put / Update inside TransactWriteItems by PutItem /
+        UpdateItem; IAM defines no TransactWriteItems action (#750), so without
+        them a principal holding only this policy cannot write at all.
         """
         acq_actions = _extract_policy_actions(self.template, "AcquireOnlyPolicy")
         required_acq_actions = {
             "dynamodb:GetItem",
             "dynamodb:BatchGetItem",
             "dynamodb:Query",
-            "dynamodb:TransactWriteItems",
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
+            "dynamodb:ConditionCheckItem",
         }
         missing = required_acq_actions - acq_actions
 
         assert not missing, (
             f"AcquireOnlyPolicy is missing required DynamoDB actions: {missing}. "
             f"Add them to the AcquireOnlyPolicy in cfn_template.yaml."
+        )
+
+    def test_no_policy_grants_an_undefined_transaction_action(self) -> None:
+        """No policy or role grants an action IAM does not define (ADR-152).
+
+        A transaction is authorised item by item, so a TransactWriteItems
+        entry grants nothing and reads as if it covered the writes (#750).
+        """
+
+        def strings(node: object) -> list[str]:
+            if isinstance(node, str):
+                return [node]
+            if isinstance(node, dict):
+                return [s for value in node.values() for s in strings(value)]
+            if isinstance(node, list):
+                return [s for value in node for s in strings(value)]
+            return []
+
+        for key, resource in self.template["Resources"].items():
+            undefined = set(strings(resource)) & _UNDEFINED_TRANSACTION_ACTIONS
+            assert not undefined, f"{key} grants {undefined}, which IAM does not define"
+
+    def test_acquire_only_policy_stays_below_full_access(self) -> None:
+        """AcquireOnlyPolicy grants no delete, batch write or scan (ADR-152)."""
+        acq_actions = _extract_policy_actions(self.template, "AcquireOnlyPolicy")
+        beyond_acquire = {
+            "dynamodb:DeleteItem",
+            "dynamodb:BatchWriteItem",
+            "dynamodb:Scan",
+            "dynamodb:DescribeTable",
+        }
+        assert not acq_actions & beyond_acquire, (
+            f"AcquireOnlyPolicy grants actions acquire() never uses: {acq_actions & beyond_acquire}"
         )
 
     def test_readonly_role_has_only_read_operations(self) -> None:
@@ -224,8 +271,10 @@ class TestNamespaceScopedPolicies:
         )
 
     def test_namespace_acquire_policy_actions(self) -> None:
-        """ns-acq: UpdateItem on namespace prefix, read-only on shared prefix."""
-        # Statement 1: namespace prefix — read + write
+        """ns-acq: Put/Update on namespace prefix, read-only on shared prefix."""
+        # Statement 1: namespace prefix — read + write, and the META pin a
+        # bucket create carries (ADR-150). PutItem authorises the bucket create
+        # inside the create's transaction (ADR-152, #750).
         ns_actions = _extract_statement_actions(
             self.template, "NamespaceAcquirePolicy", "NamespaceAcquireAccess"
         )
@@ -233,7 +282,9 @@ class TestNamespaceScopedPolicies:
             "dynamodb:GetItem",
             "dynamodb:BatchGetItem",
             "dynamodb:Query",
+            "dynamodb:PutItem",
             "dynamodb:UpdateItem",
+            "dynamodb:ConditionCheckItem",
         }
 
         # Statement 2: shared prefix — read-only
@@ -258,6 +309,7 @@ class TestNamespaceScopedPolicies:
             "dynamodb:PutItem",
             "dynamodb:UpdateItem",
             "dynamodb:DeleteItem",
+            "dynamodb:ConditionCheckItem",
         }
 
     def test_namespace_readonly_policy_actions(self) -> None:
@@ -436,3 +488,68 @@ class TestProvisionerRoleParity:
             f"src/zae_limiter_provisioner/: {missing}. "
             f"Add them to the DynamoDBAccess policy on ProvisionerRole in cfn_template.yaml."
         )
+
+
+class TestBucketCreatePin:
+    """A bucket create is pinned to its owner's META with a ConditionCheck (ADR-150).
+
+    Every principal that creates buckets (an acquire, or the aggregator's
+    shard clone) needs ``dynamodb:ConditionCheckItem``, or the create's
+    transaction fails with AccessDeniedException.
+    """
+
+    def setup_method(self) -> None:
+        self.template = _load_cfn_template()
+
+    def test_every_acquiring_policy_grants_the_check(self) -> None:
+        for policy in ("AcquireOnlyPolicy", "FullAccessPolicy", "NamespaceFullAccessPolicy"):
+            assert "dynamodb:ConditionCheckItem" in _extract_policy_actions(
+                self.template, policy
+            ), policy
+
+    def test_the_aggregator_role_grants_the_check(self) -> None:
+        actions = _extract_role_inline_policy_actions(
+            self.template, "AggregatorRole", "DynamoDBAccess"
+        )
+        assert "dynamodb:ConditionCheckItem" in actions
+
+    def test_read_only_policies_do_not(self) -> None:
+        for policy in ("ReadOnlyPolicy", "NamespaceReadOnlyPolicy"):
+            assert "dynamodb:ConditionCheckItem" not in _extract_policy_actions(
+                self.template, policy
+            ), policy
+
+
+class TestManagedPolicyDescriptionsAreFrozen:
+    """A managed policy's Description never changes (#752).
+
+    CloudFormation replaces an ``AWS::IAM::ManagedPolicy`` to change its
+    Description, a named policy cannot be replaced, and ``upgrade`` refuses a
+    replacement, so a changed Description would leave every existing stack
+    unable to upgrade. The texts are the ones v0.16.0 shipped, even where they
+    no longer describe the policy exactly.
+    """
+
+    _SHIPPED = {
+        "AcquireOnlyPolicy": "Rate limiter acquire-only access (read + transact write)",
+        "FullAccessPolicy": "Rate limiter full access (all operations)",
+        "ReadOnlyPolicy": "Rate limiter read-only access (monitoring)",
+        "NamespaceAcquirePolicy": (
+            "Namespace-scoped acquire-only access (read + update within namespace)"
+        ),
+        "NamespaceFullAccessPolicy": (
+            "Namespace-scoped full access (all operations within namespace)"
+        ),
+        "NamespaceReadOnlyPolicy": (
+            "Namespace-scoped read-only access (monitoring within namespace)"
+        ),
+    }
+
+    def test_every_managed_policy_keeps_its_shipped_description(self) -> None:
+        resources = _load_cfn_template()["Resources"]
+        descriptions = {
+            key: resource["Properties"].get("Description")
+            for key, resource in resources.items()
+            if resource["Type"] == "AWS::IAM::ManagedPolicy"
+        }
+        assert descriptions == self._SHIPPED

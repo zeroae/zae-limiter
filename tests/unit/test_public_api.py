@@ -64,3 +64,16 @@ def test_only_schedule_entry_is_promoted_to_the_root():
             f"{name} leaked onto the package root; the public surface decision "
             f"keeps it inside zae_limiter.schedule"
         )
+
+
+def test_permission_denied_is_exported_as_an_unavailability():
+    """`PermissionDenied` is public (#751): a user names it in an `except` clause.
+
+    It subclasses `RateLimiterUnavailable`, so a handler written for BLOCK still
+    catches it.
+    """
+    from zae_limiter import PermissionDenied, RateLimiterUnavailable
+
+    assert "PermissionDenied" in zae_limiter.__all__
+    assert PermissionDenied is zae_limiter.exceptions.PermissionDenied
+    assert issubclass(PermissionDenied, RateLimiterUnavailable)

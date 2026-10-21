@@ -18,7 +18,7 @@ from zae_limiter.exceptions import (
     ValidationError,
     VersionMismatchError,
 )
-from zae_limiter.models import BucketState
+from zae_limiter.models import BucketState, CreditCeiling
 from zae_limiter.repository import Repository
 from zae_limiter.repository_protocol import SpeculativeFailureReason
 from zae_limiter.schedule import ScheduleEntry
@@ -866,9 +866,9 @@ class TestCompositeWritePaths:
         assert "Update" in result
         update = result["Update"]
 
-        # Should have ADD but no condition
+        # An ADD whose only condition is that the item exists (#721)
         assert "ADD" in update["UpdateExpression"]
-        assert "ConditionExpression" not in update
+        assert update["ConditionExpression"] == "attribute_exists(PK)"
 
         # Positive delta: subtract from tk, add to tc
         vals = update["ExpressionAttributeValues"]
@@ -879,6 +879,175 @@ class TestCompositeWritePaths:
         # Negative delta: add to tk, subtract from tc
         assert vals[":bd1"]["N"] == "500"
         assert vals[":bcd1"]["N"] == "-500"
+
+    @pytest.mark.asyncio
+    async def test_build_composite_adjust_conditions_each_credit_on_its_ceiling(self, repo):
+        """A self-trimming credit (#721): `tk <= ceiling - credit`, credits only."""
+        update = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": 3000, "tpm": -500, "rpd": -2000},
+            # rpd has none: unconditional
+            ceilings={
+                "rpm": CreditCeiling(9000, 9000, None),
+                "tpm": CreditCeiling(10_000, 20_000, 2),
+            },
+        )["Update"]
+
+        # Without a pin: the balance bound, plus what the ceiling came from.
+        assert update["ConditionExpression"] == (
+            "attribute_exists(PK) AND #bt1 <= :bm1 AND #bp1 = :bp1 AND #bg1 = :bg1"
+        )
+        values = update["ExpressionAttributeValues"]
+        assert values[":bm1"] == {"N": "9500"}
+        assert (values[":bp1"], values[":bg1"]) == ({"N": "20000"}, {"N": "2"})
+        assert update["ExpressionAttributeNames"]["#bg1"] == "b_tpm_gc"
+        assert ":bm0" not in values  # a debit
+        assert "SET" not in update["UpdateExpression"]
+
+    @pytest.mark.asyncio
+    async def test_build_composite_adjust_pins_the_shard_count_and_vu(self, repo):
+        """#721: a doubling, a schedule change or a reset since the state was read
+        moves one of these, so the in-memory ceiling is trusted only while they hold."""
+        absent = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": -500},
+            ceilings={"rpm": CreditCeiling(10_000, 10_000, None)},
+            pin=(1, None, (None, None, None)),
+        )["Update"]
+        assert absent["ConditionExpression"] == (
+            "attribute_exists(PK) AND #bt0 <= :bm0 AND #bp0 = :bp0 AND attribute_not_exists(#bg0)"
+            " AND (attribute_not_exists(#bsc) OR #bsc = :bsc)"
+            " AND attribute_not_exists(#bvu)"
+            " AND attribute_not_exists(#bis) AND attribute_not_exists(#bir)"
+            " AND attribute_not_exists(#biz)"
+        )
+
+        stamped = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": -500},
+            ceilings={"rpm": CreditCeiling(10_000, 10_000, None)},
+            pin=(4, 1_800_000_000_000, (None, None, None)),
+        )["Update"]
+        assert " AND #bsc = :bsc AND #bvu = :bvu AND " in stamped["ConditionExpression"]
+        assert stamped["ExpressionAttributeValues"][":bsc"] == {"N": "4"}
+        assert stamped["ExpressionAttributeValues"][":bvu"] == {"N": "1800000000000"}
+
+    @pytest.mark.asyncio
+    async def test_build_composite_adjust_pins_the_schedule_strings(self, repo):
+        """#721: a window's capacity or scale changed under the same cron leaves cp,
+        gc, shard_count and vu alone, so the schedule strings are pinned as seen."""
+        update = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": -500},
+            ceilings={"rpm": CreditCeiling(10_000, 10_000, None, ("1h9-17s500", None))},
+            pin=(1, None, ("1m0h0", None, "America/New_York")),
+        )["Update"]
+        condition = update["ConditionExpression"]
+        names = update["ExpressionAttributeNames"]
+        values = update["ExpressionAttributeValues"]
+        assert "#bxs0 = :bxs0 AND attribute_not_exists(#bxr0)" in condition
+        assert (names["#bxs0"], names["#bxr0"]) == ("b_rpm_sched", "b_rpm_rsched")
+        assert values[":bxs0"] == {"S": "1h9-17s500"}
+        assert condition.endswith("#bis = :bis AND attribute_not_exists(#bir) AND #biz = :biz")
+        assert (names["#bis"], names["#bir"], names["#biz"]) == ("sched", "rsched", "sched_tz")
+        assert (values[":bis"], values[":biz"]) == ({"S": "1m0h0"}, {"S": "America/New_York"})
+
+    @pytest.mark.asyncio
+    async def test_build_composite_adjust_pins_nothing_without_a_credit_condition(self, repo):
+        update = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": 500},
+            pin=(1, None, (None, None, None)),
+        )["Update"]
+        assert update["ConditionExpression"] == "attribute_exists(PK)"
+
+    @pytest.mark.asyncio
+    async def test_build_composite_adjust_keeps_a_quota_credit_in_its_period(self, repo):
+        """#721: a calendar quota's credit lands only while `rf` is before the next
+        edge; a session quota's only while the window it saw is still on the item.
+        In both writes: the trimmed one too."""
+        from zae_limiter.models import QuotaPeriodPin
+
+        ceilings = {
+            "day": CreditCeiling(10_000, 10_000, 1, (None, None), True, QuotaPeriodPin(500)),
+            "ses": CreditCeiling(
+                10_000, 10_000, 1, (None, None), True, QuotaPeriodPin(window=(7, None))
+            ),
+        }
+        for trim in (False, True):
+            update = repo.build_composite_adjust(
+                entity_id="entity-1",
+                resource="gpt-4",
+                deltas={"day": -1000, "ses": -1000},
+                ceilings=ceilings,
+                trim=trim,
+                pin=(1, None, (None, None, None)),
+            )["Update"]
+            condition = update["ConditionExpression"]
+            assert "#bqrf < :bq0" in condition
+            assert "#bqw1 = :bqw1 AND attribute_not_exists(#bqa1)" in condition
+            names, values = update["ExpressionAttributeNames"], update["ExpressionAttributeValues"]
+            assert (names["#bqrf"], names["#bqw1"], names["#bqa1"]) == (
+                "rf",
+                "b_ses_ws",
+                "b_ses_wa",
+            )
+            assert (values[":bq0"], values[":bqw1"]) == ({"N": "500"}, {"N": "7"})
+
+    @pytest.mark.asyncio
+    async def test_build_composite_adjust_pins_the_reset_schedule_of_the_period(self, repo):
+        """#721: the calendar edge came from the lease's cron, so both writes pin the
+        reset-schedule strings it came from; item-level terms appear once."""
+        from zae_limiter.models import QuotaPeriodPin
+
+        period = QuotaPeriodPin(500, reset_sched_raw=("1m0h0", "UTC", None))
+        ceilings = {
+            name: CreditCeiling(10_000, 10_000, 1, (None, None), True, period)
+            for name in ("d", "e")
+        }
+        for trim in (False, True):
+            update = repo.build_composite_adjust(
+                entity_id="entity-1",
+                resource="gpt-4",
+                deltas={"d": -1000, "e": -1000},
+                ceilings=ceilings,
+                trim=trim,
+                pin=(1, None, (None, None, None)),
+            )["Update"]
+            condition = update["ConditionExpression"]
+            assert condition.count("#bqis = :bqis") == 1
+            assert condition.count("#bqiz = :bqiz") == 1
+            assert "attribute_not_exists(#bqo0)" in condition
+            assert "attribute_not_exists(#bqo1)" in condition
+            names, values = update["ExpressionAttributeNames"], update["ExpressionAttributeValues"]
+            assert (names["#bqis"], names["#bqiz"], names["#bqo1"]) == (
+                "rsched",
+                "sched_tz",
+                "b_e_rsched",
+            )
+            assert (values[":bqis"], values[":bqiz"]) == ({"S": "1m0h0"}, {"S": "UTC"})
+
+    @pytest.mark.asyncio
+    async def test_build_composite_adjust_trim_stamps_vu_in_the_same_write(self, repo):
+        """The fallback (#721): the same ADD, unconditional, plus `vu = 0`."""
+        update = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": -500},
+            ceilings={"rpm": CreditCeiling(10_000, 10_000, None)},
+            trim=True,
+            pin=(1, None, (None, None, None)),
+        )["Update"]
+
+        assert update["ConditionExpression"] == "attribute_exists(PK)"
+        assert update["UpdateExpression"] == "SET #vu = :vuz ADD #bt0 :bd0, #bc0 :bcd0"
+        assert update["ExpressionAttributeNames"]["#vu"] == "vu"
+        assert update["ExpressionAttributeValues"][":vuz"] == {"N": "0"}
 
     @pytest.mark.asyncio
     async def test_build_composite_adjust_zero_deltas(self, repo):

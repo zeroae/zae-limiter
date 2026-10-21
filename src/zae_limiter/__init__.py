@@ -53,6 +53,7 @@ from .exceptions import (
     LeaseExpiredError,
     NamespaceNotFoundError,
     NamespaceStateError,
+    PermissionDenied,
     RateLimitError,
     RateLimiterUnavailable,
     RateLimitExceeded,
@@ -164,6 +165,7 @@ __all__ = [
     "EntityExistsError",
     # Exceptions - Infrastructure
     "RateLimiterUnavailable",
+    "PermissionDenied",
     "StackOperationError",
     "StackAlreadyExistsError",
     "InfrastructureNotFoundError",
