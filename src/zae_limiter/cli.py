@@ -4438,7 +4438,9 @@ def entity_set_parent(
 
         repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            before = await repo.get_entity(entity_id)
+            # Strongly consistent: a replica from before an earlier move
+            # would name the wrong old parent in the message (ADR-150).
+            before = await repo.get_entity(entity_id, consistent_read=True)
             count = await repo.set_parent(entity_id, parent_id)
             old = (before.parent_id if before else None) or "(none)"
             click.echo(

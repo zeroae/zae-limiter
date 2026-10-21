@@ -6814,6 +6814,28 @@ class TestSetParentCommand:
         repo.set_parent.assert_called_once_with("u", "org-b")
 
     @patch("zae_limiter.repository.Repository")
+    def test_the_old_parent_comes_from_a_consistent_read(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """F8 (review of Stack B): a stale replica cannot name the old parent."""
+        from zae_limiter.models import Entity
+
+        repo = self._writable(mock_repo_class, "org-a", return_value=3)
+
+        async def replica(entity_id: str, *, consistent_read: bool = False) -> Entity:
+            # An eventually consistent read still sees the parent before org-a.
+            return Entity(id=entity_id, parent_id="org-a" if consistent_read else "org-z")
+
+        repo.get_entity = AsyncMock(side_effect=replica)
+
+        result = runner.invoke(cli, ["entity", "set-parent", "u", "--parent", "org-b"])
+
+        assert result.exit_code == 0, result.output
+        assert "from org-a to org-b" in result.output
+        assert "org-z" not in result.output
+        repo.get_entity.assert_awaited_once_with("u", consistent_read=True)
+
+    @patch("zae_limiter.repository.Repository")
     def test_moves_to_no_parent(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         repo = self._writable(mock_repo_class, "org-a", return_value=1)
 
