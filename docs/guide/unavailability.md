@@ -73,6 +73,10 @@ except PermissionDenied as e:
 
 !!! warning "Breaking change in v0.17.0"
     Before v0.17.0 an IAM denial under `ALLOW` produced a degraded lease, like an outage.
+    v0.17.0 clients also need IAM actions the v0.16.0 policies lack, so run
+    `zae-limiter upgrade` on each stack before rolling out v0.17.0 clients: it applies the
+    new template, policies included (see the
+    [v0.17.0 IAM changes](../infra/deployment.md#application-iam-policies)).
 
 ## BLOCK (Default)
 

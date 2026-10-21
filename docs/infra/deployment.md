@@ -486,8 +486,11 @@ The stack creates three managed IAM policies by default for different access pat
     A bucket create is one transaction that also checks the owner entity's record
     (ADR-150), so every principal that acquires — and the aggregator's role, which
     pre-creates shards — needs `dynamodb:ConditionCheckItem` on the table. The policies
-    and roles this template creates grant it after `zae-limiter upgrade` or `deploy`;
-    custom IAM must add it. Without it a bucket create is denied, and `acquire()` raises
+    and roles this template creates grant it once the stack runs the v0.17.0 template: a
+    new `deploy`, or `zae-limiter upgrade` on an existing stack, which applies the new
+    template (and refuses a change that would replace or remove a resource). Run
+    `zae-limiter upgrade` on each stack before rolling out v0.17.0 clients; custom IAM
+    must add it. Without it a bucket create is denied, and `acquire()` raises
     `PermissionDenied` under `BLOCK` and `ALLOW` alike
     ([ALLOW never covers permission errors](../guide/unavailability.md#allow-never-covers-permission-errors)).
 
@@ -498,9 +501,11 @@ The stack creates three managed IAM policies by default for different access pat
     Before v0.17.0 `AcquireOnlyPolicy` granted neither, so a principal holding only it
     (including the `{stack}-app` role) could not write a bucket, and
     `NamespaceAcquirePolicy` lacked `PutItem`, so it could never create one (ADR-152).
-    A stack deployed earlier keeps its old policies until its template is updated
-    (`zae-limiter cfn-template`, then a CloudFormation stack update with
-    `CAPABILITY_NAMED_IAM`); custom IAM modelled on the old policies must add both actions.
+    A stack deployed earlier keeps its old policies until its template is updated:
+    `zae-limiter upgrade` applies the new template through a CloudFormation change set
+    (and refuses a change that would replace or remove a resource), so run it on each
+    stack before rolling out v0.17.0 clients. Custom IAM modelled on the old policies
+    must add both actions.
 
 ### Enabling/Disabling IAM Resources
 

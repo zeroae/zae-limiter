@@ -1218,6 +1218,21 @@ move, which can only under-admit.
   unchanged: it pushes only what its flags enable and stamps by the rule above. `_connect` turns
   a failed auto-update's `StackOperationError` into an exit-1 message; only write commands
   reach it, since read-only commands never auto-update (#648).
+- **CLI `upgrade` applies the template before the code (#752).** Nothing else updates an
+  existing stack's template — `create_stack` returns early and `ensure_tags` reuses the previous
+  one — so without it a stack keeps the IAM of the release that created it (v0.17.0 clients need
+  `ConditionCheckItem`, and `PutItem` / `UpdateItem` on `acq`). `StackManager.apply_template()`
+  builds a **change set** from `_load_template()`: `UsePreviousValue` for every parameter the
+  stack has and the template still declares (`template_parameter_names`; a new one takes its
+  default, a dropped one is not passed), the stack's own tags, `CAPABILITY_NAMED_IAM`. No changes
+  (a FAILED "didn't contain changes" set, or a `CreateChangeSet` refusal saying so) is
+  `no_changes`; no stack is `absent`. Any `ResourceChange` with `Action` `Remove` or
+  `Replacement` `True` / `Conditional` is **refused**: the change set is deleted, nothing is
+  applied, and `StackOperationError` names each resource. `upgrade` runs it as step 1, before
+  the pushes, and on the "already up to date" path too — but only when the record names this
+  build (an older client would apply its older template). `--lambda-only` skips it. A refusal
+  exits 1 and pushes no code. `open(auto_update=True)` and `deploy` on an existing stack still
+  never touch the template; the tag step that follows is a separate, sequential update.
 - **Missing version record fails closed** — nothing proves the readers (`can_auto_update=False`,
   remedy `zae-limiter deploy`).
 - **`--no-aggregator` gets no exemption in the gate** — the record cannot say the aggregator

@@ -171,7 +171,7 @@ v0.15+ clients from misreading them.
     old tagged client would be. The fix is `git fetch --tags` or a tagged install, not a code
     change. A stack whose minimum was never raised (the default `0.0.0`) is unaffected.
 
-    `zae-limiter upgrade` from a tagless checkout reports "Infrastructure is already up to
+    `zae-limiter upgrade` from a tagless checkout reports "Lambda code is already up to
     date" and pushes nothing unless `--force` is given — its very low read of the client's own
     version never looks newer than the deployed Lambda, so nothing appears to need upgrading.
 
@@ -254,10 +254,27 @@ zae-limiter upgrade --name <name> --region <region>
 zae-limiter check --name <name> --region <region>
 ```
 
+`upgrade` first applies this version's CloudFormation template to the stack, so its IAM
+policies and other resources match the client, and only then pushes Lambda code. The template
+goes through a change set: a change that would **replace** or **remove** a resource (replacing
+the table would empty it) is refused, nothing is applied, no code is pushed, and the command
+exits 1 naming each resource. A template with nothing to change is reported as already current.
+A stack whose Lambda code is already current still gets the template, so running `upgrade`
+after clients have auto-updated the Lambdas is enough. Run it on each stack before rolling out
+v0.17.0 clients, whose bucket writes need IAM actions the v0.16.0 policies lack.
+
+```
+[1/5] Applying stack template...
+      Stack template applied (3 resource(s) changed)
+        Modify AcquireOnlyPolicy (AWS::IAM::ManagedPolicy)
+        ...
+[2/5] Deploying Lambda code...
+```
+
 **Lambda-only upgrade:**
 
 ```bash
-# Update Lambda without schema changes
+# Update Lambda code only; leave the stack template as it is
 zae-limiter upgrade --name <name> --region <region> --lambda-only
 ```
 
@@ -279,9 +296,9 @@ Lambda update push new code only to the functions that exist, skip the rest, and
 new Lambda version:
 
 ```
-[1/4] Deploying Lambda code...
+[2/5] Deploying Lambda code...
       No aggregator Lambda on this stack, skipped
-[2/4] Deploying provisioner code...
+[3/5] Deploying provisioner code...
       Provisioner code deployed (1234.5 KB)
 ```
 

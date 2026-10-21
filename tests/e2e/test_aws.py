@@ -2107,3 +2107,140 @@ class TestE2EAWSAcquirePolicies:
                 iam.detach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
             finally:
                 iam.delete_role(RoleName=role_name)
+
+
+class TestE2EAWSUpgradeAppliesTemplate:
+    """``zae-limiter upgrade`` brings a stack deployed by v0.16.0 up to this
+    template, so its managed policies grant the v0.17.0 actions (#752).
+
+    The stack is created from the v0.16.0 template, read from the ``v0.16.0``
+    tag (``git fetch --tags`` if missing), and stamped as running v0.16.0
+    Lambdas. It has no aggregator, provisioner or alarms, so it holds only the
+    table and the managed policies. ``plain`` is what an operator runs:
+    ``open()`` brings the (absent) Lambdas current on connect, so the template
+    is applied on the "already up to date" path. ``force`` takes the step
+    path, where the template goes before the code push.
+    """
+
+    POLICY_ACTIONS = {"dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"}
+
+    @staticmethod
+    def _v0160_template() -> str:
+        import subprocess
+        from pathlib import Path
+
+        try:
+            return subprocess.run(
+                ["git", "show", "v0.16.0:src/zae_limiter/infra/cfn_template.yaml"],
+                check=True,
+                capture_output=True,
+                text=True,
+                cwd=Path(__file__).resolve().parent,
+            ).stdout
+        except (OSError, subprocess.CalledProcessError) as e:
+            pytest.fail(f"needs the v0.16.0 tag (git fetch --tags): {e}")
+
+    @staticmethod
+    def _acquire_policy_actions(stack: str) -> set[str]:
+        import boto3
+
+        cfn = boto3.client("cloudformation", region_name="us-east-1")
+        outputs = cfn.describe_stacks(StackName=stack)["Stacks"][0].get("Outputs", [])
+        arn = next(o["OutputValue"] for o in outputs if o["OutputKey"] == "AcquireOnlyPolicyArn")
+        iam = boto3.client("iam", region_name="us-east-1")
+        version = iam.get_policy(PolicyArn=arn)["Policy"]["DefaultVersionId"]
+        document = iam.get_policy_version(PolicyArn=arn, VersionId=version)["PolicyVersion"][
+            "Document"
+        ]
+        actions: set[str] = set()
+        for statement in document["Statement"]:
+            listed = statement.get("Action", [])
+            actions.update([listed] if isinstance(listed, str) else listed)
+        return actions
+
+    @pytest.mark.parametrize("flags", [(), ("--force",)], ids=["plain", "force"])
+    def test_upgrade_grants_the_v0170_actions(self, unique_name, flags):
+        import contextlib
+        from unittest.mock import patch
+
+        import boto3
+        from click.testing import CliRunner
+
+        from zae_limiter.cli import cli
+        from zae_limiter.infra.stack_manager import StackManager
+        from zae_limiter.version import get_schema_version
+
+        old_template = self._v0160_template()
+        stack_options = StackOptions(
+            enable_aggregator=False,
+            enable_provisioner=False,
+            enable_alarms=False,
+            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
+            role_name_format="PowerUserPB-{}",
+            policy_name_format="PowerUserPB-{}",
+        )
+
+        async def create() -> None:
+            with patch.object(StackManager, "_load_template", return_value=old_template):
+                repo = await (
+                    Repository.builder()
+                    .stack(unique_name)
+                    .region("us-east-1")
+                    .stack_options(stack_options)
+                    .build()
+                )
+            try:
+                # What a v0.16.0 deploy leaves behind.
+                await repo.set_version_record(
+                    schema_version=get_schema_version(), lambda_version="0.16.0"
+                )
+            finally:
+                await repo.close()
+
+        async def delete() -> None:
+            async with StackManager(unique_name, "us-east-1") as manager:
+                await manager.delete_stack(unique_name)
+
+        # What CloudFormation said the change would do, for the record (#752).
+        # Absent before the fix, when there is no change set to describe.
+        seen: list[dict] = []
+        original = getattr(StackManager, "_describe_change_set", None)
+
+        async def record(self, client, change_set_id, stack_name):
+            described = await original(self, client, change_set_id, stack_name)
+            seen.extend(c.get("ResourceChange", {}) for c in described.get("Changes", []))
+            return described
+
+        try:
+            asyncio.run(create())
+            before = self._acquire_policy_actions(unique_name)
+            assert not self.POLICY_ACTIONS <= before, "the stack was not created from v0.16.0"
+
+            spy = (
+                patch.object(StackManager, "_describe_change_set", record)
+                if original
+                else contextlib.nullcontext()
+            )
+            with spy:
+                result = CliRunner().invoke(
+                    cli, ["upgrade", "--name", unique_name, "--region", "us-east-1", *flags]
+                )
+            print(result.output)
+            for change in seen:
+                print(
+                    "change set:",
+                    change.get("Action"),
+                    change.get("LogicalResourceId"),
+                    change.get("ResourceType"),
+                    "Replacement",
+                    change.get("Replacement"),
+                )
+
+            assert result.exit_code == 0, result.output
+            after = self._acquire_policy_actions(unique_name)
+            assert self.POLICY_ACTIONS <= after, sorted(after)
+            cfn = boto3.client("cloudformation", region_name="us-east-1")
+            status = cfn.describe_stacks(StackName=unique_name)["Stacks"][0]["StackStatus"]
+            assert status == "UPDATE_COMPLETE"
+        finally:
+            asyncio.run(delete())
