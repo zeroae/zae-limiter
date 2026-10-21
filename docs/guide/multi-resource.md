@@ -121,7 +121,7 @@ user — on warm caches:
 | Exit reconcile, every resource adjusted | 1 | 0 | 3 |
 | Rejected, and the [rejection cache](../performance.md) already knows | 0 | 0 | 0 |
 | `budget` rejected, cache cold | 2 | 0 | 3 + 2 refunds |
-| First acquire of the entity (every resource on the slow path) | ≈4 | ≈2.5 | 8 (one 3-item transaction + 2 failed writes) |
+| First acquire of the entity (every resource on the slow path) | ≈4 | ≈2.5 | 12 (one 5-item transaction + 2 failed writes) |
 
 A cold rejection costs more than two hand-ordered acquires would, because the writes went out
 together and the ones that landed are refunded. Repeat rejections within the rejection cache's
