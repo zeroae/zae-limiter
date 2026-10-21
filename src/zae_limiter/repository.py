@@ -9671,6 +9671,15 @@ class Repository:
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
                     )
                 else:
+                    if attempt:
+                        # The create pins the owner's META (ADR-150): a retry
+                        # after a move or a recreate checks the META as it is
+                        # now, or it would fail the same check every attempt.
+                        # The record keeps the first read's incarnation.
+                        meta = await self._get_item_consistent(
+                            schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
+                        )
+                        entity = self._deserialize_entity(meta) if meta is not None else None
                     try:
                         result, landed = await self._top_up_new_bucket(
                             entity_id,
@@ -10043,8 +10052,9 @@ class Repository:
         A dripping limit is created full anyway, so it gains nothing and, when
         no quota is named, nothing is written. Returns the result and whether
         the create is known to have landed: False when its condition failed —
-        another writer created the bucket first, or this very create landed and
-        its response was lost — and the caller re-reads to tell which.
+        another writer created the bucket first, this very create landed and
+        its response was lost, or the owner's META moved since ``entity`` was
+        read (ADR-150's check) — and the caller re-reads to tell which.
         """
         states = {
             limit.name: BucketState.from_limit(entity_id, resource, limit, now_ms)
@@ -10081,6 +10091,8 @@ class Repository:
             shard_count=1,
             vu=bucket_ops.creation_vu(resolved, states, now_ms),
             rf_ms=now_ms,
+            pgen=entity.parent_generation if entity is not None else None,
+            pinc=entity.incarnation if entity is not None else None,
         )
         result = BucketOperationResult(entity_id, resource, 1, amounts)
         try:
@@ -10091,6 +10103,15 @@ class Repository:
                         bucket_ops.TOP_UP, operation_id, result, now_ms, token, incarnation
                     ),
                     await self._operation_audit(bucket_ops.TOP_UP, result, principal),
+                    # ADR-150: the owner stamps above came from this META read;
+                    # a move or recreate since cancels the create (a retry
+                    # re-reads META), like every other bucket create.
+                    self.build_owner_check(
+                        entity_id,
+                        exists=entity is not None,
+                        pgen=entity.parent_generation if entity is not None else None,
+                        pinc=entity.incarnation if entity is not None else None,
+                    ),
                 ],
                 client_request_token=request_token,
             )

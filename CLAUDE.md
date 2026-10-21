@@ -1980,7 +1980,11 @@ exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed u
   above the ceiling, or a refund of spent room is clamped away (design-validator). A dripping
   limit gains at most its headroom (`split_by_headroom`). A session quota with no live window
   opens one (D4). No bucket → shard 0 created holding share + N, `tu = N` (D5;
-  `ResourceDisabled` if disabled; a dripping-only top-up writes nothing). A limit not yet on any
+  `ResourceDisabled` if disabled; a dripping-only top-up writes nothing). Like every bucket
+  create, it stamps the owner's `pgen` / `pinc` and carries ADR-150's `ConditionCheck` on the
+  META it read (a 4-item transaction: create, operation record, audit event, check; +2 WCU), so
+  a `set_parent` landing in between cancels it; the retry re-reads META (1 RCU) and stamps the
+  new parent. A limit not yet on any
   shard (configured after the bucket existed) raises `ValidationError` naming it. `tu` takes the
   whole portion even on a plan upgrade (`set_limits` then `top_up`), so the upgrade is gated too
   and the ceiling is up to one top-up wider than the plan until the next reset — under-clamping

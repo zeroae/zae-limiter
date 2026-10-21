@@ -454,6 +454,73 @@ class TestRefundAcrossAReset:
         assert await _drain(limiter, "e", "rpm") == 10
 
 
+class TestTopUpCreateChecksTheOwner:
+    """Stack C review, F3: a top-up that creates the bucket pins the owner's
+    META (ADR-150) like every other bucket create, so a `set_parent` landing
+    between its META read and its create cancels it, and the retry stamps the
+    new parent instead of leaving the old one on the item."""
+
+    @staticmethod
+    async def _top_up_racing_a_move(limiter):
+        repo = limiter._repository
+        for parent in ("p1", "p2"):
+            await repo.create_entity(parent)
+            await limiter.set_limits(parent, [CAL], resource="budget")
+            await limiter.set_limits(parent, [RPM], resource="r")
+            # Each parent's bucket exists, so a cascade on a stale stamp lands
+            # on the fast path instead of falling back on a missing bucket.
+            await _spend(limiter, parent, {"cal": 0}, resource="budget")
+        await repo.create_entity("c", parent_id="p1", cascade=True)
+        await limiter.set_limits("c", [CAL], resource="budget")
+        await limiter.set_limits("c", [RPM], resource="r")
+        real = repo.transact_write
+        armed = [True]
+
+        async def move_first(items, *a, **k):
+            if armed[0]:  # the top-up's create: META was read for p1
+                armed[0] = False
+                await repo.set_parent("c", "p2")
+            return await real(items, *a, **k)
+
+        repo.transact_write = move_first
+        try:
+            await repo.top_up("c", "budget", {"cal": 5})
+        finally:
+            repo.transact_write = real
+        assert not armed[0]
+
+    async def test_the_created_bucket_names_the_new_parent(self, limiter, clock):
+        repo = limiter._repository
+        await self._top_up_racing_a_move(limiter)
+        client = await repo._get_client()
+        item = (
+            await client.get_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": schema.pk_bucket(repo._namespace_id, "c", "budget", 0)},
+                    "SK": {"S": schema.sk_state()},
+                },
+                ConsistentRead=True,
+            )
+        )["Item"]
+        meta = await repo.get_entity("c", consistent_read=True)
+        assert item["parent_id"] == {"S": "p2"}
+        assert item[schema.BUCKET_FIELD_PGEN] == {"N": str(meta.parent_generation)}
+        assert await _tu(repo, "c", "cal", resource="budget") == 5_000
+
+    async def test_a_multi_resource_acquire_debits_the_new_parent(self, limiter, clock):
+        """ADR-148: one lease over `r` and `budget` after the race; both
+        cascade to p2, and p1's budget is never touched."""
+        await self._top_up_racing_a_move(limiter)
+        clock[0] += 1
+        async with limiter.acquire("c", "r", {"rpm": 1}, also={"budget": {"cal": 3}}):
+            pass
+        p2 = await limiter.check_availability("p2", "budget")
+        p1 = await limiter.check_availability("p1", "budget")
+        assert p2.status("cal").available == 7
+        assert p1.status("cal").available == 10
+
+
 async def _try_on(lim, entity, amounts, resource):
     try:
         await _spend(lim, entity, amounts, resource)
