@@ -1772,3 +1772,156 @@ class TestAnOlderStampNeverMovesTheCacheBack:
             entity.incarnation,
             1,
         )
+
+
+def _cancelled(codes: list[str]):
+    """A cancelled transaction with these per-item reasons."""
+    from botocore.exceptions import ClientError
+
+    return ClientError(
+        {
+            "Error": {"Code": "TransactionCanceledException", "Message": "cancelled"},
+            "CancellationReasons": [{"Code": code} for code in codes],
+        },
+        "TransactWriteItems",
+    )
+
+
+def _meta_check_lost(items: list[dict]) -> list[str]:
+    """Reasons for a transaction whose META checks failed and nothing else did."""
+    return ["ConditionalCheckFailed" if "ConditionCheck" in item else "None" for item in items]
+
+
+def _update_lost(items: list[dict]) -> list[str]:
+    """Reasons for a transaction whose rf-locked update lost its lock."""
+    return ["ConditionalCheckFailed" if "Update" in item else "None" for item in items]
+
+
+class TestEverySendKeepsTheMetaPin:
+    """Each send of a commit that creates a bucket routes a lost META check to a re-plan."""
+
+    @staticmethod
+    async def _child_kept_parent_created(limiter) -> Repository:
+        """user/gpt-4 exists; org-a/gpt-4 must be created (a check on org-a)."""
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        client = await repo._get_client()
+        await client.delete_item(
+            TableName=TABLE,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "org-a", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return repo
+
+    @staticmethod
+    def _scripted(repo, *failures):
+        """Fail the first sends with these reason builders, then send for real."""
+        real = repo.transact_write
+        sent: list[list[str]] = []
+
+        async def transact_write(items):
+            sent.append([next(iter(item)) for item in items])
+            if len(sent) <= len(failures):
+                raise _cancelled(failures[len(sent) - 1](items))
+            return await real(items)
+
+        return sent, patch.object(repo, "transact_write", transact_write)
+
+    async def test_the_re_send_after_a_claim_keeps_its_pin(self, limiter):
+        from unittest.mock import AsyncMock
+
+        from zae_limiter.lease import Lease
+
+        repo = await self._child_kept_parent_created(limiter)
+        sent, scripted = self._scripted(repo, _update_lost, _meta_check_lost)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with scripted, patch.object(Lease, "_claim_owner_stamps", AsyncMock(return_value=True)):
+            async with slow.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+        # The send, the re-send after the claim (lost its META check), the re-plan.
+        assert sent == [["Update", "Put", "ConditionCheck"]] * 3
+        assert await _item(repo, "org-a", "gpt-4") is not None
+
+    async def test_the_retry_keeps_its_pin(self, limiter):
+        repo = await self._child_kept_parent_created(limiter)
+        await repo.set_resource_defaults("chat", [RPM])
+        # The child's chat bucket is created; the parent's exists.
+        async with RateLimiter(repository=repo).acquire("org-a", "chat", consume={"rpm": 1}):
+            pass
+        sent, scripted = self._scripted(repo, _update_lost, _meta_check_lost)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with scripted:
+            async with slow.acquire("user", "chat", consume={"rpm": 1}):
+                pass
+        # The send (the parent's lock lost), the retry re-issuing the innocent
+        # create with its check (lost), and the re-plan.
+        assert sent[:2] == [
+            ["Put", "Update", "ConditionCheck"],
+            ["Put", "Update", "ConditionCheck"],
+        ]
+        assert len(sent) == 3
+        assert await _item(repo, "user", "chat") is not None
+
+    async def test_a_multi_resource_commit_that_loses_twice_is_contended(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        for resource in ("chat", "code"):
+            await repo.set_resource_defaults(resource, [RPM])
+        sent, scripted = self._scripted(repo, _meta_check_lost, _meta_check_lost)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with scripted:
+            with pytest.raises(RateLimitExceeded) as raised:
+                async with slow.acquire(
+                    "user", "chat", consume={"rpm": 1}, also={"code": {"rpm": 1}}
+                ):
+                    pytest.fail("a lost META check must not admit")
+        assert raised.value.contended
+        assert len(sent) == 2
+        assert await _item(repo, "user", "chat") is None
+
+
+class TestAnOlderStampOnTheSinglePath:
+    """F7 on the single-item path: an outdated stamp never names a parent to debit."""
+
+    async def test_a_move_to_no_parent_is_not_undone_by_an_older_shard(self, repo):
+        await repo.set_resource_defaults("gpt-4", [RPM])
+        for org in ("org-a", "org-b"):
+            await repo.create_entity(org)
+        await repo.create_entity("user", parent_id="org-a", cascade=True)
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+            async with limiter.acquire("org-b", "gpt-4", consume={"rpm": 1}):
+                pass
+        await repo.set_parent("user", "org-b")  # generation 1
+        await repo.set_parent("user", None)  # generation 2: no parent, no cascade
+
+        fresh = await _open_repo()
+        ns = fresh._namespace_id
+        async with RateLimiter(repository=fresh) as limiter:
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass  # learns generation 2, no parent
+            assert fresh._entity_cache[(ns, "user")][:2] == (False, None)
+            client = await repo._get_client()
+            await client.update_item(  # as a fan-out that has not reached it yet
+                TableName=TABLE,
+                Key={
+                    "PK": {"S": schema.pk_bucket(ns, "user", "gpt-4", 0)},
+                    "SK": {"S": schema.sk_state()},
+                },
+                UpdateExpression="SET #c = :t, parent_id = :b, pgen = :g",
+                ExpressionAttributeNames={"#c": "cascade"},
+                ExpressionAttributeValues={
+                    ":t": {"BOOL": True},
+                    ":b": {"S": "org-b"},
+                    ":g": {"N": "1"},
+                },
+            )
+            org_b = await _consumed(repo, "org-b")
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user"}
+            assert fresh._entity_cache[(ns, "user")][:2] == (False, None)
+        await fresh.close()
+        assert await _consumed(repo, "org-b") == org_b
