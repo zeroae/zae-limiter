@@ -417,6 +417,31 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def restamp_owner_if_current(
+        self, entity_id: str, resource: str, shard_id: int, incarnation: str
+    ) -> bool:
+        """
+        Claim a bucket stamped by another incarnation, if this one is current (ADR-150).
+
+        The slow path's owner stamp only overwrites a stamp of its own
+        incarnation, because its META read is eventually consistent and may be
+        a deleted predecessor's. When that pin is lost to another incarnation,
+        one strongly consistent META read settles it: if ``incarnation`` is
+        current, the bucket is a predecessor's leftover and is restamped with
+        the current owner (``cascade``, ``parent_id``, generation and
+        incarnation), never lowering a newer stamp; if not, it is left alone.
+
+        Args:
+            entity_id: The bucket's owner.
+            resource: The bucket's resource.
+            shard_id: The bucket's shard.
+            incarnation: The incarnation the caller's pass read.
+
+        Returns:
+            Whether the bucket was restamped.
+        """
+        ...
+
     def get_bucket(
         self, entity_id: str, resource: str, limit_name: str, shard_id: int = 0
     ) -> "BucketState | None":

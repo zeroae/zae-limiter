@@ -552,16 +552,6 @@ class TestStaleWriters:
                 async with slow.acquire("user", "gpt-4", consume={"rpm": 1}):
                     pass
 
-    async def test_a_backend_without_the_claim_skips_it(self):
-        from types import SimpleNamespace
-        from typing import cast
-
-        from zae_limiter.lease import Lease
-        from zae_limiter.repository_protocol import RepositoryProtocol
-
-        lease = Lease(repository=cast(RepositoryProtocol, SimpleNamespace()))
-        await lease._claim_owner_stamps({}, RuntimeError("x"))
-
     async def test_a_predecessors_bucket_never_outranks_the_recreated_entity(self, repo, other):
         """Skew probe: its generation is higher, its incarnation is not this one."""
         await self._leftover_from_a_fast_clock(repo, other)

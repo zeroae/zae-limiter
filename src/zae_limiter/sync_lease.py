@@ -1304,9 +1304,6 @@ class SyncLease:
         Returns:
             Whether any bucket was claimed.
         """
-        restamp = getattr(self.repository, "restamp_owner_if_current", None)
-        if restamp is None:
-            return False
         claimed = False
         images = _retry_failure_images(exc, list(groups))
         for key, group_entries in groups.items():
@@ -1318,7 +1315,10 @@ class SyncLease:
             if stored is None or stored == owner._parent_incarnation:
                 continue
             try:
-                claimed = restamp(*key, owner._parent_incarnation) or claimed
+                claimed = (
+                    self.repository.restamp_owner_if_current(*key, owner._parent_incarnation)
+                    or claimed
+                )
             except Exception:
                 logger.warning(
                     "could not claim a predecessor's bucket for resource=%s shard=%d",
