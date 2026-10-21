@@ -1508,3 +1508,68 @@ class TestSyncTwin:
         with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
             assert {e.entity_id for e in lease.entries} == {"user", "org-b"}
         repo.close()
+
+
+class TestTheParentShardHint:
+    """F2 (review of Stack B): a missing-shard hint belongs to the parent it came from."""
+
+    QUOTA = Limit.quota("rpd", 100, cron="0 0 * * *")
+
+    async def test_the_old_parents_hint_never_creates_a_new_parent_shard(self, limiter, other):
+        """The cache names org-a at 4 shards; the fast path finds org-a's shard 3
+        missing; META names org-b (1 shard). Honouring 3 there created org-b
+        shard 3 at count 1 with a fresh full grant: 198 held + 2 used of 100."""
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [self.QUOTA])
+        await repo.create_entity("org-a")
+        await repo.create_entity("org-b")
+        await repo.create_entity("user", parent_id="org-a", cascade=True)
+        async with limiter.acquire("user", "gpt-4", consume={"rpd": 1}):
+            pass  # user cached under org-a
+        async with other.acquire("org-b", "gpt-4", consume={"rpd": 1}):
+            pass  # org-b's shard 0 exists
+        ns = repo._namespace_id
+        cascade, parent, shards = repo._entity_cache[(ns, "org-a")]
+        repo._entity_cache[(ns, "org-a")] = (cascade, parent, {**shards, "gpt-4": 4})
+
+        await other._repository.set_parent("user", "org-b")
+        client = await repo._get_client()
+        await client.update_item(  # the child's next fast-path write fails on its stamp
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET vu = :z",
+            ExpressionAttributeValues={":z": {"N": "0"}},
+        )
+        # This process has not seen the move.
+        repo._entity_cache[(ns, "user")] = (True, "org-a", repo._entity_cache[(ns, "user")][2])
+
+        import zae_limiter.repository as repository_module
+
+        real = repository_module.random.randrange
+
+        def last(n, *args, **kwargs):
+            return n - 1 if not args else real(n, *args, **kwargs)
+
+        with patch.object(repository_module.random, "randrange", side_effect=last):
+            async with limiter.acquire("user", "gpt-4", consume={"rpd": 1}) as lease:
+                assert {(e.entity_id, e._shard_id) for e in lease.entries} == {
+                    ("user", 0),
+                    ("org-b", 0),
+                }
+
+        assert await _item(repo, "org-b", "gpt-4", 3) is None
+        org_b = await _item(repo, "org-b", "gpt-4", 0)
+        tk = int(org_b[schema.bucket_attr("rpd", "tk")]["N"])
+        assert tk == 98_000, "org-b holds its allowance less the two it admitted"
+
+    def test_a_hinted_shard_past_the_count_is_redrawn(self, limiter):
+        repo = limiter._repository
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            assert limiter._slow_path_shard("org-b", "gpt-4", 3) == (0, 1)
+            assert limiter._slow_path_shard("org-b", "gpt-4", 3, 2) == (0, 2)
+        assert limiter._slow_path_shard("org-b", "gpt-4", 3, 4) == (3, 4)  # a doubling's draw
+        repo._entity_cache[(repo._namespace_id, "org-b")] = (False, None, {"gpt-4": 4})
+        assert limiter._slow_path_shard("org-b", "gpt-4", 3) == (3, 4)  # ADR-133: in range

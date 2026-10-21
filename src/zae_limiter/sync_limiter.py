@@ -78,7 +78,8 @@ logger = logging.getLogger(__name__)
 _ENTITY_CONFIG_SOURCES: frozenset[str] = frozenset({"entity", "entity_default"})
 MAX_ACQUIRE_RESOURCES = 16
 _MAX_TRANSACT_ITEMS = 100
-_SlowPart = tuple[str, dict[str, int], int | None, int | None, int | None]
+_ParentHint = tuple[str, int]
+_SlowPart = tuple[str, dict[str, int], int | None, int | None, _ParentHint | None]
 
 
 def _is_custom_config(config_source: str | None) -> bool:
@@ -747,7 +748,7 @@ class SyncRateLimiter:
             lease: SyncLease | None = None
             slow_path_shard: int | None = None
             slow_path_shard_count: int | None = None
-            slow_path_parent_shard: int | None = None
+            slow_path_parent_shard: _ParentHint | None = None
             if len(parts) > 1:
                 lease = self._acquire_resources(entity_id, parts)
             elif self._speculative_writes:
@@ -767,7 +768,7 @@ class SyncRateLimiter:
                     consume=consume,
                     shard_id=slow_path_shard,
                     shard_count=slow_path_shard_count,
-                    parent_shard_id=slow_path_parent_shard,
+                    parent_hint=slow_path_parent_shard,
                 )
             lease._commit_initial()
         except (
@@ -805,7 +806,7 @@ class SyncRateLimiter:
         consume: dict[str, int],
         use_rejection_cache: bool = True,
         prechecked: tuple[frozenset[int], frozenset[int]] | None = None,
-    ) -> tuple[SyncLease | None, int, int | None, int | None]:
+    ) -> tuple[SyncLease | None, int, int | None, _ParentHint | None]:
         """Try the speculative fast path for acquire (issue #315).
 
         SyncRepository checks its own entity cache (issue #318) and issues
@@ -821,7 +822,9 @@ class SyncRateLimiter:
             observed on the failure image (or after the bump), which the slow
             path must use to size and stamp a shard it creates — a failed
             speculative write never updates the entity cache (issue #439).
-            Both are meaningless when ``lease`` is not None.
+            The fourth element is the parent shard the slow path should target
+            (:data:`_ParentHint`), or None. All three are meaningless when
+            ``lease`` is not None.
 
         ``use_rejection_cache`` is False when the caller passed ``limits=``:
         the cached states describe the stored parameters, not an override.
@@ -863,10 +866,12 @@ class SyncRateLimiter:
                 entity_id=entity_id, resource=resource, consume=consume, now_ms=now_ms
             )
         if not result.success:
+            written_parent = result.debited_parent_id or result.parent_id
             parent_hint = (
-                result.parent_result.shard_id
+                (written_parent, result.parent_result.shard_id)
                 if result.parent_result is not None
-                and result.parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+                and written_parent is not None
+                and (result.parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING)
                 else None
             )
             if result.parent_result is not None and result.parent_result.success:
@@ -1055,7 +1060,7 @@ class SyncRateLimiter:
         consume: dict[str, int],
         result: "SpeculativeResult",
         now_ms: int,
-    ) -> tuple[SyncLease | None, int | None]:
+    ) -> tuple[SyncLease | None, _ParentHint | None]:
         """Handle parent failure from nested SpeculativeResult (issue #318).
 
         Child succeeded speculatively (result.success=True).
@@ -1064,10 +1069,11 @@ class SyncRateLimiter:
         slow path, or fast-reject.
 
         Returns:
-            ``(lease, parent_shard_id)``. ``lease`` is set when the parent-only
+            ``(lease, parent_hint)``. ``lease`` is set when the parent-only
             slow path succeeded, None when the full slow path is needed.
-            ``parent_shard_id`` is a parent shard the slow path must target —
-            one the speculative write found MISSING, or the brand-new shard a
+            ``parent_hint`` is the parent shard the slow path must target, with
+            the parent it belongs to (:data:`_ParentHint`) — one the
+            speculative write found MISSING, or the brand-new shard a
             wcu-driven doubling added — and None when the slow path is free to
             draw its own, which it must be for an exhausted shard (issue #474).
 
@@ -1080,8 +1086,8 @@ class SyncRateLimiter:
         parent_result = result.parent_result
         parent_shard = parent_result.shard_id
         parent_shard_count = parent_result.shard_count
-        parent_hint = (
-            parent_shard
+        parent_hint: _ParentHint | None = (
+            (parent_id, parent_shard)
             if parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
             else None
         )
@@ -1116,7 +1122,7 @@ class SyncRateLimiter:
                 self._compensate_child(
                     entity_id, resource, consume, result.shard_id, result.buckets
                 )
-                return (None, parent_shard)
+                return (None, (parent_id, parent_shard))
         entries: list[LeaseEntry] = []
         for state in result.buckets:
             if state.limit_name not in consume:
@@ -1959,7 +1965,7 @@ class SyncRateLimiter:
         consume: dict[str, int],
         shard_id: int | None = None,
         shard_count: int | None = None,
-        parent_shard_id: int | None = None,
+        parent_hint: _ParentHint | None = None,
     ) -> SyncLease:
         """The slow path and its initial commit, re-planned once on a lost move.
 
@@ -1991,7 +1997,7 @@ class SyncRateLimiter:
                     consume=consume,
                     shard_id=shard_id,
                     shard_count=shard_count,
-                    parent_shard_id=parent_shard_id,
+                    parent_hint=parent_hint,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
                     consistent_owner=owner_reread,
@@ -2095,7 +2101,7 @@ class SyncRateLimiter:
 
             def _attempt(
                 resource: str, consume: dict[str, int], avoid: tuple[frozenset[int], frozenset[int]]
-            ) -> tuple[SyncLease | None, int, int | None, int | None] | Exception:
+            ) -> tuple[SyncLease | None, int, int | None, _ParentHint | None] | Exception:
                 try:
                     outcome = self._try_speculative_acquire(
                         entity_id=entity_id, resource=resource, consume=consume, prechecked=avoid
@@ -2189,7 +2195,7 @@ class SyncRateLimiter:
         def _plan(
             part: _SlowPart, disable_moves: bool, moves_contended: bool, reread: bool
         ) -> SyncLease | Exception:
-            resource, consume, shard, shard_count, parent_shard = part
+            resource, consume, shard, shard_count, parent_hint = part
             try:
                 return self._do_acquire(
                     entity_id=entity_id,
@@ -2198,7 +2204,7 @@ class SyncRateLimiter:
                     consume=consume,
                     shard_id=shard,
                     shard_count=shard_count,
-                    parent_shard_id=parent_shard,
+                    parent_hint=parent_hint,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
                     consistent_owner=reread,
@@ -2382,7 +2388,7 @@ class SyncRateLimiter:
         consume: dict[str, int],
         shard_id: int | None = None,
         shard_count: int | None = None,
-        parent_shard_id: int | None = None,
+        parent_hint: _ParentHint | None = None,
         disable_moves: bool = False,
         moves_contended: bool = False,
         consistent_owner: bool = False,
@@ -2408,8 +2414,11 @@ class SyncRateLimiter:
             shard_count: The shard_count the fast path observed on its failure
                 image, used to size and stamp a shard created here. None
                 falls back to the entity cache.
-            parent_shard_id: Parent shard the fast path found missing, so it
-                is created where the fast path looked rather than re-drawn.
+            parent_hint: Parent shard the fast path found missing (or a wcu
+                doubling added), with the parent it belongs to, so it is
+                created where the fast path looked rather than re-drawn. Used
+                only when that parent is the one this pass reads from META: a
+                move (ADR-150) makes the fast path's parent a stale guess.
         """
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
@@ -2417,7 +2426,7 @@ class SyncRateLimiter:
         cache_mark = rejection_cache.mark() if rejection_cache is not None else None
         now_ms = self._repository._now_ms()
         zeroed: set[tuple[str, str]] = set()
-        child_shard, child_shard_count = self._repository.select_shard(
+        child_shard, child_shard_count = self._slow_path_shard(
             entity_id, resource, shard_id, shard_count
         )
         entity_shards: dict[str, tuple[int, int]] = {entity_id: (child_shard, child_shard_count)}
@@ -2463,9 +2472,10 @@ class SyncRateLimiter:
             )
             entity_limits[parent_id] = parent_limits
             entity_config_sources[parent_id] = parent_config_source
-            entity_shards[parent_id] = self._repository.select_shard(
-                parent_id, resource, parent_shard_id
+            hinted = (
+                parent_hint[1] if parent_hint is not None and parent_hint[0] == parent_id else None
             )
+            entity_shards[parent_id] = self._slow_path_shard(parent_id, resource, hinted)
             parent_entity, parent_buckets = self._fetch_entity_and_buckets(
                 parent_id, resource, entity_shards[parent_id][0]
             )
@@ -2689,6 +2699,29 @@ class SyncRateLimiter:
             _unknown_keys=unknown_keys,
             _cache_mark=cache_mark,
         )
+
+    def _slow_path_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int | None = None,
+        shard_count: int | None = None,
+    ) -> tuple[int, int]:
+        """The shard the slow path reads and, if missing, creates (GHSA-76rv, #439).
+
+        :meth:`SyncRepository.select_shard`, except that an explicit shard at or
+        past the count is never honoured: a bucket created there would be
+        stamped with a count that does not include it, so no sibling's grant
+        covers its slot and a quota would get a fresh share on top of the
+        entity's allowance (ADR-145 I8). It is re-drawn instead. The shards
+        the fast path hands over always fit: an ADR-133 create's shard was
+        drawn from the count the slow path reads, and a wcu doubling's from
+        ``range(old, new)`` with ``new`` passed as the count.
+        """
+        shard, count = self._repository.select_shard(entity_id, resource, shard_id, shard_count)
+        if shard_id is not None and shard >= count:
+            shard, count = self._repository.select_shard(entity_id, resource, None, shard_count)
+        return (shard, count)
 
     def _fetch_entity_and_buckets(
         self, entity_id: str, resource: str, shard_id: int
