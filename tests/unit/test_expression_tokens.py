@@ -481,6 +481,27 @@ class TestCompositeBuilders:
             )["Update"]
             assert_expression_safe(update)
 
+    def test_quota_top_up_pin(self) -> None:
+        """ADR-149: a quota credit pins its top-up, present (`=`) or absent."""
+        from zae_limiter.models import QuotaPeriodPin
+
+        period = QuotaPeriodPin(9, None, ("1m0h0", None, None))
+        update = _repo().build_composite_adjust(
+            "user-1",
+            "api",
+            deltas={DOTTED: -1000, HYPHENATED: -2000},
+            ceilings={
+                DOTTED: CreditCeiling(
+                    5000, 10_000, 2, (None, None), True, period, topped_up_milli=3000
+                ),
+                HYPHENATED: CreditCeiling(9000, 9000, 1, (None, "1m0h0"), True, period),
+            },
+            pin=(2, None, (None, None, None)),
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#bu0 = :bu0" in update["ConditionExpression"]
+        assert "attribute_not_exists(#bu1)" in update["ConditionExpression"]
+
     def test_trimmed_credit(self) -> None:
         """#721: the fallback re-issues the credit with ``vu = 0`` in the same write."""
         update = _repo().build_composite_adjust(

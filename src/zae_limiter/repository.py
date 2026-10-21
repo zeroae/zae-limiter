@@ -240,11 +240,12 @@ def _credit_limit_terms(
 
     The balance after the credit stays at or below the ceiling (debt may take
     any credit that satisfies it), and the ceiling is still the one computed:
-    the stored base capacity (a limit change), the grant count (a re-grant)
-    and the schedule overrides (a window's capacity or scale changed under the
-    same cron) hold. With ``lease.credit_ceiling`` the one place a credited
-    limit's ceiling and pins are decided: a new input to the ceiling (a quota
-    top-up, #720) adds its term here. Tokens are positional (#634).
+    the stored base capacity (a limit change), the grant count (a re-grant),
+    the schedule overrides (a window's capacity or scale changed under the
+    same cron) and a quota's top-up (ADR-149) hold. With
+    ``lease.credit_ceiling`` the one place a credited limit's ceiling and pins
+    are decided: a new input to the ceiling adds its term here. Tokens are
+    positional (#634).
     """
     tk_alias = f"#bt{i}"
     values[f":bm{i}"] = {"N": str(ceiling.ceiling_milli + delta)}
@@ -268,6 +269,15 @@ def _credit_limit_terms(
             alias = f"#bx{code}{i}"
             names[alias] = schema.bucket_attr(name, field)
             terms.append(_pin_string(alias, f":bx{code}{i}", raw, values))
+        if ceiling.quota:
+            # ADR-149: an operator reset REMOVEs the top-up and can leave every
+            # other pin as it was (its `vu = 0` is re-stamped by the next pass).
+            names[f"#bu{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TU)
+            if ceiling.topped_up_milli is None:
+                terms.append(f"attribute_not_exists(#bu{i})")
+            else:
+                values[f":bu{i}"] = {"N": str(ceiling.topped_up_milli)}
+                terms.append(f"#bu{i} = :bu{i}")
     return terms
 
 
