@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
+from botocore.exceptions import ClientError
+
 from .limiter import OnUnavailable as OnUnavailable
 
 if TYPE_CHECKING:
@@ -28,6 +30,8 @@ from .bucket import (
     would_refill_satisfy,
 )
 from .exceptions import (
+    IAM_DOCS_URL,
+    PermissionDenied,
     RateLimiterUnavailable,
     RateLimitExceeded,
     ResourceDisabled,
@@ -92,6 +96,34 @@ def _is_custom_config(config_source: str | None) -> bool:
     out. Kept in one place so the call sites cannot drift apart again (#489).
     """
     return config_source in _ENTITY_CONFIG_SOURCES
+
+
+_ACCESS_DENIED = "AccessDeniedException"
+
+
+def _access_denied_in(exc: BaseException) -> ClientError | None:
+    """The ``AccessDeniedException`` anywhere in ``exc``'s cause chain, if any (#751).
+
+    Walks ``__cause__`` and ``__context__`` (each link once, so a cycle ends),
+    since the denial may arrive wrapped: a ``RateLimiterUnavailable`` raised
+    from it, or an error raised while handling it. DynamoDB reports a denied
+    single-item write and a denied item inside ``TransactWriteItems`` the same
+    way, as this code, never as ``TransactionCanceledException``.
+    """
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending:
+        link = pending.pop()
+        if id(link) in seen:
+            continue
+        seen.add(id(link))
+        if (
+            isinstance(link, ClientError)
+            and link.response.get("Error", {}).get("Code") == _ACCESS_DENIED
+        ):
+            return link
+        pending.extend(e for e in (link.__cause__, link.__context__) if e is not None)
+    return None
 
 
 def _item_overrules_debited_parent(result: "SpeculativeResult") -> bool:
@@ -780,6 +812,16 @@ class SyncRateLimiter:
         ):
             raise
         except Exception as e:
+            denied = _access_denied_in(e)
+            if denied is not None:
+                message = denied.response.get("Error", {}).get("Message") or str(denied)
+                raise PermissionDenied(
+                    f"{message} -- acquire() needs the IAM actions listed at {IAM_DOCS_URL}",
+                    cause=e,
+                    stack_name=self._repository.stack_name,
+                    entity_id=entity_id,
+                    resource=resource,
+                ) from e
             if mode == OnUnavailable.ALLOW:
                 yield SyncLease(repository=self._repository, degraded=True)
                 return

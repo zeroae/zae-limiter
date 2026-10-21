@@ -27,9 +27,11 @@ from zae_limiter import (
 )
 from zae_limiter.bucket import calculate_available
 from zae_limiter.exceptions import (
+    IAM_DOCS_URL,
     InvalidIdentifierError,
     InvalidNameError,
     LeaseExpiredError,
+    PermissionDenied,
     VersionMismatchError,
 )
 from zae_limiter.infra.sync_discovery import SyncInfrastructureDiscovery
@@ -9634,6 +9636,108 @@ class TestSlowPathCommitErrorsHonourOnUnavailable:
                     "commit-retry", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.ALLOW
                 ):
                     pass
+
+
+class TestPermissionDeniedIsNeverAdmitted:
+    """An IAM denial raises `PermissionDenied` under every mode (#751).
+
+    ALLOW covers an outage, which heals. A missing permission does not, and the
+    denied write is the one that would create the bucket, so before #751 ALLOW
+    admitted every later call with no limit at all (50 of 50 against 2/day).
+    On real AWS both the fast path's `UpdateItem` and a `Put` inside the create's
+    `TransactWriteItems` fail as `AccessDeniedException` (the #750 red run).
+    """
+
+    MODES = [OnUnavailable.ALLOW, OnUnavailable.BLOCK]
+
+    @staticmethod
+    def _denied(operation: str) -> ClientError:
+        return ClientError(
+            {
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": "User: arn:aws:sts::123456789012:assumed-role/app/s is not authorized to perform: dynamodb:PutItem",
+                }
+            },
+            operation,
+        )
+
+    @staticmethod
+    def _expect_denied(sync_limiter, entity_id, mode):
+        admitted = False
+        with pytest.raises(PermissionDenied) as exc_info:
+            with sync_limiter.acquire(entity_id, "gpt-4", consume={"rpm": 1}, on_unavailable=mode):
+                admitted = True
+        assert admitted is False
+        return exc_info.value
+
+    @pytest.mark.parametrize("mode", MODES)
+    def test_a_denied_fast_path_write_is_never_admitted(self, sync_limiter, mode):
+        repo = sync_limiter._repository
+        repo.set_resource_defaults("gpt-4", [Limit.per_day("rpm", 2)])
+        with sync_limiter.acquire("deny-fast", "gpt-4", consume={"rpm": 1}):
+            pass
+        with patch.object(repo, "speculative_consume", side_effect=self._denied("UpdateItem")):
+            exc = self._expect_denied(sync_limiter, "deny-fast", mode)
+        assert isinstance(exc, RateLimiterUnavailable)
+        assert "not authorized to perform: dynamodb:PutItem" in str(exc)
+        assert IAM_DOCS_URL in str(exc)
+        assert exc.entity_id == "deny-fast"
+        assert exc.resource == "gpt-4"
+        assert exc.stack_name == repo.stack_name
+        assert isinstance(exc.__cause__, ClientError)
+        assert exc.cause is exc.__cause__
+
+    @pytest.mark.parametrize("mode", MODES)
+    def test_a_denied_create_transaction_is_never_admitted(self, sync_limiter, mode):
+        repo = sync_limiter._repository
+        repo.set_resource_defaults("gpt-4", [Limit.per_day("rpm", 2)])
+        with patch.object(repo, "transact_write", side_effect=self._denied("TransactWriteItems")):
+            exc = self._expect_denied(sync_limiter, "deny-create", mode)
+        assert isinstance(exc, RateLimiterUnavailable)
+        assert repo.get_buckets("deny-create") == []
+
+    def test_a_denial_deeper_in_the_chain_is_still_detected(self, sync_limiter):
+        """A denial wrapped as a `__cause__` of a `__context__` still counts."""
+        repo = sync_limiter._repository
+        repo.set_resource_defaults("gpt-4", [Limit.per_day("rpm", 2)])
+        middle = ValueError("while handling the denial")
+        middle.__context__ = self._denied("TransactWriteItems")
+        outer = RuntimeError("wrapped")
+        outer.__cause__ = middle
+        with patch.object(repo, "transact_write", side_effect=outer):
+            exc = self._expect_denied(sync_limiter, "deny-deep", OnUnavailable.ALLOW)
+        assert exc.cause is outer
+        assert "not authorized to perform" in str(exc)
+
+    def test_an_outage_still_degrades_under_allow(self, sync_limiter):
+        """Throughput exhaustion is an outage: ALLOW keeps admitting, as before."""
+        repo = sync_limiter._repository
+        repo.set_resource_defaults("gpt-4", [Limit.per_day("rpm", 2)])
+        throttled = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow"}},
+            "TransactWriteItems",
+        )
+        with patch.object(repo, "transact_write", side_effect=throttled):
+            with sync_limiter.acquire(
+                "outage", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.ALLOW
+            ) as lease:
+                assert lease.degraded is True
+
+    def test_an_outage_is_not_reported_as_a_denial_under_block(self, sync_limiter):
+        repo = sync_limiter._repository
+        repo.set_resource_defaults("gpt-4", [Limit.per_day("rpm", 2)])
+        throttled = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow"}},
+            "TransactWriteItems",
+        )
+        with patch.object(repo, "transact_write", side_effect=throttled):
+            with pytest.raises(RateLimiterUnavailable) as exc_info:
+                with sync_limiter.acquire(
+                    "outage-block", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.BLOCK
+                ):
+                    pass
+        assert not isinstance(exc_info.value, PermissionDenied)
 
 
 class TestRetryRejectionReportsTheRealWait:

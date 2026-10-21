@@ -14,6 +14,7 @@ ZAELimiterError (base)
 │   └── EntityExistsError
 ├── InfrastructureError
 │   ├── RateLimiterUnavailable
+│   │   └── PermissionDenied
 │   ├── StackOperationError
 │   ├── StackAlreadyExistsError
 │   ├── InfrastructureNotFoundError
@@ -69,6 +70,13 @@ ZAELimiterError (base)
 ## Infrastructure Exceptions
 
 ::: zae_limiter.exceptions.RateLimiterUnavailable
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+
+::: zae_limiter.exceptions.PermissionDenied
     options:
       show_root_heading: true
       show_source: false

@@ -487,7 +487,9 @@ The stack creates three managed IAM policies by default for different access pat
     (ADR-150), so every principal that acquires — and the aggregator's role, which
     pre-creates shards — needs `dynamodb:ConditionCheckItem` on the table. The policies
     and roles this template creates grant it after `zae-limiter upgrade` or `deploy`;
-    custom IAM must add it, or bucket creates fail with `AccessDeniedException`.
+    custom IAM must add it. Without it a bucket create is denied, and `acquire()` raises
+    `PermissionDenied` under `BLOCK` and `ALLOW` alike
+    ([ALLOW never covers permission errors](../guide/unavailability.md#allow-never-covers-permission-errors)).
 
 !!! warning "`AcquireOnlyPolicy` gains `PutItem` and `UpdateItem` in v0.17.0"
     AWS authorises each `Put` and `Update` inside a `TransactWriteItems` by
