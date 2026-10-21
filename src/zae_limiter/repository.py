@@ -2075,7 +2075,7 @@ class Repository:
             return None
 
         entity = self._deserialize_entity(item)
-        self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
+        self._cache_owner_from_meta(entity_id, entity)
         return entity
 
     @clears_rejection_cache
@@ -2212,9 +2212,7 @@ class Repository:
         # per-resource policies learned under the old parent. The fan-out
         # relearns them for a parent, and with no parent nothing cascades.
         cache_key = (self._namespace_id, entity_id)
-        shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
-        self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, shards)
-        self._owner_stamp_cache[cache_key] = (entity.incarnation, entity.parent_generation)
+        self._cache_owner_from_meta(entity_id, entity)
         for key in [k for k in self._cascade_cache if k[:2] == cache_key]:
             del self._cascade_cache[key]
 
@@ -2686,7 +2684,7 @@ class Repository:
         cache_key = (self._namespace_id, entity_id)
         existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if entity is not None:
-            self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
+            self._cache_owner_from_meta(entity_id, entity)
         else:
             self._entity_cache[cache_key] = (False, None, existing_shards)
         return entity, buckets
@@ -4513,6 +4511,25 @@ class Repository:
             # it for a parent from its child's view (#684), so it teaches nothing.
             self._cascade_cache[(self._namespace_id, entity_id, resource)] = meta[0]
         return count
+
+    def _cache_owner_from_meta(self, entity_id: str, entity: Entity) -> None:
+        """Teach the entity cache the owner a META record names, unless it is older (ADR-150).
+
+        An eventually consistent META read can return a replica from before a
+        move: the same incarnation at a lower parent generation than this
+        process has already seen. Adopting it would put the old parent back,
+        and the warm path would then debit the old parent, be overruled by the
+        child's item and refund it (+2 WCU, never an over-admission). Such a
+        read keeps the cached cascade and parent and records nothing; any
+        other read replaces them and becomes the newest stamp seen. Shard
+        counts are kept either way.
+        """
+        if self._stamp_is_outdated(entity_id, entity.incarnation, entity.parent_generation):
+            return
+        cache_key = (self._namespace_id, entity_id)
+        shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
+        self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, shards)
+        self._owner_stamp_cache[cache_key] = (entity.incarnation, entity.parent_generation)
 
     def _stamp_is_outdated(self, entity_id: str, pinc: str | None, pgen: int | None) -> bool:
         """Whether an item's owner stamp is older than the newest seen (ADR-150).

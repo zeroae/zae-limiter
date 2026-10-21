@@ -1,6 +1,6 @@
 """Moving an entity to a new parent (ADR-150, #677)."""
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -376,6 +376,86 @@ class TestFanout:
             with pytest.raises(ClientError):
                 await repo.set_parent("user", "org-b")
         assert (await repo.get_entity("user", consistent_read=True)).parent_id == "org-b"
+
+
+class TestStaleMetaRead:
+    """An eventually consistent META read from before a move cannot move the cache back.
+
+    Without it the warm path debits the old parent, is overruled by the
+    child's item and refunds it: +2 WCU per call, never an over-admission.
+    """
+
+    @staticmethod
+    async def _moved_with_old_meta(limiter: RateLimiter) -> dict:
+        """Move `user` from org-a to org-b; return its META from before the move."""
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        old_meta = await _meta(repo, "user")
+        await repo.set_parent("user", "org-b")
+        return old_meta
+
+    @staticmethod
+    def _cached_owner(repo: Repository) -> tuple[bool, str | None]:
+        return repo._entity_cache[(repo._namespace_id, "user")][:2]
+
+    @staticmethod
+    async def _read_meta_as(repo: Repository, meta: dict) -> None:
+        """`get_entity` answered by a replica holding ``meta``."""
+        client = await repo._get_client()
+        with patch.object(client, "get_item", AsyncMock(return_value={"Item": meta})):
+            entity = await repo.get_entity("user")
+        assert entity is not None
+
+    @staticmethod
+    async def _batch_read_meta_as(repo: Repository, meta: dict) -> None:
+        """`batch_get_entity_and_buckets` answered by a replica holding ``meta``."""
+        real = repo._batch_get_all
+
+        async def stale(keys, **kwargs):
+            items = await real(keys, **kwargs)
+            return [meta if i["SK"]["S"] == schema.sk_meta() else i for i in items]
+
+        with patch.object(repo, "_batch_get_all", side_effect=stale):
+            entity, _buckets = await repo.batch_get_entity_and_buckets(
+                "user", [("user", "gpt-4", 0)]
+            )
+        assert entity is not None
+
+    @pytest.mark.parametrize("read", ["_read_meta_as", "_batch_read_meta_as"])
+    async def test_an_older_replica_leaves_the_cache_on_the_new_parent(self, limiter, read):
+        repo = limiter._repository
+        old_meta = await self._moved_with_old_meta(limiter)
+        cache_key = (repo._namespace_id, "user")
+        shards = dict(repo._entity_cache[cache_key][2])
+        newest = repo._owner_stamp_cache[cache_key]
+
+        await getattr(self, read)(repo, old_meta)
+
+        assert self._cached_owner(repo) == (True, "org-b")
+        assert repo._entity_cache[cache_key][2] == shards
+        assert repo._owner_stamp_cache[cache_key] == newest
+
+    @pytest.mark.parametrize("read", ["_read_meta_as", "_batch_read_meta_as"])
+    async def test_another_incarnation_still_replaces_it(self, limiter, read):
+        """A recreated entity's META is not comparable, so it is never older."""
+        repo = limiter._repository
+        old_meta = await self._moved_with_old_meta(limiter)
+        reborn = {**old_meta, schema.ENTITY_FIELD_PINC: {"S": "reborn"}}
+
+        await getattr(self, read)(repo, reborn)
+
+        assert self._cached_owner(repo) == (True, "org-a")
+        assert repo._owner_stamp_cache[(repo._namespace_id, "user")] == ("reborn", 0)
+
+    async def test_a_current_read_is_recorded_as_the_newest(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        repo._owner_stamp_cache.clear()
+
+        await repo.get_entity("user")
+
+        assert repo._owner_stamp_cache[(repo._namespace_id, "user")][1] == 0
+        assert self._cached_owner(repo) == (True, "org-a")
 
 
 class TestStaleWriters:
