@@ -87,6 +87,18 @@ _OPERATION_RETRY_CODES = frozenset(
         "IdempotentParameterMismatchException",
     }
 )
+_OPERATION_PERMANENT_REASONS = frozenset({"ValidationError", "ItemCollectionSizeLimitExceeded"})
+
+
+def _operation_retryable(error: ClientError) -> bool:
+    """Whether a reset or top-up should re-read and retry after ``error``."""
+    code = error.response.get("Error", {}).get("Code")
+    if code not in _OPERATION_RETRY_CODES:
+        return False
+    reasons = error.response.get("CancellationReasons") or []
+    return not any(reason.get("Code") in _OPERATION_PERMANENT_REASONS for reason in reasons)
+
+
 _IDEMPOTENCY_KEY = re.compile("[A-Za-z0-9._:-]{1,64}")
 
 
@@ -8110,7 +8122,7 @@ class SyncRepository:
             try:
                 self.transact_write(items, client_request_token=f"{token}-{attempt}")
             except ClientError as e:
-                if e.response.get("Error", {}).get("Code") in _OPERATION_RETRY_CODES:
+                if _operation_retryable(e):
                     last_error = e
                     continue
                 mine = self._landed_by(
@@ -8417,7 +8429,7 @@ class SyncRepository:
                 client_request_token=request_token,
             )
         except ClientError as e:
-            if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
+            if not _operation_retryable(e):
                 raise
             return (result, False)
         return (result, True)

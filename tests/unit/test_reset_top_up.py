@@ -727,6 +727,64 @@ def _tx_error(code):
     return ClientError({"Error": {"Code": code, "Message": code}}, "TransactWriteItems")
 
 
+class TestPermanentCancellation:
+    """Stack C review, F5: a cancellation no retry can clear raises AWS's own
+    error at once, instead of four attempts and "kept changing"."""
+
+    @staticmethod
+    async def _cancel_every_write(limiter, reason):
+        from botocore.exceptions import ClientError
+
+        client = await limiter._repository._get_client()
+        calls = []
+
+        async def cancelled(**kw):
+            calls.append(1)
+            reasons = [{"Code": "None"} for _ in kw["TransactItems"]]
+            reasons[0] = {"Code": reason, "Message": reason}
+            raise ClientError(
+                {
+                    "Error": {"Code": "TransactionCanceledException", "Message": reason},
+                    "CancellationReasons": reasons,
+                },
+                "TransactWriteItems",
+            )
+
+        client.transact_write_items = cancelled
+        return calls
+
+    @pytest.mark.parametrize("reason", ["ValidationError", "ItemCollectionSizeLimitExceeded"])
+    async def test_a_permanent_reason_is_raised_after_one_attempt(self, limiter, clock, reason):
+        from botocore.exceptions import ClientError
+
+        await limiter.set_limits("e", [CAL], resource="r")
+        await _spend(limiter, "e", {"cal": 1})
+        calls = await self._cancel_every_write(limiter, reason)
+        with pytest.raises(ClientError) as info:
+            await limiter._repository.reset_bucket("e", "r")
+        assert info.value.response["CancellationReasons"][0]["Code"] == reason
+        assert len(calls) == 1
+
+    async def test_a_lost_condition_is_still_retried(self, limiter, clock):
+        from zae_limiter import RateLimiterUnavailable
+
+        await limiter.set_limits("e", [CAL], resource="r")
+        await _spend(limiter, "e", {"cal": 1})
+        calls = await self._cancel_every_write(limiter, "ConditionalCheckFailed")
+        with pytest.raises(RateLimiterUnavailable, match="kept changing"):
+            await limiter._repository.reset_bucket("e", "r")
+        assert len(calls) == 4
+
+    async def test_a_permanent_reason_on_a_top_up_create_is_raised(self, limiter, clock):
+        from botocore.exceptions import ClientError
+
+        await limiter.set_limits("e", [CAL], resource="r")
+        calls = await self._cancel_every_write(limiter, "ValidationError")
+        with pytest.raises(ClientError):
+            await limiter._repository.top_up("e", "r", {"cal": 5})
+        assert len(calls) == 1
+
+
 def _carries_record(kw):
     return any(
         "Put" in item and item["Put"]["Item"]["SK"]["S"].startswith("#OP#")
