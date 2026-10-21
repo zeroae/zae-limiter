@@ -385,6 +385,15 @@ class TestCompositeBuilders:
         update = _repo().build_vu_reset("user-1", "api", shard_id=3)["Update"]
         assert_expression_safe(update)
 
+    @pytest.mark.parametrize(
+        "exists, pgen, pinc",
+        [(False, None, None), (True, 0, "-"), (True, 0, "2026-01-01T00:00:00Z"), (True, 7, "a1")],
+    )
+    def test_owner_check(self, exists, pgen, pinc) -> None:
+        """ADR-150: the ConditionCheck pinning a bucket create to its owner's META."""
+        check = _repo().build_owner_check("user-1", exists=exists, pgen=pgen, pinc=pinc)
+        assert_expression_safe(check["ConditionCheck"])
+
     def test_self_trimming_credit(self) -> None:
         """#721: each credited limit with a ceiling is conditioned on staying under it."""
         update = _repo().build_composite_adjust(
@@ -737,7 +746,8 @@ class TestClientWritesThroughMoto:
             with patch("zae_limiter.repository.random.randrange", return_value=1):
                 async with limiter.acquire("user-1", "api", consume={DOTTED: 1}):
                     pass
-        assert [next(iter(item)) for item in sent] == ["Put", "Update"]
+        # The create, its donor debit, and the owner's META check (ADR-150).
+        assert [next(iter(item)) for item in sent] == ["Put", "Update", "ConditionCheck"]
         for item in sent:
             assert_expression_safe(next(iter(item.values())))
 

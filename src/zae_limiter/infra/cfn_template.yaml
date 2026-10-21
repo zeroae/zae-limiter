@@ -539,6 +539,8 @@ Resources:
               - dynamodb:BatchGetItem
               - dynamodb:Query
               - dynamodb:TransactWriteItems
+              # A bucket create is pinned to its owner's META (ADR-150)
+              - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt RateLimitsTable.Arn
               - !Sub ${RateLimitsTable.Arn}/index/*
@@ -573,6 +575,7 @@ Resources:
               - dynamodb:DeleteItem
               - dynamodb:UpdateItem
               - dynamodb:BatchWriteItem
+              - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt RateLimitsTable.Arn
               - !Sub ${RateLimitsTable.Arn}/index/*
@@ -627,6 +630,8 @@ Resources:
               - dynamodb:BatchGetItem
               - dynamodb:Query
               - dynamodb:UpdateItem
+              # A bucket create is pinned to its owner's META (ADR-150)
+              - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt RateLimitsTable.Arn
               - !Sub ${RateLimitsTable.Arn}/index/*
@@ -670,6 +675,7 @@ Resources:
               - dynamodb:PutItem
               - dynamodb:UpdateItem
               - dynamodb:DeleteItem
+              - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt RateLimitsTable.Arn
               - !Sub ${RateLimitsTable.Arn}/index/*
@@ -784,6 +790,8 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:UpdateItem
                   - dynamodb:Query
+                  # A shard clone is pinned to its owner's META (ADR-150)
+                  - dynamodb:ConditionCheckItem
                 Resource:
                   - !GetAtt RateLimitsTable.Arn
                   - !Sub ${RateLimitsTable.Arn}/index/*

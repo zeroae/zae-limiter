@@ -60,6 +60,7 @@ from .sync_config_cache import ConfigSource
 from .sync_lease import (
     _CONTENTION_RETRY_AFTER_S,
     LeaseEntry,
+    OwnerStampLostError,
     PeriodNotAppliedError,
     QuotaMoveLostError,
     SyncLease,
@@ -1982,20 +1983,9 @@ class SyncRateLimiter:
         """
 
         def plan_and_commit(disable_moves: bool, moves_contended: bool = False) -> SyncLease:
-            lease = self._do_acquire(
-                entity_id=entity_id,
-                resource=resource,
-                limits_override=limits_override,
-                consume=consume,
-                shard_id=shard_id,
-                shard_count=shard_count,
-                parent_shard_id=parent_shard_id,
-                disable_moves=disable_moves,
-                moves_contended=moves_contended,
-            )
-            try:
-                lease._commit_initial()
-            except PeriodNotAppliedError:
+            period_redone = False
+            owner_reread = False
+            while True:
                 lease = self._do_acquire(
                     entity_id=entity_id,
                     resource=resource,
@@ -2006,9 +1996,19 @@ class SyncRateLimiter:
                     parent_shard_id=parent_shard_id,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
+                    consistent_owner=owner_reread,
                 )
-                lease._commit_initial()
-            return lease
+                try:
+                    lease._commit_initial()
+                    return lease
+                except PeriodNotAppliedError:
+                    if period_redone:
+                        raise
+                    period_redone = True
+                except OwnerStampLostError:
+                    if owner_reread:
+                        raise
+                    owner_reread = True
 
         try:
             return plan_and_commit(False)
@@ -2189,7 +2189,7 @@ class SyncRateLimiter:
         """
 
         def _plan(
-            part: _SlowPart, disable_moves: bool, moves_contended: bool
+            part: _SlowPart, disable_moves: bool, moves_contended: bool, reread: bool
         ) -> SyncLease | Exception:
             resource, consume, shard, shard_count, parent_shard = part
             try:
@@ -2203,16 +2203,20 @@ class SyncRateLimiter:
                     parent_shard_id=parent_shard,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
+                    consistent_owner=reread,
                 )
             except Exception as exc:
                 return exc
 
         def plan_and_commit(
-            disable_moves: bool, moves_contended: bool = False, redone: bool = False
+            disable_moves: bool,
+            moves_contended: bool = False,
+            redone: bool = False,
+            reread: bool = False,
         ) -> tuple[SyncLease, dict[str, frozenset[str]]]:
             outcomes = self._run_in_executor(
                 *[
-                    lambda part=part: _plan(part, disable_moves, moves_contended)
+                    lambda part=part: _plan(part, disable_moves, moves_contended, reread)
                     for part in slow_parts
                 ]
             )
@@ -2225,7 +2229,7 @@ class SyncRateLimiter:
                         self._commit_rejected_moves(plan.entries, plan._carriers)
                 raise error
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return plan_and_commit(True, moves_contended, redone)
+                return plan_and_commit(True, moves_contended, redone, reread)
             marks = [plan._cache_mark for plan in planned]
             lease = SyncLease(
                 repository=self._repository,
@@ -2238,7 +2242,11 @@ class SyncRateLimiter:
             except PeriodNotAppliedError:
                 if redone:
                     raise
-                return plan_and_commit(disable_moves, moves_contended, True)
+                return plan_and_commit(disable_moves, moves_contended, True, reread)
+            except OwnerStampLostError:
+                if reread:
+                    raise
+                return plan_and_commit(disable_moves, moves_contended, redone, True)
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }
@@ -2256,7 +2264,7 @@ class SyncRateLimiter:
 
     @staticmethod
     def _transaction_items(planned: list[SyncLease]) -> int:
-        """Items one commit of these plans writes: bucket items plus donor debits."""
+        """Items one commit of these plans sends: bucket items, donor debits, META checks."""
         buckets = {
             (entry.entity_id, entry.resource, entry._shard_id)
             for plan in planned
@@ -2268,7 +2276,13 @@ class SyncRateLimiter:
             for entry in plan.entries
             if entry._donor_debit is not None
         }
-        return len(buckets) + len(donors)
+        owners = {
+            entry.entity_id
+            for plan in planned
+            for entry in plan.entries
+            if entry._is_new and entry._owner_read
+        }
+        return len(buckets) + len(donors) + len(owners)
 
     def _find_disabled(self, entity_id: str, resources: list[str]) -> ResourceDisabled | None:
         """The first ``ResourceDisabled`` among resources the fast path left (ADR-148).
@@ -2373,10 +2387,15 @@ class SyncRateLimiter:
         parent_shard_id: int | None = None,
         disable_moves: bool = False,
         moves_contended: bool = False,
+        consistent_owner: bool = False,
     ) -> SyncLease:
         """Internal acquire implementation (the slow path).
 
         Args:
+            consistent_owner: Re-read every owner's META strongly consistently
+                (+1 RCU each). The re-plan after a bucket create was cancelled
+                by its META check (ADR-150): the eventually consistent read
+                that planned it may return the same stale record again.
             disable_moves: The third attempt after two lost ADR-145 moves
                 (design §6 step 6): a quota whose slot a sibling covers gets 0
                 this time instead of a move, and no donor debit rides. Only
@@ -2423,6 +2442,8 @@ class SyncRateLimiter:
                 entity_id=entity_id, resource=resource, level=level or "resource"
             )
         entity, child_buckets = self._fetch_entity_and_buckets(entity_id, resource, child_shard)
+        if consistent_owner:
+            entity = self._repository.get_entity(entity_id, consistent_read=True)
         entity_ids = [entity_id]
         owners: dict[str, Entity | None] = {entity_id: entity}
         cascades: dict[str, bool] = {entity_id: effective_cascade(policy[0], entity)}
@@ -2450,6 +2471,8 @@ class SyncRateLimiter:
             parent_entity, parent_buckets = self._fetch_entity_and_buckets(
                 parent_id, resource, entity_shards[parent_id][0]
             )
+            if consistent_owner:
+                parent_entity = self._repository.get_entity(parent_id, consistent_read=True)
             owners[parent_id] = parent_entity
             cascades[parent_id] = effective_cascade(parent_access.cascade, parent_entity)
             existing_buckets.update(parent_buckets)
@@ -2632,6 +2655,7 @@ class SyncRateLimiter:
                         _stamp_owner=owner is not None,
                         _parent_generation=owner.parent_generation if owner else None,
                         _parent_incarnation=owner.incarnation if owner else None,
+                        _owner_read=True,
                         _declared=status is not None,
                         _boundary_ms=boundary_ms,
                         _reset_edge_ms=reset_edge_ms,

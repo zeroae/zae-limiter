@@ -139,6 +139,7 @@ class TestIAMRoleParity:
         AcquireOnlyPolicy is for applications running acquire() only. It needs:
         - Read operations: GetItem, BatchGetItem, Query
         - Write: TransactWriteItems (atomic bucket updates)
+        - ConditionCheckItem: a bucket create's META pin (ADR-150)
 
         It intentionally excludes PutItem, DeleteItem, UpdateItem,
         BatchWriteItem (entity creation and config management).
@@ -149,6 +150,7 @@ class TestIAMRoleParity:
             "dynamodb:BatchGetItem",
             "dynamodb:Query",
             "dynamodb:TransactWriteItems",
+            "dynamodb:ConditionCheckItem",
         }
         missing = required_acq_actions - acq_actions
 
@@ -225,7 +227,8 @@ class TestNamespaceScopedPolicies:
 
     def test_namespace_acquire_policy_actions(self) -> None:
         """ns-acq: UpdateItem on namespace prefix, read-only on shared prefix."""
-        # Statement 1: namespace prefix — read + write
+        # Statement 1: namespace prefix — read + write, and the META pin a
+        # bucket create carries (ADR-150)
         ns_actions = _extract_statement_actions(
             self.template, "NamespaceAcquirePolicy", "NamespaceAcquireAccess"
         )
@@ -234,6 +237,7 @@ class TestNamespaceScopedPolicies:
             "dynamodb:BatchGetItem",
             "dynamodb:Query",
             "dynamodb:UpdateItem",
+            "dynamodb:ConditionCheckItem",
         }
 
         # Statement 2: shared prefix — read-only
@@ -258,6 +262,7 @@ class TestNamespaceScopedPolicies:
             "dynamodb:PutItem",
             "dynamodb:UpdateItem",
             "dynamodb:DeleteItem",
+            "dynamodb:ConditionCheckItem",
         }
 
     def test_namespace_readonly_policy_actions(self) -> None:
@@ -436,3 +441,33 @@ class TestProvisionerRoleParity:
             f"src/zae_limiter_provisioner/: {missing}. "
             f"Add them to the DynamoDBAccess policy on ProvisionerRole in cfn_template.yaml."
         )
+
+
+class TestBucketCreatePin:
+    """A bucket create is pinned to its owner's META with a ConditionCheck (ADR-150).
+
+    Every principal that creates buckets (an acquire, or the aggregator's
+    shard clone) needs ``dynamodb:ConditionCheckItem``, or the create's
+    transaction fails with AccessDeniedException.
+    """
+
+    def setup_method(self) -> None:
+        self.template = _load_cfn_template()
+
+    def test_every_acquiring_policy_grants_the_check(self) -> None:
+        for policy in ("AcquireOnlyPolicy", "FullAccessPolicy", "NamespaceFullAccessPolicy"):
+            assert "dynamodb:ConditionCheckItem" in _extract_policy_actions(
+                self.template, policy
+            ), policy
+
+    def test_the_aggregator_role_grants_the_check(self) -> None:
+        actions = _extract_role_inline_policy_actions(
+            self.template, "AggregatorRole", "DynamoDBAccess"
+        )
+        assert "dynamodb:ConditionCheckItem" in actions
+
+    def test_read_only_policies_do_not(self) -> None:
+        for policy in ("ReadOnlyPolicy", "NamespaceReadOnlyPolicy"):
+            assert "dynamodb:ConditionCheckItem" not in _extract_policy_actions(
+                self.template, policy
+            ), policy

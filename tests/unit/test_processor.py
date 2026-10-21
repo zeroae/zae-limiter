@@ -10,7 +10,7 @@ import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
 
 from zae_limiter.schedule import ScheduleEntry, decode, decode_reset
-from zae_limiter.schema import BUCKET_SCHED_NONE, MAX_SHARD_COUNT, sk_meta
+from zae_limiter.schema import BUCKET_SCHED_NONE, MAX_SHARD_COUNT
 from zae_limiter_aggregator.processor import (
     BucketRefillState,
     ConsumptionDelta,
@@ -2186,10 +2186,25 @@ class TestTryProactiveShard:
         assert result is True  # 10% remaining < 20% threshold
 
 
-def _assert_only_the_owner_read(table: MagicMock) -> None:
-    """No sibling was read: the one GetItem is the clone owner check's META read (ADR-150)."""
-    keys = [c.kwargs["Key"] for c in table.get_item.call_args_list]
-    assert keys and all(key["SK"] == sk_meta() for key in keys), keys
+def _clone_items(table: MagicMock) -> list[dict]:
+    """The items Path 2 cloned: each clone is its own transaction (ADR-150)."""
+    return [
+        item["Put"]["Item"]
+        for call in table.meta.client.transact_write_items.call_args_list
+        for item in call.kwargs["TransactItems"]
+        if "Put" in item
+    ]
+
+
+def _cancelled(*codes: str) -> ClientError:
+    """A cancelled clone transaction, with these per-item reasons."""
+    return ClientError(
+        {
+            "Error": {"Code": "TransactionCanceledException", "Message": ""},
+            "CancellationReasons": [{"Code": code} for code in codes],
+        },
+        "TransactWriteItems",
+    )
 
 
 class TestProactiveShardingFeedback:
@@ -2399,7 +2414,7 @@ class TestPropagateShardsCount:
         assert "ns1/BUCKET#user-1#gpt-4#1" in update_pks
         assert "ns1/BUCKET#user-1#gpt-4#0" not in update_pks
         # New shards 2, 3 created via PutItem
-        put_pks = {c.kwargs["Item"]["PK"] for c in mock_table.put_item.call_args_list}
+        put_pks = {item["PK"] for item in _clone_items(mock_table)}
         assert "ns1/BUCKET#user-1#gpt-4#2" in put_pks
         assert "ns1/BUCKET#user-1#gpt-4#3" in put_pks
 
@@ -2415,7 +2430,7 @@ class TestPropagateShardsCount:
 
         assert propagate_shard_count(mock_table, record) == 0
         mock_table.update_item.assert_not_called()
-        mock_table.put_item.assert_not_called()
+        mock_table.meta.client.transact_write_items.assert_not_called()
         mock_table.get_item.assert_not_called()
 
     def test_a_doubling_onto_max_shard_count_is_propagated(self) -> None:
@@ -2449,7 +2464,9 @@ class TestPropagateShardsCount:
         )
         mock_table = MagicMock()
         mock_table.update_item.side_effect = conditional_error
-        mock_table.put_item.side_effect = conditional_error
+        mock_table.meta.client.transact_write_items.side_effect = _cancelled(
+            "ConditionalCheckFailed", "None"
+        )
         record = self._make_shard_change_record(
             old_shard_count=2,
             new_shard_count=4,
@@ -2522,25 +2539,23 @@ class TestPropagateShardsCount:
             },
         }
         mock_table = MagicMock()
-        mock_table.get_item.return_value = {}  # no META: no owner stamp to check (ADR-150)
         propagated = propagate_shard_count(mock_table, record)
 
         # Shard 1 is EXISTING (update only), shards 2 and 3 are NEW (put)
         update_calls = mock_table.update_item.call_args_list
-        put_calls = mock_table.put_item.call_args_list
+        clones = _clone_items(mock_table)
 
         assert len(update_calls) == 1  # shard 1
         assert "shard_count < :new" in update_calls[0].kwargs["ConditionExpression"]
 
-        assert len(put_calls) == 2  # shards 2 and 3
-        for put_call in put_calls:
-            item = put_call.kwargs["Item"]
+        assert len(clones) == 2  # shards 2 and 3
+        for item in clones:
             assert "GSI3PK" in item
             assert "GSI2PK" in item
             assert "b_rpm_tk" in item
             assert "b_wcu_tk" in item
 
-        new_pks = {c.kwargs["Item"]["PK"] for c in put_calls}
+        new_pks = {item["PK"] for item in clones}
         assert "ns1/BUCKET#user-1#gpt-4#2" in new_pks
         assert "ns1/BUCKET#user-1#gpt-4#3" in new_pks
 
@@ -2578,15 +2593,14 @@ class TestPropagateShardsCount:
         update_pks = {c.kwargs["Key"]["PK"] for c in mock_table.update_item.call_args_list}
         assert "ns1/BUCKET#user-1#gpt-4#1" in update_pks
 
-        put_pks = {c.kwargs["Item"]["PK"] for c in mock_table.put_item.call_args_list}
+        put_pks = {item["PK"] for item in _clone_items(mock_table)}
         assert "ns1/BUCKET#user-1#gpt-4#1" not in put_pks
 
     def test_new_shard_skips_if_client_created(self) -> None:
-        """PutItem with attribute_not_exists(PK) skips client-created shards."""
+        """The Put's attribute_not_exists(PK) skips client-created shards."""
         mock_table = MagicMock()
-        mock_table.put_item.side_effect = ClientError(
-            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
-            "PutItem",
+        mock_table.meta.client.transact_write_items.side_effect = _cancelled(
+            "ConditionalCheckFailed", "None"
         )
         record = {
             "eventName": "MODIFY",
@@ -2648,9 +2662,9 @@ class TestPropagateShardsCount:
         mock_table = MagicMock()
         propagate_shard_count(mock_table, record)
 
-        put_calls = mock_table.put_item.call_args_list
-        assert len(put_calls) == 1  # shard 1 is new
-        item = put_calls[0].kwargs["Item"]
+        clones = _clone_items(mock_table)
+        assert len(clones) == 1  # shard 1 is new
+        item = clones[0]
 
         # rpm tokens = effective capacity = 100000000 // 2 = 50000000
         assert item["b_rpm_tk"] == 50000000
@@ -3124,7 +3138,7 @@ class TestShardCloneRespectsSchedule:
         `vu`, which is in the future, so the fast path would spend it."""
         table = MagicMock()
         assert propagate_shard_count(table, self._record(sched=BUSINESS_COMPACT), TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
+        item = _clone_items(table)[-1]
         assert item["b_rpm_tk"] == 250_000  # (1_000_000 * 0.5) // 2
         assert item["b_wcu_tk"] == 1_000_000  # per-partition, never divided or scaled
 
@@ -3132,20 +3146,20 @@ class TestShardCloneRespectsSchedule:
         """Discriminates the test above."""
         table = MagicMock()
         assert propagate_shard_count(table, self._record(sched=None), TUE_1400) == 1
-        assert table.put_item.call_args.kwargs["Item"]["b_rpm_tk"] == 500_000
+        assert _clone_items(table)[-1]["b_rpm_tk"] == 500_000
 
     def test_per_limit_override_is_honoured(self) -> None:
         table = MagicMock()
         record = self._record(sched=BUSINESS_COMPACT, limit_sched={"rpm": HOUR_14_COMPACT})
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        assert table.put_item.call_args.kwargs["Item"]["b_rpm_tk"] == 125_000
+        assert _clone_items(table)[-1]["b_rpm_tk"] == 125_000
 
     def test_undecodable_schedule_creates_no_shard(self) -> None:
         """A shard created at the wrong ceiling is worse than no shard: the
         client creates it on its slow path, where §6 applies."""
         table = MagicMock()
         assert propagate_shard_count(table, self._record(sched="not-a-schedule"), TUE_1400) == 0
-        table.put_item.assert_not_called()
+        table.meta.client.transact_write_items.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -3733,7 +3747,7 @@ class TestAnUnscheduledLimitOnAScheduledItem:
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
+        item = _clone_items(table)[-1]
         assert item["b_rpm_tk"] == 250_000  # (1_000_000 * 0.5) // 2
         assert item["b_tpm_tk"] == 500_000  # 1_000_000 // 2, unscaled
 
@@ -3997,7 +4011,8 @@ class TestQuotaShardCloneIsAMove:
     def test_clone_takes_its_share_from_its_parent_in_one_transaction(self, mock_dynamodb) -> None:
         """Shard 0 holds the whole 1000 at gc 1; count 1 -> 2. Shard 1 is
         created with 500 and shard 0 is left with 500, by one
-        ``transact_write_items`` call carrying the Put and the donor Update."""
+        ``transact_write_items`` call carrying the Put, the donor Update and
+        the owner's META check."""
         table = _moto_table()
         _put_quota_shard(table, 0, tk=1_000_000, shard_count=2, b_rpd_gc=1)
         real = table.meta.client.transact_write_items
@@ -4005,7 +4020,8 @@ class TestQuotaShardCloneIsAMove:
             assert propagate_shard_count(table, _doubling_record(table, 1), TUE_1400) == 1
         assert transact.call_count == 1
         (items,) = [c.kwargs["TransactItems"] for c in transact.call_args_list]
-        assert [next(iter(item)) for item in items] == ["Put", "Update"]
+        # The clone, its donor debit, and the owner's META check (ADR-150).
+        assert [next(iter(item)) for item in items] == ["Put", "Update", "ConditionCheck"]
         clone = _stored(table, 1)
         assert clone is not None
         assert clone["b_rpd_tk"] == 500_000
@@ -4050,7 +4066,7 @@ class TestQuotaShardCloneIsAMove:
         (cancelled,) = [e for e in logged if e["message"].startswith("Clone transaction cancelled")]
         assert cancelled["resource"] == MOVE_RESOURCE
         assert cancelled["shard_id"] == 1
-        assert cancelled["reasons"] == ["None", "ConditionalCheckFailed"]
+        assert cancelled["reasons"] == ["None", "ConditionalCheckFailed", "None"]
         assert "entity_id" not in cancelled
 
     def test_a_record_overtaken_by_a_later_doubling_clones_no_quota(
@@ -4083,24 +4099,25 @@ class TestQuotaShardCloneIsAMove:
         sibling at all, so a dripping limit's clone is sized at the record's
         count exactly as before."""
         table = MagicMock()
-        table.get_item.return_value = {}
         record = _sched_record(
             limits={"rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0}},
             shard_count=2,
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        _assert_only_the_owner_read(table)
+        table.get_item.assert_not_called()
 
     def test_a_spent_parent_funds_nothing(self, mock_dynamodb) -> None:
         """#587 itself, under ADR-145: the parent's grant covers the clone's
         slot, so the clone gets what the parent holds, never a fresh share —
-        and a parent holding nothing moves nothing, so no transaction."""
+        and a parent holding nothing moves nothing, so no donor debit."""
         table = _moto_table()
         _put_quota_shard(table, 0, tk=0, shard_count=2, b_rpd_gc=1)
-        with patch.object(table.meta.client, "transact_write_items") as transact:
+        real = table.meta.client.transact_write_items
+        with patch.object(table.meta.client, "transact_write_items", side_effect=real) as transact:
             assert propagate_shard_count(table, _doubling_record(table, 1), TUE_1400) == 1
-        transact.assert_not_called()
+        (items,) = [c.kwargs["TransactItems"] for c in transact.call_args_list]
+        assert [next(iter(item)) for item in items] == ["Put", "ConditionCheck"]
         clone = _stored(table, 1)
         assert clone is not None
         assert clone["b_rpd_tk"] == 0
@@ -4162,9 +4179,13 @@ class TestQuotaShardCloneIsAMove:
         stale_rf = TUE_2300 - 86_400_000
         _put_quota_shard(table, 0, tk=400_000, shard_count=4, b_rpd_gc=2, rf=stale_rf)
         _put_quota_shard(table, 1, tk=500_000, shard_count=2, b_rpd_gc=2)
-        with patch.object(table.meta.client, "transact_write_items") as transact:
+        real = table.meta.client.transact_write_items
+        with patch.object(table.meta.client, "transact_write_items", side_effect=real) as transact:
             assert propagate_shard_count(table, _doubling_record(table, 2), TUE_1400) == 2
-        transact.assert_not_called()
+        # Only clone 2, with no donor debit: no write for slot 3 at all.
+        (items,) = [c.kwargs["TransactItems"] for c in transact.call_args_list]
+        assert [next(iter(item)) for item in items] == ["Put", "ConditionCheck"]
+        assert items[0]["Put"]["Item"]["PK"].endswith("#2")
         assert _stored(table, 3) is None, "the client creates slot 3 lazily"
         assert _must(table, 1)["b_rpd_tk"] == 500_000, "no debit"
         clone = _must(table, 2)
@@ -4217,7 +4238,7 @@ class TestQuotaShardCloneIsAMove:
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
+        item = _clone_items(table)[-1]
         assert item["b_rpm_tk"] == 500_000
         assert "b_rpm_gc" not in item, "a rate limit never carries a grant count"
 
@@ -4231,10 +4252,10 @@ class TestQuotaShardCloneIsAMove:
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
+        item = _clone_items(table)[-1]
         assert item["b_rpd_tk"] == 5_000_000
         assert "b_rpd_gc" not in item
-        _assert_only_the_owner_read(table)
+        table.get_item.assert_not_called()
 
     def test_the_unscheduled_marker_blocks_inheriting_the_items_reset(self) -> None:
         """#541's marker means "this limit declares none", so it is not a quota
@@ -4248,7 +4269,7 @@ class TestQuotaShardCloneIsAMove:
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
+        item = _clone_items(table)[-1]
         assert item["b_rpd_tk"] == 5_000_000
         assert "b_rpd_gc" not in item
 
@@ -4263,7 +4284,7 @@ class TestQuotaShardCloneIsAMove:
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
+        item = _clone_items(table)[-1]
         assert item["b_rpd_tk"] == 5_000_000
         assert item["b_rpd_gc"] == 2
 
@@ -4279,7 +4300,7 @@ class TestQuotaShardCloneIsAMove:
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 0
-        table.put_item.assert_not_called()
+        table.meta.client.transact_write_items.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -4430,7 +4451,8 @@ class TestIsQuotaLimitRecognisesADurationWindow:
         with patch.object(table.meta.client, "transact_write_items", side_effect=real) as transact:
             assert propagate_shard_count(table, _doubling_record(table, 1), WS + 1_000) == 1
         (items,) = [c.kwargs["TransactItems"] for c in transact.call_args_list]
-        assert [next(iter(item)) for item in items] == ["Put", "Update"]
+        # The clone, its donor debit, and the owner's META check (ADR-150).
+        assert [next(iter(item)) for item in items] == ["Put", "Update", "ConditionCheck"]
         clone = _must(table, 1)
         assert (clone["b_session_tk"], clone["b_rpd_tk"]) == (2_000, 2_000)
         assert (clone["b_session_gc"], clone["b_rpd_gc"]) == (2, 2)
@@ -4583,7 +4605,7 @@ class TestAggregatorRollsAWindow:
         state = _window_state(_session_record(rf_ms=WS - 1, shard_count=4, vu_ms=0))
         assert try_refill_bucket(table, state, now_ms=WS + 1) is True
         assert table.update_item.call_count == 1
-        table.put_item.assert_not_called()
+        table.meta.client.transact_write_items.assert_not_called()
         write = self._write(table)
         assert write["Key"]["PK"] == "ns123/BUCKET#user-1#gpt-4#0"
         assert "_ws" not in write["UpdateExpression"]

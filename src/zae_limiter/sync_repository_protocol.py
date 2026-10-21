@@ -564,6 +564,18 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def build_owner_check(
+        self, entity_id: str, *, exists: bool, pgen: int | None, pinc: str | None
+    ) -> dict[str, Any]:
+        """Build the ``ConditionCheck`` that pins a bucket create to its owner's META (ADR-150).
+
+        A transaction item asserting the owner's META still holds the parent
+        generation and incarnation the create read, or is still absent when
+        ``exists`` is False. Rides in the create's own transaction, so a move
+        landing between the read and the create cancels it.
+        """
+        ...
+
     def build_composite_create(
         self,
         entity_id: str,

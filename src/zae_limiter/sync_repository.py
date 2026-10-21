@@ -2598,6 +2598,41 @@ class SyncRepository:
         """
         return schema.explicit_schedule_overrides(state.sched, state.reset_sched)
 
+    def build_owner_check(
+        self, entity_id: str, *, exists: bool, pgen: int | None, pinc: str | None
+    ) -> dict[str, Any]:
+        """Build the ``ConditionCheck`` that pins a bucket create to its owner's META (ADR-150).
+
+        Rides in the create's own transaction: the owner's META must still
+        hold the parent generation and incarnation the create read (or still
+        be absent, when the read found none), so a move landing between the
+        read and the create cancels it instead of leaving the old parent on a
+        new bucket. Needs ``dynamodb:ConditionCheckItem``. Writes nothing.
+
+        Args:
+            entity_id: The owner whose bucket the transaction creates.
+            exists: Whether the create's read found the owner's META.
+            pgen: The parent generation that read returned.
+            pinc: The incarnation that read returned.
+        """
+        expression, names, values = schema.owner_meta_condition(exists=exists, pgen=pgen, pinc=pinc)
+        check: dict[str, Any] = {
+            "TableName": self.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_meta()},
+            },
+            "ConditionExpression": expression,
+        }
+        if names:
+            check["ExpressionAttributeNames"] = names
+        if values:
+            check["ExpressionAttributeValues"] = {
+                token: {"N": str(value)} if isinstance(value, int) else {"S": value}
+                for token, value in values.items()
+            }
+        return {"ConditionCheck": check}
+
     def build_composite_create(
         self,
         entity_id: str,

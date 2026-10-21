@@ -8492,7 +8492,8 @@ class TestClientShardCreation:
 
         async def parent_refilled_first(items):
             nonlocal bumped
-            if not bumped and len(items) == 2:
+            # Child Put, parent update, and the child's META check (ADR-150).
+            if not bumped and len(items) == 3:
                 bumped = True
                 # A concurrent refill moves the parent's rf; the transaction's
                 # rf lock on the parent fails while the child's Put is innocent

@@ -6601,7 +6601,7 @@ class TestClientShardCreation:
 
         def parent_refilled_first(items):
             nonlocal bumped
-            if not bumped and len(items) == 2:
+            if not bumped and len(items) == 3:
                 bumped = True
                 client.update_item(
                     TableName=repo.table_name,

@@ -33,6 +33,7 @@ from .lease import (
     _CONTENTION_RETRY_AFTER_S,
     Lease,
     LeaseEntry,
+    OwnerStampLostError,
     PeriodNotAppliedError,
     QuotaMoveLostError,
     _contention_rejection,
@@ -2523,23 +2524,9 @@ class RateLimiter:
         """
 
         async def plan_and_commit(disable_moves: bool, moves_contended: bool = False) -> Lease:
-            lease = await self._do_acquire(
-                entity_id=entity_id,
-                resource=resource,
-                limits_override=limits_override,
-                consume=consume,
-                shard_id=shard_id,
-                shard_count=shard_count,
-                parent_shard_id=parent_shard_id,
-                disable_moves=disable_moves,
-                moves_contended=moves_contended,
-            )
-            try:
-                await lease._commit_initial()
-            except PeriodNotAppliedError:
-                # The retry found a quota period nobody has applied (#743):
-                # redo the pass once from a fresh read, which applies it. A
-                # second loss stands as the rejection it was raised as.
+            period_redone = False
+            owner_reread = False
+            while True:
                 lease = await self._do_acquire(
                     entity_id=entity_id,
                     resource=resource,
@@ -2550,9 +2537,27 @@ class RateLimiter:
                     parent_shard_id=parent_shard_id,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
+                    consistent_owner=owner_reread,
                 )
-                await lease._commit_initial()
-            return lease
+                try:
+                    await lease._commit_initial()
+                    return lease
+                except PeriodNotAppliedError:
+                    # The retry found a quota period nobody has applied (#743):
+                    # redo the pass once from a fresh read, which applies it. A
+                    # second loss stands as the rejection it was raised as.
+                    if period_redone:
+                        raise
+                    period_redone = True
+                except OwnerStampLostError:
+                    # A bucket this pass created lost its META check: the
+                    # owner moved since the read (ADR-150). Nothing was
+                    # written; redo the pass once from a strongly consistent
+                    # read, which stamps (and cascades to) the new parent. A
+                    # second loss stands as the contended 429 it was raised as.
+                    if owner_reread:
+                        raise
+                    owner_reread = True
 
         try:
             return await plan_and_commit(False)
@@ -2760,7 +2765,7 @@ class RateLimiter:
         """
 
         async def _plan(
-            part: _SlowPart, disable_moves: bool, moves_contended: bool
+            part: _SlowPart, disable_moves: bool, moves_contended: bool, reread: bool
         ) -> Lease | Exception:
             resource, consume, shard, shard_count, parent_shard = part
             try:
@@ -2774,16 +2779,20 @@ class RateLimiter:
                     parent_shard_id=parent_shard,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
+                    consistent_owner=reread,
                 )
             except Exception as exc:
                 return exc
 
         async def plan_and_commit(
-            disable_moves: bool, moves_contended: bool = False, redone: bool = False
+            disable_moves: bool,
+            moves_contended: bool = False,
+            redone: bool = False,
+            reread: bool = False,
         ) -> tuple[Lease, dict[str, frozenset[str]]]:
             # One name per part keeps the sync twin's lambda on one line (#513).
             outcomes = await asyncio.gather(
-                *[_plan(part, disable_moves, moves_contended) for part in slow_parts]
+                *[_plan(part, disable_moves, moves_contended, reread) for part in slow_parts]
             )
             planned = [outcome for outcome in outcomes if isinstance(outcome, Lease)]
             errors = [outcome for outcome in outcomes if not isinstance(outcome, Lease)]
@@ -2797,10 +2806,11 @@ class RateLimiter:
                     if any(entry._donor_debit is not None for entry in plan.entries):
                         await self._commit_rejected_moves(plan.entries, plan._carriers)
                 raise error
-            # Without moves a plan is at most 2 bucket items per resource, so
+            # Without moves a plan is at most 2 bucket items per resource, plus
+            # at most 2 META checks (the entity and its parent, ADR-150), so
             # MAX_ACQUIRE_RESOURCES keeps the re-plan under the limit.
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return await plan_and_commit(True, moves_contended, redone)
+                return await plan_and_commit(True, moves_contended, redone, reread)
             marks = [plan._cache_mark for plan in planned]
             lease = Lease(
                 repository=self._repository,
@@ -2816,7 +2826,15 @@ class RateLimiter:
                 # second loss stands as the rejection it was raised as.
                 if redone:
                     raise
-                return await plan_and_commit(disable_moves, moves_contended, True)
+                return await plan_and_commit(disable_moves, moves_contended, True, reread)
+            except OwnerStampLostError:
+                # A bucket this commit created lost its META check: an owner
+                # moved since the read (ADR-150). Nothing was written; re-plan
+                # every part once from a strongly consistent read. A second
+                # loss stands as the contended 429 it was raised as.
+                if reread:
+                    raise
+                return await plan_and_commit(disable_moves, moves_contended, redone, True)
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }
@@ -2836,7 +2854,7 @@ class RateLimiter:
 
     @staticmethod
     def _transaction_items(planned: list[Lease]) -> int:
-        """Items one commit of these plans writes: bucket items plus donor debits."""
+        """Items one commit of these plans sends: bucket items, donor debits, META checks."""
         buckets = {
             (entry.entity_id, entry.resource, entry._shard_id)
             for plan in planned
@@ -2849,7 +2867,14 @@ class RateLimiter:
             for entry in plan.entries
             if entry._donor_debit is not None
         }
-        return len(buckets) + len(donors)
+        # One META check per owner whose bucket the commit creates (ADR-150).
+        owners = {
+            entry.entity_id
+            for plan in planned
+            for entry in plan.entries
+            if entry._is_new and entry._owner_read
+        }
+        return len(buckets) + len(donors) + len(owners)
 
     async def _find_disabled(self, entity_id: str, resources: list[str]) -> ResourceDisabled | None:
         """The first ``ResourceDisabled`` among resources the fast path left (ADR-148).
@@ -2959,10 +2984,15 @@ class RateLimiter:
         parent_shard_id: int | None = None,
         disable_moves: bool = False,
         moves_contended: bool = False,
+        consistent_owner: bool = False,
     ) -> Lease:
         """Internal acquire implementation (the slow path).
 
         Args:
+            consistent_owner: Re-read every owner's META strongly consistently
+                (+1 RCU each). The re-plan after a bucket create was cancelled
+                by its META check (ADR-150): the eventually consistent read
+                that planned it may return the same stale record again.
             disable_moves: The third attempt after two lost ADR-145 moves
                 (design §6 step 6): a quota whose slot a sibling covers gets 0
                 this time instead of a move, and no donor debit rides. Only
@@ -3036,6 +3066,8 @@ class RateLimiter:
         entity, child_buckets = await self._fetch_entity_and_buckets(
             entity_id, resource, child_shard
         )
+        if consistent_owner:
+            entity = await self._repository.get_entity(entity_id, consistent_read=True)
 
         # Determine cascade: the resolved policy for this resource, falling back
         # to the entity's META flag when nothing sets one (ADR-146).
@@ -3082,6 +3114,8 @@ class RateLimiter:
             parent_entity, parent_buckets = await self._fetch_entity_and_buckets(
                 parent_id, resource, entity_shards[parent_id][0]
             )
+            if consistent_owner:
+                parent_entity = await self._repository.get_entity(parent_id, consistent_read=True)
             owners[parent_id] = parent_entity
             cascades[parent_id] = effective_cascade(parent_access.cascade, parent_entity)
             existing_buckets.update(parent_buckets)
@@ -3439,6 +3473,7 @@ class RateLimiter:
                         _stamp_owner=owner is not None,
                         _parent_generation=owner.parent_generation if owner else None,
                         _parent_incarnation=owner.incarnation if owner else None,
+                        _owner_read=True,
                         _declared=status is not None,
                         _boundary_ms=boundary_ms,
                         _reset_edge_ms=reset_edge_ms,

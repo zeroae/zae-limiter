@@ -115,6 +115,11 @@ class LeaseEntry:
     _parent_generation: int | None = None
     # And its incarnation (ADR-150): a generation only compares within one.
     _parent_incarnation: str | None = None
+    # True when this pass read the owner's META, found or not (ADR-150). A
+    # create of this entry's item then carries a `ConditionCheck` on that META
+    # asserting what was read — `_stamp_owner`'s generation and incarnation, or
+    # still no META — so a move landing in between cancels the create.
+    _owner_read: bool = False
     # Whether the caller named this limit in acquire(consume=...) (Issue #455).
     # `consume` is the declared scope of a lease: only declared entries are
     # visible through `consumed` and adjustable through adjust()/consume()/
@@ -476,6 +481,20 @@ class QuotaMoveLostError(Exception):
     def __init__(self, *, contended: bool = False) -> None:
         super().__init__("quota move lost" + (" to contention" if contended else ""))
         self.contended = contended
+
+
+class OwnerStampLostError(RateLimitExceeded):
+    """A bucket create was cancelled by its owner's META check (ADR-150).
+
+    The commit created a bucket item stamped with an owner (``cascade`` /
+    ``parent_id``) read from META, and the transaction's ``ConditionCheck``
+    found that META changed since — a move, or a delete and recreate. Nothing
+    was written. The acquire re-plans once from a strongly consistent META
+    read (`RateLimiter._slow_acquire`), which also sends the cascade to the
+    new parent. A contended `RateLimitExceeded`, so a caller that does not
+    re-plan (or a second loss) reads it as a short "busy, retry" rejection:
+    it can only under-admit, never reach `on_unavailable`.
+    """
 
 
 def _mark_granted(entry: LeaseEntry) -> None:
@@ -1310,6 +1329,12 @@ class Lease:
         for (entity_id, resource), debits in by_bucket.items():
             donor_items += repo.build_quota_donor_debits(entity_id, resource, debits)
         items += donor_items
+        # ADR-150: each create rides with a `ConditionCheck` on its owner's
+        # META, last so the per-index reasons above still line up. A move
+        # landing between this pass's META read and this write cancels it.
+        meta_checks = _meta_checks(repo, list(groups.items()), self.entries, now_ms)
+        first_check = len(items)
+        items += meta_checks
 
         # Retry loop for TransactionConflict (Issue #332)
         condition_failed = False
@@ -1348,6 +1373,12 @@ class Lease:
                     raise _contention_rejection(self.entries, now_ms) from exc
                 raise  # other errors propagate unchanged
 
+        if condition_failed and _meta_check_failed(condition_exc, first_check, len(meta_checks)):
+            # An owner moved (or was recreated) since this pass read it: the
+            # whole transaction rolled back, so the caller re-plans from a
+            # strongly consistent read (ADR-150).
+            raise _owner_stamp_lost(self.entries, now_ms) from condition_exc
+
         if (
             condition_failed
             and condition_exc is not None
@@ -1363,6 +1394,8 @@ class Lease:
             except Exception as exc:
                 if not _is_condition_check_failure(exc):
                     raise
+                if _meta_check_failed(exc, first_check, len(meta_checks)):
+                    raise _owner_stamp_lost(self.entries, now_ms) from exc
                 condition_exc = exc
 
         if condition_failed and donor_items:
@@ -1465,10 +1498,26 @@ class Lease:
             for retry_attempt in range(2):
                 if not retry_items:
                     break
+                # A re-issued create keeps its META pin (ADR-150): the move
+                # could land between the two transactions as well.
+                retry_checks = _meta_checks(
+                    repo,
+                    [
+                        group
+                        for item, group in zip(retry_items, retry_groups, strict=True)
+                        if isinstance(item, dict) and "Put" in item
+                    ],
+                    self.entries,
+                    now_ms,
+                )
                 try:
-                    retry_attrs = await _transact_retrying_conflict(repo, retry_items)
+                    retry_attrs = await _transact_retrying_conflict(
+                        repo, retry_items + retry_checks
+                    )
                     break
                 except Exception as retry_exc:
+                    if _meta_check_failed(retry_exc, len(retry_items), len(retry_checks)):
+                        raise _owner_stamp_lost(self.entries, now_ms) from retry_exc
                     if not _is_condition_check_failure(retry_exc):
                         if _is_transaction_conflict(retry_exc):
                             # Every write in a transaction lands or none does,
@@ -2552,6 +2601,59 @@ def _build_retry_failure_statuses(
         if any(status.exceeded for status in from_items):
             return from_items
     return _retry_statuses(entries, now_ms, None)
+
+
+def _meta_checks(
+    repo: "RepositoryProtocol",
+    groups: list[tuple[tuple[str, str, int], list[LeaseEntry]]],
+    entries: list[LeaseEntry],
+    now_ms: int,
+) -> list[dict[str, Any]]:
+    """One ``ConditionCheck`` per distinct owner whose bucket these groups create (ADR-150).
+
+    Asserts the META each create's pass read: the parent generation and
+    incarnation it stamps, or no META at all when the read found none. A
+    group whose pass read no META (an entry built elsewhere) carries none.
+    One per owner: two actions on one item are not allowed in a transaction.
+
+    Raises:
+        OwnerStampLostError: Two creates of one owner read different META
+            (a multi-resource commit plans each resource with its own read),
+            so one of them is stale and no single check can pin both.
+    """
+    read: dict[str, tuple[bool, int | None, str | None]] = {}
+    for (entity_id, _resource, _shard), group_entries in groups:
+        if not group_entries[0]._is_new or not any(e._owner_read for e in group_entries):
+            continue
+        owner = next((e for e in group_entries if e._stamp_owner), None)
+        seen = (
+            (True, owner._parent_generation, owner._parent_incarnation)
+            if owner is not None
+            else (False, None, None)
+        )
+        if read.setdefault(entity_id, seen) != seen:
+            raise _owner_stamp_lost(entries, now_ms)
+    return [
+        repo.build_owner_check(entity_id, exists=exists, pgen=pgen, pinc=pinc)
+        for entity_id, (exists, pgen, pinc) in read.items()
+    ]
+
+
+def _meta_check_failed(exc: Exception | None, first: int, count: int) -> bool:
+    """Whether a cancelled transaction failed one of its META checks (ADR-150).
+
+    The checks sit at indices ``first .. first + count - 1``; the per-index
+    cancellation reasons say which items failed their condition.
+    """
+    if exc is None or count == 0:
+        return False
+    codes = _get_cancellation_reason_codes(exc) or []
+    return any(code == "ConditionalCheckFailed" for code in codes[first : first + count])
+
+
+def _owner_stamp_lost(entries: list[LeaseEntry], now_ms: int) -> "OwnerStampLostError":
+    """The rejection a META-check cancellation raises: nothing was written (ADR-150)."""
+    return OwnerStampLostError(_contention_rejection(entries, now_ms).statuses, contended=True)
 
 
 def _contention_rejection(

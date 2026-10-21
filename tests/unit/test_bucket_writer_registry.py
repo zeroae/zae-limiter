@@ -80,6 +80,7 @@ REPOSITORY = {
     "_write_audit_retention_config": NOT_BUCKET,
     "create_entity": NOT_BUCKET,
     "_write_parent": NOT_BUCKET,  # META parent_id, GSI1 keys and pgen (ADR-150)
+    "build_owner_check": NOT_BUCKET,  # ConditionCheck on META pinning a create (ADR-150)
     "delete_limits": NOT_BUCKET,
     "delete_namespace": NOT_BUCKET,
     "delete_resource_defaults": NOT_BUCKET,
@@ -97,8 +98,7 @@ AGGREGATOR = {
     "_donor_update_items": (True, False),  # the donor side of a Path 2 move
     "_quota_count_freeze": (False, True),  # Path 1 raising a legacy item freezes gc
     "_repair_quota_clones": (False, True),  # raise clones a doubling overtook, freeze
-    "_repair_clone_owner_stamps": (False, False),  # restamp clones a move overtook (ADR-150)
-    "propagate_shard_count": (True, True),  # Path 1 raise + Path 2 clone put / transaction
+    "propagate_shard_count": (True, True),  # Path 1 raise + Path 2 clone transaction
     "try_proactive_shard": (False, False),  # shard_count on shard 0
     "update_snapshot": NOT_BUCKET,  # usage snapshot items
 }
