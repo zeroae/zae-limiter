@@ -539,6 +539,11 @@ Resources:
               - dynamodb:BatchGetItem
               - dynamodb:Query
               - dynamodb:TransactWriteItems
+              # Each Put / Update inside TransactWriteItems is authorised by
+              # PutItem / UpdateItem, and the fast path, adjustments and
+              # rollbacks are plain UpdateItems (ADR-152)
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
               # A bucket create is pinned to its owner's META (ADR-150)
               - dynamodb:ConditionCheckItem
             Resource:
@@ -629,6 +634,9 @@ Resources:
               - dynamodb:GetItem
               - dynamodb:BatchGetItem
               - dynamodb:Query
+              # A bucket create is a Put, authorised by PutItem even inside
+              # TransactWriteItems (ADR-152)
+              - dynamodb:PutItem
               - dynamodb:UpdateItem
               # A bucket create is pinned to its owner's META (ADR-150)
               - dynamodb:ConditionCheckItem

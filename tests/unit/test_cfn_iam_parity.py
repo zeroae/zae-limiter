@@ -133,22 +133,28 @@ class TestIAMRoleParity:
             f"Add them to the FullAccessPolicy in cfn_template.yaml."
         )
 
-    def test_acquire_only_policy_covers_read_and_transact_operations(self) -> None:
-        """AcquireOnlyPolicy should have read + transact operations for acquire() workflow.
+    def test_acquire_only_policy_covers_every_acquire_write(self) -> None:
+        """AcquireOnlyPolicy must grant every item action acquire() writes with (ADR-152).
 
         AcquireOnlyPolicy is for applications running acquire() only. It needs:
         - Read operations: GetItem, BatchGetItem, Query
-        - Write: TransactWriteItems (atomic bucket updates)
+        - PutItem: every bucket create, alone or inside a transaction
+        - UpdateItem: the speculative write, adjustments, rollbacks, and every
+          Update inside the slow path's transaction
         - ConditionCheckItem: a bucket create's META pin (ADR-150)
+        - TransactWriteItems: the multi-item commit
 
-        It intentionally excludes PutItem, DeleteItem, UpdateItem,
-        BatchWriteItem (entity creation and config management).
+        AWS authorises each Put / Update inside TransactWriteItems by PutItem /
+        UpdateItem, not by TransactWriteItems (#750), so without them a
+        principal holding only this policy cannot write at all.
         """
         acq_actions = _extract_policy_actions(self.template, "AcquireOnlyPolicy")
         required_acq_actions = {
             "dynamodb:GetItem",
             "dynamodb:BatchGetItem",
             "dynamodb:Query",
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
             "dynamodb:TransactWriteItems",
             "dynamodb:ConditionCheckItem",
         }
@@ -157,6 +163,19 @@ class TestIAMRoleParity:
         assert not missing, (
             f"AcquireOnlyPolicy is missing required DynamoDB actions: {missing}. "
             f"Add them to the AcquireOnlyPolicy in cfn_template.yaml."
+        )
+
+    def test_acquire_only_policy_stays_below_full_access(self) -> None:
+        """AcquireOnlyPolicy grants no delete, batch write or scan (ADR-152)."""
+        acq_actions = _extract_policy_actions(self.template, "AcquireOnlyPolicy")
+        beyond_acquire = {
+            "dynamodb:DeleteItem",
+            "dynamodb:BatchWriteItem",
+            "dynamodb:Scan",
+            "dynamodb:DescribeTable",
+        }
+        assert not acq_actions & beyond_acquire, (
+            f"AcquireOnlyPolicy grants actions acquire() never uses: {acq_actions & beyond_acquire}"
         )
 
     def test_readonly_role_has_only_read_operations(self) -> None:
@@ -226,9 +245,10 @@ class TestNamespaceScopedPolicies:
         )
 
     def test_namespace_acquire_policy_actions(self) -> None:
-        """ns-acq: UpdateItem on namespace prefix, read-only on shared prefix."""
+        """ns-acq: Put/Update on namespace prefix, read-only on shared prefix."""
         # Statement 1: namespace prefix — read + write, and the META pin a
-        # bucket create carries (ADR-150)
+        # bucket create carries (ADR-150). PutItem authorises the bucket create
+        # inside the create's transaction (ADR-152, #750).
         ns_actions = _extract_statement_actions(
             self.template, "NamespaceAcquirePolicy", "NamespaceAcquireAccess"
         )
@@ -236,6 +256,7 @@ class TestNamespaceScopedPolicies:
             "dynamodb:GetItem",
             "dynamodb:BatchGetItem",
             "dynamodb:Query",
+            "dynamodb:PutItem",
             "dynamodb:UpdateItem",
             "dynamodb:ConditionCheckItem",
         }

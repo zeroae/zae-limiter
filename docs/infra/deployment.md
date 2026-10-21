@@ -478,8 +478,8 @@ The stack creates three managed IAM policies by default for different access pat
 
 | Policy | Suffix | Use Case | DynamoDB Permissions |
 |--------|--------|----------|---------------------|
-| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, TransactWriteItems, ConditionCheckItem |
-| `FullAccessPolicy` | `-full` | Ops teams managing config | All of the above + PutItem, DeleteItem, UpdateItem, BatchWriteItem, Scan, DescribeTable |
+| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, TransactWriteItems, ConditionCheckItem, PutItem, UpdateItem |
+| `FullAccessPolicy` | `-full` | Ops teams managing config | All of the above + DeleteItem, BatchWriteItem, Scan, DescribeTable |
 | `ReadOnlyPolicy` | `-read` | Monitoring and dashboards | GetItem, BatchGetItem, Query, Scan, DescribeTable |
 
 !!! warning "`dynamodb:ConditionCheckItem` is required from v0.17.0"
@@ -488,6 +488,17 @@ The stack creates three managed IAM policies by default for different access pat
     pre-creates shards — needs `dynamodb:ConditionCheckItem` on the table. The policies
     and roles this template creates grant it after `zae-limiter upgrade` or `deploy`;
     custom IAM must add it, or bucket creates fail with `AccessDeniedException`.
+
+!!! warning "`AcquireOnlyPolicy` gains `PutItem` and `UpdateItem` in v0.17.0"
+    AWS authorises each `Put` and `Update` inside a `TransactWriteItems` by
+    `dynamodb:PutItem` / `dynamodb:UpdateItem`, not by `TransactWriteItems`
+    ([AWS docs](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html)).
+    Before v0.17.0 `AcquireOnlyPolicy` granted neither, so a principal holding only it
+    (including the `{stack}-app` role) could not write a bucket, and
+    `NamespaceAcquirePolicy` lacked `PutItem`, so it could never create one (ADR-152).
+    A stack deployed earlier keeps its old policies until its template is updated
+    (`zae-limiter cfn-template`, then a CloudFormation stack update with
+    `CAPABILITY_NAMED_IAM`); custom IAM modelled on the old policies must add both actions.
 
 ### Enabling/Disabling IAM Resources
 
