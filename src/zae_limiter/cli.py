@@ -4376,6 +4376,92 @@ def entity_clear_cascade(
 
 
 @entity.command(
+    "set-parent",
+    epilog="""\b
+Examples:
+    \b
+    # Move a user to another organisation
+    zae-limiter entity set-parent user-123 --parent org-b
+    \b
+    # Make a user a root entity
+    zae-limiter entity set-parent user-123 --none
+""",
+)
+@click.argument("entity_id")
+@click.option("--parent", "parent_id", default=None, help="The new parent (must exist).")
+@click.option("--none", "no_parent", is_flag=True, help="Move the entity to no parent.")
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def entity_set_parent(
+    entity_id: str,
+    parent_id: str | None,
+    no_parent: bool,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Move an entity to a new parent, or to no parent.
+
+    ENTITY_ID is the entity to move (e.g., 'user-123'). Give exactly one of
+    --parent or --none. Existing buckets are restamped immediately, and every
+    process debits the new parent from its next acquire. Usage already charged
+    to the old parent stays there. Whether the entity debits its new parent
+    follows its cascade policy (see set-cascade). Requires a stack whose
+    Lambdas are 0.17.0 or later (run 'zae-limiter upgrade' first if not).
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter entity set-parent user-123 --parent org-b
+        zae-limiter entity set-parent user-123 --none
+        ```
+    """
+    if (parent_id is None) == (not no_parent):
+        click.echo("Error: Give exactly one of --parent or --none.", err=True)
+        sys.exit(2)
+
+    async def _run() -> None:
+        from .exceptions import FanoutIncomplete
+
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            before = await repo.get_entity(entity_id)
+            count = await repo.set_parent(entity_id, parent_id)
+            old = (before.parent_id if before else None) or "(none)"
+            click.echo(
+                f"Moved entity '{entity_id}' from {old} to {parent_id or '(none)'} "
+                f"({count} buckets stamped)"
+            )
+        except FanoutIncomplete as e:
+            click.echo(
+                f"Error: Moved entity '{entity_id}', but only {e.stamped} buckets were "
+                f"restamped ({e.cause}). Re-run the same command to finish.",
+                err=True,
+            )
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: Failed to set parent: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+@entity.command(
     "list",
     epilog="""\b
 Examples:

@@ -6777,6 +6777,84 @@ class TestCascadeCommands:
         assert "Cascade: on (explicit)" in result.output
 
 
+class TestSetParentCommand:
+    """entity set-parent (ADR-150)."""
+
+    @staticmethod
+    def _writable(mock_repo_class: Mock, old_parent: str | None, **set_parent: Any) -> Mock:
+        from zae_limiter.models import Entity
+
+        mock_repo = Mock()
+        mock_repo.get_entity = AsyncMock(return_value=Entity(id="u", parent_id=old_parent))
+        mock_repo.set_parent = AsyncMock(**set_parent)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        return mock_repo
+
+    def test_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["entity", "set-parent", "--help"])
+        assert result.exit_code == 0
+        assert "--parent" in result.output and "--none" in result.output
+        assert "--namespace" in result.output
+
+    @pytest.mark.parametrize("args", [[], ["--parent", "org-b", "--none"]])
+    def test_exactly_one_of_parent_or_none(self, runner: CliRunner, args: list[str]) -> None:
+        result = runner.invoke(cli, ["entity", "set-parent", "u", *args])
+        assert result.exit_code == 2
+        assert "exactly one of --parent or --none" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_moves_to_a_parent(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        repo = self._writable(mock_repo_class, "org-a", return_value=3)
+
+        result = runner.invoke(cli, ["entity", "set-parent", "u", "--parent", "org-b"])
+
+        assert result.exit_code == 0, result.output
+        assert "Moved entity 'u' from org-a to org-b (3 buckets stamped)" in result.output
+        repo.set_parent.assert_called_once_with("u", "org-b")
+
+    @patch("zae_limiter.repository.Repository")
+    def test_moves_to_no_parent(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        repo = self._writable(mock_repo_class, "org-a", return_value=1)
+
+        result = runner.invoke(cli, ["entity", "set-parent", "u", "--none"])
+
+        assert result.exit_code == 0, result.output
+        assert "from org-a to (none)" in result.output
+        repo.set_parent.assert_called_once_with("u", None)
+
+    @patch("zae_limiter.repository.Repository")
+    def test_a_partial_fan_out_says_to_re_run(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        self._writable(
+            mock_repo_class,
+            None,
+            side_effect=FanoutIncomplete(2, RuntimeError("throttled"), entity_id="u"),
+        )
+
+        result = runner.invoke(cli, ["entity", "set-parent", "u", "--parent", "org-b"])
+
+        assert result.exit_code == 1
+        assert "only 2 buckets were restamped (throttled)" in result.output
+        assert "Re-run the same command" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_a_refusal_exits_1(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        self._writable(
+            mock_repo_class,
+            "org-a",
+            side_effect=ValidationError("parent_id", "u", "a cycle"),
+        )
+
+        result = runner.invoke(cli, ["entity", "set-parent", "u", "--parent", "org-b"])
+
+        assert result.exit_code == 1
+        assert "Failed to set parent" in result.output
+
+
 class TestDisableCommands:
     """Disable/enable commands (ADR-125)."""
 
