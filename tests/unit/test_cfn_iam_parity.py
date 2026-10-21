@@ -518,3 +518,38 @@ class TestBucketCreatePin:
             assert "dynamodb:ConditionCheckItem" not in _extract_policy_actions(
                 self.template, policy
             ), policy
+
+
+class TestManagedPolicyDescriptionsAreFrozen:
+    """A managed policy's Description never changes (#752).
+
+    CloudFormation replaces an ``AWS::IAM::ManagedPolicy`` to change its
+    Description, a named policy cannot be replaced, and ``upgrade`` refuses a
+    replacement, so a changed Description would leave every existing stack
+    unable to upgrade. The texts are the ones v0.16.0 shipped, even where they
+    no longer describe the policy exactly.
+    """
+
+    _SHIPPED = {
+        "AcquireOnlyPolicy": "Rate limiter acquire-only access (read + transact write)",
+        "FullAccessPolicy": "Rate limiter full access (all operations)",
+        "ReadOnlyPolicy": "Rate limiter read-only access (monitoring)",
+        "NamespaceAcquirePolicy": (
+            "Namespace-scoped acquire-only access (read + update within namespace)"
+        ),
+        "NamespaceFullAccessPolicy": (
+            "Namespace-scoped full access (all operations within namespace)"
+        ),
+        "NamespaceReadOnlyPolicy": (
+            "Namespace-scoped read-only access (monitoring within namespace)"
+        ),
+    }
+
+    def test_every_managed_policy_keeps_its_shipped_description(self) -> None:
+        resources = _load_cfn_template()["Resources"]
+        descriptions = {
+            key: resource["Properties"].get("Description")
+            for key, resource in resources.items()
+            if resource["Type"] == "AWS::IAM::ManagedPolicy"
+        }
+        assert descriptions == self._SHIPPED

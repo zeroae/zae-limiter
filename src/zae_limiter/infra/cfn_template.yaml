@@ -514,8 +514,12 @@ Resources:
   # -------------------------------------------------------------------------
   # IAM Managed Policies (Created when EnableIAM=true)
   # -------------------------------------------------------------------------
+  # Never change a policy's Description, even where it is out of date: CloudFormation
+  # replaces a ManagedPolicy to change it, a named policy cannot be replaced, and
+  # `upgrade` refuses a replacement, so every existing stack would be stuck (#752).
+  # Pinned by tests/unit/test_cfn_iam_parity.py.
 
-  # AcquireOnlyPolicy: For applications running acquire() - read + transact write
+  # AcquireOnlyPolicy: For applications running acquire() - read + write
   AcquireOnlyPolicy:
     Type: AWS::IAM::ManagedPolicy
     Condition: DeployIAM
@@ -840,7 +844,7 @@ Resources:
   # Application IAM Roles
   # -------------------------------------------------------------------------
 
-  # AppRole: For applications running acquire() - read + transact write
+  # AppRole: For applications running acquire() - read + write
   AppRole:
     Type: AWS::IAM::Role
     Condition: DeployIAMRolesWithIAM

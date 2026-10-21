@@ -17,7 +17,7 @@ IMPORTANT: These tests require:
 2. The --run-aws pytest flag
 
 To run:
-    pytest tests/test_e2e_aws.py --run-aws -v
+    pytest tests/e2e/test_aws.py --run-aws -v
 
 WARNING: These tests create real AWS resources and may incur charges.
 Resources are cleaned up after tests, but verify via AWS Console.
@@ -43,9 +43,9 @@ pytestmark = [pytest.mark.aws, pytest.mark.e2e]
 # - snapshots: Tests that verify usage snapshot creation
 #
 # Usage:
-#   pytest tests/test_e2e_aws.py --run-aws -v                    # Run all
-#   pytest tests/test_e2e_aws.py --run-aws -v -m "not slow"      # Skip slow tests
-#   pytest tests/test_e2e_aws.py --run-aws -v -m "not monitoring"  # Skip monitoring tests
+#   pytest tests/e2e/test_aws.py --run-aws -v                    # Run all
+#   pytest tests/e2e/test_aws.py --run-aws -v -m "not slow"      # Skip slow tests
+#   pytest tests/e2e/test_aws.py --run-aws -v -m "not monitoring"  # Skip monitoring tests
 
 
 # AWS-specific fixtures that don't depend on localstack_endpoint
