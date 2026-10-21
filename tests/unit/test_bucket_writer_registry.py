@@ -33,7 +33,7 @@ from datetime import timedelta
 from typing import Any
 
 from zae_limiter import Limit, Repository
-from zae_limiter.models import BucketState, QuotaDonorDebit
+from zae_limiter.models import BucketState, CreditCeiling, QuotaDonorDebit, QuotaPeriodPin
 from zae_limiter.schema import BUCKET_FIELD_GC
 from zae_limiter_aggregator import processor
 
@@ -47,8 +47,7 @@ REPOSITORY = {
     "build_composite_create": (True, True),  # create: tk from a move or grant, gc = count
     "build_composite_normal": (True, True),  # rf-locked: reset/roll/seed stamp gc, pinned
     "build_composite_retry": (True, False),  # ADD only; never seeds a quota
-    "build_composite_adjust": (True, False),  # adjust / rollback ADD
-    "build_vu_reset": (False, False),  # vu = 0 after a credit above the ceiling (#679)
+    "build_composite_adjust": (True, False),  # adjust / rollback ADD; vu = 0 on trim (#721)
     "build_quota_donor_debits": (True, False),  # the donor side of a move
     "_build_quota_count_freeze": (False, True),  # gc = if_not_exists(gc, :g) on a raise
     "_build_bucket_param_update": (False, False),  # param sync: cp/ra/rp/sched, vu = 0
@@ -60,13 +59,15 @@ REPOSITORY = {
     "repair_created_quota_shard": (False, True),  # raise a create a doubling overtook, freeze
     "_propagate_window_start": (False, False),  # ws / rsa / vu / wtc, never tk
     "_stamp_bucket_disabled": (False, False),  # disabled flag
-    "_stamp_bucket_cascade": (False, False),  # cascade policy + owner parent_id (ADR-146)
+    "_stamp_bucket_cascade": (False, False),  # cascade + owner parent_id + pgen (ADR-146/150)
     "_sync_one_bucket_shard": (False, False),  # issues _build_bucket_param_update
     "get_or_create_bucket": (True, True),  # legacy create via build_bucket_put_item
     "purge_namespace": (True, True),  # deletes whole items, buckets included
     # Executors: run builders registered above.
     "transact_write": NOT_BUCKET,
     "write_each": NOT_BUCKET,
+    # Re-sends an UpdateItem its caller built, on a transaction conflict (#724).
+    "_update_item_retrying_conflict": NOT_BUCKET,
     # Config, registry, audit and version items.
     "_cleanup_entity_config_registry": NOT_BUCKET,
     "_initialize_version_record": NOT_BUCKET,
@@ -77,6 +78,8 @@ REPOSITORY = {
     "_write_resource_config_flag": NOT_BUCKET,  # disabled / cascade on resource config
     "_write_audit_retention_config": NOT_BUCKET,
     "create_entity": NOT_BUCKET,
+    "_write_parent": NOT_BUCKET,  # META parent_id, GSI1 keys and pgen (ADR-150)
+    "build_owner_check": NOT_BUCKET,  # ConditionCheck on META pinning a create (ADR-150)
     "delete_limits": NOT_BUCKET,
     "delete_namespace": NOT_BUCKET,
     "delete_resource_defaults": NOT_BUCKET,
@@ -94,13 +97,14 @@ AGGREGATOR = {
     "_donor_update_items": (True, False),  # the donor side of a Path 2 move
     "_quota_count_freeze": (False, True),  # Path 1 raising a legacy item freezes gc
     "_repair_quota_clones": (False, True),  # raise clones a doubling overtook, freeze
-    "propagate_shard_count": (True, True),  # Path 1 raise + Path 2 clone put / transaction
+    "propagate_shard_count": (True, True),  # Path 1 raise + Path 2 clone transaction
     "try_proactive_shard": (False, False),  # shard_count on shard 0
     "update_snapshot": NOT_BUCKET,  # usage snapshot items
 }
 
 _WRITE = re.compile(
-    r"update_item\(|put_item\(|delete_item\(|transact_write_items\("
+    r"update_item\(|_update_item_retrying_conflict\(|put_item\(|delete_item\("
+    r"|transact_write_items\("
     r'|"Update"\s*:|"Put"\s*:|"Delete"\s*:|"UpdateExpression"|UpdateExpression='
 )
 
@@ -233,9 +237,32 @@ def _non_gc_builds() -> dict[str, list[dict[str, Any]]]:
             )["Update"]
         ],
         "build_composite_adjust": [
-            repo.build_composite_adjust("e", "r", deltas={"cal": 1_000, "ses": -1_000})["Update"]
+            repo.build_composite_adjust("e", "r", deltas={"cal": 1_000, "ses": -1_000})["Update"],
+            # The self-trimming credit and its fallback (#721).
+            repo.build_composite_adjust(
+                "e",
+                "r",
+                deltas={"cal": -1_000, "ses": -1_000},
+                ceilings={"cal": CreditCeiling(5_000, 10_000, 2, ("1m0h0", None))},
+                pin=(2, None, ("1h9-17s500", None, "UTC")),
+            )["Update"],
+            repo.build_composite_adjust("e", "r", deltas={"cal": -1_000, "ses": -1_000}, trim=True)[
+                "Update"
+            ],
+            # A quota credit guarded on its period (#721).
+            repo.build_composite_adjust(
+                "e",
+                "r",
+                deltas={"cal": -1_000, "ses": -1_000},
+                ceilings={
+                    "cal": CreditCeiling(5_000, 10_000, 2, (None, None), True, QuotaPeriodPin(9)),
+                    "ses": CreditCeiling(
+                        5_000, 10_000, 2, (None, None), True, QuotaPeriodPin(window=(3, 3))
+                    ),
+                },
+                trim=True,
+            )["Update"],
         ],
-        "build_vu_reset": [repo.build_vu_reset("e", "r", shard_id=1)["Update"]],
         "build_quota_donor_debits": [
             item["Update"]
             for item in repo.build_quota_donor_debits(

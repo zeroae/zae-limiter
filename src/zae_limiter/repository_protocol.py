@@ -19,6 +19,8 @@ if TYPE_CHECKING:
         BackendCapabilities,
         BucketState,
         ConfigAccess,
+        CreditCeiling,
+        CreditPin,
         Entity,
         Limit,
         OnUnavailableAction,
@@ -44,6 +46,12 @@ class SpeculativeFailureReason(Enum):
     it cannot help and would create a shard needlessly) and above all not
     fast-reject, which would report RateLimitExceeded against limits the new
     window may have already raised.
+
+    CONTENTION means the write kept colliding with an in-flight DynamoDB
+    transaction on the same item (``TransactionConflictException``, #724)
+    after the repository's bounded retries. Nothing was written and there is
+    no image. The limiter must take the slow path — never fast-reject (there
+    is nothing to judge) and never treat it as the backend being unavailable.
     """
 
     APP_LIMIT_EXHAUSTED = "app_limit_exhausted"
@@ -52,6 +60,7 @@ class SpeculativeFailureReason(Enum):
     BUCKET_MISSING = "bucket_missing"
     DISABLED = "disabled"
     SCHEDULE_BOUNDARY = "schedule_boundary"
+    CONTENTION = "contention"
 
 
 @dataclass
@@ -72,6 +81,16 @@ class SpeculativeResult:
         shard_count: The total shard count read from the bucket item. Used by
             the limiter to decide whether to retry on another shard or double
             shards when the ``wcu`` limit is exhausted.
+        pgen: The parent generation stamped on the item (ADR-150), or None
+            when the item carries none. A stamp with a generation is
+            authoritative for ``cascade`` and ``parent_id`` even when it names
+            no parent.
+        pinc: The entity incarnation stamped beside ``pgen`` (ADR-150), or
+            None. A generation compares only within one incarnation.
+        debited_parent_id: On the warm parallel cascade path, the parent the
+            nested write in ``parent_result`` went to: the cached parent, which
+            the item's ``parent_id`` can contradict after a move (ADR-150).
+            None when no parallel parent write was issued.
     """
 
     success: bool
@@ -83,6 +102,20 @@ class SpeculativeResult:
     shard_id: int = 0
     shard_count: int = 1
     failure_reason: SpeculativeFailureReason | None = None
+    pgen: int | None = None
+    pinc: str | None = None
+    debited_parent_id: str | None = None
+
+    @property
+    def stamp_is_policy(self) -> bool:
+        """Whether the item's ``cascade`` / ``parent_id`` stamp can be trusted.
+
+        A stamp carrying a parent generation is authoritative (ADR-150); one
+        without is trusted only when it carries a ``parent_id`` (ADR-146: a
+        ``cascade=False`` with no ``parent_id`` and no generation is a bucket an
+        older version created for a parent from its child's view, #684).
+        """
+        return self.pgen is not None or self.parent_id is not None
 
 
 #: Sentinel default for the tri-state ``disabled`` parameter (ADR-125).
@@ -395,6 +428,63 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    async def set_parent(
+        self,
+        entity_id: str,
+        parent_id: str | None,
+        *,
+        principal: str | None = None,
+    ) -> int:
+        """
+        Move an entity to a new parent, or to no parent (ADR-150).
+
+        Updates the entity's parent and makes every one of its bucket items
+        name the new parent, so the next acquire debits it wherever the cascade
+        policy (ADR-146) says the entity cascades. Consumption already charged
+        to the old parent stays there.
+
+        Args:
+            entity_id: Entity to move.
+            parent_id: The new parent, which must exist, or None for no parent.
+            principal: Caller identity for audit logging.
+
+        Returns:
+            Number of bucket items restamped.
+
+        Raises:
+            ValidationError: The move would make the entity its own ancestor.
+            EntityNotFoundError: The entity or the new parent does not exist.
+            VersionMismatchError: The backend's readers predate parent moves.
+            FanoutIncomplete: The move landed but restamping stopped part-way;
+                repeating the call finishes it.
+        """
+        ...
+
+    async def restamp_owner_if_current(
+        self, entity_id: str, resource: str, shard_id: int, incarnation: str
+    ) -> bool:
+        """
+        Claim a bucket stamped by another incarnation, if this one is current (ADR-150).
+
+        The slow path's owner stamp only overwrites a stamp of its own
+        incarnation, because its META read is eventually consistent and may be
+        a deleted predecessor's. When that pin is lost to another incarnation,
+        one strongly consistent META read settles it: if ``incarnation`` is
+        current, the bucket is a predecessor's leftover and is restamped with
+        the current owner (``cascade``, ``parent_id``, generation and
+        incarnation), never lowering a newer stamp; if not, it is left alone.
+
+        Args:
+            entity_id: The bucket's owner.
+            resource: The bucket's resource.
+            shard_id: The bucket's shard.
+            incarnation: The incarnation the caller's pass read.
+
+        Returns:
+            Whether the bucket was restamped.
+        """
+        ...
+
     # -------------------------------------------------------------------------
     # Bucket operations
     # -------------------------------------------------------------------------
@@ -568,6 +658,18 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    def build_owner_check(
+        self, entity_id: str, *, exists: bool, pgen: int | None, pinc: str | None
+    ) -> dict[str, Any]:
+        """Build the ``ConditionCheck`` that pins a bucket create to its owner's META (ADR-150).
+
+        A transaction item asserting the owner's META still holds the parent
+        generation and incarnation the create read, or is still absent when
+        ``exists`` is False. Rides in the create's own transaction, so a move
+        landing between the read and the create cancels it.
+        """
+        ...
+
     def build_composite_create(
         self,
         entity_id: str,
@@ -581,6 +683,8 @@ class RepositoryProtocol(Protocol):
         shard_count: int = 1,
         vu: int | None = None,
         rf_ms: int | None = None,
+        pgen: int | None = None,
+        pinc: str | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -594,6 +698,9 @@ class RepositoryProtocol(Protocol):
             parent_id: The entity's parent_id (if any)
             vu: Valid-until stamp in epoch ms, or None to omit (#222 §2.1)
             rf_ms: The ``rf`` to stamp, or None for ``now_ms`` (ADR-140)
+            pgen: The owner's parent generation read with ``cascade`` /
+                ``parent_id`` (ADR-150), or None to stamp none
+            pinc: The owner's incarnation read with ``pgen``, or None
         """
         ...
 
@@ -619,12 +726,25 @@ class RepositoryProtocol(Protocol):
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
+        owner_pgen: int | None = None,
+        owner_pinc: str | None = None,
+        read_tokens: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
+
+        ``read_tokens`` (limit name -> ``tk`` as read) pins every limit whose
+        refill delta is positive on ``tk <= :read``, so a credit landing
+        between the read and the write fails the write rather than having the
+        refill stack on it (#730).
 
         ``owner`` is ``(cascade, parent_id)`` from the item owner's META, read
         this pass: when given, both stamps are rewritten so the fast path's
         denormalised copy is repaired (#684). ``None`` leaves them as stored.
+        ``owner_pgen`` is the owner's parent generation read with them
+        (ADR-150): stamped beside them, and the write is pinned on not
+        lowering it, so a pass that read META before a move cannot undo it.
+        ``owner_pinc`` is the owner's incarnation: the pin passes over a stamp
+        of another incarnation, whose generation is not comparable.
 
         ``pin_vu``: when the write sets or removes ``vu``, require it to still be
         ``expected_vu`` (absent when None), the value the caller read, so a
@@ -676,8 +796,15 @@ class RepositoryProtocol(Protocol):
         consumed: dict[str, int],
         shard_id: int = 0,
         seeds: "dict[str, BucketState] | None" = None,
+        period_guards: dict[str, tuple[int | None, int | None]] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
+
+        ``period_guards`` (limit name -> ``(reset_edge_ms, window_start_ms)``):
+        for each quota the lost write was to reset, roll or open, the retry
+        requires that period to be applied already (``rf >= edge``, or
+        ``b_{name}_wa = window_start``), so it never spends the previous
+        period's balance (#743).
 
         Must ask for ``ReturnValuesOnConditionCheckFailure=ALL_OLD``: the lease
         reports a failure here from the item's real balance (#633).
@@ -698,10 +825,13 @@ class RepositoryProtocol(Protocol):
         resource: str,
         deltas: dict[str, int],
         shard_id: int = 0,
+        ceilings: "dict[str, CreditCeiling] | None" = None,
+        trim: bool = False,
+        pin: "CreditPin | None" = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
-        Unconditional ADD for post-hoc correction. Can go negative by design.
+        An ADD for post-hoc correction. Can go negative by design.
         Positive delta = consumed more (subtract tokens, add to counter).
         Negative delta = consumed less (add tokens, subtract from counter).
 
@@ -709,10 +839,23 @@ class RepositoryProtocol(Protocol):
             entity_id: Entity owning the bucket
             resource: Resource name
             deltas: Delta per limit (millitokens, positive=consume, negative=release)
+            ceilings: Limit name -> ``CreditCeiling``. Each credited limit
+                named here is conditioned on its balance staying at or below
+                the ceiling after the credit, and on the stored ``cp`` / ``gc``
+                the ceiling was computed from (#721); a failed condition raises
+                ``ConditionalCheckFailedException`` and the caller re-issues
+                the credit with ``trim=True``.
+            trim: Build the fallback: the same unconditional ADD plus
+                ``SET vu = 0`` in one write, so the speculative fast path cannot
+                spend a balance above the ceiling before a slow pass clamps it.
+            pin: The item's (``shard_count``, ``vu``, item-level schedule
+                strings) the ceilings were computed against (``None`` =
+                absent), pinned beside them: a doubling, a schedule change or a
+                reset may have lowered the real ceiling.
         """
         ...
 
-    async def transact_write(self, items: list[dict[str, Any]]) -> None:
+    async def transact_write(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
         """
         Execute a write of one or more items.
 
@@ -722,6 +865,11 @@ class RepositoryProtocol(Protocol):
 
         Args:
             items: List of transaction items from build_bucket_put_item
+
+        Returns:
+            For a single-item update, the item's attributes after the write
+            (``ALL_NEW``), which a later refund pins (#721); otherwise, or when
+            a backend cannot say, ``None``.
 
         Raises:
             TransactionCanceledException: If multi-item transaction fails
@@ -743,8 +891,7 @@ class RepositoryProtocol(Protocol):
         Returns:
             One entry per item: the attributes an UpdateItem returned (when the
             item asked for ``ReturnValues``), else an empty dict. A backend may
-            return ``None``; callers then skip the post-credit ceiling check
-            (#679) rather than fail.
+            return ``None``; no caller depends on the result.
         """
         ...
 

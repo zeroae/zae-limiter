@@ -75,6 +75,7 @@ aws dynamodb query --table-name <name> \
 | Limit too restrictive | Compare limit capacity vs usage | Increase capacity |
 | Cascade triggered | Check `violations` array | Increase parent limit |
 | Clock skew | Compare server time with bucket `last_update` | Sync NTP |
+| Over-sharded entity | `shard_count` above 32 on the bucket item | See [Over-sharded entities](#over-sharded-entities) |
 
 **Check bucket state:**
 
@@ -90,6 +91,42 @@ aws dynamodb get-item --table-name <name> \
 - `tokens`: Current token count (in millitokens, divide by 1000)
 - `last_update`: Unix timestamp of last access
 - `capacity`: Maximum bucket capacity (in millitokens)
+
+### Over-sharded entities
+
+Before [#745](https://github.com/zeroae/zae-limiter/pull/745), the aggregator's proactive
+sharding could double an entity's `shard_count` on light traffic, with no upper bound: one
+entity went from 1 to 2048 shards over 11 aggregator invocations. Each shard holds
+`capacity // shard_count`, so at 2048 shards almost every request is larger than one shard's
+share.
+
+**Symptom:** `RateLimitExceeded` while the entity is far below its configured limit. In one
+measurement, 1 request in 200 was admitted.
+
+**How to spot it:**
+
+- The bucket item's `shard_count` is above 32 (`MAX_SHARD_COUNT`). Use the
+  `get-item` command above; `shard_count` is in the projection.
+- Or the GSI3 discovery in [Debug Bucket State](#debug-bucket-state) returns more than 32
+  bucket items for one entity and resource.
+
+**Upgrading does not repair it.** A current version never doubles past 32 and never
+propagates a count above 32, but nothing lowers a `shard_count` that is already there. The
+repair is tracked in [#747](https://github.com/zeroae/zae-limiter/issues/747).
+
+!!! warning "Deleting the bucket items is not a safe workaround"
+    Clients cache each entity's `shard_count` in memory and draw a shard from that cached
+    value (`Repository.select_shard`). A running client that cached the old count recreates
+    the missing shards at that count on its next acquire. No repair procedure is documented
+    yet; follow #747.
+
+**Client clock skew can still double up to 32.** The aggregator projects a bucket's stored
+`wcu` balance from its `rf` timestamp to the aggregator's own clock before deciding to double.
+`rf` is stamped from the client's clock, so when a client runs about 2 seconds ahead, the
+projection adds no refill, a stale low balance still reads as a hot partition, and the
+aggregator can double the entity again on following invocations. The walk is bounded: it stops
+at `MAX_SHARD_COUNT` (32) and never goes past it. Keep client and Lambda clocks in sync (NTP;
+Lambda's clock is already synced) to avoid it.
 
 ### Limits Not Enforcing
 

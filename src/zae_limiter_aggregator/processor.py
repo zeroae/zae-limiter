@@ -31,6 +31,8 @@ from zae_limiter.schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
     BUCKET_FIELD_GC,
+    BUCKET_FIELD_PGEN,
+    BUCKET_FIELD_PINC,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
     BUCKET_FIELD_RSA,
@@ -45,19 +47,21 @@ from zae_limiter.schema import (
     BUCKET_FIELD_WTC,
     BUCKET_PREFIX,
     BUCKET_SCHED_NONE,
+    MAX_SHARD_COUNT,
     SK_BUCKET,
     WCU_LIMIT_NAME,
-    WCU_SHARD_WARN_THRESHOLD,
     bucket_attr,
     gsi2_pk_resource,
     gsi2_sk_bucket,
     gsi2_sk_usage,
     gsi3_sk_bucket,
     gsi4_sk_bucket,
+    owner_meta_condition,
     parse_bucket_pk,
     parse_namespace,
     pk_bucket,
     pk_entity,
+    sk_meta,
     sk_state,
     sk_usage,
 )
@@ -309,6 +313,9 @@ def process_stream_records(
                     state,
                     wcu_tk_milli=wcu_info.tk_milli,
                     wcu_capacity_milli=wcu_info.cp_milli,
+                    wcu_refill_amount_milli=wcu_info.ra_milli,
+                    wcu_refill_period_ms=wcu_info.rp_ms,
+                    now_ms=now_ms,
                 )
             except Exception as e:
                 error_msg = f"Error in proactive sharding: {e}"
@@ -725,6 +732,11 @@ def aggregate_bucket_states(
             # records for one key arrive in order, so the last image is the
             # closest thing to the item's current state.
             bucket_states[key].rf_ms = parsed.rf_ms
+            # A doubling later in the batch must reach the refill: it targets
+            # `cp // shard_count`, and the first record's count would top this
+            # shard up to the old, larger share while the new shards are
+            # created holding theirs (1265 against 1000 until the next pass).
+            bucket_states[key].shard_count = parsed.shard_count
             bucket_states[key].sched = parsed.sched
             bucket_states[key].sched_compact = parsed.sched_compact
             bucket_states[key].reset_sched = parsed.reset_sched
@@ -961,12 +973,19 @@ def try_refill_bucket(
     # name (#634) — `NAME_PATTERN` allows `.` and `-`, and an inline
     # `b_rpm.v2_tk` parses as a nested document path.
     refilled: list[str] = []
+    # (alias, placeholder, `tk` as read) for every raise this write computes
+    # from the image: pinned on `tk <= read` below (#730).
+    raised: list[tuple[str, str, int]] = []
     # Limits this pass leaves unclamped — a quota it does not reset or roll (it
     # never drips, so `refill_bucket` never clamps it) — with their ceilings.
     # `vu` is not re-stamped while one is above its ceiling, and a re-stamp is
     # pinned on each staying within it (#679, #681, see below).
     unclamped: list[tuple[str, int]] = []
     over_ceiling: list[str] = []
+    # `wcu`'s refill when the threshold below would skip it: credited if this
+    # write happens for another limit, since that write moves `rf` (see after
+    # the loop). `(delta, tk as read)`.
+    deferred_wcu: tuple[int, int] | None = None
 
     for limit_name, info in state.limits.items():
         if limit_name == WCU_LIMIT_NAME:
@@ -1057,6 +1076,8 @@ def try_refill_bucket(
                 add_parts.append(f"#wtk{idx} :wd{idx}")
                 expr_names[f"#wtk{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
                 expr_values[f":wd{idx}"] = roll_delta
+                if roll_delta > 0:
+                    raised.append((f"#wtk{idx}", f":wk{idx}", info.tk_milli))
                 # Pin the window being restored (see the condition below).
                 expr_names[f"#wws{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_WS)
                 expr_values[f":ews{idx}"] = window[0]
@@ -1091,6 +1112,8 @@ def try_refill_bucket(
                     add_parts.append(f"#rt{idx} :rd{idx}")
                     expr_names[f"#rt{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
                     expr_values[f":rd{idx}"] = reset_delta
+                    if reset_delta > 0:
+                        raised.append((f"#rt{idx}", f":rk{idx}", info.tk_milli))
                     refilled.append(limit_name)
                 continue
 
@@ -1126,6 +1149,8 @@ def try_refill_bucket(
             projected = result.new_tokens_milli
             consumption_estimate = max(0, info.tc_delta)
             if projected >= consumption_estimate:
+                if limit_name == WCU_LIMIT_NAME:
+                    deferred_wcu = (refill_delta, info.tk_milli)
                 continue
         # A negative delta is a clamp: the bucket holds more than its effective
         # cap after a shrink (set_limits, a shard doubling, or a schedule
@@ -1141,6 +1166,8 @@ def try_refill_bucket(
         add_parts.append(f"#rt{idx} :rd{idx}")
         expr_names[f"#rt{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
         expr_values[f":rd{idx}"] = refill_delta
+        if refill_delta > 0:
+            raised.append((f"#rt{idx}", f":rk{idx}", info.tk_milli))
         refilled.append(limit_name)
 
     if not any_needs_refill:
@@ -1150,6 +1177,28 @@ def try_refill_bucket(
             resource=state.resource,
         )
         return False
+
+    # This write moves `rf`, and every limit on the item refills from `rf`, so
+    # a limit left out of it forfeits everything it accrued since the last
+    # stamp. `wcu` was always left out by the threshold above. Its `tc` does
+    # move (the fast path ADDs one token to `#wcu_tc` per write), but a batch holds
+    # at most BatchSize (100) records, so its `tc_delta` is at most 100 tokens,
+    # while its projection from the unmoved `rf` is back near its 1000-token
+    # capacity within a second (it refills 1000/s): `projected >= tc_delta`
+    # skipped it on every pass, and nothing on the fast path refills it.
+    # Its stored balance then
+    # drained by one token per write for good, and read as a hot partition
+    # after ~800 writes however slowly they came. Credited only here, never as
+    # a reason to write: a `wcu`-only refill would spend a write to record
+    # capacity that refill from the unmoved `rf` already accounts for.
+    if deferred_wcu is not None:
+        wcu_delta, wcu_read_tk = deferred_wcu
+        idx = len(refilled)
+        add_parts.append(f"#rt{idx} :rd{idx}")
+        expr_names[f"#rt{idx}"] = bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK)
+        expr_values[f":rd{idx}"] = wcu_delta
+        raised.append((f"#rt{idx}", f":rk{idx}", wcu_read_tk))
+        refilled.append(WCU_LIMIT_NAME)
 
     # Build single UpdateItem for the composite bucket
     # ADD is commutative with concurrent speculative writes (Issue #317)
@@ -1231,6 +1280,16 @@ def try_refill_bucket(
     # lost lock. One term per rolled limit, positional aliases only.
     for idx in range(len(rolled)):
         condition += f" AND #wws{idx} = :ews{idx}"
+
+    # A raise is computed from the image's `tk`. A refund or release landing
+    # since moves neither `rf` nor `vu`, so the refill would stack on top of
+    # it (#730: 15 admitted against a quota of 10). Speculative debits only
+    # lower `tk`, so `tk` above the image means a credit: the write fails its
+    # condition and is skipped like any lost lock. A trim (delta <= 0) is not
+    # pinned, so it still clamps. Positional tokens (#634).
+    for alias, token, read_tk in raised:
+        condition += f" AND {alias} <= {token}"
+        expr_values[token] = read_tk
 
     # ADR-145 I3/I4: a reset or roll this write applies re-grants that quota
     # at the item's count, so it stamps `gc` in the same write — and pins the
@@ -1335,12 +1394,35 @@ def try_proactive_shard(
     state: BucketRefillState,
     wcu_tk_milli: int,
     wcu_capacity_milli: int,
+    *,
+    wcu_refill_amount_milli: int = 0,
+    wcu_refill_period_ms: int = 0,
+    now_ms: int | None = None,
 ) -> bool:
     """Proactively double shard_count when wcu token level is low.
 
     Checks remaining wcu tokens against capacity. When tokens drop
     below 20% of capacity, the partition is under sustained write
     pressure and should be split.
+
+    The stored balance is projected to ``now_ms`` first, exactly as the
+    client's ``_shard_after_wcu_exhaustion`` does with ``try_consume``. Nobody
+    refills ``wcu`` on the fast path, so the stored value only says how many
+    writes landed since the last materialising pass — 800 of them over an
+    hour read as "under 20%" — not that the partition is hot now.
+
+    Never doubles at or past ``MAX_SHARD_COUNT`` (ADR-133), the cap the client
+    already honours. Without it the doubling fed itself: this write is a
+    MODIFY of shard 0 that still carries the low ``wcu`` balance, so the next
+    invocation read it and doubled again, without bound.
+
+    A backstop, not the primary protection. The client doubles on its own
+    the moment a write finds ``wcu`` exhausted (``_shard_after_wcu_exhaustion``),
+    and that is what protects a hot shard. Projected to now, the balance this
+    reads is low only when a materialising pass stamped ``rf`` less than
+    0.2 s before this invocation's clock (``wcu`` refills 1000/s; the
+    threshold is 200), so the aggregator rarely doubles before the client
+    already has.
 
     Only acts on shard 0 (source of truth for shard_count).
     Uses conditional write to prevent double-bumping.
@@ -1350,6 +1432,11 @@ def try_proactive_shard(
         state: Aggregated bucket state
         wcu_tk_milli: Remaining wcu tokens in millitokens (from last NewImage)
         wcu_capacity_milli: wcu capacity in millitokens
+        wcu_refill_amount_milli: wcu refill amount in millitokens; with
+            ``wcu_refill_period_ms`` and ``now_ms``, projects the balance
+            from ``state.rf_ms`` to now. Omitted, the stored balance is used.
+        wcu_refill_period_ms: wcu refill period in milliseconds
+        now_ms: Current time (epoch milliseconds)
 
     Returns:
         True if shard_count was bumped, False otherwise
@@ -1360,11 +1447,31 @@ def try_proactive_shard(
     if wcu_capacity_milli <= 0:
         return False
 
+    if state.shard_count >= MAX_SHARD_COUNT:
+        logger.debug(
+            "Proactive shard skipped - at MAX_SHARD_COUNT",
+            entity_id=state.entity_id,
+            resource=state.resource,
+            shard_count=state.shard_count,
+            max_shard_count=MAX_SHARD_COUNT,
+        )
+        return False
+
+    if now_ms is not None and wcu_refill_period_ms > 0 and wcu_refill_amount_milli > 0:
+        wcu_tk_milli = refill_bucket(
+            tokens_milli=wcu_tk_milli,
+            last_refill_ms=state.rf_ms,
+            now_ms=now_ms,
+            capacity_milli=wcu_capacity_milli,
+            refill_amount_milli=wcu_refill_amount_milli,
+            refill_period_ms=wcu_refill_period_ms,
+        ).new_tokens_milli
+
     token_ratio = wcu_tk_milli / wcu_capacity_milli
     if token_ratio >= WCU_PROACTIVE_THRESHOLD_LOW:
         return False
 
-    new_count = state.shard_count * 2
+    new_count = min(state.shard_count * 2, MAX_SHARD_COUNT)
 
     try:
         table.update_item(
@@ -1387,13 +1494,13 @@ def try_proactive_shard(
             new_count=new_count,
             token_ratio=round(token_ratio, 2),
         )
-        if new_count > WCU_SHARD_WARN_THRESHOLD:
+        if new_count >= MAX_SHARD_COUNT:
             logger.warning(
-                "High shard count after proactive doubling",
+                "Shard count reached MAX_SHARD_COUNT after proactive doubling",
                 entity_id=state.entity_id,
                 resource=state.resource,
                 shard_count=new_count,
-                threshold=WCU_SHARD_WARN_THRESHOLD,
+                max_shard_count=MAX_SHARD_COUNT,
             )
         return True
     except ClientError as e:
@@ -1744,6 +1851,44 @@ def _legacy_quota_sizes(
     return sizes
 
 
+def _clone_owner_check(
+    table_name: str, namespace_id: str, entity_id: str, image: dict[str, Any]
+) -> dict[str, Any]:
+    """The ``ConditionCheck`` pinning a Path 2 clone to its owner's META (ADR-150).
+
+    A clone copies shard 0's owner stamp (``cascade`` / ``parent_id`` /
+    ``pgen`` / ``pinc``) from the stream image, which can predate a move: the
+    move's fan-out ran before the clone existed, and nothing else would
+    correct it. So the clone's transaction asserts the owner's META still
+    carries the image's generation and incarnation; a move or a recreate since
+    cancels it, and the clone is skipped (the client creates it lazily).
+
+    An image with no generation stamp (written before ADR-150, or for an
+    entity with no META) asserts META carries none either: true of an
+    unmoved pre-0.17 entity or a missing one, false once anything moved it.
+    Needs ``dynamodb:ConditionCheckItem``.
+    """
+    raw_pgen = image.get(BUCKET_FIELD_PGEN)
+    raw_pinc = image.get(BUCKET_FIELD_PINC)
+    pgen = None if raw_pgen is None else int(raw_pgen)
+    pinc = None if raw_pinc is None else str(raw_pinc)
+    expression, names, values = owner_meta_condition(
+        exists=True if pgen is not None or pinc is not None else None,
+        pgen=pgen,
+        pinc=pinc,
+    )
+    check: dict[str, Any] = {
+        "TableName": table_name,
+        "Key": {"PK": pk_entity(namespace_id, entity_id), "SK": sk_meta()},
+        "ConditionExpression": expression,
+    }
+    if names:
+        check["ExpressionAttributeNames"] = names
+    if values:
+        check["ExpressionAttributeValues"] = values
+    return {"ConditionCheck": check}
+
+
 def _repair_quota_clones(
     table: Any,
     namespace_id: str,
@@ -1832,6 +1977,9 @@ def propagate_shard_count(
     - New shards (old_count..new_count-1): PutItem cloned from shard 0's
       NewImage with adjusted PK/GSI keys and effective token capacity.
       Uses attribute_not_exists(PK) to avoid overwriting client-created items.
+      Each clone is one ``TransactWriteItems`` with a ``ConditionCheck`` on the
+      owner's META, pinned on the image's ``pgen`` / ``pinc`` (ADR-150): a
+      clone whose image a move has overtaken is skipped, left to the client.
       A quota on the clone is funded by a move off the current-period sibling
       covering its slot — its parent ``target % old_count`` — in one
       ``TransactWriteItems`` with the Put (ADR-145), or granted fresh when no
@@ -1872,6 +2020,22 @@ def propagate_shard_count(
 
     if shard_id != 0:
         return 0  # Only propagate from source of truth
+
+    # A count past the cap is a runaway doubling (an aggregator predating the
+    # cap in `try_proactive_shard`), never a real split. Path 1 and Path 2 each
+    # write once per shard, so propagating it is O(new_count) writes: past a few
+    # thousand the invocation times out, the batch is redriven, and the event
+    # source stalls behind it until the records age out.
+    if new_count > MAX_SHARD_COUNT:
+        logger.warning(
+            "Shard count propagation skipped - above MAX_SHARD_COUNT",
+            entity_id=entity_id,
+            resource=resource,
+            old_count=old_count,
+            new_count=new_count,
+            max_shard_count=MAX_SHARD_COUNT,
+        )
+        return 0
 
     updated = 0
 
@@ -2081,6 +2245,9 @@ def propagate_shard_count(
         ):
             stale_on_image.add(limit_name)
     created_clones: list[int] = []
+    # Each clone copies shard 0's owner stamp, which a move can have overtaken
+    # since the image: every clone is pinned to the owner's META (ADR-150).
+    owner_check = _clone_owner_check(table.name, namespace_id, entity_id, base_item)
     for target_shard in range(old_count, new_count):
         item = dict(base_item)
         item["PK"] = pk_bucket(namespace_id, entity_id, resource, target_shard)
@@ -2143,50 +2310,50 @@ def propagate_shard_count(
             wtc_attr = bucket_attr(limit_name, BUCKET_FIELD_WTC)
             if wtc_attr in item:
                 item[wtc_attr] = 0
+        # Every clone is one transaction: its Put, any donor debit, and the
+        # owner's META check last (ADR-150). The boto3 `Table` resource has no
+        # transaction call, so this goes through `table.meta.client`, which
+        # shares the resource's serializer: native values. Put and Update
+        # inside a transaction are authorised by PutItem / UpdateItem, the
+        # check by ConditionCheckItem.
+        transact_items = [
+            {
+                "Put": {
+                    "TableName": table.name,
+                    "Item": item,
+                    "ConditionExpression": "attribute_not_exists(PK)",
+                }
+            },
+            *_donor_update_items(table.name, namespace_id, entity_id, resource, debits),
+            owner_check,
+        ]
         try:
-            if debits:
-                # The boto3 `Table` resource has no transaction call, so this
-                # goes through `table.meta.client`, which shares the resource's
-                # serializer: native values, exactly like `put_item` below.
-                # Put and Update inside a transaction are authorised by
-                # PutItem / UpdateItem, which the aggregator role already has
-                # (design §6) — no ConditionCheck.
-                client.transact_write_items(
-                    TransactItems=[
-                        {
-                            "Put": {
-                                "TableName": table.name,
-                                "Item": item,
-                                "ConditionExpression": "attribute_not_exists(PK)",
-                            }
-                        },
-                        *_donor_update_items(table.name, namespace_id, entity_id, resource, debits),
-                    ]
-                )
-            else:
-                table.put_item(
-                    Item=item,
-                    ConditionExpression="attribute_not_exists(PK)",
-                )
+            client.transact_write_items(TransactItems=transact_items)
             updated += 1
         except ClientError as e:
-            code = e.response["Error"]["Code"]
-            if code in ("ConditionalCheckFailedException", "TransactionCanceledException"):
-                # The client already created this shard, or a donor moved
-                # since the read. Either way the whole write is undone (the
-                # donor untouched) and the client creates the shard lazily.
-                if code == "TransactionCanceledException":
-                    logger.debug(
-                        "Clone transaction cancelled - left to the client",
-                        resource=resource,
-                        shard_id=target_shard,
-                        reasons=[
-                            reason.get("Code", "None")
-                            for reason in e.response.get("CancellationReasons", [])
-                        ],
-                    )
-                continue
-            raise
+            if e.response["Error"]["Code"] != "TransactionCanceledException":
+                raise
+            # The client already created this shard, a donor moved since the
+            # read, or the owner moved since the image (ADR-150). Either way
+            # the whole write is undone (the donor untouched) and the client
+            # creates the shard lazily. Never the entity id: an API key.
+            reasons = [
+                reason.get("Code", "None") for reason in e.response.get("CancellationReasons", [])
+            ]
+            if len(reasons) == len(transact_items) and reasons[-1] == "ConditionalCheckFailed":
+                logger.debug(
+                    "Clone skipped - the owner moved since the stream image",
+                    resource=resource,
+                    shard_id=target_shard,
+                )
+            else:
+                logger.debug(
+                    "Clone transaction cancelled - left to the client",
+                    resource=resource,
+                    shard_id=target_shard,
+                    reasons=reasons,
+                )
+            continue
         if quota_shares:
             created_clones.append(target_shard)
         # A later clone planning off the same donor sees what it has left.

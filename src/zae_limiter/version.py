@@ -28,6 +28,14 @@ MIN_READER_VERSION_FOR_RESET_AFTER = "0.15.0"
 # stamps that on the buckets it creates, undoing the policy there.
 MIN_READER_VERSION_FOR_CASCADE_POLICY = "0.16.0"
 
+# The first release whose writers carry the parent generation (`pgen`) on
+# every bucket write of an entity's `parent_id` (ADR-150), gated the same way.
+# A client predating it can owner-stamp the old parent onto a bucket after a
+# move, with no generation pin, and a bucket that then only takes the fast path
+# keeps debiting the old parent forever; a limits provisioner predating it can
+# do the same from its cascade fan-out.
+MIN_READER_VERSION_FOR_PARENT_MOVE = "0.17.0"
+
 
 @dataclass(frozen=True, order=False)
 class ParsedVersion:
@@ -357,6 +365,35 @@ def cascade_policy_refusal(record_found: bool, lambda_version: str | None) -> tu
     return (
         f"Refusing to store a cascade policy: the deployed Lambdas predate {minimum} "
         "(the limits provisioner would erase it on its next apply). Run "
+        "'zae-limiter upgrade' first, or open the stack with Repository.open() "
+        "and auto_update=True.",
+        True,
+    )
+
+
+def parent_move_refusal(record_found: bool, lambda_version: str | None) -> tuple[str, bool]:
+    """The message and ``can_auto_update`` for a refused move to a new parent (ADR-150).
+
+    The ``reset_after_refusal`` contract, for ``set_parent``.
+    """
+    minimum = MIN_READER_VERSION_FOR_PARENT_MOVE
+    if not record_found:
+        return (
+            "Refusing to move an entity to a new parent: the stack has no version record, "
+            f"so nothing proves its limits provisioner keeps the move (added in {minimum}). "
+            f"Re-run 'zae-limiter deploy' from {minimum} or later, which writes it.",
+            False,
+        )
+    if lambda_version is None:
+        return (
+            "Refusing to move an entity to a new parent: the version record does not say "
+            "which Lambda code is deployed, so nothing proves the limits provisioner keeps "
+            f"the move (added in {minimum}). Run 'zae-limiter upgrade' to deploy it.",
+            False,
+        )
+    return (
+        "Refusing to move an entity to a new parent: the deployed Lambdas predate "
+        f"{minimum} (the limits provisioner could stamp the old parent back). Run "
         "'zae-limiter upgrade' first, or open the stack with Repository.open() "
         "and auto_update=True.",
         True,

@@ -64,7 +64,8 @@ The stack creates three IAM managed policies by default:
 
 The Lambda aggregator processes DynamoDB Stream events for usage aggregation, proactive bucket refill, and audit archival. It uses a separate execution role with least-privilege permissions:
 
-- `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `Query`
+- `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `Query`, `ConditionCheckItem` (a shard
+  clone is pinned to its owner's META, ADR-150)
 - `s3:PutObject` (when audit archival is enabled)
 
 #### Permission Boundaries
@@ -129,6 +130,8 @@ The stack creates three additional namespace-scoped policies:
 | **NamespaceReadOnlyPolicy** | `-ns-read` | Tenant monitoring | Yes |
 
 These policies use `dynamodb:LeadingKeys` with the `zael_namespace_id` principal tag to restrict DynamoDB access to items whose partition key starts with the tenant's namespace ID.
+
+`NamespaceAcquirePolicy` grants `GetItem`, `BatchGetItem`, `Query`, `PutItem`, `UpdateItem` and `ConditionCheckItem` within the namespace, plus reads of the reserved `_/` prefix (the namespace registry). `PutItem` and `UpdateItem` are what authorise the bucket create and update inside `acquire()`'s transactions: AWS checks each item in a `TransactWriteItems` against its own action (ADR-152).
 
 ##### Single Namespace (Most Common)
 
@@ -204,7 +207,9 @@ response = sts.assume_role(
                         "dynamodb:GetItem",
                         "dynamodb:BatchGetItem",
                         "dynamodb:Query",
+                        "dynamodb:PutItem",
                         "dynamodb:UpdateItem",
+                        "dynamodb:ConditionCheckItem",
                     ],
                     "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/shared-table",
                     "Condition": {
@@ -239,7 +244,8 @@ aws iam create-policy --policy-name my-multi-ns-policy \
       \"Effect\": \"Allow\",
       \"Action\": [
         \"dynamodb:GetItem\", \"dynamodb:BatchGetItem\",
-        \"dynamodb:Query\", \"dynamodb:UpdateItem\"
+        \"dynamodb:Query\", \"dynamodb:PutItem\",
+        \"dynamodb:UpdateItem\", \"dynamodb:ConditionCheckItem\"
       ],
       \"Resource\": \"arn:aws:dynamodb:us-east-1:123456789012:table/shared-table\",
       \"Condition\": {
