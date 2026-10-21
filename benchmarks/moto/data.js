@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792606177236,
+  "lastUpdate": 1792607363984,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -61739,6 +61739,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0005212983621603275",
             "extra": "mean: 7.252515855072218 msec\nrounds: 138"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d71e8f0b95862fd8b5aa17a7b73d6386d11d5d91",
+          "message": "🐛 fix(limiter): Stack B review fixes (set_parent) (#749)\n\n## Summary\n\nOwner-approved review fixes for Stack B (ADR-150, move an entity to a\nnew parent; #712 → #716 → #722). One commit per item.\n\n| # | SHA | What | Why |\n|---|-----|------|-----|\n| 1 | f51b2bdb7 | 💥 Pin bucket creates to the owner's META with a\n`ConditionCheck` | A move could land between a create's META read and\nits `Put`; the post-create background check could be overtaken and\nneeded joining/cancellation/`vu = 0` fallback. Now the create's own\ntransaction asserts META's `pgen`/`pinc`; a lost check re-plans once\nfrom a strongly consistent read. Aggregator Path 2 clones carry the same\ncheck and are skipped when it fails. |\n| 2 | d8059a1db | ♻️ Remove the post-create owner checks | Dead after\n(1): background task, join, cancellation handling,\n`repair_created_owner_stamp`, `start_background`, `build_vu_reset`,\n`cancellation.py`, and the sync generator's `create_task` → `_spawn`\nsupport (back to main). |\n| 3 | 4d0750487 | ♻️ Declare `restamp_owner_if_current` on\n`RepositoryProtocol` | The lease looked it up with `getattr` and\nsilently skipped the claim. |\n| 4 | f0339163f | 🐛 Apply the parent shard hint only to the parent it\ncame from (F2) | After a move the old parent's missing-shard hint\ncreated a new-parent shard at count 1 with a fresh quota grant (198 held\n+ 2 used of 100, ADR-145 I8). Also never honour an explicit shard ≥ the\ncount a create stamps. |\n| 5 | 0981a3de1 | 🐛 Retry contention on every send of the commit\ntransaction (F4) | The re-send after a claim let `TransactionConflict`\nescape raw → unlimited degraded lease under ALLOW. |\n| 6 | 89c148774 | 🐛 Read the parent strongly consistently in\n`_find_disabled` (F5) | A stale read named the old parent and hid the\nnew parent's 403. |\n| 7 | 63f60e5e1 | 🐛 Never let an older owner stamp move the entity cache\nback (F7) | Mid fan-out, shards with the old generation flipped the\ncache and caused refund/re-debit churn. Side cache `_owner_stamp_cache`\n(incarnation, pgen). |\n| 8 | 94d90d563 | 🐛 CLI names the old parent from a consistent read (F8)\n| |\n| 9 | 1b953909e | 🐛 A failed audit write never hides the move's outcome\n(F9) | An audit failure in `finally:` replaced `FanoutIncomplete`\n(\"re-run to finish\"). |\n| 10 | a24bef2ef | 📝 Trim ADR-150 to the decision | ADR-000 format;\ndetail moved to the design doc's \"Review decisions (2026-10-20)\". Status\nstays Proposed. |\n| 11 | e3afc5641 | 📝 Describe the pinned bucket create | CLAUDE.md\ninvariant 9, writer table, pricing; hierarchical guide; IAM docs;\nprotocol docs. |\n| + | 7c68d2863 | ✅ Cover the META pin on every send and the single-path\nolder stamp | Five branches the pre-push diff-coverage gate found\nuntested. |\n\n## ⚠️ Breaking change\n\n- **Bucket creates now carry a DynamoDB `ConditionCheck`**, so every IAM\nprincipal that acquires needs `dynamodb:ConditionCheckItem` on the table\n(and a custom aggregator role too). The managed policies (`acq`, `full`,\n`ns-acq` namespace statement, `ns-full`) and the aggregator role in the\nCloudFormation template grant it after `zae-limiter upgrade`/`deploy`;\n**custom IAM must add it**, or creates fail with\n`AccessDeniedException`.\n- **Restart every client after upgrading, before the first move**: a\npre-0.17 process keeps debiting the old parent and can restore it from a\nstale read until it reopens the stack.\n- A first create is now a 2-item `TransactWriteItems` instead of a\nsingle-item `PutItem`. Whether the `ConditionCheck` bills as read or\nwrite capacity is unconfirmed — measure on AWS with\n`ReturnConsumedCapacity`.\n\n## Test plan\n\n- [x] Per commit: targeted tests + `ruff check`, `ruff format --check`,\n`mypy`\n- [x] `cfn-lint src/zae_limiter/infra/cfn_template.yaml` clean (no new\nignore needed)\n- [x] `test_quota_conservation_fuzz.py`, `test_quota_shard_creation.py`,\n`test_window_shard_creation.py`, `test_rejection_cache.py`,\n`test_set_parent.py`, `test_processor.py`, `test_provisioner_fanout.py`,\n`test_cascade_policy.py`, `test_window_applied_marker.py`\n- [x] `pytest tests/unit/ -m gevent -n 0`\n- [x] `tests/benchmark/test_capacity.py` (cost pins updated for the\n2-item create)\n- [x] `mkdocs build --strict`\n- [x] Pre-push hook: full unit suite + 100% diff coverage\n- [ ] AWS e2e (owner, pre-release): IAM with `ConditionCheckItem`, and\n`ReturnConsumedCapacity` for the check\n\nRefs #677\n\n## IAM: acquire policies can now write (Refs #750)\n\nThese commits on top of this stack address #750:\n\n| Commit | Title |\n|---|---|\n| 412a04f14 | 📝 docs(adr): ADR-152 acquire policies grant the item\nactions they write with |\n| e4147a01d | 🐛 fix(infra): grant the item actions acquire() writes with\n|\n| a36218e48 | 🔥 remove(infra): drop the TransactWriteItems action IAM\ndoes not define |\n| bf61a57d5 | ✏️ docs(infra): fix stale acquire comments and pin the\npolicy descriptions |\n\nAWS authorises each `Put` / `Update` inside `TransactWriteItems` by\n`dynamodb:PutItem` / `dynamodb:UpdateItem` ([AWS\ndocs](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html)).\n`AcquireOnlyPolicy` now grants `PutItem` + `UpdateItem`;\n`NamespaceAcquirePolicy` now grants `PutItem`. ADR-152 is Proposed. On\nacceptance at v0.17.0 it supersedes ADR-124's permission matrix.\n\n### AWS e2e runs — `TestE2EAWSAcquirePolicies` (profile\n`zeroae-code/AWSPowerUserAccess`, us-east-1)\n\n| Run | Code under test | Date (UTC) | Result |\n|---|---|---|---|\n| Red (old template) | 7c68d2863 + the new test, uncommitted |\n2026-10-21 | **0 passed, 2 failed** (196.75 s) |\n| Green (fixed template) | tree of e4147a01d | 2026-10-21 | **2 passed,\n0 failed** (136.18 s) |\n\nRed-run errors (both surfaced as `RateLimiterUnavailable` under\n`on_unavailable=BLOCK`):\n- app role (acq only): `AccessDeniedException` on `UpdateItem` (the\nspeculative write of the first acquire): \"not authorized to perform:\ndynamodb:UpdateItem … because no identity-based policy allows the\ndynamodb:UpdateItem action\".\n- ns-acq role: `AccessDeniedException` on `TransactWriteItems` (bucket\ncreate), naming the item action: \"not authorized to perform:\ndynamodb:PutItem … because no identity-based policy allows the\ndynamodb:PutItem action\". The error is not\n`TransactionCanceledException`.\n\nThe green run also shows that `NamespaceAcquirePolicy` does not need\n`dynamodb:TransactWriteItems`, which it never had. No stack or IAM role\nwas left behind (checked with `list-stacks` / `list-roles`).\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_017XzYMYKXNcZNQYS3xQhFdc",
+          "timestamp": "2026-10-21T14:27:11-04:00",
+          "tree_id": "2c3b976390c21923ee2e8cca5dad6d3f4cd7df34",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d71e8f0b95862fd8b5aa17a7b73d6386d11d5d91"
+        },
+        "date": 1792607362578,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 232.54874970303382,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002712787362997634",
+            "extra": "mean: 4.300173625001236 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 192.36251562472324,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00025975627847703645",
+            "extra": "mean: 5.198517999997894 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 118.77358011884819,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00037725191096760717",
+            "extra": "mean: 8.419380800000908 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 158.78107390596122,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009184508937496564",
+            "extra": "mean: 6.297979824675164 msec\nrounds: 154"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 225.43398521918965,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00026824453623953406",
+            "extra": "mean: 4.435888400001886 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 231.75466368296563,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00022825585388345587",
+            "extra": "mean: 4.314907774058753 msec\nrounds: 239"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 120.76915471642893,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015255764751123695",
+            "extra": "mean: 8.280259991452636 msec\nrounds: 117"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 219.7763942216862,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00037488655884729077",
+            "extra": "mean: 4.55007920000412 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 192.70475303962795,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024380909347813295",
+            "extra": "mean: 5.189285599999494 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 131.69120372301103,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00037136816983210987",
+            "extra": "mean: 7.593521599994801 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 231.9458429650702,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00023273495284054934",
+            "extra": "mean: 4.311351250001039 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 198.2321458996937,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024900600192299374",
+            "extra": "mean: 5.044590499998947 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 179.7134626985145,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010799671002762358",
+            "extra": "mean: 5.564413399999921 msec\nrounds: 150"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 203.5143260855228,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00020940254405153055",
+            "extra": "mean: 4.9136590000046 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 218.27053602713096,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003395302667313087",
+            "extra": "mean: 4.581470399998011 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 116.91161872112889,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000511186408444016",
+            "extra": "mean: 8.553469799997515 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 118.12761307139158,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00027391292108680103",
+            "extra": "mean: 8.465421200000378 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 234.571473538525,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016967185768958757",
+            "extra": "mean: 4.2630929708328935 msec\nrounds: 240"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 1.1701589425300296,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004075208560824476",
+            "extra": "mean: 854.5847607999946 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 119.83116462548604,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001338191094834492",
+            "extra": "mean: 8.345074531532317 msec\nrounds: 111"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 22.93558423279344,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006829213303119832",
+            "extra": "mean: 43.60037179999949 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 23.306290153014032,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003802052985185442",
+            "extra": "mean: 42.90687164000133 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 110.2710179409268,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014119825444656385",
+            "extra": "mean: 9.068565962959637 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 118.49855993047217,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015956530122262588",
+            "extra": "mean: 8.438921119267102 msec\nrounds: 109"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 3.481509635740706,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10046159719854024",
+            "extra": "mean: 287.23171975000025 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 3.7217076357081664,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0036956368790177895",
+            "extra": "mean: 268.69386257142685 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 116.61712405188403,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012946199276371993",
+            "extra": "mean: 8.575069983333588 msec\nrounds: 120"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 87.88949229067163,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03232849672581498",
+            "extra": "mean: 11.377924413225193 msec\nrounds: 121"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 3.473762992911386,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004232452074538006",
+            "extra": "mean: 287.87225899999953 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 0.40670509278798955,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010809868480902367",
+            "extra": "mean: 2.458784061800003 sec\nrounds: 5"
           }
         ]
       }
