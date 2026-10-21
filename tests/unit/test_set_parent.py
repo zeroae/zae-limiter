@@ -337,6 +337,46 @@ class TestFanout:
         for resource in ("gpt-4", "llm"):
             assert _stamp(await _item(repo, "user", resource)) == (True, "org-b", 2)
 
+    async def test_a_failed_audit_never_hides_an_incomplete_move(self, limiter, caplog):
+        """F9 (review of Stack B): the caller still learns to re-run the move."""
+        from botocore.exceptions import ClientError
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        incomplete = FanoutIncomplete(1, RuntimeError("throttled"), entity_id="user")
+        throttled = ClientError({"Error": {"Code": "ThrottlingException"}}, "PutItem")
+        with (
+            patch.object(repo, "_fanout_cascade", side_effect=incomplete),
+            patch.object(repo, "_log_audit_event", side_effect=throttled),
+        ):
+            with pytest.raises(FanoutIncomplete) as raised:
+                await repo.set_parent("user", "org-b")
+        assert raised.value is incomplete
+        assert "entity_parent_changed was not written" in caplog.text
+        assert "ClientError" in caplog.text
+        assert "user" not in caplog.text
+
+    async def test_any_other_fan_out_failure_is_audited_and_kept(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        with patch.object(repo, "_fanout_cascade", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                await repo.set_parent("user", "org-b")
+        events = await repo.get_audit_events("user")
+        assert [e.details["buckets_stamped"] for e in events if e.action.endswith("changed")] == [0]
+
+    async def test_a_failed_audit_after_a_complete_move_raises(self, limiter):
+        """Like every other admin method: the move landed, its audit did not."""
+        from botocore.exceptions import ClientError
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        throttled = ClientError({"Error": {"Code": "ThrottlingException"}}, "PutItem")
+        with patch.object(repo, "_log_audit_event", side_effect=throttled):
+            with pytest.raises(ClientError):
+                await repo.set_parent("user", "org-b")
+        assert (await repo.get_entity("user", consistent_read=True)).parent_id == "org-b"
+
 
 class TestStaleWriters:
     """A writer that read the old parent can lose, never undo a move (ADR-150 §4)."""

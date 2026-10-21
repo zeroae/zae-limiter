@@ -2218,25 +2218,58 @@ class Repository:
         for key in [k for k in self._cascade_cache if k[:2] == cache_key]:
             del self._cascade_cache[key]
 
-        count = 0
+        details: dict[str, Any] = {
+            "old_parent_id": old_parent,
+            "parent_id": parent_id,
+            "pgen": entity.parent_generation,
+        }
+        # The move is audited on every path. On the two error paths a failed
+        # audit write must not replace the fan-out's exception: the META
+        # record has moved, and only FanoutIncomplete tells the caller to
+        # re-run the same call to finish the restamp.
         try:
             count = await self._fanout_cascade(entity_id=entity_id)
         except FanoutIncomplete as e:
-            count = e.stamped
+            await self._audit_after_failed_fanout(
+                entity_id, principal, {**details, "buckets_stamped": e.stamped}
+            )
             raise
-        finally:
+        except Exception:
+            await self._audit_after_failed_fanout(
+                entity_id, principal, {**details, "buckets_stamped": 0}
+            )
+            raise
+        await self._log_audit_event(
+            action=AuditAction.ENTITY_PARENT_CHANGED,
+            entity_id=entity_id,
+            principal=principal,
+            details={**details, "buckets_stamped": count},
+        )
+        return count
+
+    async def _audit_after_failed_fanout(
+        self, entity_id: str, principal: str | None, details: dict[str, Any]
+    ) -> None:
+        """Audit a move whose fan-out failed, never raising (ADR-150).
+
+        The caller is about to re-raise the fan-out's own exception, which is
+        the one that says what to do next. A failed audit write is logged at
+        WARNING with the action and the error type — never the entity id,
+        routinely an API key — and swallowed.
+        """
+        try:
             await self._log_audit_event(
                 action=AuditAction.ENTITY_PARENT_CHANGED,
                 entity_id=entity_id,
                 principal=principal,
-                details={
-                    "old_parent_id": old_parent,
-                    "parent_id": parent_id,
-                    "pgen": entity.parent_generation,
-                    "buckets_stamped": count,
-                },
+                details=details,
             )
-        return count
+        except Exception as audit_error:
+            logger.warning(
+                "audit event %s was not written after an incomplete move (%s)",
+                AuditAction.ENTITY_PARENT_CHANGED,
+                type(audit_error).__name__,
+            )
 
     async def _require_parent_move_readers(self) -> None:
         """Refuse a move the stack cannot keep (ADR-150).
