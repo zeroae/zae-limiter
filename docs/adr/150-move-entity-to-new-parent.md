@@ -3,8 +3,8 @@
 **Status:** Proposed
 **Date:** 2026-10-09
 **Issue:** [#677](https://github.com/zeroae/zae-limiter/issues/677)
-**Amends:** [ADR-112](112-cascade-per-entity.md) (parent fixed at creation), CLAUDE.md invariant 9
-**Related:** [ADR-125](125-resource-disable.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-146](146-per-resource-cascade-policy.md), [ADR-147](147-client-side-rejection-cache.md), [#674](https://github.com/zeroae/zae-limiter/issues/674), [#684](https://github.com/zeroae/zae-limiter/issues/684), [#686](https://github.com/zeroae/zae-limiter/issues/686)
+**Amends:** CLAUDE.md invariant 9 (`parent_id` set once at `create_entity()` and never changed)
+**Related:** [ADR-112](112-cascade-per-entity.md), [ADR-125](125-resource-disable.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-146](146-per-resource-cascade-policy.md), [ADR-147](147-client-side-rejection-cache.md), [#674](https://github.com/zeroae/zae-limiter/issues/674), [#684](https://github.com/zeroae/zae-limiter/issues/684), [#686](https://github.com/zeroae/zae-limiter/issues/686)
 **Design:** `docs/plans/2026-10-09-move-entity-design.md`
 
 ## Context
