@@ -451,6 +451,11 @@ the CLI read META strongly consistently.
 | Slow-path claim of a predecessor's bucket | — | 1 RCU, + up to 3 RCU (strongly consistent policy walk) only when it claims |
 | Lost META check | — | one re-plan (+1 RCU per owner, consistent), then the commit |
 
-A transactional write bills 2 WCU per KB. Whether a `ConditionCheck` item bills as read or
-write capacity is **unconfirmed**: measure it on AWS with `ReturnConsumedCapacity=TOTAL`
-before quoting a figure.
+A transactional write bills 2 WCU per KB, and AWS bills a transaction
+[2 units per item](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html#transaction-capacity-handling).
+A `ConditionCheck` item bills as **write** capacity, 2 WCU like the `Put` (measured on DynamoDB
+2026-10-21 with `ReturnConsumedCapacity`: the `Put` alone in a transaction 2 WCU, `Put` + check
+4 WCU whether the check reads a META item or asserts one absent, a plain `PutItem` 1 WCU, 0 RCU
+in every case; a cancelled transaction returns no `ConsumedCapacity`). A bucket create is
+therefore 4 WCU where it was 1, including for an entity with no META and on every TTL
+recreation of a resource- or system-default bucket.
