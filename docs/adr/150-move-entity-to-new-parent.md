@@ -37,6 +37,7 @@ An entity's parent must be changeable through one repository operation that upda
 - Until the fan-out reaches a shard, acquires on it debit the old parent.
 - Every bucket create becomes a transaction with one extra item, a `ConditionCheck` on the owner's META, which needs `dynamodb:ConditionCheckItem`: breaking for custom IAM.
 - Residual (GSI3 lag): a create that lands before the move's META write but is missed by both discovery passes keeps the old parent until its next slow pass or a repeat of the move.
+- Residual (recreate race): a bucket left over from a deleted entity, written by a slow pass whose eventually consistent META read still returns the predecessor within about a second of the entity's re-creation, keeps the predecessor's parent until the next slow pass reads the new incarnation.
 - Residual (ADR-147): a rejection cached before the move can reject a child against the old parent's state for up to `rejection_cache_ttl` in another process; never an admission.
 - Until it reopens the stack, a pre-0.17 process debits the old parent on every warm-path call, and its unpinned slow-pass stamp can restore the old parent from a stale read; the version ratchet refuses only its next open. Restart every client after upgrading, before the first move.
 
