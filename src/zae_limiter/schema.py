@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING, Any
 
-from .schedule import cycle_seconds, entry_params, parse_cron
+from .schedule import cycle_seconds, encode, encode_reset, entry_params, parse_cron
 
 if TYPE_CHECKING:
     from .models import Limit
@@ -212,6 +212,33 @@ BUCKET_FIELD_DISABLED = "disabled"
 # policy for that (entity, resource).
 CONFIG_FIELD_CASCADE = "cascade"
 
+# Parent generation (ADR-150). A number on an entity's META, set to the
+# creation instant (epoch ms) by `create_entity` so a recreated entity is never
+# below a bucket its predecessor left, incremented by every move to a new
+# parent (absent = 0, an entity created before v0.17), and on its bucket items beside the
+# `cascade` / `parent_id` owner stamp: every writer of that stamp carries the
+# generation it read and is conditioned on not lowering it, so a writer that
+# read META before a move can lose but never undo it. A bucket item carrying
+# `pgen` is authoritative for both `cascade` and `parent_id`, with or without
+# a `parent_id`.
+ENTITY_FIELD_PGEN = "pgen"
+BUCKET_FIELD_PGEN = "pgen"
+
+# Incarnation (ADR-150). A random token `create_entity` writes on META, and
+# every owner stamp copies onto the bucket beside `pgen`. A generation is only
+# comparable within one incarnation: a bucket outliving its entity can carry a
+# higher `pgen` than the recreated entity (two clocks a few seconds apart), and
+# would then win every pinned write forever. So an owner-stamp pin passes when
+# the stored stamp belongs to another incarnation, whatever its generation:
+# `attribute_not_exists(pinc) OR pinc <> :inc OR attribute_not_exists(pgen) OR
+# pgen <= :pg`. An entity created before v0.17 has no `pinc`; it reads as its
+# `created_at`, which a recreate changes, and only an entity with neither reads
+# as the legacy incarnation below. #677 (`create_entity`) owns the write side;
+# every reader of an entity's incarnation goes through `entity_incarnation`.
+ENTITY_FIELD_PINC = "pinc"
+BUCKET_FIELD_PINC = "pinc"
+LEGACY_INCARNATION = "-"
+
 # Infrastructure limit: DynamoDB partition write capacity ceiling (GHSA-76rv)
 # Auto-injected on every bucket to track per-partition write pressure.
 # When exhausted, the client doubles shard_count to spread writes.
@@ -219,11 +246,6 @@ WCU_LIMIT_NAME = "wcu"
 WCU_LIMIT_CAPACITY = 1000  # DynamoDB per-partition WCU/sec limit
 WCU_LIMIT_REFILL_AMOUNT = 1000  # Refills to full capacity each second
 WCU_LIMIT_REFILL_PERIOD_SECONDS = 1
-# Log warning when shard count exceeds this (GHSA-76rv). Consumed only by the
-# aggregator's proactive doubling, which is not bound by MAX_SHARD_COUNT; the
-# client refuses to double at MAX_SHARD_COUNT and warns there instead, so a
-# client-side check against this equal-valued threshold is unreachable (#439).
-WCU_SHARD_WARN_THRESHOLD = 32
 # Hard cap on shard_count (ADR-133). Bounds how small a per-shard share can get
 # (capacity // shard_count) and how far an exhausted shard can drive doubling
 # without the aggregator. Surfaced as a metric in #475.
@@ -258,15 +280,6 @@ LIMIT_FIELD_RSA = "rsa"  # w_{name}_rsa — duration window length, seconds (ADR
 CONFIG_FIELD_SCHED_TZ = "sched_tz"
 
 
-# `pinc` on an entity's META: its incarnation, unique per creation (#716 writes
-# it in create_entity). #720 only reads it. Defined on both stacks with these
-# exact names and values so they merge cleanly.
-ENTITY_FIELD_PINC = "pinc"
-# The incarnation of an entity with no `pinc` and no `created_at` (and, for the
-# reset / top-up operation records of ADR-149, of an entity with no META).
-LEGACY_INCARNATION = "-"
-
-
 def entity_incarnation(meta_item: dict[str, Any]) -> str:
     """An entity's incarnation, read off its META item (ADR-150).
 
@@ -285,6 +298,58 @@ def entity_incarnation(meta_item: dict[str, Any]) -> str:
         if isinstance(value, str) and value:
             return value
     return LEGACY_INCARNATION
+
+
+def owner_meta_condition(
+    *, exists: bool | None, pgen: int | None, pinc: str | None
+) -> tuple[str, dict[str, str], dict[str, int | str]]:
+    """The condition a bucket create pins on its owner's META item (ADR-150).
+
+    A create stamps the owner's ``cascade`` / ``parent_id`` from a META read,
+    and a ``Put`` has no stored stamp to pin against. So the create's
+    transaction carries a ``ConditionCheck`` on the owner's META asserting it
+    still holds what was read: a move (``pgen`` + 1) or a delete and recreate
+    (a new incarnation) between the read and the create cancels it.
+
+    Args:
+        exists: True when the read found META, False when it found none
+            (``attribute_not_exists(PK)``: an entity created since cancels
+            it), None when the reader cannot tell (an aggregator image with no
+            generation stamp): no term on ``PK``.
+        pgen: The parent generation read, or None for none stamped. 0 is also
+            what a META without ``pgen`` reads as, so 0 accepts either.
+        pinc: The incarnation read (:func:`entity_incarnation`), or None for
+            none stamped. Matched by the same rule: ``pinc``, else
+            ``created_at``, else the legacy incarnation.
+
+    Returns:
+        ``(expression, names, values)``, values native (``int`` / ``str``) for
+        the caller to serialise; only the tokens the expression uses.
+    """
+    if exists is False:
+        return "attribute_not_exists(PK)", {}, {}
+    parts: list[str] = []
+    names: dict[str, str] = {}
+    values: dict[str, int | str] = {}
+    if exists:
+        parts.append("attribute_exists(PK)")
+    names["#opg"] = ENTITY_FIELD_PGEN
+    if pgen is None:
+        parts.append("attribute_not_exists(#opg)")
+    else:
+        values[":opg"] = pgen
+        parts.append("(attribute_not_exists(#opg) OR #opg = :opg)" if pgen == 0 else "#opg = :opg")
+    names["#opi"] = ENTITY_FIELD_PINC
+    if pinc is None:
+        parts.append("attribute_not_exists(#opi)")
+    else:
+        names["#oca"] = "created_at"
+        values[":opi"] = pinc
+        created = "#oca = :opi"
+        if pinc == LEGACY_INCARNATION:
+            created = f"({created} OR attribute_not_exists(#oca))"
+        parts.append(f"(#opi = :opi OR (attribute_not_exists(#opi) AND {created}))")
+    return " AND ".join(parts), names, values
 
 
 def encode_disabled(value: bool | None) -> dict[str, Any] | None:
@@ -1103,3 +1168,33 @@ def calculate_bucket_ttl(
     if ttl_seconds is None:
         return None
     return (now_ms // 1000) + ttl_seconds
+
+
+def explicit_schedule_overrides(
+    sched: "tuple[ScheduleEntry, ...]",
+    reset_sched: "tuple[ScheduleEntry, ...]",
+) -> tuple[str | None, dict[str, str]]:
+    """A seeded limit's own schedule overrides, spelled out (#633, #541).
+
+    Both ``b_{name}_sched`` and ``b_{name}_rsched`` are written explicitly — the
+    limit's compact encoding, or ``BUCKET_SCHED_NONE`` when it has none of that
+    kind — so the item default can never leak onto a limit added to an existing
+    item. Shared by the seed write and the image a refund pins after it (#721).
+
+    Returns:
+        ``(tz, {field: compact})``: the zone the limit's schedules are written
+        in, or ``None`` when it has none, and one entry per field.
+    """
+    tz: str | None = None
+    overrides: dict[str, str] = {}
+    for field, entries, encoder in (
+        (BUCKET_FIELD_SCHED, sched, encode),
+        (BUCKET_FIELD_RSCHED, reset_sched, encode_reset),
+    ):
+        if entries:
+            compact, entry_tz = encoder(entries)
+            overrides[field] = compact
+            tz = tz or entry_tz
+        else:
+            overrides[field] = BUCKET_SCHED_NONE
+    return tz, overrides

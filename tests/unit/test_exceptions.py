@@ -17,6 +17,7 @@ from zae_limiter.exceptions import (
     LeaseExpiredError,
     NamespaceNotFoundError,
     NamespaceStateError,
+    PermissionDenied,
     RateLimitError,
     RateLimiterUnavailable,
     RateLimitExceeded,
@@ -66,6 +67,36 @@ class TestRateLimitExceeded:
         passed_status = self._make_status(exceeded=False, retry_after=0)
         with pytest.raises(ValueError, match="requires at least one violation"):
             RateLimitExceeded([passed_status])
+
+    def test_contended_with_no_violations(self) -> None:
+        """A contention 429 (#724) needs no violation and says so."""
+        status = self._make_status(exceeded=False, retry_after=0.1)
+        exc = RateLimitExceeded([status], contended=True)
+
+        assert exc.contended is True
+        assert exc.violations == []
+        assert exc.passed == [status]
+        assert exc.primary_violation is status
+        assert exc.retry_after_seconds == 0.1
+        assert "contended" in str(exc)
+        assert exc.as_dict()["contended"] is True
+
+    def test_contended_with_no_statuses_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="requires at least one violation"):
+            RateLimitExceeded([], contended=True)
+
+    def test_contended_with_a_violation_reports_it(self) -> None:
+        status = self._make_status(exceeded=True, retry_after=3.0)
+        exc = RateLimitExceeded([status], contended=True)
+
+        assert exc.violations == [status]
+        assert "Rate limit exceeded" in str(exc)
+
+    def test_not_contended_by_default(self) -> None:
+        exc = RateLimitExceeded([self._make_status()])
+
+        assert exc.contended is False
+        assert exc.as_dict()["contended"] is False
 
     def test_single_violation(self) -> None:
         """Single violation sets properties correctly."""
@@ -387,6 +418,34 @@ class TestRateLimiterUnavailable:
         assert not isinstance(exc, RateLimitError)
 
 
+class TestPermissionDenied:
+    """Tests for PermissionDenied (#751)."""
+
+    def test_is_a_rate_limiter_unavailable(self) -> None:
+        """A BLOCK handler written for RateLimiterUnavailable still catches it."""
+        exc = PermissionDenied("denied")
+        assert isinstance(exc, RateLimiterUnavailable)
+        assert isinstance(exc, InfrastructureError)
+        assert not isinstance(exc, RateLimitError)
+
+    def test_keeps_the_context_fields(self) -> None:
+        cause = ConnectionError("denied")
+        exc = PermissionDenied(
+            "not authorized",
+            cause=cause,
+            stack_name="rate-limits",
+            entity_id="entity-1",
+            resource="gpt-4",
+        )
+        assert exc.cause is cause
+        assert (exc.stack_name, exc.entity_id, exc.resource) == (
+            "rate-limits",
+            "entity-1",
+            "gpt-4",
+        )
+        assert str(exc) == "not authorized [stack=rate-limits, entity=entity-1, resource=gpt-4]"
+
+
 class TestEntityNotFoundError:
     """Tests for EntityNotFoundError."""
 
@@ -700,6 +759,7 @@ class TestExceptionHierarchy:
     def test_infrastructure_subtree(self) -> None:
         """InfrastructureError subtree."""
         assert issubclass(RateLimiterUnavailable, InfrastructureError)
+        assert issubclass(PermissionDenied, RateLimiterUnavailable)
         assert issubclass(StackOperationError, InfrastructureError)
         assert issubclass(StackAlreadyExistsError, InfrastructureError)
         assert issubclass(InfrastructureNotFoundError, InfrastructureError)
