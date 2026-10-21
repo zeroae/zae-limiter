@@ -2260,7 +2260,9 @@ class CreditCeiling:
     own schedule overrides (``b_{name}_sched``, ``b_{name}_rsched``, each
     ``None`` = absent; a schedule-only change). ``sched_raw`` is ``None`` when
     the state was not read off the item: then nothing can be pinned and the
-    credit is trimmed outright.
+    credit is trimmed outright. A quota also pins its top-up
+    (``b_{name}_tu``, ADR-149; ``None`` = absent), part of its ceiling: an
+    operator reset removes it and moves nothing else a credit pins.
     """
 
     ceiling_milli: int
@@ -2273,6 +2275,7 @@ class CreditCeiling:
     # credit is dropped rather than land in a period that did not spend it.
     quota: bool = False
     quota_period: "QuotaPeriodPin | None" = None
+    topped_up_milli: int | None = None
 
 
 @dataclass(frozen=True)
@@ -2310,8 +2313,9 @@ class CreditLimitImage:
 
     What a self-trimming credit pins for that limit: the stored base capacity
     (``b_{name}_cp``), the quota grant count (``b_{name}_gc``), the schedule
-    overrides (``b_{name}_sched``, ``b_{name}_rsched``) and the session window
-    (``b_{name}_ws``, ``b_{name}_wa``), each ``None`` when absent.
+    overrides (``b_{name}_sched``, ``b_{name}_rsched``), the session window
+    (``b_{name}_ws``, ``b_{name}_wa``) and the quota top-up
+    (``b_{name}_tu``, ADR-149), each ``None`` when absent.
     """
 
     capacity_milli: int
@@ -2319,6 +2323,7 @@ class CreditLimitImage:
     sched_raw: tuple[str | None, str | None]
     window_start_ms: int | None = None
     window_applied_ms: int | None = None
+    topped_up_milli: int | None = None
 
 
 @dataclass(frozen=True)

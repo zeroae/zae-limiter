@@ -493,6 +493,22 @@ class TestRefundsUnderALiveTopUp:
                 await lease.adjust(cal=-5)  # estimated 10, used 5
         assert forced == []
 
+    async def test_a_second_top_up_under_an_open_lease_keeps_the_refund(self, limiter, clock):
+        """The refund pins `b_{name}_tu`; a top-up landing under the lease moves
+        it, which costs the trimmed write but never the refund itself."""
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await limiter.set_limits("e", [CAL], resource="r")
+        await repo.top_up("e", "r", {"cal": 5})  # tk 15, tu 5
+        clock[0] += 1
+        with pytest.raises(RuntimeError):
+            async with slow.acquire("e", "r", {"cal": 5}):  # tk 10
+                await repo.top_up("e", "r", {"cal": 3})  # tk 13, tu 8
+                clock[0] += 1
+                raise RuntimeError("body fails")  # rollback credits 5 -> tk 18
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 18  # 10 + 5 + 3, the refund kept
+
 
 async def _two_shards(limiter, entity, name):
     import random as _r

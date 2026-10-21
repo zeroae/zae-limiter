@@ -38,6 +38,7 @@ from .schema import (
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TK,
+    BUCKET_FIELD_TU,
     BUCKET_FIELD_VU,
     BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
@@ -255,7 +256,8 @@ def credit_ceiling(
 
     The one place the ceiling and its pins are decided, with
     ``Repository._credit_limit_terms`` the one place they become condition
-    terms: a new input to the ceiling (a quota top-up, #720) extends both.
+    terms: a new input to the ceiling extends both, as a quota's top-up
+    (``b_{name}_tu``, ADR-149) does.
     """
     quota = state.is_quota_state is True
     if period_limit is None:
@@ -286,6 +288,7 @@ def credit_ceiling(
         capacity_milli=limit_image.capacity_milli,
         grant_count=limit_image.grant_count,
         sched_raw=limit_image.sched_raw,
+        topped_up_milli=limit_image.topped_up_milli,
         quota=quota,
         quota_period=period,
     )
@@ -1986,6 +1989,8 @@ def _limit_image(
         sched_raw=sched_raw if sched_raw is not None else (state.stored_sched_raw or (None, None)),
         window_start_ms=window_start_ms,
         window_applied_ms=window_applied_ms,
+        # Only a quota carries a top-up (ADR-149), as `report_top_up_milli` reads it.
+        topped_up_milli=state.topped_up_milli if state.is_quota_state is True else None,
     )
 
 
@@ -2054,6 +2059,7 @@ def credit_image_from_item(item: Any) -> CreditImage | None:
                     ),
                     window_start_ms=num(bucket_attr(name, BUCKET_FIELD_WS)),
                     window_applied_ms=num(bucket_attr(name, BUCKET_FIELD_WA)),
+                    topped_up_milli=num(bucket_attr(name, BUCKET_FIELD_TU)),
                 ),
             )
         )
