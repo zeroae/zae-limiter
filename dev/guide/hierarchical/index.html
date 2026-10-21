@@ -4250,12 +4250,11 @@ organisation, or pass <code>None</code> to make it a root entity:</p>
 <li><strong>Other processes learn it from the next call.</strong> A process that still has the old parent
   cached debits it once, sees the new parent on the entity's bucket, refunds the old parent and
   debits the new one in the same call.</li>
-<li><strong>A bucket created while the move lands is re-checked.</strong> An acquire that creates a bucket
-  reads the entity's parent once more after its write (1 RCU, once per bucket created) and
-  restamps the bucket if a move overtook it. The read runs in the background while your code
-  inside <code>acquire()</code> runs, so it adds no latency, and it is finished when the <code>async with</code>
-  block exits. If it fails or is cancelled, that bucket's next acquire takes the slow path,
-  which restamps it. Cancelling only that read never replaces your own exception.</li>
+<li><strong>A bucket created while the move lands cannot keep the old parent.</strong> Creating a bucket is
+  one transaction that also checks the entity's record still names the parent it read; if a
+  move landed in between, the acquire re-reads the entity and retries once. This needs
+  <code>dynamodb:ConditionCheckItem</code> on the table for every principal that acquires: the policies
+  the CloudFormation template creates grant it, and custom IAM must add it.</li>
 <li><strong>Nothing already debited moves.</strong> Usage charged to the old parent stays there, including
   usage from leases opened before the move: their adjustments and rollbacks land on the old
   parent, where the tokens were taken.</li>
@@ -4268,7 +4267,9 @@ organisation, or pass <code>None</code> to make it a root entity:</p>
 and <code>ValidationError</code> when the move would make the entity its own ancestor. If restamping stops
 part-way it raises <code>FanoutIncomplete</code>; the move itself landed, and calling <code>set_parent()</code> again
 with the same arguments finishes it. It needs a stack whose Lambdas are 0.17.0 or later
-(<code>VersionMismatchError</code> otherwise; run <code>zae-limiter upgrade</code>). Each move is recorded as an
+(<code>VersionMismatchError</code> otherwise; run <code>zae-limiter upgrade</code>). Restart every client after
+upgrading, before the first move: a process that opened the stack with an older version keeps
+debiting the old parent until it reopens it. Each move is recorded as an
 <code>entity_parent_changed</code> <a href="../../infra/auditing/">audit event</a>.</p>
 <h2 id="limitations">Limitations<a class="headerlink" href="#limitations" title="Permanent link">&para;</a></h2>
 <ul>

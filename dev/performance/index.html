@@ -5635,7 +5635,7 @@ by an atomic move off the shard whose grant covers it — or, when no shard cove
 share — and each shard's ceiling is the share it was granted, not the current share. A doubling
 therefore neither creates nor destroys quota allowance
 (<a href="../adr/145-sharded-quota-conserves-allowance/">ADR-145</a>). A shard creation that moves tokens
-reads the entity's other shards once and writes a two-item transaction (4 WCU), once per shard,
+reads the entity's other shards once and writes one transaction carrying the new shard, the donor's debit and the owner check (6 WCU), once per shard,
 then reads shard 0's count once (1 RCU) to catch a doubling that landed while it was being
 created.</p>
 <p><strong>Works without the aggregator:</strong> Deployments using <code>--no-aggregator</code> get the same

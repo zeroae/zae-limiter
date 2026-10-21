@@ -3869,7 +3869,7 @@ parse — so it is compared against <code>client_min_version</code> like any oth
 tagless build reads as below it and is refused with <code>can_auto_update=False</code>, exactly as an
 old tagged client would be. The fix is <code>git fetch --tags</code> or a tagged install, not a code
 change. A stack whose minimum was never raised (the default <code>0.0.0</code>) is unaffected.</p>
-<p><code>zae-limiter upgrade</code> from a tagless checkout reports "Infrastructure is already up to
+<p><code>zae-limiter upgrade</code> from a tagless checkout reports "Lambda code is already up to
 date" and pushes nothing unless <code>--force</code> is given — its very low read of the client's own
 version never looks newer than the deployed Lambda, so nothing appears to need upgrading.</p>
 </div>
@@ -3957,16 +3957,33 @@ because the refused update wrote nothing.</p>
 </span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="c1"># Step 3: Verify</span>
 </span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>zae-limiter<span class="w"> </span>check<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;
 </span></code></pre></div>
+<p><code>upgrade</code> first applies this version's CloudFormation template to the stack, so its IAM
+policies and other resources match the client, and only then pushes Lambda code. The template
+goes through a change set: a change that would <strong>replace</strong> or <strong>remove</strong> a resource (replacing
+the table would empty it) is refused, nothing is applied, no code is pushed, and the command
+exits 1 naming each resource. A template with nothing to change is reported as already current.
+A stack whose Lambda code is already current still gets the template, so running <code>upgrade</code>
+after clients have auto-updated the Lambdas is enough; it reports "already up to date" only when
+the template has nothing to change and the Lambdas run this version. <code>upgrade</code> itself never
+auto-updates the Lambdas on connect, so the template always goes first. The steps are: template,
+Lambda code, provisioner code, version record, stack tags. Run it on each stack before rolling out
+v0.17.0 clients, whose bucket writes need IAM actions the v0.16.0 policies lack.</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>[1/5] Applying stack template...
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>      Stack template applied (3 resource(s) changed)
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>        Modify AcquireOnlyPolicy (AWS::IAM::ManagedPolicy)
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>        ...
+</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>[2/5] Deploying Lambda code...
+</span></code></pre></div>
 <p><strong>Lambda-only upgrade:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1"># Update Lambda without schema changes</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;<span class="w"> </span>--lambda-only
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># Update Lambda code only; leave the stack template as it is</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;<span class="w"> </span>--lambda-only
 </span></code></pre></div>
 <p><strong>Force upgrade (skip compatibility check):</strong></p>
 <div class="admonition warning">
 <p class="admonition-title">Use with caution</p>
 <p>Only use <code>--force</code> when you understand the implications.</p>
 </div>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;<span class="w"> </span>--force
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;<span class="w"> </span>--force
 </span></code></pre></div>
 <h3 id="stacks-without-every-lambda">Stacks without every Lambda<a class="headerlink" href="#stacks-without-every-lambda" title="Permanent link">&para;</a></h3>
 <p>A stack deployed with <code>--no-aggregator</code> has no aggregator function, and one deployed with
@@ -3974,10 +3991,10 @@ because the refused update wrote nothing.</p>
 <code>--aggregator-role-arn</code> is given. Both <code>zae-limiter upgrade</code> and <code>Repository.open()</code>'s automatic
 Lambda update push new code only to the functions that exist, skip the rest, and then record the
 new Lambda version:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>[1/4] Deploying Lambda code...
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>      No aggregator Lambda on this stack, skipped
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>[2/4] Deploying provisioner code...
-</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>      Provisioner code deployed (1234.5 KB)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>[2/5] Deploying Lambda code...
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>      No aggregator Lambda on this stack, skipped
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>[3/5] Deploying provisioner code...
+</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>      Provisioner code deployed (1234.5 KB)
 </span></code></pre></div>
 <p>Each function is first checked with <code>lambda:GetFunctionConfiguration</code>, which a deployer already
 holds (the update waits on the same call). A function Lambda reports missing is skipped. When
@@ -3992,24 +4009,24 @@ upgraded at all (#644).</p>
 <ol>
 <li>
 <p><strong>Check version alignment:</strong>
-   <div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;
+   <div class="language-bash highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;
 </span></code></pre></div></p>
 </li>
 <li>
 <p><strong>Run smoke tests:</strong>
-   <div class="language-python highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span><span class="p">,</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Limit</span>
-</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>
-</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
-</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
-</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>
-</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="c1"># Test basic operation</span>
-</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"test-entity"</span><span class="p">,</span>
-</span><span id="__span-17-9"><a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"test"</span><span class="p">,</span>
-</span><span id="__span-17-10"><a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
-</span><span id="__span-17-11"><a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
-</span><span id="__span-17-12"><a id="__codelineno-17-12" name="__codelineno-17-12" href="#__codelineno-17-12"></a><span class="p">):</span>
-</span><span id="__span-17-13"><a id="__codelineno-17-13" name="__codelineno-17-13" href="#__codelineno-17-13"></a>    <span class="nb">print</span><span class="p">(</span><span class="s2">"Rate limiting working"</span><span class="p">)</span>
+   <div class="language-python highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span><span class="p">,</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Limit</span>
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
+</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
+</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>
+</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a><span class="c1"># Test basic operation</span>
+</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
+</span><span id="__span-18-8"><a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"test-entity"</span><span class="p">,</span>
+</span><span id="__span-18-9"><a id="__codelineno-18-9" name="__codelineno-18-9" href="#__codelineno-18-9"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"test"</span><span class="p">,</span>
+</span><span id="__span-18-10"><a id="__codelineno-18-10" name="__codelineno-18-10" href="#__codelineno-18-10"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
+</span><span id="__span-18-11"><a id="__codelineno-18-11" name="__codelineno-18-11" href="#__codelineno-18-11"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+</span><span id="__span-18-12"><a id="__codelineno-18-12" name="__codelineno-18-12" href="#__codelineno-18-12"></a><span class="p">):</span>
+</span><span id="__span-18-13"><a id="__codelineno-18-13" name="__codelineno-18-13" href="#__codelineno-18-13"></a>    <span class="nb">print</span><span class="p">(</span><span class="s2">"Rate limiting working"</span><span class="p">)</span>
 </span></code></pre></div></p>
 </li>
 <li>

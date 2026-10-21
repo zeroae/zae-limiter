@@ -3550,100 +3550,6 @@
   
 </li>
       
-        <li class="md-nav__item">
-  <a href="#decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Decision
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#consequences" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Consequences
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#alternatives-considered" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Alternatives Considered
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Alternatives Considered">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#expire-the-entity-cache-on-a-ttl" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Expire the entity cache on a TTL
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#make-the-slow-path-read-meta-strongly-consistently" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Make the slow path read META strongly consistently
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#delay-the-fan-outs-last-pass-past-the-replication-window" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Delay the fan-out's last pass past the replication window
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#delete-and-recreate-the-entity-under-the-new-parent" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Delete and recreate the entity under the new parent
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#move-the-old-parents-consumption-to-the-new-parent" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Move the old parent's consumption to the new parent
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
     </ul>
   
 </nav>
@@ -3675,123 +3581,48 @@
 <p><strong>Status:</strong> Proposed
 <strong>Date:</strong> 2026-10-09
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/677">#677</a>
-<strong>Amends:</strong> <a href="../112-cascade-per-entity/">ADR-112</a> (parent fixed at creation), CLAUDE.md invariant 9
-<strong>Related:</strong> <a href="../125-resource-disable/">ADR-125</a>, <a href="../141-reset-after-version-gate/">ADR-141</a>, <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a>, <a href="../146-per-resource-cascade-policy/">ADR-146</a>, <a href="../147-client-side-rejection-cache/">ADR-147</a>, <a href="https://github.com/zeroae/zae-limiter/issues/674">#674</a>, <a href="https://github.com/zeroae/zae-limiter/issues/684">#684</a>, <a href="https://github.com/zeroae/zae-limiter/issues/686">#686</a>
+<strong>Amends:</strong> CLAUDE.md invariant 9 (<code>parent_id</code> set once at <code>create_entity()</code> and never changed)
+<strong>Related:</strong> <a href="../112-cascade-per-entity/">ADR-112</a>, <a href="../125-resource-disable/">ADR-125</a>, <a href="../141-reset-after-version-gate/">ADR-141</a>, <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a>, <a href="../146-per-resource-cascade-policy/">ADR-146</a>, <a href="../147-client-side-rejection-cache/">ADR-147</a>, <a href="https://github.com/zeroae/zae-limiter/issues/674">#674</a>, <a href="https://github.com/zeroae/zae-limiter/issues/684">#684</a>, <a href="https://github.com/zeroae/zae-limiter/issues/686">#686</a>
 <strong>Design:</strong> <code>docs/plans/2026-10-09-move-entity-design.md</code></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>An entity's <code>parent_id</code> is written once, by <code>create_entity()</code>, onto its META record (with
-the GSI1 parent→children keys). Since #684 every bucket item the entity owns carries the
-same <code>parent_id</code> beside the resolved cascade policy (ADR-146), and the fast path debits
-whichever parent the item, or the process's entity cache, names — with no META read.
-CLAUDE.md invariant 9 states that this metadata never changes, and the entity cache has no
-expiry. The use case in #674 needs a user moved between organisations, effective at once.</p>
-<p>ADR-146 already built the machinery a move needs: an eager, two-pass fan-out over an
-entity's buckets that stamps <code>cascade</code> and <code>parent_id</code> from strongly consistent reads, and
-a warm path on which the child's returned item overrules the cache for <code>cascade</code>. Two gaps
-remain. The warm path checks only <code>cascade</code>, so a process holding the old parent keeps
-debiting it once the item has moved on. And a slow pass that read META before the move can
-land its owner stamp after the fan-out, writing the old parent back onto a bucket that may
-then take only the fast path; nothing would ever correct it. A move to no parent adds a
-third: a stamp with no <code>parent_id</code> is today ignored as a pre-#684 artefact.</p>
+<p>An entity's <code>parent_id</code> is written once, by <code>create_entity()</code>, onto its META record. Since</p>
+<h1 id="684-every-bucket-item-the-entity-owns-carries-the-same-parent_id-beside-the-resolved">684 every bucket item the entity owns carries the same <code>parent_id</code> beside the resolved<a class="headerlink" href="#684-every-bucket-item-the-entity-owns-carries-the-same-parent_id-beside-the-resolved" title="Permanent link">&para;</a></h1>
+<p>cascade policy (ADR-146), and the fast path debits whichever parent the item, or the
+process's entity cache, names — with no META read. CLAUDE.md invariant 9 states that this
+metadata never changes, and the entity cache has no expiry. The use case in #674 needs a user
+moved between organisations, effective at once.</p>
+<p>ADR-146 already built most of what a move needs: an eager, two-pass fan-out that restamps an
+entity's buckets from strongly consistent reads. What it lacks is protection against stale
+writers: a slow pass, a bucket create or an aggregator shard clone that read META before the
+move can land after the fan-out and write the old parent back onto a bucket that may then
+take only the fast path, where nothing would ever correct it.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>An entity's parent must be changeable through one repository operation that updates the
-META record and its GSI1 keys, then restamps every bucket the entity owns through the
-ADR-146 cascade fan-out, which remains the only writer of <code>cascade</code> and <code>parent_id</code> on
-bucket items outside the slow path's owner stamp. Each move must increment a parent
-generation on META; every write of <code>parent_id</code> to a bucket item (owner stamp, create,
-fan-out, provisioner fan-out) must carry the generation it read and must not overwrite a
-higher one, so a stale writer can lose but never undo a move. A write that creates a bucket
-item cannot be pinned, so every such write (the client's create, the aggregator's shard
-clone) must re-check the owner's generation against META with a strongly consistent read
-once it lands, and restamp through the pinned write when a move overtook it; when that
-check fails, the bucket must be forced onto the slow path (<code>vu = 0</code>), whose pinned owner
-stamp then restamps it. The check is not needed for the acquire that created the bucket, so it
-must not hold that acquire up: it starts once the commit's last write lands, runs while
-the caller's block does, and is joined when the lease exits, so it never outlives the
-lease. A check that is cancelled before it finishes must leave the same <code>vu = 0</code> a
-failed one does; the cancellation is re-raised only when it was aimed at the caller, so a
-cancel of the check alone never replaces the caller's exception. Each entity must also carry an incarnation, a random
-token written at creation and copied onto every owner stamp beside the generation; a
-generation compares only within one incarnation. A writer that read META strongly
-consistently (the fan-outs, the owner checks) may overwrite a stamp of another incarnation; a
-writer that read it eventually consistently (the slow path's owner stamp) may overwrite only
-its own incarnation's, because its read may be a deleted predecessor's. When the slow path
-loses that pin to another incarnation, one strongly consistent read decides: if its
-incarnation is current, the bucket is a predecessor's leftover and is claimed; if not, it is
-left alone. So a bucket a deleted predecessor left behind never outranks the recreated
-entity, whatever the two clocks said, and a stale read can never undo the current stamp. An
-entity created before the incarnation existed is its own legacy incarnation. A stamped <code>vu = 0</code>
-on one shard of a sharded bucket is cleared by a slow pass on that same shard. A move's count reports only buckets actually stamped.
-A bucket item stamped with a
-generation is authoritative for both <code>cascade</code> and <code>parent_id</code>, including when it names no
-parent. On the warm path, when the child's returned item names a different parent from the
-one the cache debited, the limiter must refund that debit, debit the item's parent, and
-relearn the cache from the item. A move must refuse an entity as its own ancestor, must
-write an audit event, and must pass the ADR-141 version gate at 0.17.0 and ratchet
-<code>client_min_version</code> to 0.17.0. Consumption already debited to the old parent, including
-by leases open across the move, stays where it was debited.</p>
+<p>An entity's parent must be changeable through one repository operation that updates its META record and restamps every bucket it owns through the ADR-146 cascade fan-out. Every write of <code>parent_id</code> to a bucket item must carry the parent generation and entity incarnation it read and must not overwrite a newer stamp, and a write that creates a bucket item must be pinned to the owner's META in the same transaction, so a stale writer can lose but never undo a move.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
-- A move takes effect on the fast path of every process after at most one call per
-  (process, entity). An acquire that only touches existing buckets costs nothing more; one
-  that creates a bucket costs one more read (see Negative).
-- One write path owns <code>parent_id</code> on bucket items, as ADR-146 item 10 asked.
-- The generation also settles the "no <code>parent_id</code> = pre-#684" ambiguity for new stamps.
-- Parents are separate entities with their own buckets: no quota allowance moves
-  (ADR-145), and no lease is rewritten.</p>
+- A move takes effect on the fast path of every process within one call per (process, entity): the child's item overrules a stale cache, and the old parent's debit is refunded.
+- No consumption or quota allowance moves between parents (ADR-145), and no lease is rewritten; details and costs are in the design doc.</p>
 <p><strong>Negative:</strong>
 - A move is O(buckets of the entity) writes, not O(1), like a cascade-policy change.
-- Until the fan-out reaches a shard, acquires on it debit the old parent; a pre-0.17
-  process that has not reopened the stack still debits it once per (process, entity).
-- A rejection cached before the move can reject a child against the old parent's state
-  for up to <code>rejection_cache_ttl</code> in another process (ADR-147); never an admission.
-- The ancestor check costs one strongly consistent read per level of the new parent's
-  chain.
-- The rf-locked write gains one condition term; losing it costs that acquire the
-  consumption-only retry (one extra write), only in the move's race window.
-- Every bucket created costs one more strongly consistent read (1 RCU, once per shard), and
-  every aggregator record that clones shards one more; a restamp only when a move overtook
-  the create. A <code>ConditionCheck</code> would avoid the read but needs
-  <code>dynamodb:ConditionCheckItem</code>, which no shipped policy grants. The read starts when the
-  commit lands and overlaps the caller's block; the lease exit joins it, which adds
-  latency only when the block is shorter than one strongly consistent <code>GetItem</code>, and then
-  only the difference.
-- Residual: a process that dies between a create and its owner check leaves a create that
-  read META before a move on the old parent until the bucket's next slow pass or a repeat
-  of the move. The check's own failure is covered (<code>vu = 0</code> forces that slow pass).
-- Residual: a cancelled check is covered the same way, by <code>vu = 0</code> on every bucket it
-  checked, but those writes are themselves cancellable. A second cancellation landing
-  while they run (an outer timeout, an event-loop shutdown) stops them where they stand,
-  and the buckets not yet written keep the create's stamp, wrong only if a move overtook
-  the create in that window, until their next slow pass or a repeat of the move. It is
-  bounded by the buckets one acquire created. A <code>KeyboardInterrupt</code> or <code>SystemExit</code> during
-  the join skips the writes on purpose, with the same residual: the process is going down.
-  Shielding the writes was not chosen, because the generated sync twin has no
-  <code>asyncio.shield</code>, and a detached write task needs a strong reference that would outlive
-  the lease.
-- Residual (ADR-125's two-pass race, here for moves): a move whose META write lands after a
-  create's owner check runs its fan-out after the bucket exists, but GSI3 can lag the
-  create, so both discovery passes can miss it. The bucket keeps the old parent until its
-  next slow pass or a repeat of the move — the same window ADR-125 accepts for <code>disabled</code>.
-- A slow pass whose eventually consistent META read returned a deleted predecessor's record
-  still commits, on the consumption-only retry: that one acquire debits the predecessor's
-  parent once, the same bound as a lease opened before a move. It never restamps the bucket.
-- A slow pass that loses its owner pin to another incarnation costs one strongly consistent
-  read (1 RCU); a predecessor's leftover is then claimed and the write re-sent once.</p>
+- Until the fan-out reaches a shard, acquires on it debit the old parent.
+- Every bucket create becomes a transaction with one extra item, a <code>ConditionCheck</code> on the owner's META, which needs <code>dynamodb:ConditionCheckItem</code>: breaking for custom IAM.
+- Residual (GSI3 lag): a create that lands before the move's META write but is missed by both discovery passes keeps the old parent until its next slow pass or a repeat of the move.
+- Residual (recreate race): a bucket left over from a deleted entity, written by a slow pass whose eventually consistent META read still returns the predecessor within about a second of the entity's re-creation, keeps the predecessor's parent until the next slow pass reads the new incarnation.
+- Residual (ADR-147): a rejection cached before the move can reject a child against the old parent's state for up to <code>rejection_cache_ttl</code> in another process; never an admission.
+- Until it reopens the stack, a pre-0.17 process debits the old parent on every warm-path call, and its unpinned slow-pass stamp can restore the old parent from a stale read; the version ratchet refuses only its next open. Restart every client after upgrading, before the first move.</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
 <h3 id="expire-the-entity-cache-on-a-ttl">Expire the entity cache on a TTL<a class="headerlink" href="#expire-the-entity-cache-on-a-ttl" title="Permanent link">&para;</a></h3>
-<p>Rejected: it bounds staleness by the TTL on every entity at the cost of periodic META
-reads, where the item already returns the answer for free on every call.</p>
+<p>Rejected: periodic META reads on every hot entity for a value the item already returns for free.</p>
 <h3 id="make-the-slow-path-read-meta-strongly-consistently">Make the slow path read META strongly consistently<a class="headerlink" href="#make-the-slow-path-read-meta-strongly-consistently" title="Permanent link">&para;</a></h3>
-<p>Rejected: it doubles that read on every slow pass and still lets a pass that read before
-the move write after the fan-out.</p>
+<p>Rejected: it doubles that read on every slow pass and still lets a pass that read before the move write after the fan-out.</p>
 <h3 id="delay-the-fan-outs-last-pass-past-the-replication-window">Delay the fan-out's last pass past the replication window<a class="headerlink" href="#delay-the-fan-outs-last-pass-past-the-replication-window" title="Permanent link">&para;</a></h3>
 <p>Rejected: a guess about timing, not a guarantee; a slow pass can outlast any fixed delay.</p>
 <h3 id="delete-and-recreate-the-entity-under-the-new-parent">Delete and recreate the entity under the new parent<a class="headerlink" href="#delete-and-recreate-the-entity-under-the-new-parent" title="Permanent link">&para;</a></h3>
 <p>Rejected: it loses the entity's config, bucket balances and audit history.</p>
 <h3 id="move-the-old-parents-consumption-to-the-new-parent">Move the old parent's consumption to the new parent<a class="headerlink" href="#move-the-old-parents-consumption-to-the-new-parent" title="Permanent link">&para;</a></h3>
-<p>Rejected: usage is history; a parent's buckets belong to the parent, and moving tokens
-between parents would breach ADR-145's conservation rules for quotas.</p>
+<p>Rejected: usage is history, and moving tokens between parents would breach ADR-145's conservation rules for quotas.</p>
+<h3 id="re-check-each-create-against-meta-after-it-lands">Re-check each create against META after it lands<a class="headerlink" href="#re-check-each-create-against-meta-after-it-lands" title="Permanent link">&para;</a></h3>
+<p>Rejected: a background check per create needs joining, cancellation handling and a <code>vu = 0</code> fallback, and still leaves a window in which other processes debit the old parent.</p>
 
 
 

@@ -5297,6 +5297,7 @@ use CLI deployment or CloudFormation template export. See the
 </span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:PutItem</span>
 </span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:UpdateItem</span>
 </span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:Query</span>
+</span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:ConditionCheckItem</span>
 </span></code></pre></div>
 <p>When X-Ray tracing is enabled, additional permissions are granted:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">xray:PutTraceSegments</span>
@@ -5377,13 +5378,13 @@ use CLI deployment or CloudFormation template export. See the
 <td><code>AcquireOnlyPolicy</code></td>
 <td><code>-acq</code></td>
 <td>Applications calling <code>acquire()</code></td>
-<td>GetItem, BatchGetItem, Query, TransactWriteItems</td>
+<td>GetItem, BatchGetItem, Query, ConditionCheckItem, PutItem, UpdateItem</td>
 </tr>
 <tr>
 <td><code>FullAccessPolicy</code></td>
 <td><code>-full</code></td>
 <td>Ops teams managing config</td>
-<td>All of the above + PutItem, DeleteItem, UpdateItem, BatchWriteItem, Scan, DescribeTable</td>
+<td>All of the above + DeleteItem, BatchWriteItem, Scan, DescribeTable</td>
 </tr>
 <tr>
 <td><code>ReadOnlyPolicy</code></td>
@@ -5393,6 +5394,36 @@ use CLI deployment or CloudFormation template export. See the
 </tr>
 </tbody>
 </table>
+<div class="admonition warning">
+<p class="admonition-title"><code>dynamodb:ConditionCheckItem</code> is required from v0.17.0</p>
+<p>A bucket create is one transaction that also checks the owner entity's record
+(ADR-150), so every principal that acquires — and the aggregator's role, which
+pre-creates shards — needs <code>dynamodb:ConditionCheckItem</code> on the table. The policies
+and roles this template creates grant it once the stack runs the v0.17.0 template: a
+new <code>deploy</code>, or <code>zae-limiter upgrade</code> on an existing stack, which applies the new
+template (and refuses a change that would replace or remove a resource). Run
+<code>zae-limiter upgrade</code> on each stack before rolling out v0.17.0 clients; custom IAM
+must add it. Without it a bucket create is denied, and <code>acquire()</code> raises
+<code>PermissionDenied</code> under <code>BLOCK</code> and <code>ALLOW</code> alike
+(<a href="../../guide/unavailability/#allow-never-covers-permission-errors">ALLOW never covers permission errors</a>).</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title"><code>AcquireOnlyPolicy</code> gains <code>PutItem</code> and <code>UpdateItem</code> in v0.17.0</p>
+<p>AWS authorises each <code>Put</code> and <code>Update</code> inside a <code>TransactWriteItems</code> by
+<code>dynamodb:PutItem</code> / <code>dynamodb:UpdateItem</code>, not by <code>TransactWriteItems</code>
+(<a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html">AWS docs</a>).
+Before v0.17.0 <code>AcquireOnlyPolicy</code> granted neither, so a principal holding only it
+(including the <code>{stack}-app</code> role) could not write a bucket, and
+<code>NamespaceAcquirePolicy</code> lacked <code>PutItem</code>, so it could never create one (ADR-152).
+The policies no longer list <code>dynamodb:TransactWriteItems</code>: IAM defines no such action
+(<a href="https://servicereference.us-east-1.amazonaws.com/v1/dynamodb/dynamodb.json">service reference</a>),
+so it never granted anything.
+A stack deployed earlier keeps its old policies until its template is updated:
+<code>zae-limiter upgrade</code> applies the new template through a CloudFormation change set
+(and refuses a change that would replace or remove a resource), so run it on each
+stack before rolling out v0.17.0 clients. Custom IAM modelled on the old policies
+must add both actions.</p>
+</div>
 <h3 id="enablingdisabling-iam-resources">Enabling/Disabling IAM Resources<a class="headerlink" href="#enablingdisabling-iam-resources" title="Permanent link">&para;</a></h3>
 <div class="tabbed-set tabbed-alternate" data-tabs="5:2"><input checked="checked" id="__tabbed_5_1" name="__tabbed_5" type="radio" /><input id="__tabbed_5_2" name="__tabbed_5" type="radio" /><div class="tabbed-labels"><label for="__tabbed_5_1">CLI</label><label for="__tabbed_5_2">Programmatic</label></div>
 <div class="tabbed-content">

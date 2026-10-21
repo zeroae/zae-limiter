@@ -9521,8 +9521,12 @@ System defaults are the lowest priority in the hierarchy.</p>
 </table>
 <h4 id="zae-limiter-upgrade">zae-limiter upgrade<a class="headerlink" href="#zae-limiter-upgrade" title="Permanent link">&para;</a></h4>
 <p>Upgrade infrastructure to match client version.</p>
-<p>Updates Lambda code and version records to match the current client.
-Use --force to update even when versions already match.</p>
+<p>Applies this version's CloudFormation template to the stack (IAM
+policies included), then updates Lambda code and version records to
+match the current client. The template goes through a change set, and a
+change that would replace or remove a resource is refused: nothing is
+applied and no code is pushed. Use --force to update even when versions
+already match, and --lambda-only to skip the template.</p>
 <p>The stack's minimum client version is kept, never lowered, and a client
 below it is refused rather than allowed to downgrade the Lambdas.</p>
 <p><strong>Examples:</strong>
@@ -9567,7 +9571,7 @@ below it is refused rather than allowed to downgrade the Lambdas.</p>
 <tr>
 <td><code>--lambda-only</code></td>
 <td>boolean</td>
-<td>Only update Lambda code</td>
+<td>Only update Lambda code; do not apply the stack template</td>
 <td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
@@ -10049,6 +10053,16 @@ so they <strong>require an up-to-date stack</strong> and refuse otherwise, befor
 deployed no Lambda code) is refused the same way, as <code>run unknown</code>.</p>
 <p>Every other command intends to write and keeps its behaviour: <code>deploy</code> and <code>upgrade</code> provision
 and update, and the data commands that write register a missing namespace.</p>
+<p><code>upgrade</code> applies this version's CloudFormation template to an existing stack before it pushes
+Lambda code, so the stack's IAM policies match the client (<code>deploy</code> leaves an existing stack's
+template alone). Unlike the other writing commands it does not connect through
+<code>Repository.open()</code>: it never auto-updates the Lambdas on connect (that would push code before
+the template) and never provisions a missing stack. Its steps are the template, the Lambda code,
+the version record, then the stack tags; it reports "already up to date" when the template has
+nothing to change and the Lambdas already run this version. The template goes through a change set; a change that would replace or remove a
+resource is refused, nothing is applied, no code is pushed, and the command exits 1 naming each
+resource. <code>--lambda-only</code> skips the template. Run <code>zae-limiter upgrade</code> on each stack before
+rolling out v0.17.0 clients: their bucket writes need IAM actions the v0.16.0 policies lack.</p>
 <h2 id="declarative-limits">Declarative Limits<a class="headerlink" href="#declarative-limits" title="Permanent link">&para;</a></h2>
 <p>The <code>limits</code> command group manages rate limits declaratively via YAML manifest files. Changes are applied through a Lambda provisioner that tracks managed state and computes diffs, similar to how <code>terraform plan</code> and <code>terraform apply</code> work.</p>
 <h3 id="yaml-manifest-format">YAML Manifest Format<a class="headerlink" href="#yaml-manifest-format" title="Permanent link">&para;</a></h3>
@@ -10417,7 +10431,9 @@ without <code>--cascade</code> and moved under a parent therefore does not casca
 ancestor, and exits 1 for either. If restamping stops part-way (throttling, for example), it
 exits 1 with the number of buckets restamped: the move itself landed, and re-running the same
 command finishes it. It needs a stack whose Lambdas are 0.17.0 or later and raises the stack's
-minimum client version to 0.17.0.</p>
+minimum client version to 0.17.0. Restart every client after upgrading, before the first move:
+a process that opened the stack with an older version keeps debiting the old parent until it
+reopens it.</p>
 <h2 id="namespace-lifecycle">Namespace Lifecycle<a class="headerlink" href="#namespace-lifecycle" title="Permanent link">&para;</a></h2>
 <p>The <code>namespace</code> command group manages the namespace registry:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-153-1"><a id="__codelineno-153-1" name="__codelineno-153-1" href="#__codelineno-153-1"></a><span class="c1"># Register namespaces</span>

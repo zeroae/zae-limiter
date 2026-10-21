@@ -4836,19 +4836,20 @@
 </span><span id="__span-11-17"><a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:PutItem</span>
 </span><span id="__span-11-18"><a id="__codelineno-11-18" name="__codelineno-11-18" href="#__codelineno-11-18"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:UpdateItem</span>
 </span><span id="__span-11-19"><a id="__codelineno-11-19" name="__codelineno-11-19" href="#__codelineno-11-19"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:Query</span>
-</span><span id="__span-11-20"><a id="__codelineno-11-20" name="__codelineno-11-20" href="#__codelineno-11-20"></a><span class="w">              </span><span class="nt">Resource</span><span class="p">:</span><span class="w"> </span><span class="kt">!GetAtt</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Table.Arn</span>
-</span><span id="__span-11-21"><a id="__codelineno-11-21" name="__codelineno-11-21" href="#__codelineno-11-21"></a><span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">Effect</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Allow</span>
-</span><span id="__span-11-22"><a id="__codelineno-11-22" name="__codelineno-11-22" href="#__codelineno-11-22"></a><span class="w">              </span><span class="nt">Action</span><span class="p">:</span>
-</span><span id="__span-11-23"><a id="__codelineno-11-23" name="__codelineno-11-23" href="#__codelineno-11-23"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:GetRecords</span>
-</span><span id="__span-11-24"><a id="__codelineno-11-24" name="__codelineno-11-24" href="#__codelineno-11-24"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:GetShardIterator</span>
-</span><span id="__span-11-25"><a id="__codelineno-11-25" name="__codelineno-11-25" href="#__codelineno-11-25"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:DescribeStream</span>
-</span><span id="__span-11-26"><a id="__codelineno-11-26" name="__codelineno-11-26" href="#__codelineno-11-26"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:ListStreams</span>
-</span><span id="__span-11-27"><a id="__codelineno-11-27" name="__codelineno-11-27" href="#__codelineno-11-27"></a><span class="w">              </span><span class="nt">Resource</span><span class="p">:</span><span class="w"> </span><span class="kt">!Sub</span><span class="w"> </span><span class="s">"${Table.Arn}/stream/*"</span>
-</span><span id="__span-11-28"><a id="__codelineno-11-28" name="__codelineno-11-28" href="#__codelineno-11-28"></a><span class="w">            </span><span class="c1"># When audit archival is enabled:</span>
-</span><span id="__span-11-29"><a id="__codelineno-11-29" name="__codelineno-11-29" href="#__codelineno-11-29"></a><span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">Effect</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Allow</span>
-</span><span id="__span-11-30"><a id="__codelineno-11-30" name="__codelineno-11-30" href="#__codelineno-11-30"></a><span class="w">              </span><span class="nt">Action</span><span class="p">:</span>
-</span><span id="__span-11-31"><a id="__codelineno-11-31" name="__codelineno-11-31" href="#__codelineno-11-31"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">s3:PutObject</span>
-</span><span id="__span-11-32"><a id="__codelineno-11-32" name="__codelineno-11-32" href="#__codelineno-11-32"></a><span class="w">              </span><span class="nt">Resource</span><span class="p">:</span><span class="w"> </span><span class="kt">!Sub</span><span class="w"> </span><span class="s">"${AuditArchiveBucket.Arn}/*"</span>
+</span><span id="__span-11-20"><a id="__codelineno-11-20" name="__codelineno-11-20" href="#__codelineno-11-20"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:ConditionCheckItem</span><span class="w">  </span><span class="c1"># a shard clone's META pin (ADR-150)</span>
+</span><span id="__span-11-21"><a id="__codelineno-11-21" name="__codelineno-11-21" href="#__codelineno-11-21"></a><span class="w">              </span><span class="nt">Resource</span><span class="p">:</span><span class="w"> </span><span class="kt">!GetAtt</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Table.Arn</span>
+</span><span id="__span-11-22"><a id="__codelineno-11-22" name="__codelineno-11-22" href="#__codelineno-11-22"></a><span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">Effect</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Allow</span>
+</span><span id="__span-11-23"><a id="__codelineno-11-23" name="__codelineno-11-23" href="#__codelineno-11-23"></a><span class="w">              </span><span class="nt">Action</span><span class="p">:</span>
+</span><span id="__span-11-24"><a id="__codelineno-11-24" name="__codelineno-11-24" href="#__codelineno-11-24"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:GetRecords</span>
+</span><span id="__span-11-25"><a id="__codelineno-11-25" name="__codelineno-11-25" href="#__codelineno-11-25"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:GetShardIterator</span>
+</span><span id="__span-11-26"><a id="__codelineno-11-26" name="__codelineno-11-26" href="#__codelineno-11-26"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:DescribeStream</span>
+</span><span id="__span-11-27"><a id="__codelineno-11-27" name="__codelineno-11-27" href="#__codelineno-11-27"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:ListStreams</span>
+</span><span id="__span-11-28"><a id="__codelineno-11-28" name="__codelineno-11-28" href="#__codelineno-11-28"></a><span class="w">              </span><span class="nt">Resource</span><span class="p">:</span><span class="w"> </span><span class="kt">!Sub</span><span class="w"> </span><span class="s">"${Table.Arn}/stream/*"</span>
+</span><span id="__span-11-29"><a id="__codelineno-11-29" name="__codelineno-11-29" href="#__codelineno-11-29"></a><span class="w">            </span><span class="c1"># When audit archival is enabled:</span>
+</span><span id="__span-11-30"><a id="__codelineno-11-30" name="__codelineno-11-30" href="#__codelineno-11-30"></a><span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">Effect</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Allow</span>
+</span><span id="__span-11-31"><a id="__codelineno-11-31" name="__codelineno-11-31" href="#__codelineno-11-31"></a><span class="w">              </span><span class="nt">Action</span><span class="p">:</span>
+</span><span id="__span-11-32"><a id="__codelineno-11-32" name="__codelineno-11-32" href="#__codelineno-11-32"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">s3:PutObject</span>
+</span><span id="__span-11-33"><a id="__codelineno-11-33" name="__codelineno-11-33" href="#__codelineno-11-33"></a><span class="w">              </span><span class="nt">Resource</span><span class="p">:</span><span class="w"> </span><span class="kt">!Sub</span><span class="w"> </span><span class="s">"${AuditArchiveBucket.Arn}/*"</span>
 </span></code></pre></div>
 <h2 id="application-iam-policies">Application IAM Policies<a class="headerlink" href="#application-iam-policies" title="Permanent link">&para;</a></h2>
 <p>The template creates three IAM managed policies by default for different access patterns. These policies can be attached to your own IAM roles, users, or federated identities.</p>
@@ -4867,13 +4868,13 @@
 <td><code>AcquireOnlyPolicy</code></td>
 <td><code>-acq</code></td>
 <td>Applications calling <code>acquire()</code></td>
-<td>GetItem, BatchGetItem, Query, TransactWriteItems</td>
+<td>GetItem, BatchGetItem, Query, ConditionCheckItem, PutItem, UpdateItem</td>
 </tr>
 <tr>
 <td><code>FullAccessPolicy</code></td>
 <td><code>-full</code></td>
 <td>Ops teams managing config</td>
-<td>All of the above + PutItem, DeleteItem, UpdateItem, BatchWriteItem, Scan, DescribeTable</td>
+<td>All of the above + DeleteItem, BatchWriteItem, Scan, DescribeTable</td>
 </tr>
 <tr>
 <td><code>ReadOnlyPolicy</code></td>
@@ -4925,7 +4926,7 @@
 <td style="text-align: center;">Y</td>
 </tr>
 <tr>
-<td><code>TransactWriteItems</code></td>
+<td><code>ConditionCheckItem</code></td>
 <td style="text-align: center;">--</td>
 <td style="text-align: center;">Y</td>
 <td style="text-align: center;">Y</td>
@@ -4933,13 +4934,13 @@
 <tr>
 <td><code>PutItem</code></td>
 <td style="text-align: center;">--</td>
-<td style="text-align: center;">--</td>
+<td style="text-align: center;">Y</td>
 <td style="text-align: center;">Y</td>
 </tr>
 <tr>
 <td><code>UpdateItem</code></td>
 <td style="text-align: center;">--</td>
-<td style="text-align: center;">--</td>
+<td style="text-align: center;">Y</td>
 <td style="text-align: center;">Y</td>
 </tr>
 <tr>
@@ -4956,6 +4957,36 @@
 </tr>
 </tbody>
 </table>
+<div class="admonition warning">
+<p class="admonition-title"><code>dynamodb:ConditionCheckItem</code> is required from v0.17.0</p>
+<p>A bucket create is one transaction that also checks the owner entity's record
+(ADR-150), so every principal that acquires — and the aggregator's role, which
+pre-creates shards — needs <code>dynamodb:ConditionCheckItem</code> on the table. The policies
+and roles this template creates grant it once the stack runs the v0.17.0 template: a
+new <code>deploy</code>, or <code>zae-limiter upgrade</code> on an existing stack, which applies the new
+template (and refuses a change that would replace or remove a resource). Run
+<code>zae-limiter upgrade</code> on each stack before rolling out v0.17.0 clients; custom IAM
+must add it. Without it a bucket create is denied, and <code>acquire()</code> raises
+<code>PermissionDenied</code> under <code>BLOCK</code> and <code>ALLOW</code> alike
+(<a href="../../guide/unavailability/#allow-never-covers-permission-errors">ALLOW never covers permission errors</a>).</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title"><code>AcquireOnlyPolicy</code> gains <code>PutItem</code> and <code>UpdateItem</code> in v0.17.0</p>
+<p>AWS authorises each <code>Put</code> and <code>Update</code> inside a <code>TransactWriteItems</code> by
+<code>dynamodb:PutItem</code> / <code>dynamodb:UpdateItem</code>, not by <code>TransactWriteItems</code>
+(<a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html">AWS docs</a>).
+Before v0.17.0 <code>AcquireOnlyPolicy</code> granted neither, so a principal holding only it
+(including the <code>{stack}-app</code> role) could not write a bucket, and
+<code>NamespaceAcquirePolicy</code> lacked <code>PutItem</code>, so it could never create one (ADR-152).
+The policies no longer list <code>dynamodb:TransactWriteItems</code>: IAM defines no such action
+(<a href="https://servicereference.us-east-1.amazonaws.com/v1/dynamodb/dynamodb.json">service reference</a>),
+so it never granted anything.
+A stack deployed earlier keeps its old policies until its template is updated:
+<code>zae-limiter upgrade</code> applies the new template through a CloudFormation change set
+(and refuses a change that would replace or remove a resource), so run it on each
+stack before rolling out v0.17.0 clients. Custom IAM modelled on the old policies
+must add both actions.</p>
+</div>
 <h3 id="iam-roles-opt-in">IAM Roles (Opt-In)<a class="headerlink" href="#iam-roles-opt-in" title="Permanent link">&para;</a></h3>
 <p>When <code>EnableIAMRoles</code> is <code>true</code> (or <code>--create-iam-roles</code> is passed), the template also creates IAM roles that attach these managed policies. All roles trust the same AWS account root principal:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nt">AssumeRolePolicyDocument</span><span class="p">:</span>
