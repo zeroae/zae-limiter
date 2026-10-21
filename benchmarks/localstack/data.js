@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792526821550,
+  "lastUpdate": 1792606478807,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -34572,6 +34572,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.010836131474049576",
             "extra": "mean: 1.0904396578000046 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8428048bfd9ba3ee14a20a2a3aa023f683ab2ea7",
+          "message": "✨ feat(cli): entity set-parent, and docs for moving an entity (#677) (#722)\n\n## What it does\n\n- **CLI `zae-limiter entity set-parent ENTITY_ID (--parent P | --none)\n[-N ns]`**. Give exactly one of the two flags; anything else exits 2.\n- It prints `Moved entity 'u' from org-a to org-b (N buckets stamped)`.\n- On `FanoutIncomplete` it exits 1 with the partial count and \"Re-run\nthe same command to finish\".\n  - Any other refusal (cycle, missing parent, version gate) exits 1.\n  - It is a write command, so it uses `_connect()` / `open()`.\n- **Docs:**\n- `docs/cli.md`: a new \"Moving an Entity to a New Parent\" section, and\nthe write-command list.\n- `docs/guide/hierarchical.md`: a new \"Moving an Entity to a New Parent\"\nsection with a runnable example, covering what moves, what stays with\nthe old parent, cascade following the policy (D3), errors and the\nversion requirement. The Limitations bullet is updated.\n  - `docs/infra/auditing.md`: the `entity_parent_changed` action.\n- **CLAUDE.md** (#677 only):\n  - Invariant 9 no longer says `parent_id` never changes.\n- Writer table: `pgen` is added on the normal-path owner stamp (with its\npin) and on the create `Put`. Two new rows: the cascade/owner fan-out\nstamp, and the META move.\n\nThe API reference picks up `RateLimiter.set_parent` /\n`Repository.set_parent` from docstrings (mkdocstrings).\n\n**Stacked on:** #712 (design) → #716 (core) → this. The diff against\n`main` includes #716's commits until that merges.\n\n## Provisional decisions\n\nSame table as #716. All ADR-150 recommendations are taken: D1 `pgen`, D2\nlearn from the item, D3 no `cascade` argument, D4 32-hop walk, D5 parent\nmust exist, D6 no manifest, D7 `set_parent` / `entity set-parent`. The\nCLI and docs describe D3, D5 and D7 as built. Swapping one means editing\nthe matching paragraph in `hierarchical.md` and `cli.md`.\n\n## Test evidence\n\n- `tests/unit/test_cli.py::TestSetParentCommand` (7 tests): help,\nexactly-one-of, move to a parent, move to none, partial fan-out,\nrefusal.\n- `uv run mkdocs build --strict` is clean. The hierarchical.md doc\nexamples run and pass (`tests/doctest/test_docs_run.py -k hierarchical`,\n10 passed).\n- The pre-push hook passed: full unit suite and 100% diff coverage.\n- The first push attempt hit one failure,\n`test_rejection_cache.py::TestSyncTwin::test_the_sync_limiter_checks_the_parent_first`,\nwhich relies on a 1 s cache TTL. The machine was heavily loaded (the\nsuite took 21 min). The test passes 4/4 in isolation, and the second\npush passed.\n\nRefs #677\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01ASEDQdfdZZeqM2KMM1WTMo",
+          "timestamp": "2026-10-21T14:07:41-04:00",
+          "tree_id": "2e6d271217ca9e738232eb44066981ff6d861ecb",
+          "url": "https://github.com/zeroae/zae-limiter/commit/8428048bfd9ba3ee14a20a2a3aa023f683ab2ea7"
+        },
+        "date": 1792606477455,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 27.511257193773922,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008149191170525741",
+            "extra": "mean: 36.34875690909212 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.49415587843034,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01717543756336379",
+            "extra": "mean: 57.161946363640425 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 40.102341458485284,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006380634672962333",
+            "extra": "mean: 24.9361998235245 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 35.58697592925786,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0057011567410551",
+            "extra": "mean: 28.100167937502363 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.657180363601018,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010847908560009886",
+            "extra": "mean: 42.27046438461457 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 90.13777784691477,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000960974804539083",
+            "extra": "mean: 11.094127499996139 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.170871431463194,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009012218031885134",
+            "extra": "mean: 41.37211199999605 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 18.560737395399226,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06391149452815532",
+            "extra": "mean: 53.877169785715346 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 23.484164586189422,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010666562756262763",
+            "extra": "mean: 42.58188518181653 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.043578928969573,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006135640573840031",
+            "extra": "mean: 38.3971804615398 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 23.69333716157456,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00899792447279808",
+            "extra": "mean: 42.20595829032402 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 24.08024122005628,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008319972035393617",
+            "extra": "mean: 41.52782320000625 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 29.62370376900273,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006705168792514953",
+            "extra": "mean: 33.75675127586062 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9255023784450558,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008349445613977701",
+            "extra": "mean: 519.3449829999963 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.927370088057333,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007283859376706542",
+            "extra": "mean: 518.8417140000013 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9440974917002963,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0034000823259268905",
+            "extra": "mean: 1.0592126436 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9108788843491621,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009617464047838153",
+            "extra": "mean: 1.0978407965999963 sec\nrounds: 5"
           }
         ]
       }
