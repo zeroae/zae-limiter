@@ -16,7 +16,11 @@
 - **Nothing moves between parents.** Old-parent usage, open leases and quota grants stay
   where they were debited.
 - Cost per move ≈ **1 + R·S WCU** writes and **~3 + 3R RCU** reads (R resources, S shards);
-  **0 change** on every acquire.
+  **0 change** on an acquire that touches existing buckets.
+- **A bucket create is pinned to the owner's META** inside its own transaction (a
+  `ConditionCheck`), and an aggregator clone likewise; see
+  [Review decisions (2026-10-20)](#review-decisions-2026-10-20), which supersedes the
+  post-create owner check described in §4, §8 and §11.
 
 ## 1. What the code does today (verified 2026-10-09, `origin/main` f5d2ee2)
 
@@ -112,10 +116,12 @@ consistent META read does not help: S can read before t1 and write after t2.
   debited, `rf` frozen, `set_parent` counting a stamp it never wrote). `create_entity` writes
   a random token on META; every owner stamp copies it beside `pgen`: a generation compares
   only within one incarnation. META without `pinc` (created before this) is the legacy
-  incarnation `-`. A fan-out counts only buckets it actually stamped. Two pins, by how the
+  incarnation `-` (amended: its `created_at`, `-` only if that is missing too; see the
+  review decisions below). A fan-out counts only buckets it actually stamped. Two pins, by how the
   writer read META (third review of #716):
-  - **strongly consistent** writers — the fan-out, the provisioner fan-out, the post-create
-    owner check, the aggregator's clone repair — use `attribute_not_exists(pinc) OR pinc <>
+  - **strongly consistent** writers — the fan-out, the provisioner fan-out (and, until the
+    2026-10-20 review removed them, the post-create owner check and the aggregator's clone
+    repair) — use `attribute_not_exists(pinc) OR pinc <>
     :inc OR attribute_not_exists(pgen) OR pgen <= :pg`: they read the current record, so
     another incarnation's stamp is a predecessor's and loses;
   - the **slow path's rf-locked owner stamp** read META eventually consistently, and after a
@@ -138,7 +144,7 @@ consistent META read does not help: S can read before t1 and write after t2.
   adds `attribute_not_exists(pgen) OR pgen <= :pgen` to its condition:
   - **owner stamp** in `build_composite_normal` — a lost pin fails the transaction like a lost
     `rf` lock and goes down the existing consumption-only retry, which stamps no owner;
-  - **create `Put`** — a `Put` cannot condition on attributes of an item that does not exist.
+  - **create `Put`** — **Superseded by [Review decisions (2026-10-20)](#review-decisions-2026-10-20).** A `Put` cannot condition on attributes of an item that does not exist.
     The two-pass fan-out does **not** cover it (review of #716, finding 2): a create that read
     META before the move can land after both passes, on a resource that had no bucket when
     the move ran. So after the write, each created bucket's owner META is read once, strongly
@@ -157,7 +163,7 @@ consistent META read does not help: S can read before t1 and write after t2.
     transaction: no shipped policy grants `dynamodb:ConditionCheckItem`, so an application
     role on the acquire-only policy would be refused on every create, and a lone `Put` would
     become a 2-item transaction (4 WCU instead of 1);
-  - **aggregator Path 2 clone** — copies shard 0's stamp from a stream image that can predate
+  - **aggregator Path 2 clone** — **Superseded by [Review decisions (2026-10-20)](#review-decisions-2026-10-20).** Copies shard 0's stamp from a stream image that can predate
     the move, again after the fan-out ran (finding 3). After the clones land the aggregator
     reads the owner's META once per record (strongly consistent, 1 RCU) and, when the
     generation differs from the image's, restamps each clone with META's parent and the
@@ -227,7 +233,7 @@ is not moved". A lease opened after the stamp holds the new parent. Leases are n
   quota's grants (`gc`), donors and periods are per (entity, resource). Nothing in a child's
   bucket refers to a parent's grant, so a move moves no allowance. The new parent's session
   windows (ADR-139/140) are the new parent's own. **Confirmed: nothing moves.**
-- **Aggregator:** its refill reads neither attribute. Path 2 clones copy `cascade`,
+- **Aggregator:** **Superseded by [Review decisions (2026-10-20)](#review-decisions-2026-10-20).** Its refill reads neither attribute. Path 2 clones copy `cascade`,
   `parent_id` and `pgen` from the stream image, which can predate a move, so the clone path
   re-checks the owner's META after the clones land and restamps them (§4). Not "no
   change", as this design first said: the review of #716 measured 9 of 20 debits going
@@ -282,7 +288,7 @@ Per move, entity with R resources × S shards each, ancestor depth d, on-demand 
 (94 × $0.125 + 32 × $0.625). Admin path; a move per user per month is negligible.
 
 Per acquire: **unchanged** (fast path 0 RCU + 1 WCU; `pgen` is one condition term on the
-rf-locked write). Per bucket **created** (first acquire of an entity on a resource, or a new
+rf-locked write). **Superseded by [Review decisions (2026-10-20)](#review-decisions-2026-10-20).** Per bucket **created** (first acquire of an entity on a resource, or a new
 shard): **+1 RCU**, the strongly consistent owner check (§4), ~$0.125/M creates, started when
 the commit lands and joined on lease exit, so it adds latency only when the caller's block is
 shorter than the read; a restamp
@@ -361,3 +367,90 @@ calls). A lost `pgen` pin: +1 WCU (the retry), only inside a move's race window.
 - (a) `set_parent` / `entity set-parent` (the issue's).
 - (b) `move_entity` / `entity move`.
 - **Recommend (a):** matches the `set_*` admin family and reads correctly for "to no parent".
+
+## Review decisions (2026-10-20)
+
+The owner-approved fixes from the review of Stack B (#712, #716, #722). This section
+supersedes the post-create owner check in §4, §8 and §11; the text there is kept as
+history. ADR-150 records the decision; the rules and costs live here.
+
+**Incarnations.** `create_entity` writes a random token, `pinc`, on META, and every owner
+stamp copies it beside `pgen`; a generation compares only within one incarnation. An entity
+created before v0.17 has no `pinc`: its incarnation is its `created_at`, which a delete and
+recreate changes, and `-` only if that is missing too (`schema.entity_incarnation`, the one
+rule every reader shares). Writers that read META strongly consistently (the fan-out, the
+provisioner fan-out) may overwrite a stamp of another incarnation; the slow path's rf-locked
+owner stamp read META eventually consistently, so it may overwrite only its own incarnation's
+stamp. When it loses that pin to another incarnation it reads META once, strongly
+consistently (`Repository.restamp_owner_if_current`, a required member of
+`RepositoryProtocol`): if its incarnation is current the bucket is a predecessor's leftover
+and is claimed, and the write is re-sent once; otherwise the bucket is left alone.
+
+**A bucket create is pinned to the owner's META.** Every client create — the first create,
+an ADR-133 shard create, a cascade parent's create, each part of a multi-resource `also=`
+commit, and a create re-issued on the consumption-only retry — carries one `ConditionCheck`
+per distinct owner, on `PK={ns}/ENTITY#{id}, SK=#META`, asserting the `pgen` and `pinc` the
+pass read by the incarnation rule above (`attribute_not_exists` terms for what was absent),
+or `attribute_not_exists(PK)` when the pass found no META (`schema.owner_meta_condition`,
+`Repository.build_owner_check`). The checks follow the bucket items and donor debits so the
+per-index cancellation reasons still line up, and an item is never touched twice. A
+cancellation on a check raises `OwnerStampLostError`, a contended `RateLimitExceeded`; the
+slow path (single- and multi-resource) re-plans once with every owner's META read strongly
+consistently, which also cascades to the new parent, and a second loss stands as the
+contended 429. Two parts of one multi-resource commit that read different META for one owner
+re-plan before sending. The parent-only fallback never creates (it returns None when the
+parent bucket is missing), so it has nothing to pin. The background owner check, its join on
+lease exit, its cancellation and `KeyboardInterrupt` handling, its `vu = 0` fallback and the
+sync generator's `create_task` translation are removed.
+
+**Aggregator clones.** Every Path 2 clone is one `TransactWriteItems`: the `Put`, any ADR-145
+donor debit, and a `ConditionCheck` on the owner's META asserting the stream image's `pgen`
+and `pinc` (an image with neither asserts META has neither). A clone the check cancels is
+skipped and left to the client, exactly like the R13 and R15 skips, and logged without the
+entity id. The post-write clone repair is removed.
+
+**IAM.** `dynamodb:ConditionCheckItem` is granted to the `acq`, `full`, `ns-acq` (namespace
+statement only) and `ns-full` managed policies and to the aggregator role. Breaking for
+custom IAM: every principal that acquires, and a custom aggregator role, needs it.
+
+**Version gate.** `set_parent` passes the ADR-141 gate at 0.17.0 and ratchets
+`client_min_version` to 0.17.0 (§9). The ratchet refuses only a pre-0.17 process's next open:
+until it reopens the stack, it debits the old parent on every warm-path call, and its
+unpinned slow-pass stamp can restore the old parent from a stale read. Restart every client
+after upgrading, before the first move.
+
+**Ancestor check.** One strongly consistent `GetItem` per level of the new parent's chain,
+bounded at 32 levels (§6).
+
+**Audit.** `ENTITY_PARENT_CHANGED` with `{old_parent_id, parent_id, pgen, buckets_stamped}` on
+every path: on success (a failed audit raises, like every admin method), after
+`FanoutIncomplete` with `buckets_stamped` = what was stamped, and after any other fan-out
+error with 0. On the two error paths a failed audit write is logged at WARNING (action and
+error type, no entity id) and the original exception is re-raised, so the caller still learns
+to re-run the move.
+
+**Warm path.** When the child's item names another parent than the one the cache debited,
+the debit is refunded and the item's parent debited (§5). An item stamped with the same
+incarnation and a lower generation than the newest this process has seen (a shard the fan-out
+has not reached) is older, not a policy: it neither moves the cached owner nor feeds
+`_cascade_cache`, and nothing is refunded (`Repository._owner_stamp_cache`, shared with every
+`namespace()` scope). A missing-shard hint from the fast path names the parent it came from
+and is used only for that parent; and the slow path never honours an explicit shard at or
+past the count it would stamp on a create. Every send of the commit transaction retries a
+write conflict and turns sustained contention into the contended 429. `_find_disabled` and
+the CLI read META strongly consistently.
+
+**Consumption stays where it was debited**, including by leases open across the move (§7).
+
+**Costs.**
+
+| Path | Before the review | Now |
+|------|-------------------|-----|
+| Bucket create (once per shard) | `PutItem` + 1 RCU consistent owner check after it | a 2-item transaction: the `Put` and the META `ConditionCheck`; no read after it |
+| Aggregator clone | `PutItem` (or a 2-item move) + 1 RCU per record | one transaction per clone with one more item; no read |
+| Slow-path claim of a predecessor's bucket | — | 1 RCU, + up to 3 RCU (strongly consistent policy walk) only when it claims |
+| Lost META check | — | one re-plan (+1 RCU per owner, consistent), then the commit |
+
+A transactional write bills 2 WCU per KB. Whether a `ConditionCheck` item bills as read or
+write capacity is **unconfirmed**: measure it on AWS with `ReturnConsumedCapacity=TOTAL`
+before quoting a figure.

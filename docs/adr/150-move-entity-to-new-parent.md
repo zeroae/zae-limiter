@@ -9,121 +9,44 @@
 
 ## Context
 
-An entity's `parent_id` is written once, by `create_entity()`, onto its META record (with
-the GSI1 parent→children keys). Since #684 every bucket item the entity owns carries the
-same `parent_id` beside the resolved cascade policy (ADR-146), and the fast path debits
-whichever parent the item, or the process's entity cache, names — with no META read.
-CLAUDE.md invariant 9 states that this metadata never changes, and the entity cache has no
-expiry. The use case in #674 needs a user moved between organisations, effective at once.
+An entity's `parent_id` is written once, by `create_entity()`, onto its META record. Since
+#684 every bucket item the entity owns carries the same `parent_id` beside the resolved
+cascade policy (ADR-146), and the fast path debits whichever parent the item, or the
+process's entity cache, names — with no META read. CLAUDE.md invariant 9 states that this
+metadata never changes, and the entity cache has no expiry. The use case in #674 needs a user
+moved between organisations, effective at once.
 
-ADR-146 already built the machinery a move needs: an eager, two-pass fan-out over an
-entity's buckets that stamps `cascade` and `parent_id` from strongly consistent reads, and
-a warm path on which the child's returned item overrules the cache for `cascade`. Two gaps
-remain. The warm path checks only `cascade`, so a process holding the old parent keeps
-debiting it once the item has moved on. And a slow pass that read META before the move can
-land its owner stamp after the fan-out, writing the old parent back onto a bucket that may
-then take only the fast path; nothing would ever correct it. A move to no parent adds a
-third: a stamp with no `parent_id` is today ignored as a pre-#684 artefact.
+ADR-146 already built most of what a move needs: an eager, two-pass fan-out that restamps an
+entity's buckets from strongly consistent reads. What it lacks is protection against stale
+writers: a slow pass, a bucket create or an aggregator shard clone that read META before the
+move can land after the fan-out and write the old parent back onto a bucket that may then
+take only the fast path, where nothing would ever correct it.
 
 ## Decision
 
-An entity's parent must be changeable through one repository operation that updates the
-META record and its GSI1 keys, then restamps every bucket the entity owns through the
-ADR-146 cascade fan-out, which remains the only writer of `cascade` and `parent_id` on
-bucket items outside the slow path's owner stamp. Each move must increment a parent
-generation on META; every write of `parent_id` to a bucket item (owner stamp, create,
-fan-out, provisioner fan-out) must carry the generation it read and must not overwrite a
-higher one, so a stale writer can lose but never undo a move. A write that creates a bucket
-item cannot be pinned, so every such write (the client's create, the aggregator's shard
-clone) must re-check the owner's generation against META with a strongly consistent read
-once it lands, and restamp through the pinned write when a move overtook it; when that
-check fails, the bucket must be forced onto the slow path (`vu = 0`), whose pinned owner
-stamp then restamps it. The check is not needed for the acquire that created the bucket, so it
-must not hold that acquire up: it starts once the commit's last write lands, runs while
-the caller's block does, and is joined when the lease exits, so it never outlives the
-lease. A check that is cancelled before it finishes must leave the same `vu = 0` a
-failed one does; the cancellation is re-raised only when it was aimed at the caller, so a
-cancel of the check alone never replaces the caller's exception. Each entity must also carry an incarnation, a random
-token written at creation and copied onto every owner stamp beside the generation; a
-generation compares only within one incarnation. A writer that read META strongly
-consistently (the fan-outs, the owner checks) may overwrite a stamp of another incarnation; a
-writer that read it eventually consistently (the slow path's owner stamp) may overwrite only
-its own incarnation's, because its read may be a deleted predecessor's. When the slow path
-loses that pin to another incarnation, one strongly consistent read decides: if its
-incarnation is current, the bucket is a predecessor's leftover and is claimed; if not, it is
-left alone. So a bucket a deleted predecessor left behind never outranks the recreated
-entity, whatever the two clocks said, and a stale read can never undo the current stamp. An
-entity created before the incarnation existed is its own legacy incarnation. A stamped `vu = 0`
-on one shard of a sharded bucket is cleared by a slow pass on that same shard. A move's count reports only buckets actually stamped.
-A bucket item stamped with a
-generation is authoritative for both `cascade` and `parent_id`, including when it names no
-parent. On the warm path, when the child's returned item names a different parent from the
-one the cache debited, the limiter must refund that debit, debit the item's parent, and
-relearn the cache from the item. A move must refuse an entity as its own ancestor, must
-write an audit event, and must pass the ADR-141 version gate at 0.17.0 and ratchet
-`client_min_version` to 0.17.0. Consumption already debited to the old parent, including
-by leases open across the move, stays where it was debited.
+An entity's parent must be changeable through one repository operation that updates its META record and restamps every bucket it owns through the ADR-146 cascade fan-out. Every write of `parent_id` to a bucket item must carry the parent generation and entity incarnation it read and must not overwrite a newer stamp, and a write that creates a bucket item must be pinned to the owner's META in the same transaction, so a stale writer can lose but never undo a move.
 
 ## Consequences
 
 **Positive:**
-- A move takes effect on the fast path of every process after at most one call per
-  (process, entity). An acquire that only touches existing buckets costs nothing more; one
-  that creates a bucket costs one more read (see Negative).
-- One write path owns `parent_id` on bucket items, as ADR-146 item 10 asked.
-- The generation also settles the "no `parent_id` = pre-#684" ambiguity for new stamps.
-- Parents are separate entities with their own buckets: no quota allowance moves
-  (ADR-145), and no lease is rewritten.
+- A move takes effect on the fast path of every process within one call per (process, entity): the child's item overrules a stale cache, and the old parent's debit is refunded.
+- No consumption or quota allowance moves between parents (ADR-145), and no lease is rewritten; details and costs are in the design doc.
 
 **Negative:**
 - A move is O(buckets of the entity) writes, not O(1), like a cascade-policy change.
-- Until the fan-out reaches a shard, acquires on it debit the old parent; a pre-0.17
-  process that has not reopened the stack still debits it once per (process, entity).
-- A rejection cached before the move can reject a child against the old parent's state
-  for up to `rejection_cache_ttl` in another process (ADR-147); never an admission.
-- The ancestor check costs one strongly consistent read per level of the new parent's
-  chain.
-- The rf-locked write gains one condition term; losing it costs that acquire the
-  consumption-only retry (one extra write), only in the move's race window.
-- Every bucket created costs one more strongly consistent read (1 RCU, once per shard), and
-  every aggregator record that clones shards one more; a restamp only when a move overtook
-  the create. A `ConditionCheck` would avoid the read but needs
-  `dynamodb:ConditionCheckItem`, which no shipped policy grants. The read starts when the
-  commit lands and overlaps the caller's block; the lease exit joins it, which adds
-  latency only when the block is shorter than one strongly consistent `GetItem`, and then
-  only the difference.
-- Residual: a process that dies between a create and its owner check leaves a create that
-  read META before a move on the old parent until the bucket's next slow pass or a repeat
-  of the move. The check's own failure is covered (`vu = 0` forces that slow pass).
-- Residual: a cancelled check is covered the same way, by `vu = 0` on every bucket it
-  checked, but those writes are themselves cancellable. A second cancellation landing
-  while they run (an outer timeout, an event-loop shutdown) stops them where they stand,
-  and the buckets not yet written keep the create's stamp, wrong only if a move overtook
-  the create in that window, until their next slow pass or a repeat of the move. It is
-  bounded by the buckets one acquire created. A `KeyboardInterrupt` or `SystemExit` during
-  the join skips the writes on purpose, with the same residual: the process is going down.
-  Shielding the writes was not chosen, because the generated sync twin has no
-  `asyncio.shield`, and a detached write task needs a strong reference that would outlive
-  the lease.
-- Residual (ADR-125's two-pass race, here for moves): a move whose META write lands after a
-  create's owner check runs its fan-out after the bucket exists, but GSI3 can lag the
-  create, so both discovery passes can miss it. The bucket keeps the old parent until its
-  next slow pass or a repeat of the move — the same window ADR-125 accepts for `disabled`.
-- A slow pass whose eventually consistent META read returned a deleted predecessor's record
-  still commits, on the consumption-only retry: that one acquire debits the predecessor's
-  parent once, the same bound as a lease opened before a move. It never restamps the bucket.
-- A slow pass that loses its owner pin to another incarnation costs one strongly consistent
-  read (1 RCU); a predecessor's leftover is then claimed and the write re-sent once.
+- Until the fan-out reaches a shard, acquires on it debit the old parent.
+- Every bucket create becomes a transaction with one extra item, a `ConditionCheck` on the owner's META, which needs `dynamodb:ConditionCheckItem`: breaking for custom IAM.
+- Residual (GSI3 lag): a create that lands before the move's META write but is missed by both discovery passes keeps the old parent until its next slow pass or a repeat of the move.
+- Residual (ADR-147): a rejection cached before the move can reject a child against the old parent's state for up to `rejection_cache_ttl` in another process; never an admission.
+- Until it reopens the stack, a pre-0.17 process debits the old parent on every warm-path call, and its unpinned slow-pass stamp can restore the old parent from a stale read; the version ratchet refuses only its next open. Restart every client after upgrading, before the first move.
 
 ## Alternatives Considered
 
 ### Expire the entity cache on a TTL
-Rejected: it bounds staleness by the TTL on every entity at the cost of periodic META
-reads, where the item already returns the answer for free on every call.
+Rejected: periodic META reads on every hot entity for a value the item already returns for free.
 
 ### Make the slow path read META strongly consistently
-Rejected: it doubles that read on every slow pass and still lets a pass that read before
-the move write after the fan-out.
+Rejected: it doubles that read on every slow pass and still lets a pass that read before the move write after the fan-out.
 
 ### Delay the fan-out's last pass past the replication window
 Rejected: a guess about timing, not a guarantee; a slow pass can outlast any fixed delay.
@@ -132,5 +55,7 @@ Rejected: a guess about timing, not a guarantee; a slow pass can outlast any fix
 Rejected: it loses the entity's config, bucket balances and audit history.
 
 ### Move the old parent's consumption to the new parent
-Rejected: usage is history; a parent's buckets belong to the parent, and moving tokens
-between parents would breach ADR-145's conservation rules for quotas.
+Rejected: usage is history, and moving tokens between parents would breach ADR-145's conservation rules for quotas.
+
+### Re-check each create against META after it lands
+Rejected: a background check per create needs joining, cancellation handling and a `vu = 0` fallback, and still leaves a window in which other processes debit the old parent.
