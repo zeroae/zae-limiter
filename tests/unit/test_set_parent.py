@@ -1651,3 +1651,84 @@ class TestTheDisabledLookAcrossResources:
                 ):
                     pytest.fail("a disabled parent must not admit")
         assert (raised.value.entity_id, raised.value.resource) == ("org-b", "code")
+
+
+class TestAnOlderStampNeverMovesTheCacheBack:
+    """F7 (review of Stack B): mid fan-out, shards carry two generations."""
+
+    async def test_alternating_draws_stay_on_the_newest_parent(self, repo):
+        await repo.set_resource_defaults("gpt-4", [RPM])
+        for org in ("org-a", "org-b", "org-c"):
+            await repo.create_entity(org)
+        await repo.create_entity("user", parent_id="org-a", cascade=True)
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+            async with limiter.acquire("org-b", "gpt-4", consume={"rpm": 1}):
+                pass  # org-b has a bucket: a debit to it would land
+        await repo.bump_shard_count("user", "gpt-4", 1)
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with RateLimiter(repository=repo) as limiter:
+                async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                    pass
+        await repo.set_parent("user", "org-b")  # generation 1 on both shards
+        await repo.set_parent("user", "org-c")  # generation 2 on both shards
+
+        fresh = await _open_repo()
+        ns = fresh._namespace_id
+        async with RateLimiter(repository=fresh) as limiter:
+            for shard in (0, 1):  # this process learns generation 2, org-c
+                with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                    async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                        pass
+            assert fresh._entity_cache[(ns, "user")][1] == "org-c"
+            client = await repo._get_client()
+            await client.update_item(  # shard 0 as a fan-out that has not reached it
+                TableName=TABLE,
+                Key={
+                    "PK": {"S": schema.pk_bucket(ns, "user", "gpt-4", 0)},
+                    "SK": {"S": schema.sk_state()},
+                },
+                UpdateExpression="SET parent_id = :b, pgen = :g",
+                ExpressionAttributeValues={":b": {"S": "org-b"}, ":g": {"N": "1"}},
+            )
+            org_b, org_c = await _consumed(repo, "org-b"), await _consumed(repo, "org-c")
+            refunds: list[str] = []
+            real = limiter._compensate_speculative
+
+            async def spy(entity_id, *args, **kwargs):
+                refunds.append(entity_id)
+                return await real(entity_id, *args, **kwargs)
+
+            with patch.object(limiter, "_compensate_speculative", spy):
+                for shard in (0, 1, 0, 1):
+                    with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                        async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                            pass
+
+            assert refunds == [], "an older stamp is not a reason to refund"
+            assert fresh._entity_cache[(ns, "user")][1] == "org-c"
+            assert fresh._owner_stamp_cache[(ns, "user")][1] == 2
+        await fresh.close()
+        assert await _consumed(repo, "org-b") == org_b
+        assert await _consumed(repo, "org-c") == org_c + 4
+
+    async def test_another_incarnation_is_never_older(self, repo):
+        repo._owner_stamp_cache[(repo._namespace_id, "user")] = ("inc-1", 5)
+        assert repo._stamp_is_outdated("user", "inc-1", 4)
+        assert not repo._stamp_is_outdated("user", "inc-1", 5)
+        assert not repo._stamp_is_outdated("user", "inc-2", 0)
+        assert not repo._stamp_is_outdated("user", "inc-1", None)
+        assert not repo._stamp_is_outdated("nobody", "inc-1", 0)
+
+    async def test_a_move_in_this_process_records_its_stamp_for_every_scope(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        scoped = await repo.namespace("default")
+        assert scoped._owner_stamp_cache is repo._owner_stamp_cache
+        await repo.set_parent("user", "org-b")
+        entity = await repo.get_entity("user", consistent_read=True)
+        assert scoped._owner_stamp_cache[(repo._namespace_id, "user")] == (
+            entity.incarnation,
+            1,
+        )

@@ -128,6 +128,12 @@ def _stamped_pgen(item: dict[str, Any]) -> int | None:
     return None if raw is None else int(raw)
 
 
+def _stamped_pinc(item: dict[str, Any]) -> str | None:
+    """The entity incarnation a bucket item carries (ADR-150), or None if none."""
+    raw = item.get(schema.BUCKET_FIELD_PINC, {}).get("S")
+    return raw if isinstance(raw, str) else None
+
+
 def _pin_string(alias: str, token: str, raw: str | None, values: dict[str, Any]) -> str:
     """A condition term holding a string attribute at ``raw``, or absent (#721)."""
     if raw is None:
@@ -308,6 +314,7 @@ class SyncRepository:
         self._shard_cap_warned: set[tuple[str, str]] = set()
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
         self._cascade_cache: dict[tuple[str, str, str], bool] = {}
+        self._owner_stamp_cache: dict[tuple[str, str], tuple[str | None, int]] = {}
         self._rejection_cache = RejectionCache(
             ttl_seconds=rejection_cache_ttl, max_entries=rejection_cache_size
         )
@@ -637,6 +644,7 @@ class SyncRepository:
         )
         scoped._entity_cache = self._entity_cache
         scoped._cascade_cache = self._cascade_cache
+        scoped._owner_stamp_cache = self._owner_stamp_cache
         scoped._rejection_cache = self._rejection_cache
         scoped._namespace_cache = self._namespace_cache
         scoped._on_unavailable_cache = None
@@ -1867,6 +1875,7 @@ class SyncRepository:
         cache_key = (self._namespace_id, entity_id)
         shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, shards)
+        self._owner_stamp_cache[cache_key] = (entity.incarnation, entity.parent_generation)
         for key in [k for k in self._cascade_cache if k[:2] == cache_key]:
             del self._cascade_cache[key]
         count = 0
@@ -3452,10 +3461,15 @@ class SyncRepository:
                         child_result.shard_count,
                         meta=(child_result.cascade, child_result.parent_id),
                         pgen=child_result.pgen,
+                        pinc=child_result.pinc,
                     )
-                elif not child_result.stamp_is_policy:
+                if self._stamp_is_outdated(entity_id, child_result.pinc, child_result.pgen):
                     child_result.cascade = cascade_cached
                     child_result.parent_id = parent_id_cached
+                elif not child_result.success:
+                    if not child_result.stamp_is_policy:
+                        child_result.cascade = cascade_cached
+                        child_result.parent_id = parent_id_cached
                 child_result.parent_result = parent_result
                 child_result.debited_parent_id = parent_id_cached
                 return child_result
@@ -3469,7 +3483,13 @@ class SyncRepository:
                 result.shard_count,
                 meta=(result.cascade, result.parent_id),
                 pgen=result.pgen,
+                pinc=result.pinc,
             )
+        if cache_entry is not None and self._stamp_is_outdated(entity_id, result.pinc, result.pgen):
+            result.cascade = self._cascade_cache.get(
+                (self._namespace_id, entity_id, resource), cache_entry[0]
+            )
+            result.parent_id = cache_entry[1]
         return result
 
     def _speculative_consume_single(
@@ -3584,6 +3604,7 @@ class SyncRepository:
                 shard_id=shard_id,
                 shard_count=shard_count,
                 pgen=_stamped_pgen(item),
+                pinc=_stamped_pinc(item),
             )
         except ClientError as e:
             if _is_item_transaction_conflict(e):
@@ -3603,12 +3624,14 @@ class SyncRepository:
                     old_cascade = old_item.get("cascade", {}).get("BOOL", False)
                     old_parent_id = old_item.get("parent_id", {}).get("S")
                     old_pgen = _stamped_pgen(old_item)
+                    old_pinc = _stamped_pinc(old_item)
                     self._learn_shard_count(
                         entity_id,
                         resource,
                         old_shard_count,
                         meta=(old_cascade, old_parent_id),
                         pgen=old_pgen,
+                        pinc=old_pinc,
                     )
                     if old_item.get(schema.BUCKET_FIELD_DISABLED, {}).get("BOOL", False):
                         return SpeculativeResult(
@@ -3619,6 +3642,7 @@ class SyncRepository:
                             shard_id=shard_id,
                             shard_count=old_shard_count,
                             pgen=old_pgen,
+                            pinc=old_pinc,
                             failure_reason=SpeculativeFailureReason.DISABLED,
                         )
                     vu_raw = old_item.get(schema.BUCKET_FIELD_VU, {}).get("N")
@@ -3635,6 +3659,7 @@ class SyncRepository:
                             shard_id=shard_id,
                             shard_count=old_shard_count,
                             pgen=old_pgen,
+                            pinc=old_pinc,
                             failure_reason=SpeculativeFailureReason.SCHEDULE_BOUNDARY,
                         )
                     wcu_exhausted = any(
@@ -3661,6 +3686,7 @@ class SyncRepository:
                         shard_count=old_shard_count,
                         failure_reason=reason,
                         pgen=old_pgen,
+                        pinc=old_pinc,
                     )
                 else:
                     return SpeculativeResult(
@@ -3678,6 +3704,7 @@ class SyncRepository:
         *,
         meta: tuple[bool, str | None] | None = None,
         pgen: int | None = None,
+        pinc: str | None = None,
     ) -> int:
         """Record an observed shard_count in the entity cache, monotonically.
 
@@ -3687,13 +3714,22 @@ class SyncRepository:
         the draw range and stamp the next client-created shard with the
         lowered count (issue #439). ``meta`` supplies ``(cascade, parent_id)``
         for a new entry; without it an unknown entity is left uncached.
-        ``pgen`` is the parent generation the same item carries (ADR-150), or
-        None when it carries none.
+        ``pgen`` / ``pinc`` are the parent generation and incarnation the same
+        item carries (ADR-150), or None when it carries none. A stamp older
+        than the newest this process has seen for the entity (same
+        incarnation, lower generation: a shard a move's fan-out has not
+        reached) leaves the cached owner alone and teaches no policy; any
+        other stamp with a generation becomes the newest seen.
 
         Returns:
             The count now cached (``observed`` when nothing was cached).
         """
         cache_key = (self._namespace_id, entity_id)
+        if meta is not None and pgen is not None:
+            if self._stamp_is_outdated(entity_id, pinc, pgen):
+                meta = None
+            else:
+                self._owner_stamp_cache[cache_key] = (pinc, pgen)
         entry = self._entity_cache.get(cache_key)
         if entry is None:
             if meta is None:
@@ -3709,6 +3745,17 @@ class SyncRepository:
         if meta is not None and (meta[1] is not None or pgen is not None):
             self._cascade_cache[self._namespace_id, entity_id, resource] = meta[0]
         return count
+
+    def _stamp_is_outdated(self, entity_id: str, pinc: str | None, pgen: int | None) -> bool:
+        """Whether an item's owner stamp is older than the newest seen (ADR-150).
+
+        Older means the same incarnation and a lower parent generation. A
+        stamp of another incarnation is not comparable, and is never older.
+        """
+        if pgen is None:
+            return False
+        newest = self._owner_stamp_cache.get((self._namespace_id, entity_id))
+        return newest is not None and newest[0] == pinc and (pgen < newest[1])
 
     def _remember_bucket_image(
         self,

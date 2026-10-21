@@ -85,6 +85,8 @@ class SpeculativeResult:
             when the item carries none. A stamp with a generation is
             authoritative for ``cascade`` and ``parent_id`` even when it names
             no parent.
+        pinc: The entity incarnation stamped beside ``pgen`` (ADR-150), or
+            None. A generation compares only within one incarnation.
         debited_parent_id: On the warm parallel cascade path, the parent the
             nested write in ``parent_result`` went to: the cached parent, which
             the item's ``parent_id`` can contradict after a move (ADR-150).
@@ -101,6 +103,7 @@ class SpeculativeResult:
     shard_count: int = 1
     failure_reason: SpeculativeFailureReason | None = None
     pgen: int | None = None
+    pinc: str | None = None
     debited_parent_id: str | None = None
 
     @property
