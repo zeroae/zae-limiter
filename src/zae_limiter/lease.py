@@ -1,7 +1,6 @@
 """Lease management for rate limit acquisitions."""
 
 import asyncio
-import functools
 import logging
 import random
 import warnings
@@ -16,7 +15,6 @@ from .bucket import (
     try_consume,
     window_end_in_force,
 )
-from .cancellation import caller_is_cancelled
 from .exceptions import LeaseExpiredError, RateLimitExceeded, ValidationError
 from .models import (
     BucketState,
@@ -115,6 +113,11 @@ class LeaseEntry:
     _parent_generation: int | None = None
     # And its incarnation (ADR-150): a generation only compares within one.
     _parent_incarnation: str | None = None
+    # True when this pass read the owner's META, found or not (ADR-150). A
+    # create of this entry's item then carries a `ConditionCheck` on that META
+    # asserting what was read — `_stamp_owner`'s generation and incarnation, or
+    # still no META — so a move landing in between cancels the create.
+    _owner_read: bool = False
     # Whether the caller named this limit in acquire(consume=...) (Issue #455).
     # `consume` is the declared scope of a lease: only declared entries are
     # visible through `consumed` and adjustable through adjust()/consume()/
@@ -478,6 +481,20 @@ class QuotaMoveLostError(Exception):
         self.contended = contended
 
 
+class OwnerStampLostError(RateLimitExceeded):
+    """A bucket create was cancelled by its owner's META check (ADR-150).
+
+    The commit created a bucket item stamped with an owner (``cascade`` /
+    ``parent_id``) read from META, and the transaction's ``ConditionCheck``
+    found that META changed since — a move, or a delete and recreate. Nothing
+    was written. The acquire re-plans once from a strongly consistent META
+    read (`RateLimiter._slow_acquire`), which also sends the cascade to the
+    new parent. A contended `RateLimitExceeded`, so a caller that does not
+    re-plan (or a second loss) reads it as a short "busy, retry" rejection:
+    it can only under-admit, never reach `on_unavailable`.
+    """
+
+
 def _mark_granted(entry: LeaseEntry) -> None:
     """Record a quota reset or roll applied at commit time (ADR-145 I3).
 
@@ -533,16 +550,6 @@ class Lease:
     # shard of its bucket was forgotten since — a refund landed in between is
     # on the item but not in the state. None: never recorded, only forgotten.
     _cache_mark: int | None = None
-    # The background task checking the owner stamps this lease's commit
-    # created against META (ADR-150), started as soon as the commit lands so
-    # its round trip overlaps the caller's block instead of adding to the
-    # acquire's latency or to its exit. `_await_owner_checks` joins it.
-    _owner_task: asyncio.Task[None] | None = field(default=None, repr=False)
-    # The checks that task runs: if the join is cancelled, each of these
-    # buckets is forced onto the slow path instead (`_abandon_owner_checks`).
-    _owner_checks: list[tuple[str, str, int, int, str | None]] = field(
-        default_factory=list, repr=False
-    )
     # Names of the declared limits, computed once at construction so the hot
     # path (adjust/consume/release on every request) allocates nothing to
     # answer "is this key declared?". Entries are never appended after the
@@ -943,11 +950,6 @@ class Lease:
         # Quota shards N>0 this commit creates: (entity, resource, shard,
         # created count, quota names), repaired after the write (ADR-145).
         quota_creates: list[tuple[str, str, int, int, list[str]]] = []
-        # Bucket items this commit creates with an owner stamp read from META:
-        # (entity, resource, shard, the parent generation and incarnation
-        # stamped), checked
-        # against META after the write (ADR-150).
-        owner_creates: list[tuple[str, str, int, int, str | None]] = []
         # Bucket items the rf-locked write leaves in a state the rejection
         # cache can record once it lands: (key, states, shard count, ttl
         # epoch, owner stamps). See `_record_written_states`.
@@ -1027,16 +1029,6 @@ class Lease:
                     )
                 # ADR-145: a quota shard N>0 created at a count a racing
                 # doubling may already have overtaken; checked after the write.
-                if owner_entry is not None and owner_entry._parent_generation is not None:
-                    owner_creates.append(
-                        (
-                            entity_id,
-                            resource,
-                            shard_id,
-                            owner_entry._parent_generation,
-                            owner_entry._parent_incarnation,
-                        )
-                    )
                 created_quotas = [e.limit.name for e in group_entries if e.limit.is_quota]
                 if shard_id != 0 and created_quotas:
                     quota_creates.append(
@@ -1310,43 +1302,24 @@ class Lease:
         for (entity_id, resource), debits in by_bucket.items():
             donor_items += repo.build_quota_donor_debits(entity_id, resource, debits)
         items += donor_items
+        # ADR-150: each create rides with a `ConditionCheck` on its owner's
+        # META, last so the per-index reasons above still line up. A move
+        # landing between this pass's META read and this write cancels it.
+        meta_checks = _meta_checks(repo, list(groups.items()), self.entries, now_ms)
+        first_check = len(items)
+        items += meta_checks
 
-        # Retry loop for TransactionConflict (Issue #332)
-        condition_failed = False
-        condition_exc: Exception | None = None
-        for attempt in range(_CONFLICT_MAX_RETRIES + 1):
-            try:
-                await repo.transact_write(items)
-                break  # success
-            except Exception as exc:
-                # Check ConditionalCheckFailed first — it takes priority over
-                # TransactionConflict because it means the optimistic lock failed,
-                # requiring the consumption-only retry path.
-                if _is_condition_check_failure(exc):
-                    condition_failed = True
-                    condition_exc = exc
-                    break
-                if _is_transaction_conflict(exc):
-                    if attempt < _CONFLICT_MAX_RETRIES:
-                        delay = random.uniform(0, _CONFLICT_BASE_DELAY_S * (2**attempt))
-                        logger.debug(
-                            "TransactionConflict (attempt %d/%d), retrying in %.3fs",
-                            attempt + 1,
-                            _CONFLICT_MAX_RETRIES,
-                            delay,
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-                    if donor_items:
-                        # A move that kept conflicting wrote nothing; the
-                        # caller re-plans it rather than seeing a raw error.
-                        raise QuotaMoveLostError(contended=True) from exc
-                    # Sustained contention, not an outage (#724): the
-                    # transaction did not apply, so nothing was debited.
-                    # Reaching `on_unavailable` would admit without limit
-                    # under ALLOW; a short 429 asks the caller to retry.
-                    raise _contention_rejection(self.entries, now_ms) from exc
-                raise  # other errors propagate unchanged
+        # Every send of this transaction goes through `_send_commit`, which
+        # retries a TransactionConflict (Issue #332) and turns sustained
+        # contention into the contended 429 (#724) or a lost move.
+        condition_exc = await self._send_commit(items, bool(donor_items), now_ms)
+        condition_failed = condition_exc is not None
+
+        if condition_failed and _meta_check_failed(condition_exc, first_check, len(meta_checks)):
+            # An owner moved (or was recreated) since this pass read it: the
+            # whole transaction rolled back, so the caller re-plans from a
+            # strongly consistent read (ADR-150).
+            raise _owner_stamp_lost(self.entries, now_ms) from condition_exc
 
         if (
             condition_failed
@@ -1356,14 +1329,14 @@ class Lease:
             # A predecessor's leftover was claimed for this incarnation
             # (ADR-150); the claim moves no `rf`, so the same write — refill
             # and owner stamp included — now passes the lock it lost. Once.
-            try:
-                await repo.transact_write(items)
+            resent_exc = await self._send_commit(items, bool(donor_items), now_ms)
+            if resent_exc is None:
                 condition_failed = False
                 condition_exc = None
-            except Exception as exc:
-                if not _is_condition_check_failure(exc):
-                    raise
-                condition_exc = exc
+            else:
+                if _meta_check_failed(resent_exc, first_check, len(meta_checks)):
+                    raise _owner_stamp_lost(self.entries, now_ms) from resent_exc
+                condition_exc = resent_exc
 
         if condition_failed and donor_items:
             # The whole transaction rolled back — donor untouched — and the
@@ -1465,10 +1438,26 @@ class Lease:
             for retry_attempt in range(2):
                 if not retry_items:
                     break
+                # A re-issued create keeps its META pin (ADR-150): the move
+                # could land between the two transactions as well.
+                retry_checks = _meta_checks(
+                    repo,
+                    [
+                        group
+                        for item, group in zip(retry_items, retry_groups, strict=True)
+                        if isinstance(item, dict) and "Put" in item
+                    ],
+                    self.entries,
+                    now_ms,
+                )
                 try:
-                    retry_attrs = await _transact_retrying_conflict(repo, retry_items)
+                    retry_attrs = await _transact_retrying_conflict(
+                        repo, retry_items + retry_checks
+                    )
                     break
                 except Exception as retry_exc:
+                    if _meta_check_failed(retry_exc, len(retry_items), len(retry_checks)):
+                        raise _owner_stamp_lost(self.entries, now_ms) from retry_exc
                     if not _is_condition_check_failure(retry_exc):
                         if _is_transaction_conflict(retry_exc):
                             # Every write in a transaction lands or none does,
@@ -1568,26 +1557,71 @@ class Lease:
         self._record_written_states(
             groups, [] if condition_failed else written_images, condition_failed
         )
-        #
-        # The owner checks start last, after every awaited step: a task started
-        # earlier would be orphaned by a cancellation landing in the repair or
-        # the fan-out, since the caller never reaches the lease exit that joins
-        # it. A cancellation there forces the slow pass on those buckets
-        # instead, as a cancelled join does.
-        if condition_failed:
-            owner_creates = [c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates]
-        try:
-            if not condition_failed:
-                await self._repair_created_quota_shards(quota_creates)
-                await self._fan_out_windows(window_fanouts)
-            elif reissued_creates:
-                await self._repair_created_quota_shards(
-                    [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
-                )
-        except BaseException:
-            await self._abandon_owner_checks(owner_creates)
-            raise
-        await self._start_owner_checks(owner_creates)
+        if not condition_failed:
+            await self._repair_created_quota_shards(quota_creates)
+            await self._fan_out_windows(window_fanouts)
+        elif reissued_creates:
+            await self._repair_created_quota_shards(
+                [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
+            )
+
+    async def _send_commit(
+        self, items: list[dict[str, Any]], carries_moves: bool, now_ms: int
+    ) -> Exception | None:
+        """Send the commit transaction once, retrying a write conflict (#332, #724).
+
+        A ``TransactionConflict`` rolls the whole transaction back, so it is
+        re-sent as-is with full jitter, up to ``_CONFLICT_MAX_RETRIES`` times.
+        Every send of the commit goes through here — the first, and the
+        re-send after a claimed predecessor's bucket (ADR-150) — so none of
+        them can let a conflict escape raw: under ``on_unavailable=ALLOW`` a
+        raw error is an unlimited degraded lease.
+
+        Returns:
+            None when the transaction landed, or the exception when it failed
+            a condition (checked first: a lost lock routes to the
+            consumption-only retry, a META check to a re-plan). The caller
+            decides which.
+
+        Raises:
+            QuotaMoveLostError: Sustained contention on a commit carrying an
+                ADR-145 move; nothing was written and the caller re-plans.
+            RateLimitExceeded: Sustained contention otherwise — the contended
+                429 (#724); nothing was debited.
+            Exception: Any other error, unchanged.
+        """
+        attempt = 0
+        while True:
+            try:
+                await self.repository.transact_write(items)
+                return None
+            except Exception as exc:
+                # ConditionalCheckFailed takes priority over TransactionConflict:
+                # it means a condition (a lock, a pin) failed, not contention.
+                if _is_condition_check_failure(exc):
+                    return exc
+                if not _is_transaction_conflict(exc):
+                    raise  # other errors propagate unchanged
+                if attempt < _CONFLICT_MAX_RETRIES:
+                    delay = random.uniform(0, _CONFLICT_BASE_DELAY_S * (2**attempt))
+                    logger.debug(
+                        "TransactionConflict (attempt %d/%d), retrying in %.3fs",
+                        attempt + 1,
+                        _CONFLICT_MAX_RETRIES,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    attempt += 1
+                    continue
+                if carries_moves:
+                    # A move that kept conflicting wrote nothing; the caller
+                    # re-plans it rather than seeing a raw error.
+                    raise QuotaMoveLostError(contended=True) from exc
+                # Sustained contention, not an outage (#724): the transaction
+                # did not apply, so nothing was debited. Reaching
+                # `on_unavailable` would admit without limit under ALLOW; a
+                # short 429 asks the caller to retry.
+                raise _contention_rejection(self.entries, now_ms) from exc
 
     def _record_written_states(
         self,
@@ -1703,9 +1737,6 @@ class Lease:
         Returns:
             Whether any bucket was claimed.
         """
-        restamp = getattr(self.repository, "restamp_owner_if_current", None)
-        if restamp is None:
-            return False
         claimed = False
         images = _retry_failure_images(exc, list(groups))
         for key, group_entries in groups.items():
@@ -1717,7 +1748,10 @@ class Lease:
             if stored is None or stored == owner._parent_incarnation:
                 continue
             try:
-                claimed = await restamp(*key, owner._parent_incarnation) or claimed
+                claimed = (
+                    await self.repository.restamp_owner_if_current(*key, owner._parent_incarnation)
+                    or claimed
+                )
             except Exception:
                 logger.warning(
                     "could not claim a predecessor's bucket for resource=%s shard=%d",
@@ -1726,152 +1760,6 @@ class Lease:
                     exc_info=True,
                 )
         return claimed
-
-    async def _start_owner_checks(
-        self, checks: list[tuple[str, str, int, int, str | None]]
-    ) -> None:
-        """Start the owner checks of the buckets this commit created (ADR-150).
-
-        A background task, started the moment the commit lands: the check is
-        not needed for this acquire, only for the next one on those buckets,
-        so its strongly consistent read runs while the caller's block does. A
-        backend that cannot run one in the background runs the checks here.
-        """
-        if not checks:
-            return
-        start = getattr(self.repository, "start_background", None)
-        if start is None:
-            await self._repair_created_owner_stamps(checks)
-            return
-        self._owner_checks = list(checks)
-        self._owner_task = start(functools.partial(self._repair_created_owner_stamps, checks))
-
-    async def _await_owner_checks(self) -> None:
-        """Join the owner-check task this lease started, if any (ADR-150).
-
-        Called by ``RateLimiter.acquire`` on exit, whether the caller's block
-        succeeded or raised, so the task never outlives the lease. A failure is
-        logged at WARNING without the entity id, routinely an API key, and can
-        neither fail the acquire nor mask the caller's exception.
-
-        A cancelled task never finishes its checks: the caller was cancelled
-        while joining (the join cancels the task with it), or someone else
-        cancelled the task, or, in the sync twin, its greenlet was killed.
-        Each bucket they covered then gets the safety net a failed check uses,
-        ``vu = 0``, so its next acquire takes the pinned slow path; a check
-        that had already finished costs one extra slow pass. The cancellation
-        is re-raised only when it is aimed at the caller
-        (:func:`~zae_limiter.cancellation.caller_is_cancelled`); otherwise the
-        caller's own exception, or its normal exit, stands. If the caller's own
-        code suppressed a cancellation without ``Task.uncancel()``,
-        ``cancelling()`` stays above 0 and such a cancel is re-raised in place of
-        the caller's exception; ``vu = 0`` still runs, so nothing is
-        over-admitted. The sync twin never reports a cancellation.
-
-        ``KeyboardInterrupt`` and ``SystemExit`` skip the ``vu = 0`` writes and
-        re-raise at once: the process is going down, and in the sync twin the
-        writes would hold Ctrl-C for their network round trips.
-        """
-        if self._owner_task is None:
-            return
-        try:
-            await self._owner_task
-        except asyncio.CancelledError:
-            # Ahead of `Exception`: in the sync twin this is
-            # `concurrent.futures.CancelledError`, an `Exception`, raised by a
-            # spawn that was cancelled or killed (gevent), which never ran its
-            # checks either.
-            self._owner_task.cancel()
-            await self._abandon_owner_checks(self._owner_checks)
-            if caller_is_cancelled():
-                raise
-            # Someone else cancelled the task (a shutdown helper, a killed
-            # greenlet): re-raising would replace the caller's own exception,
-            # or fail a normal exit, with a cancel nobody aimed at the caller.
-            logger.warning("owner stamp checks were cancelled; forced a slow pass instead")
-        except Exception:
-            logger.warning("owner stamp checks failed", exc_info=True)
-        except (KeyboardInterrupt, SystemExit):
-            # The process is going down: no `vu = 0` writes, which in the sync
-            # twin would block Ctrl-C on network round trips. The buckets keep
-            # the create's stamp, wrong only if a move overtook it, until their
-            # next slow pass or `set_parent`.
-            self._owner_task.cancel()
-            raise
-        except BaseException:
-            self._owner_task.cancel()
-            await self._abandon_owner_checks(self._owner_checks)
-            raise
-        finally:
-            self._owner_task = None
-            self._owner_checks = []
-
-    async def _abandon_owner_checks(
-        self, checks: list[tuple[str, str, int, int, str | None]]
-    ) -> None:
-        """Force each created bucket whose check will not run onto the slow path (ADR-150)."""
-        for entity_id, resource, shard_id, _stamped, _incarnation in checks:
-            await self._force_owner_restamp(entity_id, resource, shard_id)
-
-    async def _repair_created_owner_stamps(
-        self, owner_creates: list[tuple[str, str, int, int, str | None]]
-    ) -> None:
-        """Re-check each owner stamp this commit created against its META (ADR-150).
-
-        A create ``Put`` cannot pin the parent generation the way the
-        rf-locked write does: there is no item to compare with. One that read
-        META before a move and lands after the move's fan-out would keep the
-        old parent, and the next process to touch the bucket would learn it
-        from the item. So after the write, one strongly consistent read of the
-        owner's META per created bucket (1 RCU, once per shard created), and
-        a pinned restamp only when a move landed in between
-        (:meth:`Repository.repair_created_owner_stamp`). A move whose META
-        write comes after this read runs its fan-out after the create, which
-        finds the bucket like any other.
-
-        After the commit, like the quota repair: the caller was admitted and
-        the write landed, so a failure is logged — without the entity id,
-        routinely an API key — and swallowed. A backend without the method
-        stamps no generation worth checking.
-        """
-        repair = getattr(self.repository, "repair_created_owner_stamp", None)
-        if repair is None:
-            return
-        for entity_id, resource, shard_id, stamped, incarnation in owner_creates:
-            try:
-                await repair(entity_id, resource, shard_id, stamped, incarnation)
-            except Exception:
-                logger.warning(
-                    "owner stamp check failed for resource=%s shard=%d; forcing the "
-                    "next acquire onto the slow path, which restamps it",
-                    resource,
-                    shard_id,
-                    exc_info=True,
-                )
-                await self._force_owner_restamp(entity_id, resource, shard_id)
-
-    async def _force_owner_restamp(self, entity_id: str, resource: str, shard_id: int) -> None:
-        """Stamp ``vu = 0`` on a created bucket whose owner check failed (ADR-150).
-
-        The check could not tell whether a move overtook the create. ``vu = 0``
-        fails the fast path's condition, so the next acquire takes the slow
-        path, whose rf-locked write re-stamps the owner from META under the
-        owner pin — the same mechanism a limit change uses (#679). Conditioned
-        on the item existing. If this write fails too, it is logged and the
-        stamp waits for the bucket's next slow pass or a ``set_parent``.
-        """
-        build = getattr(self.repository, "build_vu_reset", None)
-        if build is None:
-            return
-        try:
-            await self.repository.write_each([build(entity_id, resource, shard_id)])
-        except Exception:
-            logger.warning(
-                "could not force a slow pass after a failed owner check for resource=%s shard=%d",
-                resource,
-                shard_id,
-                exc_info=True,
-            )
 
     async def _fan_out_windows(
         self, window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]]
@@ -2552,6 +2440,59 @@ def _build_retry_failure_statuses(
         if any(status.exceeded for status in from_items):
             return from_items
     return _retry_statuses(entries, now_ms, None)
+
+
+def _meta_checks(
+    repo: "RepositoryProtocol",
+    groups: list[tuple[tuple[str, str, int], list[LeaseEntry]]],
+    entries: list[LeaseEntry],
+    now_ms: int,
+) -> list[dict[str, Any]]:
+    """One ``ConditionCheck`` per distinct owner whose bucket these groups create (ADR-150).
+
+    Asserts the META each create's pass read: the parent generation and
+    incarnation it stamps, or no META at all when the read found none. A
+    group whose pass read no META (an entry built elsewhere) carries none.
+    One per owner: two actions on one item are not allowed in a transaction.
+
+    Raises:
+        OwnerStampLostError: Two creates of one owner read different META
+            (a multi-resource commit plans each resource with its own read),
+            so one of them is stale and no single check can pin both.
+    """
+    read: dict[str, tuple[bool, int | None, str | None]] = {}
+    for (entity_id, _resource, _shard), group_entries in groups:
+        if not group_entries[0]._is_new or not any(e._owner_read for e in group_entries):
+            continue
+        owner = next((e for e in group_entries if e._stamp_owner), None)
+        seen = (
+            (True, owner._parent_generation, owner._parent_incarnation)
+            if owner is not None
+            else (False, None, None)
+        )
+        if read.setdefault(entity_id, seen) != seen:
+            raise _owner_stamp_lost(entries, now_ms)
+    return [
+        repo.build_owner_check(entity_id, exists=exists, pgen=pgen, pinc=pinc)
+        for entity_id, (exists, pgen, pinc) in read.items()
+    ]
+
+
+def _meta_check_failed(exc: Exception | None, first: int, count: int) -> bool:
+    """Whether a cancelled transaction failed one of its META checks (ADR-150).
+
+    The checks sit at indices ``first .. first + count - 1``; the per-index
+    cancellation reasons say which items failed their condition.
+    """
+    if exc is None or count == 0:
+        return False
+    codes = _get_cancellation_reason_codes(exc) or []
+    return any(code == "ConditionalCheckFailed" for code in codes[first : first + count])
+
+
+def _owner_stamp_lost(entries: list[LeaseEntry], now_ms: int) -> "OwnerStampLostError":
+    """The rejection a META-check cancellation raises: nothing was written (ADR-150)."""
+    return OwnerStampLostError(_contention_rejection(entries, now_ms).statuses, contended=True)
 
 
 def _contention_rejection(

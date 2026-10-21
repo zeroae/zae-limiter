@@ -48,7 +48,6 @@ REPOSITORY = {
     "build_composite_normal": (True, True),  # rf-locked: reset/roll/seed stamp gc, pinned
     "build_composite_retry": (True, False),  # ADD only; never seeds a quota
     "build_composite_adjust": (True, False),  # adjust / rollback ADD; vu = 0 on trim (#721)
-    "build_vu_reset": (False, False),  # vu = 0 after a failed owner check (ADR-150)
     "build_quota_donor_debits": (True, False),  # the donor side of a move
     "_build_quota_count_freeze": (False, True),  # gc = if_not_exists(gc, :g) on a raise
     "_build_bucket_param_update": (False, False),  # param sync: cp/ra/rp/sched, vu = 0
@@ -80,6 +79,7 @@ REPOSITORY = {
     "_write_audit_retention_config": NOT_BUCKET,
     "create_entity": NOT_BUCKET,
     "_write_parent": NOT_BUCKET,  # META parent_id, GSI1 keys and pgen (ADR-150)
+    "build_owner_check": NOT_BUCKET,  # ConditionCheck on META pinning a create (ADR-150)
     "delete_limits": NOT_BUCKET,
     "delete_namespace": NOT_BUCKET,
     "delete_resource_defaults": NOT_BUCKET,
@@ -97,8 +97,7 @@ AGGREGATOR = {
     "_donor_update_items": (True, False),  # the donor side of a Path 2 move
     "_quota_count_freeze": (False, True),  # Path 1 raising a legacy item freezes gc
     "_repair_quota_clones": (False, True),  # raise clones a doubling overtook, freeze
-    "_repair_clone_owner_stamps": (False, False),  # restamp clones a move overtook (ADR-150)
-    "propagate_shard_count": (True, True),  # Path 1 raise + Path 2 clone put / transaction
+    "propagate_shard_count": (True, True),  # Path 1 raise + Path 2 clone transaction
     "try_proactive_shard": (False, False),  # shard_count on shard 0
     "update_snapshot": NOT_BUCKET,  # usage snapshot items
 }
@@ -264,7 +263,6 @@ def _non_gc_builds() -> dict[str, list[dict[str, Any]]]:
                 trim=True,
             )["Update"],
         ],
-        "build_vu_reset": [repo.build_vu_reset("e", "r", shard_id=1)["Update"]],
         "build_quota_donor_debits": [
             item["Update"]
             for item in repo.build_quota_donor_debits(

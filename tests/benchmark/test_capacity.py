@@ -73,10 +73,11 @@ class TestCapacityConsumption:
         assert capacity_counter.batch_get_item[1] == 2, (
             "Second BatchGetItem should fetch 1 bucket + 1 META"
         )
-        # Single-item optimization (issue #313): 1 item → PutItem instead of TransactWriteItems
-        assert capacity_counter.put_item == 1, "Should use PutItem for single-item write"
-        assert len(capacity_counter.transact_write_items) == 0, (
-            "Should not use TransactWriteItems for single-item write"
+        # A create is pinned to its owner's META (ADR-150): the Put and a
+        # ConditionCheck in one 2-item transaction, not the single-item PutItem.
+        assert capacity_counter.put_item == 0, "A create is never a plain PutItem"
+        assert capacity_counter.transact_write_items == [2], (
+            "The create's Put and its META ConditionCheck, in one transaction"
         )
 
     @pytest.mark.parametrize("num_limits", [2, 3, 5])
@@ -117,10 +118,11 @@ class TestCapacityConsumption:
         assert capacity_counter.batch_get_item[1] == 2, (
             "Second BatchGetItem should fetch 1 composite bucket + 1 META"
         )
-        # Single-item optimization (issue #313): 1 item → PutItem instead of TransactWriteItems
-        assert capacity_counter.put_item == 1, "Should use PutItem for single composite bucket"
-        assert len(capacity_counter.transact_write_items) == 0, (
-            "Should not use TransactWriteItems for single-item write"
+        # A create is pinned to its owner's META (ADR-150): the Put and a
+        # ConditionCheck in one 2-item transaction, not the single-item PutItem.
+        assert capacity_counter.put_item == 0, "A create is never a plain PutItem"
+        assert capacity_counter.transact_write_items == [2], (
+            "The create's Put and its META ConditionCheck, in one transaction"
         )
 
     def test_acquire_with_cascade_capacity(self, sync_limiter, capacity_counter):
@@ -180,8 +182,9 @@ class TestCapacityConsumption:
             "(#684: the parent's bucket is stamped with its own cascade/parent_id)"
         )
         assert len(capacity_counter.transact_write_items) == 1, "Should have 1 transaction"
-        assert capacity_counter.transact_write_items[0] == 2, (
-            "Transaction should write 2 items (child + parent)"
+        assert capacity_counter.transact_write_items[0] == 4, (
+            "Transaction should carry 4 items (child + parent creates, and a META "
+            "ConditionCheck for each, ADR-150)"
         )
 
     def test_acquire_with_stored_limits_capacity(self, sync_limiter, capacity_counter):
@@ -191,9 +194,8 @@ class TestCapacityConsumption:
         - GetItem for version lookup
         - 1 BatchGetItem with 3 keys = disabled walk (ADR-125)
         - 1 BatchGetItem with 2 keys = entity META + 1 bucket
-        - 1 PutItem (single-item optimization, halves WCU cost)
-        - GetItem of the entity's META, strongly consistent, after the create
-          (ADR-150: a move may have overtaken the META read)
+        - 1 TransactWriteItems: the create's Put and a ConditionCheck on the
+          entity's META (ADR-150: pinned to what the read returned)
 
         Note: When limits parameter is provided, config resolution is skipped
         (ADR-122: _resolve_limits short-circuits on explicit limits).
@@ -228,15 +230,15 @@ class TestCapacityConsumption:
         assert capacity_counter.batch_get_item[1] == 2, (
             "Second BatchGetItem should fetch 1 bucket + 1 META"
         )
-        # Single-item optimization (issue #313): 1 item → PutItem instead of TransactWriteItems
-        assert capacity_counter.put_item == 1, "Should use PutItem for single-item write"
-        assert len(capacity_counter.transact_write_items) == 0, (
-            "Should not use TransactWriteItems for single-item write"
+        # A create is pinned to its owner's META (ADR-150): the Put and a
+        # ConditionCheck in one 2-item transaction, not the single-item PutItem.
+        assert capacity_counter.put_item == 0, "A create is never a plain PutItem"
+        assert capacity_counter.transact_write_items == [2], (
+            "The create's Put and its META ConditionCheck, in one transaction"
         )
-        # Version check, plus the owner check after a create (ADR-150): one
-        # strongly consistent META read, once per bucket created. Config
-        # resolution is skipped when limits are provided.
-        assert capacity_counter.get_item == 2, "Should have 2 GetItems (version + owner check)"
+        # Config resolution is skipped when limits are provided, and the
+        # create is pinned in its own transaction (ADR-150): no read after it.
+        assert capacity_counter.get_item == 1, "Should have 1 GetItem (version check only)"
 
     def test_acquire_batched_config_resolution_capacity(self, sync_limiter, capacity_counter):
         """Verify: acquire() without limits override uses BatchGetItem for configs (#298).
@@ -245,8 +247,8 @@ class TestCapacityConsumption:
         - 1 GetItem (version check)
         - 1 BatchGetItem for config resolution (entity, entity_default, resource, system)
         - 1 BatchGetItem with 2 keys = entity META + 1 bucket
-        - 1 PutItem (single-item optimization)
-        - 1 GetItem of the entity's META after the create (ADR-150)
+        - 1 TransactWriteItems: the create's Put and its META ConditionCheck
+          (ADR-150)
 
         The config BatchGetItem replaces up to 4 sequential GetItem calls.
 
@@ -288,9 +290,8 @@ class TestCapacityConsumption:
         assert capacity_counter.batch_get_item[1] == 2, (
             "Second BatchGetItem should fetch 1 bucket + 1 META"
         )
-        # No sequential GetItem for config resolution: the version check, and the
-        # owner check after this create (ADR-150)
-        assert capacity_counter.get_item == 2, "Should have 2 GetItems (version + owner check)"
+        # No sequential GetItem for config resolution
+        assert capacity_counter.get_item == 1, "Should have only 1 GetItem (version check)"
 
     def test_available_check_capacity(self, sync_limiter, capacity_counter):
         """Verify: available() reads bucket state without writes.
@@ -476,14 +477,15 @@ class TestCapacityConsumption:
         """Verify: single-item optimization uses correct API per path (issue #313).
 
         With speculative writes (default-on, issue #315):
-        - First acquire: speculative UpdateItem fails (missing bucket) → PutItem fallback
+        - First acquire: speculative UpdateItem fails (missing bucket) → the slow
+          path creates it: Put + META ConditionCheck in one transaction (ADR-150)
         - Second acquire: speculative UpdateItem succeeds (pre-committed, 0 RCU)
         - Cascade first acquire: speculative UpdateItem fails → TransactWriteItems fallback
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
         # --- Non-cascade: first acquire ---
-        # Speculative UpdateItem fails (bucket missing) → fallback creates via PutItem
+        # Speculative UpdateItem fails (bucket missing) → fallback creates it
         with capacity_counter.counting():
             with sync_limiter.acquire(
                 entity_id="single-api-test",
@@ -493,10 +495,10 @@ class TestCapacityConsumption:
             ):
                 pass
 
-        assert capacity_counter.put_item == 1, "Fallback should create bucket via PutItem"
+        assert capacity_counter.put_item == 0, "A create is never a plain PutItem (ADR-150)"
         assert capacity_counter.update_item == 1, "Speculative UpdateItem attempted before fallback"
-        assert len(capacity_counter.transact_write_items) == 0, (
-            "Single-item should not use TransactWriteItems"
+        assert capacity_counter.transact_write_items == [2], (
+            "The create's Put and its META ConditionCheck"
         )
 
         # --- Non-cascade: second acquire ---
@@ -538,8 +540,8 @@ class TestCapacityConsumption:
         assert len(capacity_counter.transact_write_items) == 1, (
             "Cascade fallback should use TransactWriteItems"
         )
-        assert capacity_counter.transact_write_items[0] == 2, (
-            "Cascade should write 2 items (child + parent)"
+        assert capacity_counter.transact_write_items[0] == 4, (
+            "Cascade should create 2 items (child + parent), each with its META check"
         )
         assert capacity_counter.update_item == 1, (
             "Speculative UpdateItem attempted for child before fallback"
@@ -1150,12 +1152,12 @@ class TestQuotaGrantCapacity:
     ):
         """Shard 0 holds the whole quota at count 1; after a doubling, shard 1
         is created by moving half of it: the sibling read (1 Query + 1
-        BatchGetItem) and one transaction carrying the create and the donor
-        debit. The only UpdateItem is the fast path's failed attempt on the
-        missing shard — no clamp of any sibling. The one GetItem is the
-        stale-count repair's strongly consistent read of shard 0's
-        ``shard_count`` after the create lands (design §8 R7); it finds no
-        lag here, so it writes nothing."""
+        BatchGetItem) and one transaction carrying the create, the donor
+        debit and the owner's META check (ADR-150). The only UpdateItem is
+        the fast path's failed attempt on the missing shard — no clamp of
+        any sibling. The one GetItem is the stale-count repair's strongly
+        consistent read of shard 0's ``shard_count`` after the create lands
+        (design §8 R7); it finds no lag here, so it writes nothing."""
         repo = sync_limiter._repository
         repo._now_ms = lambda: self.T0
         sync_limiter.set_limits("q-move", [self.QUOTA], resource="api")
@@ -1178,7 +1180,8 @@ class TestQuotaGrantCapacity:
             "query": 1,
             "put_item": 0,
             "update_item": 1,
-            "transact_write_items": [2],
+            # The create, the donor debit, and the META check (ADR-150).
+            "transact_write_items": [3],
         }, counts
 
 

@@ -1,11 +1,10 @@
 """Moving an entity to a new parent (ADR-150, #677)."""
 
-import asyncio
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from zae_limiter import RateLimiter, RateLimitExceeded, __version__, schema
+from zae_limiter import RateLimiter, RateLimitExceeded, ResourceDisabled, __version__, schema
 from zae_limiter.exceptions import (
     EntityNotFoundError,
     FanoutIncomplete,
@@ -338,6 +337,126 @@ class TestFanout:
         for resource in ("gpt-4", "llm"):
             assert _stamp(await _item(repo, "user", resource)) == (True, "org-b", 2)
 
+    async def test_a_failed_audit_never_hides_an_incomplete_move(self, limiter, caplog):
+        """F9 (review of Stack B): the caller still learns to re-run the move."""
+        from botocore.exceptions import ClientError
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        incomplete = FanoutIncomplete(1, RuntimeError("throttled"), entity_id="user")
+        throttled = ClientError({"Error": {"Code": "ThrottlingException"}}, "PutItem")
+        with (
+            patch.object(repo, "_fanout_cascade", side_effect=incomplete),
+            patch.object(repo, "_log_audit_event", side_effect=throttled),
+        ):
+            with pytest.raises(FanoutIncomplete) as raised:
+                await repo.set_parent("user", "org-b")
+        assert raised.value is incomplete
+        assert "entity_parent_changed was not written" in caplog.text
+        assert "ClientError" in caplog.text
+        assert "user" not in caplog.text
+
+    async def test_any_other_fan_out_failure_is_audited_and_kept(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        with patch.object(repo, "_fanout_cascade", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                await repo.set_parent("user", "org-b")
+        events = await repo.get_audit_events("user")
+        assert [e.details["buckets_stamped"] for e in events if e.action.endswith("changed")] == [0]
+
+    async def test_a_failed_audit_after_a_complete_move_raises(self, limiter):
+        """Like every other admin method: the move landed, its audit did not."""
+        from botocore.exceptions import ClientError
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        throttled = ClientError({"Error": {"Code": "ThrottlingException"}}, "PutItem")
+        with patch.object(repo, "_log_audit_event", side_effect=throttled):
+            with pytest.raises(ClientError):
+                await repo.set_parent("user", "org-b")
+        assert (await repo.get_entity("user", consistent_read=True)).parent_id == "org-b"
+
+
+class TestStaleMetaRead:
+    """An eventually consistent META read from before a move cannot move the cache back.
+
+    Without it the warm path debits the old parent, is overruled by the
+    child's item and refunds it: +2 WCU per call, never an over-admission.
+    """
+
+    @staticmethod
+    async def _moved_with_old_meta(limiter: RateLimiter) -> dict:
+        """Move `user` from org-a to org-b; return its META from before the move."""
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        old_meta = await _meta(repo, "user")
+        await repo.set_parent("user", "org-b")
+        return old_meta
+
+    @staticmethod
+    def _cached_owner(repo: Repository) -> tuple[bool, str | None]:
+        return repo._entity_cache[(repo._namespace_id, "user")][:2]
+
+    @staticmethod
+    async def _read_meta_as(repo: Repository, meta: dict) -> None:
+        """`get_entity` answered by a replica holding ``meta``."""
+        client = await repo._get_client()
+        with patch.object(client, "get_item", AsyncMock(return_value={"Item": meta})):
+            entity = await repo.get_entity("user")
+        assert entity is not None
+
+    @staticmethod
+    async def _batch_read_meta_as(repo: Repository, meta: dict) -> None:
+        """`batch_get_entity_and_buckets` answered by a replica holding ``meta``."""
+        real = repo._batch_get_all
+
+        async def stale(keys, **kwargs):
+            items = await real(keys, **kwargs)
+            return [meta if i["SK"]["S"] == schema.sk_meta() else i for i in items]
+
+        with patch.object(repo, "_batch_get_all", side_effect=stale):
+            entity, _buckets = await repo.batch_get_entity_and_buckets(
+                "user", [("user", "gpt-4", 0)]
+            )
+        assert entity is not None
+
+    @pytest.mark.parametrize("read", ["_read_meta_as", "_batch_read_meta_as"])
+    async def test_an_older_replica_leaves_the_cache_on_the_new_parent(self, limiter, read):
+        repo = limiter._repository
+        old_meta = await self._moved_with_old_meta(limiter)
+        cache_key = (repo._namespace_id, "user")
+        shards = dict(repo._entity_cache[cache_key][2])
+        newest = repo._owner_stamp_cache[cache_key]
+
+        await getattr(self, read)(repo, old_meta)
+
+        assert self._cached_owner(repo) == (True, "org-b")
+        assert repo._entity_cache[cache_key][2] == shards
+        assert repo._owner_stamp_cache[cache_key] == newest
+
+    @pytest.mark.parametrize("read", ["_read_meta_as", "_batch_read_meta_as"])
+    async def test_another_incarnation_still_replaces_it(self, limiter, read):
+        """A recreated entity's META is not comparable, so it is never older."""
+        repo = limiter._repository
+        old_meta = await self._moved_with_old_meta(limiter)
+        reborn = {**old_meta, schema.ENTITY_FIELD_PINC: {"S": "reborn"}}
+
+        await getattr(self, read)(repo, reborn)
+
+        assert self._cached_owner(repo) == (True, "org-a")
+        assert repo._owner_stamp_cache[(repo._namespace_id, "user")] == ("reborn", 0)
+
+    async def test_a_current_read_is_recorded_as_the_newest(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        repo._owner_stamp_cache.clear()
+
+        await repo.get_entity("user")
+
+        assert repo._owner_stamp_cache[(repo._namespace_id, "user")][1] == 0
+        assert self._cached_owner(repo) == (True, "org-a")
+
 
 class TestStaleWriters:
     """A writer that read the old parent can lose, never undo a move (ADR-150 §4)."""
@@ -403,9 +522,11 @@ class TestStaleWriters:
         """A bucket outliving an entity created on a clock 60 s ahead (review of #716, 2nd).
 
         Process A creates `user` under org-a with a generation 60 s in the
-        future; an acquire in flight across the delete lands its create `Put`
-        after it. The entity is then recreated, under org-b, by a correct clock
-        (here generation 0): its generation is below the leftover's.
+        future, and its bucket outlives the entity (a delete that missed it in
+        GSI3; an acquire in flight across the delete can no longer leave one,
+        since its create is pinned to META). The entity is then recreated,
+        under org-b, by a correct clock (here generation 0): its generation is
+        below the leftover's.
         """
         fast = other._repository
         for resource in ("gpt-4", "llm"):
@@ -415,19 +536,16 @@ class TestStaleWriters:
         with patch.object(type(fast), "_creation_generation", return_value=10**13):
             await fast.create_entity("user", parent_id="org-a", cascade=True)
         slow = RateLimiter(repository=fast, speculative_writes=False)
-        real = fast.batch_get_entity_and_buckets
-        done = []
-
-        async def read_then_delete(*args, **kwargs):
-            result = await real(*args, **kwargs)
-            if not done:
-                done.append(1)
-                await repo.delete_entity("user")
-            return result
-
-        with patch.object(fast, "batch_get_entity_and_buckets", read_then_delete):
-            async with slow.acquire("user", "llm", consume={"rpm": 1}):
-                pass
+        async with slow.acquire("user", "llm", consume={"rpm": 1}):
+            pass
+        client = await repo._get_client()
+        await client.delete_item(  # the META goes; the bucket outlives it
+            TableName=TABLE,
+            Key={
+                "PK": {"S": schema.pk_entity(repo._namespace_id, "user")},
+                "SK": {"S": schema.sk_meta()},
+            },
+        )
         assert _stamp(await _item(repo, "user", "llm")) == (True, "org-a", 10**13)
         await repo.create_entity("user", parent_id="org-b", cascade=True)
 
@@ -554,15 +672,51 @@ class TestStaleWriters:
                 async with slow.acquire("user", "gpt-4", consume={"rpm": 1}):
                     pass
 
-    async def test_a_backend_without_the_claim_skips_it(self):
-        from types import SimpleNamespace
-        from typing import cast
+    @pytest.mark.parametrize("mode", ["block", "allow"])
+    async def test_a_resent_write_that_keeps_conflicting_is_a_contended_rejection(
+        self, limiter, mode
+    ):
+        """F4 (review of Stack B): the re-send after a claim retries a conflict.
 
-        from zae_limiter.lease import Lease
-        from zae_limiter.repository_protocol import RepositoryProtocol
+        Sustained contention on it is the #724 contended 429, never a raw error
+        that `on_unavailable=ALLOW` would turn into an unlimited degraded lease.
+        """
+        from botocore.exceptions import ClientError
 
-        lease = Lease(repository=cast(RepositoryProtocol, SimpleNamespace()))
-        await lease._claim_owner_stamps({}, RuntimeError("x"))
+        from zae_limiter import OnUnavailable
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._foreign_stamp(repo)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        real = repo.transact_write
+        calls = []
+        conflict = ClientError(
+            {
+                "Error": {"Code": "TransactionCanceledException", "Message": "conflict"},
+                "CancellationReasons": [{"Code": "TransactionConflict"}, {"Code": "None"}],
+            },
+            "TransactWriteItems",
+        )
+
+        async def conflicting_resend(items):
+            calls.append(items)
+            if len(calls) > 1:  # every send after the claim
+                raise conflict
+            return await real(items)
+
+        with (
+            patch.object(repo, "restamp_owner_if_current", return_value=True),
+            patch.object(repo, "transact_write", conflicting_resend),
+            patch("zae_limiter.lease.asyncio.sleep"),
+        ):
+            with pytest.raises(RateLimitExceeded) as raised:
+                async with slow.acquire(
+                    "user", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable(mode)
+                ):
+                    pass
+        assert raised.value.contended
+        assert len(calls) == 1 + 4  # the first send, then the re-send and its 3 retries
 
     async def test_a_predecessors_bucket_never_outranks_the_recreated_entity(self, repo, other):
         """Skew probe: its generation is higher, its incarnation is not this one."""
@@ -669,530 +823,249 @@ class TestStaleWriters:
         assert created.parent_generation == 1_800_000_000_000
         assert (await repo.get_entity("user")).parent_generation == 1_800_000_000_000
 
-    async def test_a_create_that_read_before_the_move_is_restamped(self, repo, other):
-        """Review of #716, finding 2: a create Put can carry no pin, so it is checked."""
+    @staticmethod
+    def _move_after_reading(repo, mover, entity_id: str, moved_to: str | None, moved: list):
+        """Patch ``repo`` so the first read of ``entity_id``'s META is followed by its move."""
+        real = repo.batch_get_entity_and_buckets
+
+        async def read_then_move(owner, *args, **kwargs):
+            result = await real(owner, *args, **kwargs)
+            if owner == entity_id and not moved:
+                moved.append(await mover.set_parent(entity_id, moved_to))
+            return result
+
+        return patch.object(repo, "batch_get_entity_and_buckets", read_then_move)
+
+    @staticmethod
+    def _record_sends(repo) -> list[list[str]]:
+        """The item kinds of every transaction the repository sends."""
+        sent: list[list[str]] = []
+        real = repo.transact_write
+
+        async def transact_write(items):
+            sent.append([next(iter(item)) for item in items])
+            return await real(items)
+
+        repo.transact_write = transact_write
+        return sent
+
+    async def test_a_move_between_the_read_and_a_create_cancels_it(self, repo, other):
+        """(a) Review of Stack B: the create is pinned to META in its own transaction.
+
+        The pass read `user` under org-a; the move lands before the commit, so
+        the META check cancels the transaction, the pass is re-planned from a
+        strongly consistent read, and the bucket is born with the new parent —
+        which is also the one debited. Nothing reached org-a.
+        """
         mover = other._repository
         await _hierarchy(other)  # user has gpt-4 and llm buckets; none on "chat" yet
         await mover.set_resource_defaults("chat", [RPM])
         slow = RateLimiter(repository=repo, speculative_writes=False)
-        real = repo.batch_get_entity_and_buckets
-        moved = []
+        moved: list[int] = []
+        sent = self._record_sends(repo)
 
-        async def read_then_move(*args, **kwargs):
-            result = await real(*args, **kwargs)
-            if not moved:  # META read (org-a); the move's fan-out finds no chat bucket
+        with self._move_after_reading(repo, mover, "user", "org-b", moved):
+            async with slow.acquire("user", "chat", consume={"rpm": 1}) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user", "org-b"}
+
+        assert moved == [2]
+        assert sent == [["Put", "Put", "ConditionCheck", "ConditionCheck"]] * 2
+        assert _stamp(await _item(repo, "user", "chat")) == (True, "org-b", 1)
+        assert await _item(repo, "org-a", "chat") is None
+        assert await _consumed(repo, "org-b", "chat") == 1
+
+    async def test_a_create_for_an_entity_with_no_meta_is_pinned_to_its_absence(self, limiter):
+        """An entity created between the read (no META) and the create cancels it."""
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [RPM])
+        await repo.create_entity("org-a")
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        real = repo.batch_get_entity_and_buckets
+        created: list[str] = []
+
+        async def read_then_create(owner, *args, **kwargs):
+            result = await real(owner, *args, **kwargs)
+            if not created:
+                created.append(owner)
+                await repo.create_entity("user", parent_id="org-a", cascade=True)
+            return result
+
+        with patch.object(repo, "batch_get_entity_and_buckets", read_then_create):
+            async with slow.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user", "org-a"}
+
+        assert _stamp(await _item(repo, "user", "gpt-4"))[:2] == (True, "org-a")
+        assert await _consumed(repo, "org-a") == 1
+
+    async def test_a_cascade_parents_create_is_pinned_to_the_parents_meta(self, repo, other):
+        """(b) The parent's own bucket carries the parent's own parent: pinned too."""
+        mover = other._repository
+        await mover.set_resource_defaults("chat", [RPM])
+        for holding in ("holding-1", "holding-2"):
+            await mover.create_entity(holding)
+        await mover.create_entity("org-a", parent_id="holding-1")
+        await mover.create_entity("user", parent_id="org-a", cascade=True)
+        async with other.acquire("user", "chat", consume={"rpm": 1}):
+            pass
+        client = await repo._get_client()
+        await client.delete_item(  # user keeps its bucket; org-a's must be created
+            TableName=TABLE,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "org-a", "chat", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        moved: list[int] = []
+        sent = self._record_sends(repo)
+
+        with self._move_after_reading(repo, mover, "org-a", "holding-2", moved):
+            async with slow.acquire("user", "chat", consume={"rpm": 1}):
+                pass
+
+        assert moved == [0]  # org-a had no bucket to restamp yet
+        assert sent == [["Update", "Put", "ConditionCheck"]] * 2
+        assert _stamp(await _item(repo, "org-a", "chat")) == (False, "holding-2", 1)
+        assert await _consumed(repo, "org-a", "chat") == 1
+
+    async def test_a_multi_resource_acquire_pins_every_create(self, repo, other):
+        """(c) `also=`: every part's create rides in the one pinned transaction."""
+        mover = other._repository
+        await _hierarchy(other)
+        for resource in ("chat", "code"):
+            await mover.set_resource_defaults(resource, [RPM])
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        moved: list[int] = []
+        sent = self._record_sends(repo)
+        real = repo.batch_get_entity_and_buckets
+        reads: list[str] = []
+
+        async def both_parts_read_then_move(owner, *args, **kwargs):
+            result = await real(owner, *args, **kwargs)
+            reads.append(owner)
+            if reads.count("user") == 2 and not moved:  # each part read org-a
                 moved.append(await mover.set_parent("user", "org-b"))
             return result
 
-        with patch.object(repo, "batch_get_entity_and_buckets", read_then_move):
-            async with slow.acquire("user", "chat", consume={"rpm": 1}) as lease:
-                assert {e.entity_id for e in lease.entries} == {"user", "org-a"}  # in flight
+        with patch.object(repo, "batch_get_entity_and_buckets", both_parts_read_then_move):
+            async with slow.acquire(
+                "user", "chat", consume={"rpm": 1}, also={"code": {"rpm": 1}}
+            ) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user", "org-b"}
 
         assert moved == [2]
-        assert _stamp(await _item(repo, "user", "chat")) == (True, "org-b", 1)
-        third_repo = await _open_repo()
-        async with RateLimiter(repository=third_repo) as third:
-            org_a, org_b = (
-                await _consumed(repo, "org-a", "chat"),
-                await _consumed(repo, "org-b", "chat"),
+        # One check per owner (user, its parent) for the four creates: cancelled
+        # once on the META check, then re-planned.
+        assert sent == [["Put", "Put", "Put", "Put", "ConditionCheck", "ConditionCheck"]] * 2
+        for resource in ("chat", "code"):
+            assert _stamp(await _item(repo, "user", resource)) == (True, "org-b", 1)
+            assert await _item(repo, "org-a", resource) is None
+            assert await _consumed(repo, "org-b", resource) == 1
+
+    async def test_parts_that_read_different_meta_re_plan_before_sending(self, repo, other):
+        """One part read before the move, the other after: no one check pins both."""
+        mover = other._repository
+        await _hierarchy(other)
+        for resource in ("chat", "code"):
+            await mover.set_resource_defaults(resource, [RPM])
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        moved: list[int] = []
+        sent = self._record_sends(repo)
+        real = repo.batch_get_entity_and_buckets
+        reads: list[str] = []
+
+        async def first_read_then_move(owner, *args, **kwargs):
+            result = await real(owner, *args, **kwargs)
+            reads.append(owner)
+            if owner == "user" and not moved:
+                moved.append(await mover.set_parent("user", "org-b"))
+            return result
+
+        with patch.object(repo, "batch_get_entity_and_buckets", first_read_then_move):
+            async with slow.acquire(
+                "user", "chat", consume={"rpm": 1}, also={"code": {"rpm": 1}}
+            ) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user", "org-b"}
+
+        assert reads.count("user") >= 2
+        assert sent and all(kinds.count("ConditionCheck") == 2 for kinds in sent)
+        for resource in ("chat", "code"):
+            assert _stamp(await _item(repo, "user", resource)) == (True, "org-b", 1)
+            assert await _item(repo, "org-a", resource) is None
+
+    def test_creates_that_read_different_meta_cannot_share_one_check(self):
+        from types import SimpleNamespace
+
+        from zae_limiter.lease import LeaseEntry, OwnerStampLostError, _meta_checks
+        from zae_limiter.models import BucketState
+
+        def entry(resource: str, pgen: int) -> LeaseEntry:
+            return LeaseEntry(
+                entity_id="user",
+                resource=resource,
+                limit=RPM,
+                state=BucketState.from_limit("user", resource, RPM, 0),
+                consumed=1,
+                _is_new=True,
+                _owner_read=True,
+                _stamp_owner=True,
+                _parent_generation=pgen,
+                _parent_incarnation="inc",
             )
-            for _ in range(3):
-                async with third.acquire("user", "chat", consume={"rpm": 1}):
-                    pass
-        await third_repo.close()
-        assert await _consumed(repo, "org-a", "chat") == org_a
-        assert await _consumed(repo, "org-b", "chat") == org_b + 3
 
-    async def test_a_create_with_a_current_stamp_writes_nothing_more(self, limiter):
-        repo = limiter._repository
-        await _hierarchy(limiter)
-        assert await repo.repair_created_owner_stamp("user", "gpt-4", 0, 0) is False
-        assert await repo.repair_created_owner_stamp("nobody", "gpt-4", 0, 0) is False
+        chat, code = entry("chat", 0), entry("code", 1)
+        repo = SimpleNamespace(build_owner_check=lambda *a, **k: {"ConditionCheck": k})
+        groups = [(("user", "chat", 0), [chat]), (("user", "code", 0), [code])]
+        with pytest.raises(OwnerStampLostError) as raised:
+            _meta_checks(repo, groups, [chat, code], 0)
+        assert raised.value.contended
+        assert _meta_checks(repo, groups[:1], [chat], 0) == [
+            {"ConditionCheck": {"exists": True, "pgen": 0, "pinc": "inc"}}
+        ]
 
-    async def test_a_failed_owner_check_never_fails_the_acquire(self, limiter):
-        repo = limiter._repository
-        await repo.set_resource_defaults("gpt-4", [RPM])
-        await repo.create_entity("user")
-        with patch.object(repo, "repair_created_owner_stamp", side_effect=RuntimeError("x")):
-            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
-                assert lease.consumed == {"rpm": 1}
-
-        assert (await _item(repo, "user", "gpt-4"))[schema.BUCKET_FIELD_VU] == {"N": "0"}
-
-    async def test_a_failed_owner_check_forces_the_next_pass_to_restamp(self, repo, other):
-        """Review of #716 (2nd), finding 2: the repairfail probe."""
+    async def test_a_second_lost_check_is_a_contended_rejection(self, repo, other):
+        """The re-plan loses again (another move): a short 429, never unavailable."""
         mover = other._repository
         await _hierarchy(other)
         await mover.set_resource_defaults("chat", [RPM])
         slow = RateLimiter(repository=repo, speculative_writes=False)
-        real = repo.batch_get_entity_and_buckets
-        moved = []
+        moved: list[int] = []
+        real_get = repo.get_entity
 
-        async def read_then_move(*args, **kwargs):
-            result = await real(*args, **kwargs)
-            if not moved:
-                moved.append(await mover.set_parent("user", "org-b"))
+        async def consistent_read_then_move(entity_id, *, consistent_read=False):
+            result = await real_get(entity_id, consistent_read=consistent_read)
+            if entity_id == "user" and consistent_read and len(moved) == 1:
+                moved.append(await mover.set_parent("user", "org-a"))
             return result
 
         with (
-            patch.object(repo, "batch_get_entity_and_buckets", read_then_move),
-            patch.object(repo, "repair_created_owner_stamp", side_effect=RuntimeError("throttled")),
+            self._move_after_reading(repo, mover, "user", "org-b", moved),
+            patch.object(repo, "get_entity", consistent_read_then_move),
         ):
-            async with slow.acquire("user", "chat", consume={"rpm": 1}):
-                pass
-
-        item = await _item(repo, "user", "chat")
-        assert _stamp(item)[1] == "org-a"  # the stale stamp the check could not fix...
-        assert item[schema.BUCKET_FIELD_VU] == {"N": "0"}  # ...but the fast path is closed
-        third_repo = await _open_repo()
-        async with RateLimiter(repository=third_repo) as third:
-            org_a = await _consumed(repo, "org-a", "chat")
-            for _ in range(3):
-                async with third.acquire("user", "chat", consume={"rpm": 1}):
+            with pytest.raises(RateLimitExceeded) as raised:
+                async with slow.acquire("user", "chat", consume={"rpm": 1}):
                     pass
-        await third_repo.close()
-        assert _stamp(await _item(repo, "user", "chat"))[1] == "org-b"
-        assert await _consumed(repo, "org-a", "chat") == org_a
-
-    async def test_the_owner_check_runs_in_the_background_during_the_block(self, limiter):
-        """F2 (option B): the check starts at commit and overlaps the caller's block."""
-        repo = limiter._repository
-        for resource in ("gpt-4", "llm"):
-            await repo.set_resource_defaults(resource, [RPM])
-        await repo.create_entity("user")
-        checked = []
-
-        async def check(*args):
-            checked.append(args[:3])
-            return False
-
-        with patch.object(repo, "repair_created_owner_stamp", check):
-            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
-                assert lease._owner_task is not None  # started at commit
-                for _ in range(100):  # a long caller block
-                    if checked:
-                        break
-                    await asyncio.sleep(0.01)
-                assert checked == [("user", "gpt-4", 0)]  # done before the block ends
-            assert lease._owner_task is None  # joined on exit
-
-            with pytest.raises(RuntimeError, match="the caller's work failed"):
-                async with limiter.acquire("user", "llm", consume={"rpm": 1}):
-                    raise RuntimeError("the caller's work failed")
-            assert checked[-1] == ("user", "llm", 0)  # the bucket exists all the same
-
-    async def test_a_failed_background_check_is_logged_and_masks_nothing(self, limiter, caplog):
-        repo = limiter._repository
-        for resource in ("gpt-4", "llm"):
-            await repo.set_resource_defaults(resource, [RPM])
-        await repo.create_entity("user")
-        from zae_limiter.lease import Lease
-
-        with patch.object(
-            Lease, "_repair_created_owner_stamps", side_effect=RuntimeError("check broke")
-        ):
-            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
-                assert lease.consumed == {"rpm": 1}
-            with pytest.raises(ValueError, match="the caller's"):
-                async with limiter.acquire("user", "llm", consume={"rpm": 1}):
-                    raise ValueError("the caller's")
-        assert "owner stamp checks failed" in caplog.text
-        assert "user" not in [r.getMessage() for r in caplog.records]
-
-    async def test_a_cancel_during_the_join_forces_the_slow_pass(self, limiter):
-        """r4 #1: a cancelled join loses the check, so the bucket gets ``vu = 0``."""
-        repo = limiter._repository
-        await repo.set_resource_defaults("gpt-4", [RPM])
-        await repo.create_entity("user")
-        started = asyncio.Event()
-        outcome: list[str] = []
-
-        async def slow_check(*args):
-            started.set()
-            try:
-                await asyncio.sleep(5)
-            except asyncio.CancelledError:
-                outcome.append("cancelled")
-                raise
-            return False
-
-        async def run():
-            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
-                pass  # the block ends at once: the join is what waits
-
-        with patch.object(repo, "repair_created_owner_stamp", slow_check):
-            task = asyncio.create_task(run())
-            await started.wait()
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-
-        assert outcome == ["cancelled"]  # the check itself never finished...
-        item = await _item(repo, "user", "gpt-4")
-        assert item[schema.BUCKET_FIELD_VU] == {"N": "0"}  # ...so the fast path is closed
-
-    async def test_a_cancel_during_the_window_fan_out_leaves_no_task_behind(self, limiter):
-        """r4 #2: the owner task starts after the commit's last await, so none is orphaned."""
-        from zae_limiter.lease import Lease
-
-        repo = limiter._repository
-        await repo.set_resource_defaults("gpt-4", [RPM])
-        await repo.create_entity("user")
-        started: list[object] = []
-        real_start = repo.start_background
-        in_fan_out = asyncio.Event()
-
-        def start(work):
-            task = real_start(work)
-            started.append(task)
-            return task
-
-        async def slow_fan_out(self, *args):
-            in_fan_out.set()
-            await asyncio.sleep(5)
-
-        async def run():
-            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
-                pass
-
-        with (
-            patch.object(repo, "start_background", start),
-            patch.object(Lease, "_fan_out_windows", slow_fan_out),
-        ):
-            task = asyncio.create_task(run())
-            await in_fan_out.wait()
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-
-        assert started == []  # no owner task was ever started, so none can be pending
-        item = await _item(repo, "user", "gpt-4")
-        assert item[schema.BUCKET_FIELD_VU] == {"N": "0"}  # the check's safety net instead
-
-    async def test_a_task_cancelled_by_someone_else_leaves_the_callers_exception(self, caplog):
-        """r5 #3 (case1): a cancel not aimed at the caller is not raised into it."""
-        from types import SimpleNamespace
-        from typing import cast
-
-        from zae_limiter.lease import Lease
-        from zae_limiter.repository_protocol import RepositoryProtocol
-
-        writes: list[tuple] = []
-
-        async def slow(*args):
-            await asyncio.sleep(5)
-
-        async def write_each(items):
-            writes.extend(items)
-
-        backend = SimpleNamespace(
-            start_background=lambda work: asyncio.create_task(work()),
-            repair_created_owner_stamp=slow,
-            build_vu_reset=lambda *a: ("vu=0", *a),
-            write_each=write_each,
-        )
-        lease = Lease(repository=cast(RepositoryProtocol, backend))
-        await lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
-        await asyncio.sleep(0.01)
-        assert lease._owner_task is not None
-        lease._owner_task.cancel()  # e.g. a shutdown helper cancelling stray tasks
-
-        with pytest.raises(ValueError, match="the caller's"):
-            try:
-                raise ValueError("the caller's")
-            finally:
-                await lease._await_owner_checks()
-        assert writes == [("vu=0", "user", "gpt-4", 0)]
-        assert "owner stamp checks were cancelled" in caplog.text
-
-        # A normal exit stands too.
-        await lease._start_owner_checks([("user", "gpt-4", 1, 1, "inc")])
-        await asyncio.sleep(0.01)
-        lease._owner_task.cancel()
-        await lease._await_owner_checks()
-        assert writes[-1] == ("vu=0", "user", "gpt-4", 1)
-
-    @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
-    def test_an_interrupted_sync_join_skips_the_writes_and_reraises(self, interrupt):
-        """r5 #5: Ctrl-C during the join must not wait on vu = 0 round trips."""
-        from types import SimpleNamespace
-        from typing import cast
-
-        from zae_limiter.sync_lease import SyncLease
-        from zae_limiter.sync_repository_protocol import SyncRepositoryProtocol
-
-        cancelled: list[bool] = []
-
-        def result():
-            raise interrupt()
-
-        handle = SimpleNamespace(result=result, cancel=lambda: cancelled.append(True))
-        writes: list[tuple] = []
-        backend = SimpleNamespace(
-            start_background=lambda _work: handle,
-            build_vu_reset=lambda *a: ("vu=0", *a),
-            write_each=writes.extend,
-        )
-        lease = SyncLease(repository=cast(SyncRepositoryProtocol, backend))
-        lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
-
-        with pytest.raises(interrupt):
-            lease._await_owner_checks()
-        assert writes == []  # no network round trip on the way down
-        assert cancelled == [True]
-        assert lease._owner_task is None
-
-    @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
-    async def test_an_interrupted_async_join_skips_the_writes_and_reraises(self, interrupt):
-        from types import SimpleNamespace
-        from typing import cast
-
-        from zae_limiter.lease import Lease
-        from zae_limiter.repository_protocol import RepositoryProtocol
-
-        class Handle:
-            cancelled = False
-
-            def cancel(self):
-                self.cancelled = True
-
-            def __await__(self):
-                raise interrupt  # `await` calls this first, so it unwinds right there
-
-        writes: list[tuple] = []
-
-        async def write_each(items):
-            writes.extend(items)
-
-        backend = SimpleNamespace(
-            start_background=lambda _work: Handle(),
-            build_vu_reset=lambda *a: ("vu=0", *a),
-            write_each=write_each,
-        )
-        lease = Lease(repository=cast(RepositoryProtocol, backend))
-        await lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
-        handle = lease._owner_task
-
-        with pytest.raises(interrupt):
-            await lease._await_owner_checks()
-        assert writes == []
-        assert handle.cancelled
-
-    async def test_another_base_exception_in_the_join_still_forces_the_slow_pass(self):
-        """Anything else that unwinds the join (a killed greenlet's GreenletExit) writes vu = 0."""
-        from types import SimpleNamespace
-        from typing import cast
-
-        from zae_limiter.lease import Lease
-        from zae_limiter.repository_protocol import RepositoryProtocol
-
-        class Unwind(BaseException):
-            pass
-
-        class Handle:
-            cancelled = False
-
-            def cancel(self):
-                self.cancelled = True
-
-            def __await__(self):
-                raise Unwind  # `await` calls this first, so it unwinds right there
-
-        writes: list[tuple] = []
-
-        async def write_each(items):
-            writes.extend(items)
-
-        backend = SimpleNamespace(
-            start_background=lambda _work: Handle(),
-            build_vu_reset=lambda *a: ("vu=0", *a),
-            write_each=write_each,
-        )
-        lease = Lease(repository=cast(RepositoryProtocol, backend))
-        await lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
-        handle = lease._owner_task
-
-        with pytest.raises(Unwind):
-            await lease._await_owner_checks()
-        assert writes == [("vu=0", "user", "gpt-4", 0)]
-        assert handle.cancelled
-
-    async def test_a_second_cancel_stops_the_fallback_part_way(self):
-        """r5 #4 (case2), the residual ADR-150 records: a second cancel ends the vu = 0
-        writes where they stand; the buckets not yet written keep the create's stamp."""
-        from types import SimpleNamespace
-        from typing import cast
-
-        from zae_limiter.lease import Lease
-        from zae_limiter.repository_protocol import RepositoryProtocol
-
-        writes: list[tuple] = []
-        first_written = asyncio.Event()
-
-        async def slow(*args):
-            await asyncio.sleep(5)
-
-        async def write_each(items):
-            if writes:
-                await asyncio.sleep(5)  # the second write is in flight when cancelled
-            writes.extend(items)
-            first_written.set()
-
-        backend = SimpleNamespace(
-            start_background=lambda work: asyncio.create_task(work()),
-            repair_created_owner_stamp=slow,
-            build_vu_reset=lambda *a: ("vu=0", *a),
-            write_each=write_each,
-        )
-        lease = Lease(repository=cast(RepositoryProtocol, backend))
-        await lease._start_owner_checks([("user", "gpt-4", s, 1, "inc") for s in range(3)])
-        join = asyncio.create_task(lease._await_owner_checks())
-        await asyncio.sleep(0.01)
-        join.cancel()  # first cancel: the fallback starts
-        await first_written.wait()
-        await asyncio.sleep(0.01)
-        join.cancel()  # second cancel, e.g. an outer timeout or asyncio.run shutdown
-
-        with pytest.raises(asyncio.CancelledError):
-            await join
-        assert writes == [("vu=0", "user", "gpt-4", 0)]  # shards 1 and 2 were never forced
-        assert lease._owner_task is None
-
-    def test_the_sync_twin_never_reads_its_caller_as_cancelled(self):
-        from zae_limiter.cancellation import caller_is_cancelled, sync_caller_is_cancelled
-
-        assert sync_caller_is_cancelled() is False
-        assert caller_is_cancelled() is False  # no running task at all
-
-    async def test_a_cancelled_join_with_nothing_to_force_still_reraises(self):
-        from types import SimpleNamespace
-        from typing import cast
-
-        from zae_limiter.lease import Lease
-        from zae_limiter.repository_protocol import RepositoryProtocol
-
-        async def never():
-            await asyncio.sleep(5)
-
-        lease = Lease(repository=cast(RepositoryProtocol, SimpleNamespace()))
-        lease._owner_task = asyncio.create_task(never())
-        join = asyncio.create_task(lease._await_owner_checks())
-        await asyncio.sleep(0)
-        join.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await join
-        assert lease._owner_task is None
-        assert lease._owner_checks == []
-
-    async def test_a_backend_without_background_tasks_checks_inline(self):
-        from types import SimpleNamespace
-        from typing import cast
-
-        from zae_limiter.lease import Lease
-        from zae_limiter.repository_protocol import RepositoryProtocol
-
-        checked = []
-
-        async def repair(*args):
-            checked.append(args)
-            return False
-
-        lease = Lease(
-            repository=cast(RepositoryProtocol, SimpleNamespace(repair_created_owner_stamp=repair))
-        )
-        await lease._start_owner_checks([("user", "gpt-4", 0, 1, "abc")])
-        assert checked == [("user", "gpt-4", 0, 1, "abc")]
-        assert lease._owner_task is None
-        await lease._start_owner_checks([])  # nothing to check
-        await lease._await_owner_checks()  # nothing to join
-
-    def test_the_sync_join_forces_the_slow_pass_for_a_cancelled_spawn(self):
-        """A cancelled spawn's `.result()` raises an `Exception`; it still gets vu = 0.
-
-        Nobody cancelled the sync caller, so the join does not raise either.
+        assert raised.value.contended
+        assert len(moved) == 2
+        assert await _item(repo, "user", "chat") is None  # nothing was written
+
+    async def test_a_parent_only_sub_lease_never_creates(self, limiter):
+        """(d) The parent-only fallback writes only existing parent buckets.
+
+        It returns None (the full slow path takes over) when the parent bucket
+        is missing, so it has no create to pin; its rf-locked owner stamp is
+        pinned on the parent generation like every other.
         """
-        from concurrent.futures import Future
-        from types import SimpleNamespace
-        from typing import cast
-
-        from zae_limiter.sync_lease import SyncLease
-        from zae_limiter.sync_repository_protocol import SyncRepositoryProtocol
-
-        cancelled: Future[None] = Future()
-        cancelled.cancel()
-        writes: list[tuple] = []
-        backend = SimpleNamespace(
-            start_background=lambda _work: cancelled,
-            repair_created_owner_stamp=lambda *a: False,
-            build_vu_reset=lambda *a: ("vu=0", *a),
-            write_each=writes.extend,
-        )
-        lease = SyncLease(repository=cast(SyncRepositoryProtocol, backend))
-        lease._start_owner_checks([("user", "gpt-4", 0, 1, "inc")])
-
-        lease._await_owner_checks()  # returns: the cancel was not aimed at the caller
-        assert writes == [("vu=0", "user", "gpt-4", 0)]
-        assert lease._owner_task is None
-
-    def test_the_sync_twin_runs_the_check_in_the_background(self, mock_dynamodb):
-        """The generated SyncLease spawns the check (threadpool) during the block."""
-        import time
-
-        from zae_limiter import SyncRateLimiter
-        from zae_limiter.sync_repository import SyncRepository
-
-        repo = SyncRepository(
-            name="test-set-parent-bg",
-            region="us-east-1",
-            _skip_deprecation_warning=True,
-            parallel_mode="threadpool",
-        )
-        repo.create_table()
-        repo._register_namespace("default")
-        repo.set_version_record(schema_version=get_schema_version(), lambda_version=__version__)
-        repo.set_resource_defaults("gpt-4", [RPM])
-        repo.create_entity("user")
-        limiter = SyncRateLimiter(repository=repo)
-        checked = []
-        main_thread = __import__("threading").get_ident()
-
-        def check(*args):
-            checked.append((args[:3], __import__("threading").get_ident()))
-            return False
-
-        with patch.object(repo, "repair_created_owner_stamp", check):
-            with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
-                assert lease._owner_task is not None
-                for _ in range(100):  # a long caller block
-                    if checked:
-                        break
-                    time.sleep(0.01)
-                assert [c[0] for c in checked] == [("user", "gpt-4", 0)]
-            assert lease._owner_task is None
-        assert checked[0][1] != main_thread  # it ran on the pool, not inline
-        repo.close()
-
-    async def test_a_failed_slow_pass_stamp_is_logged(self, limiter, caplog):
         repo = limiter._repository
-        await repo.set_resource_defaults("gpt-4", [RPM])
-        await repo.create_entity("user")
-        with (
-            patch.object(repo, "repair_created_owner_stamp", side_effect=RuntimeError("x")),
-            patch.object(repo, "build_vu_reset", side_effect=RuntimeError("y")),
-        ):
-            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
-                pass
-        assert "could not force a slow pass" in caplog.text
-
-    async def test_a_backend_without_vu_reset_skips_it(self):
-        from types import SimpleNamespace
-        from typing import cast
-
-        from zae_limiter.lease import Lease
-        from zae_limiter.repository_protocol import RepositoryProtocol
-
-        lease = Lease(repository=cast(RepositoryProtocol, SimpleNamespace()))
-        await lease._force_owner_restamp("user", "gpt-4", 0)
+        await _hierarchy(limiter)
+        await repo.set_resource_defaults("chat", [RPM])  # no org-a bucket on it
+        with patch.object(repo, "build_composite_create", side_effect=AssertionError("create")):
+            assert (
+                await limiter._try_parent_only_acquire(
+                    "org-a", "chat", {"rpm": 1}, [], parent_shard=0, parent_shard_count=1
+                )
+                is None
+            )
 
     @staticmethod
     async def _doubling_record(repo: Repository) -> dict:
@@ -1211,8 +1084,12 @@ class TestStaleWriters:
         old_image = {**new_image, "shard_count": {"N": "1"}}
         return {"eventName": "MODIFY", "dynamodb": {"NewImage": new_image, "OldImage": old_image}}
 
-    async def test_an_aggregator_clone_from_before_the_move_is_restamped(self, limiter):
-        """Review of #716, finding 3: Path 2 clones copy shard 0's stream image."""
+    async def test_an_aggregator_clone_from_before_the_move_is_skipped(self, limiter):
+        """Review of Stack B: Path 2 clones copy shard 0's stream image, pinned to META.
+
+        The image predates the move, so the clone's META check fails and the
+        clone is not written; the client creates the shard lazily, from META.
+        """
         import boto3
 
         from zae_limiter_aggregator.processor import propagate_shard_count
@@ -1223,50 +1100,34 @@ class TestStaleWriters:
         await repo.set_parent("user", "org-b")  # lands before the lagging record
 
         table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
-        assert propagate_shard_count(table, record) == 1
+        assert propagate_shard_count(table, record) == 0
+        assert await _item(repo, "user", "gpt-4", 1) is None
 
-        assert _stamp(await _item(repo, "user", "gpt-4", 1)) == (True, "org-b", 1)
         third_repo = await _open_repo()
         async with RateLimiter(repository=third_repo) as third:
             org_a = await _consumed(repo, "org-a")
-            for _ in range(10):
-                async with third.acquire("user", "gpt-4", consume={"rpm": 1}):
-                    pass
+            for shard in (1, 1, 0):
+                with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                    async with third.acquire("user", "gpt-4", consume={"rpm": 1}):
+                        pass
         await third_repo.close()
+        assert _stamp(await _item(repo, "user", "gpt-4", 1)) == (True, "org-b", 1)
         assert await _consumed(repo, "org-a") == org_a
 
-    async def test_a_clone_resolves_the_policy_and_a_move_to_no_parent(self, limiter):
+    async def test_a_clone_after_a_move_to_no_parent_is_skipped_too(self, limiter):
         import boto3
 
-        from zae_limiter_aggregator.processor import (
-            _clone_owner_stamp,
-            propagate_shard_count,
-        )
+        from zae_limiter_aggregator.processor import propagate_shard_count
 
         repo = limiter._repository
         await _hierarchy(limiter)
-        await repo.set_entity_cascade("user", False)  # entity-wide policy: off
-        table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
-        ns = repo._namespace_id
-        inc = (await repo.get_entity("user")).incarnation
-        assert _clone_owner_stamp(table, ns, "user", "gpt-4") == (False, "org-a", 0, inc)
-        assert _clone_owner_stamp(table, ns, "user", schema.DEFAULT_RESOURCE) == (
-            False,
-            "org-a",
-            0,
-            inc,
-        )
-        await repo.clear_entity_cascade("user")
-        await repo.set_resource_cascade("gpt-4", True)
-        assert _clone_owner_stamp(table, ns, "user", "gpt-4") == (True, "org-a", 0, inc)
-        assert _clone_owner_stamp(table, ns, "nobody", "gpt-4") is None
-
         record = await self._doubling_record(repo)
         await repo.set_parent("user", None)
-        assert propagate_shard_count(table, record) == 1
-        assert _stamp(await _item(repo, "user", "gpt-4", 1)) == (False, None, 1)
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
+        assert propagate_shard_count(table, record) == 0
+        assert await _item(repo, "user", "gpt-4", 1) is None
 
-    async def test_a_clone_with_a_current_stamp_is_left_alone(self, limiter):
+    async def test_a_clone_with_a_current_stamp_is_created(self, limiter):
         import boto3
 
         from zae_limiter_aggregator.processor import propagate_shard_count
@@ -1276,61 +1137,68 @@ class TestStaleWriters:
         await repo.set_parent("user", "org-b")
         record = await self._doubling_record(repo)  # taken after the move
         table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
-        with patch.object(table, "update_item", side_effect=AssertionError("restamped")):
-            assert propagate_shard_count(table, record) == 1
+        assert propagate_shard_count(table, record) == 1
         assert _stamp(await _item(repo, "user", "gpt-4", 1)) == (True, "org-b", 1)
 
-    async def test_a_failed_clone_repair_is_swallowed(self, limiter):
-        from botocore.exceptions import ClientError, EndpointConnectionError
-
-        from zae_limiter_aggregator.processor import _repair_clone_owner_stamps
-
-        repo = limiter._repository
-        await _hierarchy(limiter)
-        await repo.set_parent("user", "org-b")
-        ns = repo._namespace_id
-        throttled = ClientError({"Error": {"Code": "ThrottlingException"}}, "UpdateItem")
-        gone = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
-        dropped = EndpointConnectionError(endpoint_url="http://dynamodb")
-
-        class _Table:
-            def __init__(self, get=None, update=None):
-                self.get, self.update = get, update
-
-            def get_item(self, **kwargs):
-                if self.get is not None:
-                    raise self.get
-                return {"Item": {"parent_id": None, "pgen": 5}}
-
-            def update_item(self, **kwargs):
-                raise self.update
-
-        _repair_clone_owner_stamps(_Table(get=throttled), ns, "user", "gpt-4", [1], 0)
-        for error in (throttled, gone, dropped):
-            _repair_clone_owner_stamps(_Table(update=error), ns, "user", "gpt-4", [1, 2], 0)
-
-    async def test_the_clone_restamp_is_token_safe(self, limiter):
+    async def test_an_unstamped_image_clones_only_while_nothing_moved(self, limiter):
+        """An image from before ADR-150 carries no generation: META must carry none."""
         import boto3
 
-        from tests.unit.test_expression_tokens import assert_expression_safe
-        from zae_limiter_aggregator.processor import _repair_clone_owner_stamps
+        from zae_limiter_aggregator.processor import propagate_shard_count
 
         repo = limiter._repository
         await _hierarchy(limiter)
+        record = await self._doubling_record(repo)
+        image = record["dynamodb"]["NewImage"]
+        for attr in (schema.BUCKET_FIELD_PGEN, schema.BUCKET_FIELD_PINC):
+            image.pop(attr)
+        client = await repo._get_client()
+        meta_key = {
+            "PK": {"S": schema.pk_entity(repo._namespace_id, "user")},
+            "SK": {"S": schema.sk_meta()},
+        }
+        await client.update_item(  # a pre-0.17 entity: neither attribute on META
+            TableName=TABLE, Key=meta_key, UpdateExpression="REMOVE pgen, pinc"
+        )
         table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
-        for parent in ("org-b", None):
-            await repo.set_parent("user", parent)
-            calls = []
-            real = table.update_item
+        assert propagate_shard_count(table, record) == 1  # never moved: cloned
 
-            def spy(_real=real, _calls=calls, **kwargs):
-                _calls.append(kwargs)
-                return _real(**kwargs)
+        await repo.set_parent("user", "org-b")  # pgen appears on META
+        record["dynamodb"]["OldImage"]["shard_count"] = {"N": "2"}
+        image["shard_count"] = {"N": "4"}
+        assert propagate_shard_count(table, record) == 1  # Path 1 raises shard 1 only
+        for shard in (2, 3):  # moved since: neither clone is written
+            assert await _item(repo, "user", "gpt-4", shard) is None
 
-            with patch.object(table, "update_item", spy):
-                _repair_clone_owner_stamps(table, repo._namespace_id, "user", "gpt-4", [0], 0)
-            assert len(calls) == 1
-            assert_expression_safe(calls[0])
+    async def test_a_skipped_clone_is_logged_without_the_entity(self, limiter, capsys):
+        import json
+
+        import boto3
+
+        from zae_limiter_aggregator.processor import propagate_shard_count
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        record = await self._doubling_record(repo)
+        await repo.set_parent("user", "org-b")
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
+        propagate_shard_count(table, record)
+        logged = [
+            json.loads(line)
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith("{")
+        ]
+        (skip,) = [e for e in logged if e["message"].startswith("Clone skipped - the owner")]
+        assert skip["shard_id"] == 1
+        assert "user" not in json.dumps(skip)
+
+    def test_the_clone_owner_check_is_token_safe(self):
+        from tests.unit.test_expression_tokens import assert_expression_safe
+        from zae_limiter_aggregator.processor import _clone_owner_check
+
+        for image in ({}, {"pgen": 0, "pinc": "-"}, {"pgen": 7, "pinc": "abc"}):
+            check = _clone_owner_check("t", "ns", "user", image)["ConditionCheck"]
+            assert_expression_safe(check)
 
     async def test_a_stale_fanout_stamp_is_skipped(self, limiter):
         repo = limiter._repository
@@ -1563,9 +1431,10 @@ async def _set(
 class TestAStampedShardIsMaterialisedWhereItIs:
     """A `vu = 0` on one shard of a sharded bucket is cleared on that shard.
 
-    Review of #716 (3rd), finding 3: the owner-check fallback stamps `vu = 0`,
-    but a sharded entity's slow path was sent to another shard, so the stamped
-    one kept its stale owner and failed every fast-path write that drew it.
+    Review of #716 (3rd), finding 3: a trimming `vu = 0` (#679's credit clamp,
+    the param sync) on one shard of a sharded entity sent the slow path to
+    another shard, so the stamped one kept failing every fast-path write that
+    drew it — and kept any stale owner stamp it carried.
     """
 
     @staticmethod
@@ -1598,11 +1467,12 @@ class TestAStampedShardIsMaterialisedWhereItIs:
             ExpressionAttributeValues=values,
         )
 
-    async def test_the_owner_fallback_restamps_a_sharded_cascading_child(self, repo):
+    async def test_a_stale_stamped_shard_is_restamped_where_it_is(self, repo):
         """The vu0-sharded probe."""
         await self._two_shards(repo)
         await repo.set_parent("user", "org-b")
-        # Shard 1: a create that read META before the move, its owner check failed.
+        # Shard 1: a stale owner stamp (a writer predating ADR-150) under a
+        # trimming `vu = 0`.
         await self._set_shard1(
             repo,
             "SET parent_id = :a, pgen = :g, vu = :z",
@@ -1806,13 +1676,332 @@ class TestSyncTwin:
         repo.close()
 
 
-async def test_a_backend_without_the_owner_check_is_skipped():
-    """A third-party backend stamps no generation: nothing to check after a create."""
-    from types import SimpleNamespace
-    from typing import cast
+class TestTheParentShardHint:
+    """F2 (review of Stack B): a missing-shard hint belongs to the parent it came from."""
 
-    from zae_limiter.lease import Lease
-    from zae_limiter.repository_protocol import RepositoryProtocol
+    QUOTA = Limit.quota("rpd", 100, cron="0 0 * * *")
 
-    lease = Lease(repository=cast(RepositoryProtocol, SimpleNamespace()))
-    await lease._repair_created_owner_stamps([("user", "gpt-4", 0, 0)])
+    async def test_the_old_parents_hint_never_creates_a_new_parent_shard(self, limiter, other):
+        """The cache names org-a at 4 shards; the fast path finds org-a's shard 3
+        missing; META names org-b (1 shard). Honouring 3 there created org-b
+        shard 3 at count 1 with a fresh full grant: 198 held + 2 used of 100."""
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [self.QUOTA])
+        await repo.create_entity("org-a")
+        await repo.create_entity("org-b")
+        await repo.create_entity("user", parent_id="org-a", cascade=True)
+        async with limiter.acquire("user", "gpt-4", consume={"rpd": 1}):
+            pass  # user cached under org-a
+        async with other.acquire("org-b", "gpt-4", consume={"rpd": 1}):
+            pass  # org-b's shard 0 exists
+        ns = repo._namespace_id
+        cascade, parent, shards = repo._entity_cache[(ns, "org-a")]
+        repo._entity_cache[(ns, "org-a")] = (cascade, parent, {**shards, "gpt-4": 4})
+
+        await other._repository.set_parent("user", "org-b")
+        client = await repo._get_client()
+        await client.update_item(  # the child's next fast-path write fails on its stamp
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET vu = :z",
+            ExpressionAttributeValues={":z": {"N": "0"}},
+        )
+        # This process has not seen the move.
+        repo._entity_cache[(ns, "user")] = (True, "org-a", repo._entity_cache[(ns, "user")][2])
+
+        import zae_limiter.repository as repository_module
+
+        real = repository_module.random.randrange
+
+        def last(n, *args, **kwargs):
+            return n - 1 if not args else real(n, *args, **kwargs)
+
+        with patch.object(repository_module.random, "randrange", side_effect=last):
+            async with limiter.acquire("user", "gpt-4", consume={"rpd": 1}) as lease:
+                assert {(e.entity_id, e._shard_id) for e in lease.entries} == {
+                    ("user", 0),
+                    ("org-b", 0),
+                }
+
+        assert await _item(repo, "org-b", "gpt-4", 3) is None
+        org_b = await _item(repo, "org-b", "gpt-4", 0)
+        tk = int(org_b[schema.bucket_attr("rpd", "tk")]["N"])
+        assert tk == 98_000, "org-b holds its allowance less the two it admitted"
+
+    def test_a_hinted_shard_past_the_count_is_redrawn(self, limiter):
+        repo = limiter._repository
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            assert limiter._slow_path_shard("org-b", "gpt-4", 3) == (0, 1)
+            assert limiter._slow_path_shard("org-b", "gpt-4", 3, 2) == (0, 2)
+        assert limiter._slow_path_shard("org-b", "gpt-4", 3, 4) == (3, 4)  # a doubling's draw
+        repo._entity_cache[(repo._namespace_id, "org-b")] = (False, None, {"gpt-4": 4})
+        assert limiter._slow_path_shard("org-b", "gpt-4", 3) == (3, 4)  # ADR-133: in range
+
+
+class TestTheDisabledLookAcrossResources:
+    """F5 (review of Stack B): the multi-resource 403 names the parent META names now."""
+
+    async def test_a_stale_read_of_the_old_parent_cannot_hide_the_new_ones_403(self, limiter):
+        repo = limiter._repository
+        for resource in ("chat", "code"):
+            await repo.set_resource_defaults(resource, [RPM])
+        await repo.create_entity("org-a")
+        await repo.create_entity("org-b")
+        await repo.create_entity("user", parent_id="org-a", cascade=True)
+        await repo.set_limits("user", [Limit.per_day("rpm", 1)], resource="chat")
+        async with limiter.acquire("user", "chat", consume={"rpm": 1}):
+            pass  # user/chat is now spent: a fast-path 429
+        stale = await repo.get_entity("user", consistent_read=True)
+        await repo.set_parent("user", "org-b")
+        await repo.disable_entity("org-b", resource="code")
+        real = repo.get_entity
+
+        async def stale_unless_consistent(entity_id, *, consistent_read=False):
+            if entity_id == "user" and not consistent_read:
+                return stale  # an eventually consistent replica from before the move
+            return await real(entity_id, consistent_read=consistent_read)
+
+        with patch.object(repo, "get_entity", stale_unless_consistent):
+            with pytest.raises(ResourceDisabled) as raised:
+                async with limiter.acquire(
+                    "user", "chat", consume={"rpm": 1}, also={"code": {"rpm": 1}}
+                ):
+                    pytest.fail("a disabled parent must not admit")
+        assert (raised.value.entity_id, raised.value.resource) == ("org-b", "code")
+
+
+class TestAnOlderStampNeverMovesTheCacheBack:
+    """F7 (review of Stack B): mid fan-out, shards carry two generations."""
+
+    async def test_alternating_draws_stay_on_the_newest_parent(self, repo):
+        await repo.set_resource_defaults("gpt-4", [RPM])
+        for org in ("org-a", "org-b", "org-c"):
+            await repo.create_entity(org)
+        await repo.create_entity("user", parent_id="org-a", cascade=True)
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+            async with limiter.acquire("org-b", "gpt-4", consume={"rpm": 1}):
+                pass  # org-b has a bucket: a debit to it would land
+        await repo.bump_shard_count("user", "gpt-4", 1)
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with RateLimiter(repository=repo) as limiter:
+                async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                    pass
+        await repo.set_parent("user", "org-b")  # generation 1 on both shards
+        await repo.set_parent("user", "org-c")  # generation 2 on both shards
+
+        fresh = await _open_repo()
+        ns = fresh._namespace_id
+        async with RateLimiter(repository=fresh) as limiter:
+            for shard in (0, 1):  # this process learns generation 2, org-c
+                with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                    async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                        pass
+            assert fresh._entity_cache[(ns, "user")][1] == "org-c"
+            client = await repo._get_client()
+            await client.update_item(  # shard 0 as a fan-out that has not reached it
+                TableName=TABLE,
+                Key={
+                    "PK": {"S": schema.pk_bucket(ns, "user", "gpt-4", 0)},
+                    "SK": {"S": schema.sk_state()},
+                },
+                UpdateExpression="SET parent_id = :b, pgen = :g",
+                ExpressionAttributeValues={":b": {"S": "org-b"}, ":g": {"N": "1"}},
+            )
+            org_b, org_c = await _consumed(repo, "org-b"), await _consumed(repo, "org-c")
+            refunds: list[str] = []
+            real = limiter._compensate_speculative
+
+            async def spy(entity_id, *args, **kwargs):
+                refunds.append(entity_id)
+                return await real(entity_id, *args, **kwargs)
+
+            with patch.object(limiter, "_compensate_speculative", spy):
+                for shard in (0, 1, 0, 1):
+                    with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                        async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                            pass
+
+            assert refunds == [], "an older stamp is not a reason to refund"
+            assert fresh._entity_cache[(ns, "user")][1] == "org-c"
+            assert fresh._owner_stamp_cache[(ns, "user")][1] == 2
+        await fresh.close()
+        assert await _consumed(repo, "org-b") == org_b
+        assert await _consumed(repo, "org-c") == org_c + 4
+
+    async def test_another_incarnation_is_never_older(self, repo):
+        repo._owner_stamp_cache[(repo._namespace_id, "user")] = ("inc-1", 5)
+        assert repo._stamp_is_outdated("user", "inc-1", 4)
+        assert not repo._stamp_is_outdated("user", "inc-1", 5)
+        assert not repo._stamp_is_outdated("user", "inc-2", 0)
+        assert not repo._stamp_is_outdated("user", "inc-1", None)
+        assert not repo._stamp_is_outdated("nobody", "inc-1", 0)
+
+    async def test_a_move_in_this_process_records_its_stamp_for_every_scope(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        scoped = await repo.namespace("default")
+        assert scoped._owner_stamp_cache is repo._owner_stamp_cache
+        await repo.set_parent("user", "org-b")
+        entity = await repo.get_entity("user", consistent_read=True)
+        assert scoped._owner_stamp_cache[(repo._namespace_id, "user")] == (
+            entity.incarnation,
+            1,
+        )
+
+
+def _cancelled(codes: list[str]):
+    """A cancelled transaction with these per-item reasons."""
+    from botocore.exceptions import ClientError
+
+    return ClientError(
+        {
+            "Error": {"Code": "TransactionCanceledException", "Message": "cancelled"},
+            "CancellationReasons": [{"Code": code} for code in codes],
+        },
+        "TransactWriteItems",
+    )
+
+
+def _meta_check_lost(items: list[dict]) -> list[str]:
+    """Reasons for a transaction whose META checks failed and nothing else did."""
+    return ["ConditionalCheckFailed" if "ConditionCheck" in item else "None" for item in items]
+
+
+def _update_lost(items: list[dict]) -> list[str]:
+    """Reasons for a transaction whose rf-locked update lost its lock."""
+    return ["ConditionalCheckFailed" if "Update" in item else "None" for item in items]
+
+
+class TestEverySendKeepsTheMetaPin:
+    """Each send of a commit that creates a bucket routes a lost META check to a re-plan."""
+
+    @staticmethod
+    async def _child_kept_parent_created(limiter) -> Repository:
+        """user/gpt-4 exists; org-a/gpt-4 must be created (a check on org-a)."""
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        client = await repo._get_client()
+        await client.delete_item(
+            TableName=TABLE,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "org-a", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return repo
+
+    @staticmethod
+    def _scripted(repo, *failures):
+        """Fail the first sends with these reason builders, then send for real."""
+        real = repo.transact_write
+        sent: list[list[str]] = []
+
+        async def transact_write(items):
+            sent.append([next(iter(item)) for item in items])
+            if len(sent) <= len(failures):
+                raise _cancelled(failures[len(sent) - 1](items))
+            return await real(items)
+
+        return sent, patch.object(repo, "transact_write", transact_write)
+
+    async def test_the_re_send_after_a_claim_keeps_its_pin(self, limiter):
+        from unittest.mock import AsyncMock
+
+        from zae_limiter.lease import Lease
+
+        repo = await self._child_kept_parent_created(limiter)
+        sent, scripted = self._scripted(repo, _update_lost, _meta_check_lost)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with scripted, patch.object(Lease, "_claim_owner_stamps", AsyncMock(return_value=True)):
+            async with slow.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+        # The send, the re-send after the claim (lost its META check), the re-plan.
+        assert sent == [["Update", "Put", "ConditionCheck"]] * 3
+        assert await _item(repo, "org-a", "gpt-4") is not None
+
+    async def test_the_retry_keeps_its_pin(self, limiter):
+        repo = await self._child_kept_parent_created(limiter)
+        await repo.set_resource_defaults("chat", [RPM])
+        # The child's chat bucket is created; the parent's exists.
+        async with RateLimiter(repository=repo).acquire("org-a", "chat", consume={"rpm": 1}):
+            pass
+        sent, scripted = self._scripted(repo, _update_lost, _meta_check_lost)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with scripted:
+            async with slow.acquire("user", "chat", consume={"rpm": 1}):
+                pass
+        # The send (the parent's lock lost), the retry re-issuing the innocent
+        # create with its check (lost), and the re-plan.
+        assert sent[:2] == [
+            ["Put", "Update", "ConditionCheck"],
+            ["Put", "Update", "ConditionCheck"],
+        ]
+        assert len(sent) == 3
+        assert await _item(repo, "user", "chat") is not None
+
+    async def test_a_multi_resource_commit_that_loses_twice_is_contended(self, limiter):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        for resource in ("chat", "code"):
+            await repo.set_resource_defaults(resource, [RPM])
+        sent, scripted = self._scripted(repo, _meta_check_lost, _meta_check_lost)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with scripted:
+            with pytest.raises(RateLimitExceeded) as raised:
+                async with slow.acquire(
+                    "user", "chat", consume={"rpm": 1}, also={"code": {"rpm": 1}}
+                ):
+                    pytest.fail("a lost META check must not admit")
+        assert raised.value.contended
+        assert len(sent) == 2
+        assert await _item(repo, "user", "chat") is None
+
+
+class TestAnOlderStampOnTheSinglePath:
+    """F7 on the single-item path: an outdated stamp never names a parent to debit."""
+
+    async def test_a_move_to_no_parent_is_not_undone_by_an_older_shard(self, repo):
+        await repo.set_resource_defaults("gpt-4", [RPM])
+        for org in ("org-a", "org-b"):
+            await repo.create_entity(org)
+        await repo.create_entity("user", parent_id="org-a", cascade=True)
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+            async with limiter.acquire("org-b", "gpt-4", consume={"rpm": 1}):
+                pass
+        await repo.set_parent("user", "org-b")  # generation 1
+        await repo.set_parent("user", None)  # generation 2: no parent, no cascade
+
+        fresh = await _open_repo()
+        ns = fresh._namespace_id
+        async with RateLimiter(repository=fresh) as limiter:
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass  # learns generation 2, no parent
+            assert fresh._entity_cache[(ns, "user")][:2] == (False, None)
+            client = await repo._get_client()
+            await client.update_item(  # as a fan-out that has not reached it yet
+                TableName=TABLE,
+                Key={
+                    "PK": {"S": schema.pk_bucket(ns, "user", "gpt-4", 0)},
+                    "SK": {"S": schema.sk_state()},
+                },
+                UpdateExpression="SET #c = :t, parent_id = :b, pgen = :g",
+                ExpressionAttributeNames={"#c": "cascade"},
+                ExpressionAttributeValues={
+                    ":t": {"BOOL": True},
+                    ":b": {"S": "org-b"},
+                    ":g": {"N": "1"},
+                },
+            )
+            org_b = await _consumed(repo, "org-b")
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user"}
+            assert fresh._entity_cache[(ns, "user")][:2] == (False, None)
+        await fresh.close()
+        assert await _consumed(repo, "org-b") == org_b

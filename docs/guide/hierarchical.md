@@ -327,12 +327,11 @@ The move takes effect on the next acquire in every process:
 - **Other processes learn it from the next call.** A process that still has the old parent
   cached debits it once, sees the new parent on the entity's bucket, refunds the old parent and
   debits the new one in the same call.
-- **A bucket created while the move lands is re-checked.** An acquire that creates a bucket
-  reads the entity's parent once more after its write (1 RCU, once per bucket created) and
-  restamps the bucket if a move overtook it. The read runs in the background while your code
-  inside `acquire()` runs, so it adds no latency, and it is finished when the `async with`
-  block exits. If it fails or is cancelled, that bucket's next acquire takes the slow path,
-  which restamps it. Cancelling only that read never replaces your own exception.
+- **A bucket created while the move lands cannot keep the old parent.** Creating a bucket is
+  one transaction that also checks the entity's record still names the parent it read; if a
+  move landed in between, the acquire re-reads the entity and retries once. This needs
+  `dynamodb:ConditionCheckItem` on the table for every principal that acquires: the policies
+  the CloudFormation template creates grant it, and custom IAM must add it.
 - **Nothing already debited moves.** Usage charged to the old parent stays there, including
   usage from leases opened before the move: their adjustments and rollbacks land on the old
   parent, where the tokens were taken.
@@ -345,7 +344,9 @@ The move takes effect on the next acquire in every process:
 and `ValidationError` when the move would make the entity its own ancestor. If restamping stops
 part-way it raises `FanoutIncomplete`; the move itself landed, and calling `set_parent()` again
 with the same arguments finishes it. It needs a stack whose Lambdas are 0.17.0 or later
-(`VersionMismatchError` otherwise; run `zae-limiter upgrade`). Each move is recorded as an
+(`VersionMismatchError` otherwise; run `zae-limiter upgrade`). Restart every client after
+upgrading, before the first move: a process that opened the stack with an older version keeps
+debiting the old parent until it reopens it. Each move is recorded as an
 `entity_parent_changed` [audit event](../infra/auditing.md).
 
 ## Limitations

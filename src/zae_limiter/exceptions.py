@@ -280,6 +280,33 @@ class RateLimiterUnavailable(InfrastructureError):  # noqa: N818
         return " ".join(parts)
 
 
+IAM_DOCS_URL = "https://zeroae.github.io/zae-limiter/infra/deployment/#application-iam-policies"
+"""Where the permissions ``acquire()`` needs are listed, named in :class:`PermissionDenied`."""
+
+
+class PermissionDenied(RateLimiterUnavailable):  # noqa: N818
+    """
+    Raised when DynamoDB refuses a call for lack of an IAM permission.
+
+    ``acquire()`` raises it on an ``AccessDeniedException`` anywhere in the
+    error's cause chain, **whatever** ``on_unavailable`` says (#751).
+    ``OnUnavailable.ALLOW`` covers an unavailable backend, which recovers on
+    its own; a missing permission does not. The denied write is the one that
+    would create or update the bucket, so no bucket ever exists and ALLOW
+    would admit every later call with no limit at all, silently.
+
+    A subclass of :class:`RateLimiterUnavailable`, so a handler written for
+    BLOCK still catches it. The message carries AWS's own text, which names
+    the missing action, and a link to the IAM policies ``acquire()`` needs.
+
+    Attributes:
+        cause: The underlying exception (the error ``acquire()`` caught)
+        stack_name: The stack/table that was being accessed
+        entity_id: The entity being rate limited (if applicable)
+        resource: The resource being rate limited (if applicable)
+    """
+
+
 # ---------------------------------------------------------------------------
 # Entity Exceptions
 # ---------------------------------------------------------------------------

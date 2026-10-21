@@ -87,6 +87,8 @@ class SpeculativeResult:
             when the item carries none. A stamp with a generation is
             authoritative for ``cascade`` and ``parent_id`` even when it names
             no parent.
+        pinc: The entity incarnation stamped beside ``pgen`` (ADR-150), or
+            None. A generation compares only within one incarnation.
         debited_parent_id: On the warm parallel cascade path, the parent the
             nested write in ``parent_result`` went to: the cached parent, which
             the item's ``parent_id`` can contradict after a move (ADR-150).
@@ -103,6 +105,7 @@ class SpeculativeResult:
     shard_count: int = 1
     failure_reason: SpeculativeFailureReason | None = None
     pgen: int | None = None
+    pinc: str | None = None
     debited_parent_id: str | None = None
 
     @property
@@ -417,6 +420,31 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def restamp_owner_if_current(
+        self, entity_id: str, resource: str, shard_id: int, incarnation: str
+    ) -> bool:
+        """
+        Claim a bucket stamped by another incarnation, if this one is current (ADR-150).
+
+        The slow path's owner stamp only overwrites a stamp of its own
+        incarnation, because its META read is eventually consistent and may be
+        a deleted predecessor's. When that pin is lost to another incarnation,
+        one strongly consistent META read settles it: if ``incarnation`` is
+        current, the bucket is a predecessor's leftover and is restamped with
+        the current owner (``cascade``, ``parent_id``, generation and
+        incarnation), never lowering a newer stamp; if not, it is left alone.
+
+        Args:
+            entity_id: The bucket's owner.
+            resource: The bucket's resource.
+            shard_id: The bucket's shard.
+            incarnation: The incarnation the caller's pass read.
+
+        Returns:
+            Whether the bucket was restamped.
+        """
+        ...
+
     def get_bucket(
         self, entity_id: str, resource: str, limit_name: str, shard_id: int = 0
     ) -> "BucketState | None":
@@ -561,6 +589,18 @@ class SyncRepositoryProtocol(Protocol):
 
         Returns:
             Transaction item dict for use with transact_write
+        """
+        ...
+
+    def build_owner_check(
+        self, entity_id: str, *, exists: bool, pgen: int | None, pinc: str | None
+    ) -> dict[str, Any]:
+        """Build the ``ConditionCheck`` that pins a bucket create to its owner's META (ADR-150).
+
+        A transaction item asserting the owner's META still holds the parent
+        generation and incarnation the create read, or is still absent when
+        ``exists`` is False. Rides in the create's own transaction, so a move
+        landing between the read and the create cancels it.
         """
         ...
 

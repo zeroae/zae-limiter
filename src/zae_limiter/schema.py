@@ -272,6 +272,58 @@ def entity_incarnation(meta_item: dict[str, Any]) -> str:
     return LEGACY_INCARNATION
 
 
+def owner_meta_condition(
+    *, exists: bool | None, pgen: int | None, pinc: str | None
+) -> tuple[str, dict[str, str], dict[str, int | str]]:
+    """The condition a bucket create pins on its owner's META item (ADR-150).
+
+    A create stamps the owner's ``cascade`` / ``parent_id`` from a META read,
+    and a ``Put`` has no stored stamp to pin against. So the create's
+    transaction carries a ``ConditionCheck`` on the owner's META asserting it
+    still holds what was read: a move (``pgen`` + 1) or a delete and recreate
+    (a new incarnation) between the read and the create cancels it.
+
+    Args:
+        exists: True when the read found META, False when it found none
+            (``attribute_not_exists(PK)``: an entity created since cancels
+            it), None when the reader cannot tell (an aggregator image with no
+            generation stamp): no term on ``PK``.
+        pgen: The parent generation read, or None for none stamped. 0 is also
+            what a META without ``pgen`` reads as, so 0 accepts either.
+        pinc: The incarnation read (:func:`entity_incarnation`), or None for
+            none stamped. Matched by the same rule: ``pinc``, else
+            ``created_at``, else the legacy incarnation.
+
+    Returns:
+        ``(expression, names, values)``, values native (``int`` / ``str``) for
+        the caller to serialise; only the tokens the expression uses.
+    """
+    if exists is False:
+        return "attribute_not_exists(PK)", {}, {}
+    parts: list[str] = []
+    names: dict[str, str] = {}
+    values: dict[str, int | str] = {}
+    if exists:
+        parts.append("attribute_exists(PK)")
+    names["#opg"] = ENTITY_FIELD_PGEN
+    if pgen is None:
+        parts.append("attribute_not_exists(#opg)")
+    else:
+        values[":opg"] = pgen
+        parts.append("(attribute_not_exists(#opg) OR #opg = :opg)" if pgen == 0 else "#opg = :opg")
+    names["#opi"] = ENTITY_FIELD_PINC
+    if pinc is None:
+        parts.append("attribute_not_exists(#opi)")
+    else:
+        names["#oca"] = "created_at"
+        values[":opi"] = pinc
+        created = "#oca = :opi"
+        if pinc == LEGACY_INCARNATION:
+            created = f"({created} OR attribute_not_exists(#oca))"
+        parts.append(f"(#opi = :opi OR (attribute_not_exists(#opi) AND {created}))")
+    return " AND ".join(parts), names, values
+
+
 def encode_disabled(value: bool | None) -> dict[str, Any] | None:
     """Encode a tri-state disabled value as a DynamoDB attribute.
 

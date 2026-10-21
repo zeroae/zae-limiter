@@ -90,6 +90,17 @@ deployed no Lambda code) is refused the same way, as `run unknown`.
 Every other command intends to write and keeps its behaviour: `deploy` and `upgrade` provision
 and update, and the data commands that write register a missing namespace.
 
+`upgrade` applies this version's CloudFormation template to an existing stack before it pushes
+Lambda code, so the stack's IAM policies match the client (`deploy` leaves an existing stack's
+template alone). Unlike the other writing commands it does not connect through
+`Repository.open()`: it never auto-updates the Lambdas on connect (that would push code before
+the template) and never provisions a missing stack. Its steps are the template, the Lambda code,
+the version record, then the stack tags; it reports "already up to date" when the template has
+nothing to change and the Lambdas already run this version. The template goes through a change set; a change that would replace or remove a
+resource is refused, nothing is applied, no code is pushed, and the command exits 1 naming each
+resource. `--lambda-only` skips the template. Run `zae-limiter upgrade` on each stack before
+rolling out v0.17.0 clients: their bucket writes need IAM actions the v0.16.0 policies lack.
+
 ## Declarative Limits
 
 The `limits` command group manages rate limits declaratively via YAML manifest files. Changes are applied through a Lambda provisioner that tracks managed state and computes diffs, similar to how `terraform plan` and `terraform apply` work.
@@ -501,7 +512,9 @@ The command refuses a parent that does not exist and a move that would make the 
 ancestor, and exits 1 for either. If restamping stops part-way (throttling, for example), it
 exits 1 with the number of buckets restamped: the move itself landed, and re-running the same
 command finishes it. It needs a stack whose Lambdas are 0.17.0 or later and raises the stack's
-minimum client version to 0.17.0.
+minimum client version to 0.17.0. Restart every client after upgrading, before the first move:
+a process that opened the stack with an older version keeps debiting the old parent until it
+reopens it.
 
 ## Namespace Lifecycle
 

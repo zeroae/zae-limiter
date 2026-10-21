@@ -10,6 +10,8 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
+from botocore.exceptions import ClientError
+
 if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol, SpeculativeResult
 
@@ -23,6 +25,8 @@ from .bucket import (
 )
 from .config_cache import ConfigSource
 from .exceptions import (
+    IAM_DOCS_URL,
+    PermissionDenied,
     RateLimiterUnavailable,
     RateLimitExceeded,
     ResourceDisabled,
@@ -33,6 +37,7 @@ from .lease import (
     _CONTENTION_RETRY_AFTER_S,
     Lease,
     LeaseEntry,
+    OwnerStampLostError,
     PeriodNotAppliedError,
     QuotaMoveLostError,
     _contention_rejection,
@@ -90,10 +95,17 @@ MAX_ACQUIRE_RESOURCES = 16
 #: whose plan would exceed it is re-planned without quota moves (ADR-148).
 _MAX_TRANSACT_ITEMS = 100
 
+#: A parent shard the fast path hands the slow path: ``(parent_id, shard)``,
+#: the parent the fast path wrote to and the shard it found missing or a wcu
+#: doubling added. The parent travels with the shard because after a move
+#: (ADR-150) the slow path can read another parent from META, and a shard of
+#: the old parent means nothing there.
+_ParentHint = tuple[str, int]
+
 #: One resource the multi-resource fast path could not settle, with the hints
 #: it hands the slow path: ``(resource, consume, shard, shard_count,
-#: parent_shard)`` — see :meth:`RateLimiter._try_speculative_acquire`.
-_SlowPart = tuple[str, dict[str, int], int | None, int | None, int | None]
+#: parent_hint)`` — see :meth:`RateLimiter._try_speculative_acquire`.
+_SlowPart = tuple[str, dict[str, int], int | None, int | None, _ParentHint | None]
 
 
 def _is_custom_config(config_source: str | None) -> bool:
@@ -106,6 +118,35 @@ def _is_custom_config(config_source: str | None) -> bool:
     out. Kept in one place so the call sites cannot drift apart again (#489).
     """
     return config_source in _ENTITY_CONFIG_SOURCES
+
+
+#: The DynamoDB error code for a call IAM refused (#751).
+_ACCESS_DENIED = "AccessDeniedException"
+
+
+def _access_denied_in(exc: BaseException) -> ClientError | None:
+    """The ``AccessDeniedException`` anywhere in ``exc``'s cause chain, if any (#751).
+
+    Walks ``__cause__`` and ``__context__`` (each link once, so a cycle ends),
+    since the denial may arrive wrapped: a ``RateLimiterUnavailable`` raised
+    from it, or an error raised while handling it. DynamoDB reports a denied
+    single-item write and a denied item inside ``TransactWriteItems`` the same
+    way, as this code, never as ``TransactionCanceledException``.
+    """
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending:
+        link = pending.pop()
+        if id(link) in seen:
+            continue
+        seen.add(id(link))
+        if (
+            isinstance(link, ClientError)
+            and link.response.get("Error", {}).get("Code") == _ACCESS_DENIED
+        ):
+            return link
+        pending.extend(e for e in (link.__cause__, link.__context__) if e is not None)
+    return None
 
 
 def _item_overrules_debited_parent(result: "SpeculativeResult") -> bool:
@@ -128,7 +169,7 @@ def _failed_only_on_its_stamp(result: "SpeculativeResult", consume: dict[str, in
     """Whether a speculative failure image shows the request would have fit.
 
     The write lost a condition other than its balances: in practice a
-    ``vu = 0`` that only trims (#679, and the ADR-150 owner-check fallback),
+    ``vu = 0`` that only trims (#679's credit clamp, or the param sync),
     which the repository classifies as exhausted so a rejection stays one
     write. The bucket needs a slow pass on **this** shard to clear the stamp;
     another shard cannot do it.
@@ -869,7 +910,7 @@ class RateLimiter:
             # a failed speculative write never updates (issue #439).
             slow_path_shard: int | None = None
             slow_path_shard_count: int | None = None
-            slow_path_parent_shard: int | None = None
+            slow_path_parent_shard: _ParentHint | None = None
 
             # Several resources, all or none (ADR-148): arrives committed, and
             # refunded whole if anything failed.
@@ -899,7 +940,7 @@ class RateLimiter:
                     consume=consume,
                     shard_id=slow_path_shard,
                     shard_count=slow_path_shard_count,
-                    parent_shard_id=slow_path_parent_shard,
+                    parent_hint=slow_path_parent_shard,
                 )
 
             # Write initial consumption to DynamoDB before yielding (Issue
@@ -929,6 +970,20 @@ class RateLimiter:
             # RateLimiterUnavailable or swallowed by a degraded lease.
             raise
         except Exception as e:
+            # A missing IAM permission is not an outage (#751): it never heals,
+            # and the denied write is the one that would create the bucket, so
+            # ALLOW would admit every later call with no limit, silently. It is
+            # raised under every mode, before ALLOW can degrade.
+            denied = _access_denied_in(e)
+            if denied is not None:
+                message = denied.response.get("Error", {}).get("Message") or str(denied)
+                raise PermissionDenied(
+                    f"{message} -- acquire() needs the IAM actions listed at {IAM_DOCS_URL}",
+                    cause=e,
+                    stack_name=self._repository.stack_name,
+                    entity_id=entity_id,
+                    resource=resource,
+                ) from e
             if mode == OnUnavailable.ALLOW:
                 # Return a no-op lease. `degraded` exempts it from declared-
                 # scope validation (Issue #455): it has no entries by design.
@@ -952,11 +1007,6 @@ class RateLimiter:
         except Exception:
             await lease._rollback()
             raise
-        finally:
-            # The owner check of any bucket the commit created (ADR-150) runs
-            # in the background from the moment the commit landed; join it so
-            # it never outlives the lease. It cannot raise.
-            await lease._await_owner_checks()
 
     async def _try_speculative_acquire(
         self,
@@ -965,7 +1015,7 @@ class RateLimiter:
         consume: dict[str, int],
         use_rejection_cache: bool = True,
         prechecked: tuple[frozenset[int], frozenset[int]] | None = None,
-    ) -> tuple[Lease | None, int, int | None, int | None]:
+    ) -> tuple[Lease | None, int, int | None, _ParentHint | None]:
         """Try the speculative fast path for acquire (issue #315).
 
         Repository checks its own entity cache (issue #318) and issues
@@ -981,7 +1031,9 @@ class RateLimiter:
             observed on the failure image (or after the bump), which the slow
             path must use to size and stamp a shard it creates — a failed
             speculative write never updates the entity cache (issue #439).
-            Both are meaningless when ``lease`` is not None.
+            The fourth element is the parent shard the slow path should target
+            (:data:`_ParentHint`), or None. All three are meaningless when
+            ``lease`` is not None.
 
         ``use_rejection_cache`` is False when the caller passed ``limits=``:
         the cached states describe the stored parameters, not an override.
@@ -1046,9 +1098,15 @@ class RateLimiter:
             # ADR-134 re-picks on every call, so a re-draw can admit where the
             # drawn shard could not — and pinning a wcu-exhausted shard would
             # send the slow path's writes straight back onto the hot partition.
+            #
+            # The hint names the parent the fast path wrote to — the cached one
+            # on the warm path, which a move can make differ from the parent
+            # the slow path reads from META (ADR-150).
+            written_parent = result.debited_parent_id or result.parent_id
             parent_hint = (
-                result.parent_result.shard_id
+                (written_parent, result.parent_result.shard_id)
                 if result.parent_result is not None
+                and written_parent is not None
                 and result.parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
                 else None
             )
@@ -1118,7 +1176,7 @@ class RateLimiter:
                 return None, new_shard, new_count, parent_hint
 
             # A sharded bucket whose write failed only on its stamp (a trimming
-            # `vu = 0`: #679, or the ADR-150 owner-check fallback) needs the
+            # `vu = 0`: #679's credit clamp, or the param sync) needs the
             # slow path on this same shard, the only pass that clears it. The
             # retry below would send it elsewhere, and the stamped shard would
             # keep failing every fast-path write that draws it.
@@ -1357,7 +1415,7 @@ class RateLimiter:
         consume: dict[str, int],
         result: "SpeculativeResult",
         now_ms: int,
-    ) -> tuple[Lease | None, int | None]:
+    ) -> tuple[Lease | None, _ParentHint | None]:
         """Handle parent failure from nested SpeculativeResult (issue #318).
 
         Child succeeded speculatively (result.success=True).
@@ -1366,10 +1424,11 @@ class RateLimiter:
         slow path, or fast-reject.
 
         Returns:
-            ``(lease, parent_shard_id)``. ``lease`` is set when the parent-only
+            ``(lease, parent_hint)``. ``lease`` is set when the parent-only
             slow path succeeded, None when the full slow path is needed.
-            ``parent_shard_id`` is a parent shard the slow path must target —
-            one the speculative write found MISSING, or the brand-new shard a
+            ``parent_hint`` is the parent shard the slow path must target, with
+            the parent it belongs to (:data:`_ParentHint`) — one the
+            speculative write found MISSING, or the brand-new shard a
             wcu-driven doubling added — and None when the slow path is free to
             draw its own, which it must be for an exhausted shard (issue #474).
 
@@ -1387,8 +1446,8 @@ class RateLimiter:
         # Same rule as the child-failure branch: only a MISSING parent shard
         # pins the slow path to a shard. A wcu bump below replaces this with
         # the shard the doubling added, which nothing else will create.
-        parent_hint = (
-            parent_shard
+        parent_hint: _ParentHint | None = (
+            (parent_id, parent_shard)
             if parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
             else None
         )
@@ -1463,7 +1522,7 @@ class RateLimiter:
                 await self._compensate_child(
                     entity_id, resource, consume, result.shard_id, result.buckets
                 )
-                return None, parent_shard
+                return None, (parent_id, parent_shard)
 
         # Refill would help — build child entries for parent-only slow path
         entries: list[LeaseEntry] = []
@@ -2501,7 +2560,7 @@ class RateLimiter:
         consume: dict[str, int],
         shard_id: int | None = None,
         shard_count: int | None = None,
-        parent_shard_id: int | None = None,
+        parent_hint: _ParentHint | None = None,
     ) -> Lease:
         """The slow path and its initial commit, re-planned once on a lost move.
 
@@ -2523,23 +2582,9 @@ class RateLimiter:
         """
 
         async def plan_and_commit(disable_moves: bool, moves_contended: bool = False) -> Lease:
-            lease = await self._do_acquire(
-                entity_id=entity_id,
-                resource=resource,
-                limits_override=limits_override,
-                consume=consume,
-                shard_id=shard_id,
-                shard_count=shard_count,
-                parent_shard_id=parent_shard_id,
-                disable_moves=disable_moves,
-                moves_contended=moves_contended,
-            )
-            try:
-                await lease._commit_initial()
-            except PeriodNotAppliedError:
-                # The retry found a quota period nobody has applied (#743):
-                # redo the pass once from a fresh read, which applies it. A
-                # second loss stands as the rejection it was raised as.
+            period_redone = False
+            owner_reread = False
+            while True:
                 lease = await self._do_acquire(
                     entity_id=entity_id,
                     resource=resource,
@@ -2547,12 +2592,30 @@ class RateLimiter:
                     consume=consume,
                     shard_id=shard_id,
                     shard_count=shard_count,
-                    parent_shard_id=parent_shard_id,
+                    parent_hint=parent_hint,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
+                    consistent_owner=owner_reread,
                 )
-                await lease._commit_initial()
-            return lease
+                try:
+                    await lease._commit_initial()
+                    return lease
+                except PeriodNotAppliedError:
+                    # The retry found a quota period nobody has applied (#743):
+                    # redo the pass once from a fresh read, which applies it. A
+                    # second loss stands as the rejection it was raised as.
+                    if period_redone:
+                        raise
+                    period_redone = True
+                except OwnerStampLostError:
+                    # A bucket this pass created lost its META check: the
+                    # owner moved since the read (ADR-150). Nothing was
+                    # written; redo the pass once from a strongly consistent
+                    # read, which stamps (and cascades to) the new parent. A
+                    # second loss stands as the contended 429 it was raised as.
+                    if owner_reread:
+                        raise
+                    owner_reread = True
 
         try:
             return await plan_and_commit(False)
@@ -2660,7 +2723,7 @@ class RateLimiter:
                 resource: str,
                 consume: dict[str, int],
                 avoid: tuple[frozenset[int], frozenset[int]],
-            ) -> tuple[Lease | None, int, int | None, int | None] | Exception:
+            ) -> tuple[Lease | None, int, int | None, _ParentHint | None] | Exception:
                 try:
                     outcome = await self._try_speculative_acquire(
                         entity_id=entity_id, resource=resource, consume=consume, prechecked=avoid
@@ -2760,9 +2823,9 @@ class RateLimiter:
         """
 
         async def _plan(
-            part: _SlowPart, disable_moves: bool, moves_contended: bool
+            part: _SlowPart, disable_moves: bool, moves_contended: bool, reread: bool
         ) -> Lease | Exception:
-            resource, consume, shard, shard_count, parent_shard = part
+            resource, consume, shard, shard_count, parent_hint = part
             try:
                 return await self._do_acquire(
                     entity_id=entity_id,
@@ -2771,19 +2834,23 @@ class RateLimiter:
                     consume=consume,
                     shard_id=shard,
                     shard_count=shard_count,
-                    parent_shard_id=parent_shard,
+                    parent_hint=parent_hint,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
+                    consistent_owner=reread,
                 )
             except Exception as exc:
                 return exc
 
         async def plan_and_commit(
-            disable_moves: bool, moves_contended: bool = False, redone: bool = False
+            disable_moves: bool,
+            moves_contended: bool = False,
+            redone: bool = False,
+            reread: bool = False,
         ) -> tuple[Lease, dict[str, frozenset[str]]]:
             # One name per part keeps the sync twin's lambda on one line (#513).
             outcomes = await asyncio.gather(
-                *[_plan(part, disable_moves, moves_contended) for part in slow_parts]
+                *[_plan(part, disable_moves, moves_contended, reread) for part in slow_parts]
             )
             planned = [outcome for outcome in outcomes if isinstance(outcome, Lease)]
             errors = [outcome for outcome in outcomes if not isinstance(outcome, Lease)]
@@ -2797,10 +2864,11 @@ class RateLimiter:
                     if any(entry._donor_debit is not None for entry in plan.entries):
                         await self._commit_rejected_moves(plan.entries, plan._carriers)
                 raise error
-            # Without moves a plan is at most 2 bucket items per resource, so
+            # Without moves a plan is at most 2 bucket items per resource, plus
+            # at most 2 META checks (the entity and its parent, ADR-150), so
             # MAX_ACQUIRE_RESOURCES keeps the re-plan under the limit.
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return await plan_and_commit(True, moves_contended, redone)
+                return await plan_and_commit(True, moves_contended, redone, reread)
             marks = [plan._cache_mark for plan in planned]
             lease = Lease(
                 repository=self._repository,
@@ -2816,7 +2884,15 @@ class RateLimiter:
                 # second loss stands as the rejection it was raised as.
                 if redone:
                     raise
-                return await plan_and_commit(disable_moves, moves_contended, True)
+                return await plan_and_commit(disable_moves, moves_contended, True, reread)
+            except OwnerStampLostError:
+                # A bucket this commit created lost its META check: an owner
+                # moved since the read (ADR-150). Nothing was written; re-plan
+                # every part once from a strongly consistent read. A second
+                # loss stands as the contended 429 it was raised as.
+                if reread:
+                    raise
+                return await plan_and_commit(disable_moves, moves_contended, redone, True)
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }
@@ -2836,7 +2912,7 @@ class RateLimiter:
 
     @staticmethod
     def _transaction_items(planned: list[Lease]) -> int:
-        """Items one commit of these plans writes: bucket items plus donor debits."""
+        """Items one commit of these plans sends: bucket items, donor debits, META checks."""
         buckets = {
             (entry.entity_id, entry.resource, entry._shard_id)
             for plan in planned
@@ -2849,7 +2925,14 @@ class RateLimiter:
             for entry in plan.entries
             if entry._donor_debit is not None
         }
-        return len(buckets) + len(donors)
+        # One META check per owner whose bucket the commit creates (ADR-150).
+        owners = {
+            entry.entity_id
+            for plan in planned
+            for entry in plan.entries
+            if entry._is_new and entry._owner_read
+        }
+        return len(buckets) + len(donors) + len(owners)
 
     async def _find_disabled(self, entity_id: str, resources: list[str]) -> ResourceDisabled | None:
         """The first ``ResourceDisabled`` among resources the fast path left (ADR-148).
@@ -2872,8 +2955,10 @@ class RateLimiter:
                     continue
                 # The slow path would gate the parent too (ADR-125, ADR-146):
                 # its 403 outranks the child's 429 for a resource with no
-                # bucket yet, exactly as in a single-resource acquire.
-                entity = await self._repository.get_entity(entity_id)
+                # bucket yet, exactly as in a single-resource acquire. Read
+                # strongly consistently: after a move (ADR-150) an eventually
+                # consistent read can still name the old parent.
+                entity = await self._repository.get_entity(entity_id, consistent_read=True)
                 if entity is None or not effective_cascade(access.cascade, entity):
                     continue
                 parent_id = entity.parent_id
@@ -2956,13 +3041,18 @@ class RateLimiter:
         consume: dict[str, int],
         shard_id: int | None = None,
         shard_count: int | None = None,
-        parent_shard_id: int | None = None,
+        parent_hint: _ParentHint | None = None,
         disable_moves: bool = False,
         moves_contended: bool = False,
+        consistent_owner: bool = False,
     ) -> Lease:
         """Internal acquire implementation (the slow path).
 
         Args:
+            consistent_owner: Re-read every owner's META strongly consistently
+                (+1 RCU each). The re-plan after a bucket create was cancelled
+                by its META check (ADR-150): the eventually consistent read
+                that planned it may return the same stale record again.
             disable_moves: The third attempt after two lost ADR-145 moves
                 (design §6 step 6): a quota whose slot a sibling covers gets 0
                 this time instead of a move, and no donor debit rides. Only
@@ -2977,8 +3067,11 @@ class RateLimiter:
             shard_count: The shard_count the fast path observed on its failure
                 image, used to size and stamp a shard created here. None
                 falls back to the entity cache.
-            parent_shard_id: Parent shard the fast path found missing, so it
-                is created where the fast path looked rather than re-drawn.
+            parent_hint: Parent shard the fast path found missing (or a wcu
+                doubling added), with the parent it belongs to, so it is
+                created where the fast path looked rather than re-drawn. Used
+                only when that parent is the one this pass reads from META: a
+                move (ADR-150) makes the fast path's parent a stale guess.
         """
         # Validate inputs at API boundary
         validate_identifier(entity_id, "entity_id")
@@ -2996,7 +3089,7 @@ class RateLimiter:
         # The shard is part of a bucket's identity (GHSA-76rv). Resolve it
         # once here and carry it through the read, the LeaseEntry and the
         # write, so the slow path never silently collapses back onto shard 0.
-        child_shard, child_shard_count = self._repository.select_shard(
+        child_shard, child_shard_count = self._slow_path_shard(
             entity_id, resource, shard_id, shard_count
         )
         entity_shards: dict[str, tuple[int, int]] = {entity_id: (child_shard, child_shard_count)}
@@ -3036,6 +3129,8 @@ class RateLimiter:
         entity, child_buckets = await self._fetch_entity_and_buckets(
             entity_id, resource, child_shard
         )
+        if consistent_owner:
+            entity = await self._repository.get_entity(entity_id, consistent_read=True)
 
         # Determine cascade: the resolved policy for this resource, falling back
         # to the entity's META flag when nothing sets one (ADR-146).
@@ -3071,10 +3166,15 @@ class RateLimiter:
             )
             entity_limits[parent_id] = parent_limits
             entity_config_sources[parent_id] = parent_config_source
-            # The parent shards independently of the child (GHSA-76rv)
-            entity_shards[parent_id] = self._repository.select_shard(
-                parent_id, resource, parent_shard_id
+            # The parent shards independently of the child (GHSA-76rv). The
+            # fast path's hint applies only to the parent it wrote to: after a
+            # move that is the old one, and its shard number — sized by the
+            # old parent's count — would create a shard of the new parent at a
+            # count that never covered it, with a fresh quota grant (ADR-150).
+            hinted = (
+                parent_hint[1] if parent_hint is not None and parent_hint[0] == parent_id else None
             )
+            entity_shards[parent_id] = self._slow_path_shard(parent_id, resource, hinted)
             # The parent's META rides in the same BatchGetItem (+0.5 RCU): its
             # bucket is stamped with the parent's OWN cascade / parent_id, which
             # its own fast path decides from. Stamping the child's view (no
@@ -3082,6 +3182,8 @@ class RateLimiter:
             parent_entity, parent_buckets = await self._fetch_entity_and_buckets(
                 parent_id, resource, entity_shards[parent_id][0]
             )
+            if consistent_owner:
+                parent_entity = await self._repository.get_entity(parent_id, consistent_read=True)
             owners[parent_id] = parent_entity
             cascades[parent_id] = effective_cascade(parent_access.cascade, parent_entity)
             existing_buckets.update(parent_buckets)
@@ -3439,6 +3541,7 @@ class RateLimiter:
                         _stamp_owner=owner is not None,
                         _parent_generation=owner.parent_generation if owner else None,
                         _parent_incarnation=owner.incarnation if owner else None,
+                        _owner_read=True,
                         _declared=status is not None,
                         _boundary_ms=boundary_ms,
                         _reset_edge_ms=reset_edge_ms,
@@ -3482,6 +3585,29 @@ class RateLimiter:
             _unknown_keys=unknown_keys,
             _cache_mark=cache_mark,
         )
+
+    def _slow_path_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int | None = None,
+        shard_count: int | None = None,
+    ) -> tuple[int, int]:
+        """The shard the slow path reads and, if missing, creates (GHSA-76rv, #439).
+
+        :meth:`Repository.select_shard`, except that an explicit shard at or
+        past the count is never honoured: a bucket created there would be
+        stamped with a count that does not include it, so no sibling's grant
+        covers its slot and a quota would get a fresh share on top of the
+        entity's allowance (ADR-145 I8). It is re-drawn instead. The shards
+        the fast path hands over always fit: an ADR-133 create's shard was
+        drawn from the count the slow path reads, and a wcu doubling's from
+        ``range(old, new)`` with ``new`` passed as the count.
+        """
+        shard, count = self._repository.select_shard(entity_id, resource, shard_id, shard_count)
+        if shard_id is not None and shard >= count:
+            shard, count = self._repository.select_shard(entity_id, resource, None, shard_count)
+        return shard, count
 
     async def _fetch_entity_and_buckets(
         self,
@@ -3596,9 +3722,9 @@ class RateLimiter:
                     entry.state.total_consumed_milli -= entry.consumed * 1000
                 entry.consumed = 0
         try:
-            lease = Lease(repository=self._repository, entries=entries, _carriers=carriers)
-            await lease._commit_initial()
-            await lease._await_owner_checks()
+            await Lease(
+                repository=self._repository, entries=entries, _carriers=carriers
+            )._commit_initial()
         except Exception as exc:
             # Never the entity id: it is routinely an API key
             # (py/clear-text-logging-sensitive-data).

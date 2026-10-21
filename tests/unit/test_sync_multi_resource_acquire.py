@@ -306,7 +306,7 @@ class TestSlowPathPlanning:
         limiter = SyncRateLimiter(repository=repo, speculative_writes=False)
         writes = _count_transactions(repo)
         _admit(limiter)
-        assert writes == [3]
+        assert writes == [5]
 
     def test_a_plan_over_the_item_limit_is_re_planned_without_moves(self, repo, monkeypatch):
         limiter = SyncRateLimiter(repository=repo, speculative_writes=False)

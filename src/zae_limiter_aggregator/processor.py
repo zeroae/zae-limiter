@@ -47,26 +47,20 @@ from zae_limiter.schema import (
     BUCKET_FIELD_WTC,
     BUCKET_PREFIX,
     BUCKET_SCHED_NONE,
-    CONFIG_FIELD_CASCADE,
-    DEFAULT_RESOURCE,
-    ENTITY_FIELD_PGEN,
-    LEGACY_INCARNATION,
     MAX_SHARD_COUNT,
     SK_BUCKET,
     WCU_LIMIT_NAME,
     bucket_attr,
-    entity_incarnation,
     gsi2_pk_resource,
     gsi2_sk_bucket,
     gsi2_sk_usage,
     gsi3_sk_bucket,
     gsi4_sk_bucket,
+    owner_meta_condition,
     parse_bucket_pk,
     parse_namespace,
     pk_bucket,
     pk_entity,
-    pk_resource,
-    sk_config,
     sk_meta,
     sk_state,
     sk_usage,
@@ -1857,127 +1851,42 @@ def _legacy_quota_sizes(
     return sizes
 
 
-def _stored_pgen(item: dict[str, Any]) -> int:
-    """An item's parent generation (ADR-150), native values; absent reads as 0."""
-    return int(item.get(ENTITY_FIELD_PGEN, 0))
+def _clone_owner_check(
+    table_name: str, namespace_id: str, entity_id: str, image: dict[str, Any]
+) -> dict[str, Any]:
+    """The ``ConditionCheck`` pinning a Path 2 clone to its owner's META (ADR-150).
 
+    A clone copies shard 0's owner stamp (``cascade`` / ``parent_id`` /
+    ``pgen`` / ``pinc``) from the stream image, which can predate a move: the
+    move's fan-out ran before the clone existed, and nothing else would
+    correct it. So the clone's transaction asserts the owner's META still
+    carries the image's generation and incarnation; a move or a recreate since
+    cancels it, and the clone is skipped (the client creates it lazily).
 
-def _stored_pinc(item: dict[str, Any]) -> str:
-    """A bucket image's incarnation stamp (ADR-150), native values; absent is the legacy one.
-
-    A bucket item carries no ``created_at``, so this is not ``entity_incarnation``:
-    an unstamped bucket simply differs from any META that has an incarnation.
+    An image with no generation stamp (written before ADR-150, or for an
+    entity with no META) asserts META carries none either: true of an
+    unmoved pre-0.17 entity or a missing one, false once anything moved it.
+    Needs ``dynamodb:ConditionCheckItem``.
     """
-    return str(item.get(BUCKET_FIELD_PINC, LEGACY_INCARNATION))
-
-
-def _clone_owner_stamp(
-    table: Any, namespace_id: str, entity_id: str, resource: str
-) -> tuple[bool, str | None, int, str] | None:
-    """The owner stamp a bucket of ``entity_id`` on ``resource`` should carry (ADR-150).
-
-    ``(cascade, parent_id, pgen, pinc)`` from the entity's META and the ADR-146
-    policy walk — entity(resource) -> entity(``_default_``) -> resource, the
-    first explicit value winning, else META ``cascade`` — all strongly
-    consistent, like the client's and the provisioner's fan-out. No parent
-    never cascades. None when the entity has no META.
-    """
-    meta = table.get_item(
-        Key={"PK": pk_entity(namespace_id, entity_id), "SK": sk_meta()}, ConsistentRead=True
-    ).get("Item")
-    if meta is None:
-        return None
-    parent_id = meta.get("parent_id") or None
-    generation = _stored_pgen(meta)
-    incarnation = entity_incarnation(meta)
-    if parent_id is None:
-        return False, None, generation, incarnation
-    levels = [(pk_entity(namespace_id, entity_id), sk_config(resource))]
-    if resource != DEFAULT_RESOURCE:
-        levels.append((pk_entity(namespace_id, entity_id), sk_config(DEFAULT_RESOURCE)))
-    levels.append((pk_resource(namespace_id, resource), sk_config()))
-    for pk, sk in levels:
-        item = table.get_item(Key={"PK": pk, "SK": sk}, ConsistentRead=True).get("Item")
-        if item is not None and CONFIG_FIELD_CASCADE in item:
-            return bool(item[CONFIG_FIELD_CASCADE]), parent_id, generation, incarnation
-    return bool(meta.get("cascade", False)), parent_id, generation, incarnation
-
-
-def _log_owner_repair_failure(
-    resource: str, shard: int, error: ClientError | BotoCoreError
-) -> None:
-    """Log one failed clone owner-stamp read or write, never the entity id (an API key)."""
-    logger.warning(
-        "Clone owner stamp repair failed - the next slow pass or set_parent restamps it",
-        resource=resource,
-        shard=shard,
-        error=type(error).__name__,
+    raw_pgen = image.get(BUCKET_FIELD_PGEN)
+    raw_pinc = image.get(BUCKET_FIELD_PINC)
+    pgen = None if raw_pgen is None else int(raw_pgen)
+    pinc = None if raw_pinc is None else str(raw_pinc)
+    expression, names, values = owner_meta_condition(
+        exists=True if pgen is not None or pinc is not None else None,
+        pgen=pgen,
+        pinc=pinc,
     )
-
-
-def _repair_clone_owner_stamps(
-    table: Any,
-    namespace_id: str,
-    entity_id: str,
-    resource: str,
-    clones: list[int],
-    image_pgen: int,
-    image_pinc: str = LEGACY_INCARNATION,
-) -> None:
-    """Restamp clones that copied an owner stamp a move has overtaken (ADR-150).
-
-    A clone copies shard 0's ``cascade`` / ``parent_id`` / ``pgen`` from the
-    stream image, which can predate a move: the move's fan-out ran before the
-    clone existed, so nothing else would correct it, and every process that
-    touched the clone would learn the old parent from it. So, once per record
-    that created a clone: one strongly consistent ``GetItem`` of the owner's
-    META (1 RCU). When its generation and incarnation still equal the
-    image's, nothing is written. Otherwise each clone gets the move's stamp through the same
-    pinned write as the fan-out (``pgen`` never lowered); a move whose META
-    write follows this read fans out after the clones exist and finds them.
-
-    The aggregator's role needs no new permission (``GetItem`` /
-    ``UpdateItem``), which is why this is a read after the write rather than a
-    ``ConditionCheck`` inside it. A failure is logged, without the entity id,
-    and swallowed, like the quota clone repair.
-    """
-    try:
-        stamp = _clone_owner_stamp(table, namespace_id, entity_id, resource)
-    except (ClientError, BotoCoreError) as e:
-        _log_owner_repair_failure(resource, 0, e)
-        return
-    if stamp is None or (stamp[2] == image_pgen and stamp[3] == image_pinc):
-        return
-    cascade, parent_id, generation, incarnation = stamp
-    names = {
-        "#c": "cascade",
-        "#p": "parent_id",
-        "#pg": BUCKET_FIELD_PGEN,
-        "#pi": BUCKET_FIELD_PINC,
+    check: dict[str, Any] = {
+        "TableName": table_name,
+        "Key": {"PK": pk_entity(namespace_id, entity_id), "SK": sk_meta()},
+        "ConditionExpression": expression,
     }
-    values: dict[str, Any] = {":c": cascade, ":pg": generation, ":pi": incarnation}
-    if parent_id is not None:
-        update = "SET #c = :c, #p = :p, #pg = :pg, #pi = :pi"
-        values[":p"] = parent_id
-    else:
-        update = "SET #c = :c, #pg = :pg, #pi = :pi REMOVE #p"
-    for shard in clones:
-        try:
-            table.update_item(
-                Key={"PK": pk_bucket(namespace_id, entity_id, resource, shard), "SK": sk_state()},
-                UpdateExpression=update,
-                ConditionExpression="attribute_exists(PK) AND "
-                "(attribute_not_exists(#pi) OR #pi <> :pi "
-                "OR attribute_not_exists(#pg) OR #pg <= :pg)",
-                ExpressionAttributeNames=names,
-                ExpressionAttributeValues=values,
-            )
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                continue  # gone, or a newer move already stamped it
-            _log_owner_repair_failure(resource, shard, e)
-        except BotoCoreError as e:
-            _log_owner_repair_failure(resource, shard, e)
+    if names:
+        check["ExpressionAttributeNames"] = names
+    if values:
+        check["ExpressionAttributeValues"] = values
+    return {"ConditionCheck": check}
 
 
 def _repair_quota_clones(
@@ -2068,6 +1977,9 @@ def propagate_shard_count(
     - New shards (old_count..new_count-1): PutItem cloned from shard 0's
       NewImage with adjusted PK/GSI keys and effective token capacity.
       Uses attribute_not_exists(PK) to avoid overwriting client-created items.
+      Each clone is one ``TransactWriteItems`` with a ``ConditionCheck`` on the
+      owner's META, pinned on the image's ``pgen`` / ``pinc`` (ADR-150): a
+      clone whose image a move has overtaken is skipped, left to the client.
       A quota on the clone is funded by a move off the current-period sibling
       covering its slot — its parent ``target % old_count`` — in one
       ``TransactWriteItems`` with the Put (ADR-145), or granted fresh when no
@@ -2333,9 +2245,9 @@ def propagate_shard_count(
         ):
             stale_on_image.add(limit_name)
     created_clones: list[int] = []
-    # Every clone created, quota or not: each copies shard 0's owner stamp,
-    # which a move can have overtaken (ADR-150).
-    cloned: list[int] = []
+    # Each clone copies shard 0's owner stamp, which a move can have overtaken
+    # since the image: every clone is pinned to the owner's META (ADR-150).
+    owner_check = _clone_owner_check(table.name, namespace_id, entity_id, base_item)
     for target_shard in range(old_count, new_count):
         item = dict(base_item)
         item["PK"] = pk_bucket(namespace_id, entity_id, resource, target_shard)
@@ -2398,51 +2310,50 @@ def propagate_shard_count(
             wtc_attr = bucket_attr(limit_name, BUCKET_FIELD_WTC)
             if wtc_attr in item:
                 item[wtc_attr] = 0
+        # Every clone is one transaction: its Put, any donor debit, and the
+        # owner's META check last (ADR-150). The boto3 `Table` resource has no
+        # transaction call, so this goes through `table.meta.client`, which
+        # shares the resource's serializer: native values. Put and Update
+        # inside a transaction are authorised by PutItem / UpdateItem, the
+        # check by ConditionCheckItem.
+        transact_items = [
+            {
+                "Put": {
+                    "TableName": table.name,
+                    "Item": item,
+                    "ConditionExpression": "attribute_not_exists(PK)",
+                }
+            },
+            *_donor_update_items(table.name, namespace_id, entity_id, resource, debits),
+            owner_check,
+        ]
         try:
-            if debits:
-                # The boto3 `Table` resource has no transaction call, so this
-                # goes through `table.meta.client`, which shares the resource's
-                # serializer: native values, exactly like `put_item` below.
-                # Put and Update inside a transaction are authorised by
-                # PutItem / UpdateItem, which the aggregator role already has
-                # (design §6) — no ConditionCheck.
-                client.transact_write_items(
-                    TransactItems=[
-                        {
-                            "Put": {
-                                "TableName": table.name,
-                                "Item": item,
-                                "ConditionExpression": "attribute_not_exists(PK)",
-                            }
-                        },
-                        *_donor_update_items(table.name, namespace_id, entity_id, resource, debits),
-                    ]
-                )
-            else:
-                table.put_item(
-                    Item=item,
-                    ConditionExpression="attribute_not_exists(PK)",
-                )
+            client.transact_write_items(TransactItems=transact_items)
             updated += 1
         except ClientError as e:
-            code = e.response["Error"]["Code"]
-            if code in ("ConditionalCheckFailedException", "TransactionCanceledException"):
-                # The client already created this shard, or a donor moved
-                # since the read. Either way the whole write is undone (the
-                # donor untouched) and the client creates the shard lazily.
-                if code == "TransactionCanceledException":
-                    logger.debug(
-                        "Clone transaction cancelled - left to the client",
-                        resource=resource,
-                        shard_id=target_shard,
-                        reasons=[
-                            reason.get("Code", "None")
-                            for reason in e.response.get("CancellationReasons", [])
-                        ],
-                    )
-                continue
-            raise
-        cloned.append(target_shard)
+            if e.response["Error"]["Code"] != "TransactionCanceledException":
+                raise
+            # The client already created this shard, a donor moved since the
+            # read, or the owner moved since the image (ADR-150). Either way
+            # the whole write is undone (the donor untouched) and the client
+            # creates the shard lazily. Never the entity id: an API key.
+            reasons = [
+                reason.get("Code", "None") for reason in e.response.get("CancellationReasons", [])
+            ]
+            if len(reasons) == len(transact_items) and reasons[-1] == "ConditionalCheckFailed":
+                logger.debug(
+                    "Clone skipped - the owner moved since the stream image",
+                    resource=resource,
+                    shard_id=target_shard,
+                )
+            else:
+                logger.debug(
+                    "Clone transaction cancelled - left to the client",
+                    resource=resource,
+                    shard_id=target_shard,
+                    reasons=reasons,
+                )
+            continue
         if quota_shares:
             created_clones.append(target_shard)
         # A later clone planning off the same donor sees what it has left.
@@ -2453,17 +2364,6 @@ def propagate_shard_count(
                 else s
                 for s in siblings[debit.limit_name]
             ]
-
-    if cloned:
-        _repair_clone_owner_stamps(
-            table,
-            namespace_id,
-            entity_id,
-            resource,
-            cloned,
-            _stored_pgen(base_item),
-            _stored_pinc(base_item),
-        )
 
     if created_clones:
         _repair_quota_clones(

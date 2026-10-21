@@ -17,6 +17,7 @@ from zae_limiter.exceptions import (
     LeaseExpiredError,
     NamespaceNotFoundError,
     NamespaceStateError,
+    PermissionDenied,
     RateLimitError,
     RateLimiterUnavailable,
     RateLimitExceeded,
@@ -417,6 +418,34 @@ class TestRateLimiterUnavailable:
         assert not isinstance(exc, RateLimitError)
 
 
+class TestPermissionDenied:
+    """Tests for PermissionDenied (#751)."""
+
+    def test_is_a_rate_limiter_unavailable(self) -> None:
+        """A BLOCK handler written for RateLimiterUnavailable still catches it."""
+        exc = PermissionDenied("denied")
+        assert isinstance(exc, RateLimiterUnavailable)
+        assert isinstance(exc, InfrastructureError)
+        assert not isinstance(exc, RateLimitError)
+
+    def test_keeps_the_context_fields(self) -> None:
+        cause = ConnectionError("denied")
+        exc = PermissionDenied(
+            "not authorized",
+            cause=cause,
+            stack_name="rate-limits",
+            entity_id="entity-1",
+            resource="gpt-4",
+        )
+        assert exc.cause is cause
+        assert (exc.stack_name, exc.entity_id, exc.resource) == (
+            "rate-limits",
+            "entity-1",
+            "gpt-4",
+        )
+        assert str(exc) == "not authorized [stack=rate-limits, entity=entity-1, resource=gpt-4]"
+
+
 class TestEntityNotFoundError:
     """Tests for EntityNotFoundError."""
 
@@ -730,6 +759,7 @@ class TestExceptionHierarchy:
     def test_infrastructure_subtree(self) -> None:
         """InfrastructureError subtree."""
         assert issubclass(RateLimiterUnavailable, InfrastructureError)
+        assert issubclass(PermissionDenied, RateLimiterUnavailable)
         assert issubclass(StackOperationError, InfrastructureError)
         assert issubclass(StackAlreadyExistsError, InfrastructureError)
         assert issubclass(InfrastructureNotFoundError, InfrastructureError)

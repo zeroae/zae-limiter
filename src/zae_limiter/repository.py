@@ -7,7 +7,7 @@ import random
 import secrets
 import time
 import warnings
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from aiobotocore.session import AioSession, get_session
@@ -157,6 +157,12 @@ def _stamped_pgen(item: dict[str, Any]) -> int | None:
     """The parent generation a bucket item carries (ADR-150), or None if none."""
     raw = item.get(schema.BUCKET_FIELD_PGEN, {}).get("N")
     return None if raw is None else int(raw)
+
+
+def _stamped_pinc(item: dict[str, Any]) -> str | None:
+    """The entity incarnation a bucket item carries (ADR-150), or None if none."""
+    raw = item.get(schema.BUCKET_FIELD_PINC, {}).get("S")
+    return raw if isinstance(raw, str) else None
 
 
 def _pin_string(alias: str, token: str, raw: str | None, values: dict[str, Any]) -> str:
@@ -377,6 +383,15 @@ class Repository:
         # Consulted only while the entity has an entry, so dropping that entry
         # still means "start cold".
         self._cascade_cache: dict[tuple[str, str, str], bool] = {}
+        # The newest owner stamp seen per (namespace, entity): (incarnation,
+        # parent generation), ADR-150. During a move's fan-out the entity's
+        # shards carry different stamps, and adopting each one as it is drawn
+        # would flip `_entity_cache` between the old and the new parent (and
+        # refund and re-debit on every flip). A stamp of the same incarnation
+        # and a lower generation is older than what the cache holds, so it
+        # neither moves the cached owner nor teaches `_cascade_cache`. Kept
+        # apart so `_entity_cache` keeps its shape. Shared with every scope.
+        self._owner_stamp_cache: dict[tuple[str, str], tuple[str | None, int]] = {}
         # The last bucket state seen per (namespace, entity, resource, shard),
         # used only to reject a request that cannot fit without a DynamoDB
         # call (ADR-147, #695). Shared with every namespace() scope.
@@ -735,6 +750,7 @@ class Repository:
         # Share mutable caches
         scoped._entity_cache = self._entity_cache
         scoped._cascade_cache = self._cascade_cache
+        scoped._owner_stamp_cache = self._owner_stamp_cache
         scoped._rejection_cache = self._rejection_cache
         scoped._namespace_cache = self._namespace_cache
         # Scoped repos start with no on_unavailable cache (each namespace
@@ -2059,7 +2075,7 @@ class Repository:
             return None
 
         entity = self._deserialize_entity(item)
-        self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
+        self._cache_owner_from_meta(entity_id, entity)
         return entity
 
     @clears_rejection_cache
@@ -2196,30 +2212,62 @@ class Repository:
         # per-resource policies learned under the old parent. The fan-out
         # relearns them for a parent, and with no parent nothing cascades.
         cache_key = (self._namespace_id, entity_id)
-        shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
-        self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, shards)
+        self._cache_owner_from_meta(entity_id, entity)
         for key in [k for k in self._cascade_cache if k[:2] == cache_key]:
             del self._cascade_cache[key]
 
-        count = 0
+        details: dict[str, Any] = {
+            "old_parent_id": old_parent,
+            "parent_id": parent_id,
+            "pgen": entity.parent_generation,
+        }
+        # The move is audited on every path. On the two error paths a failed
+        # audit write must not replace the fan-out's exception: the META
+        # record has moved, and only FanoutIncomplete tells the caller to
+        # re-run the same call to finish the restamp.
         try:
             count = await self._fanout_cascade(entity_id=entity_id)
         except FanoutIncomplete as e:
-            count = e.stamped
+            await self._audit_after_failed_fanout(
+                entity_id, principal, {**details, "buckets_stamped": e.stamped}
+            )
             raise
-        finally:
+        except Exception:
+            await self._audit_after_failed_fanout(
+                entity_id, principal, {**details, "buckets_stamped": 0}
+            )
+            raise
+        await self._log_audit_event(
+            action=AuditAction.ENTITY_PARENT_CHANGED,
+            entity_id=entity_id,
+            principal=principal,
+            details={**details, "buckets_stamped": count},
+        )
+        return count
+
+    async def _audit_after_failed_fanout(
+        self, entity_id: str, principal: str | None, details: dict[str, Any]
+    ) -> None:
+        """Audit a move whose fan-out failed, never raising (ADR-150).
+
+        The caller is about to re-raise the fan-out's own exception, which is
+        the one that says what to do next. A failed audit write is logged at
+        WARNING with the action and the error type — never the entity id,
+        routinely an API key — and swallowed.
+        """
+        try:
             await self._log_audit_event(
                 action=AuditAction.ENTITY_PARENT_CHANGED,
                 entity_id=entity_id,
                 principal=principal,
-                details={
-                    "old_parent_id": old_parent,
-                    "parent_id": parent_id,
-                    "pgen": entity.parent_generation,
-                    "buckets_stamped": count,
-                },
+                details=details,
             )
-        return count
+        except Exception as audit_error:
+            logger.warning(
+                "audit event %s was not written after an incomplete move (%s)",
+                AuditAction.ENTITY_PARENT_CHANGED,
+                type(audit_error).__name__,
+            )
 
     async def _require_parent_move_readers(self) -> None:
         """Refuse a move the stack cannot keep (ADR-150).
@@ -2636,7 +2684,7 @@ class Repository:
         cache_key = (self._namespace_id, entity_id)
         existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if entity is not None:
-            self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
+            self._cache_owner_from_meta(entity_id, entity)
         else:
             self._entity_cache[cache_key] = (False, None, existing_shards)
         return entity, buckets
@@ -3032,6 +3080,41 @@ class Repository:
             (``sched`` and ``rsched``).
         """
         return schema.explicit_schedule_overrides(state.sched, state.reset_sched)
+
+    def build_owner_check(
+        self, entity_id: str, *, exists: bool, pgen: int | None, pinc: str | None
+    ) -> dict[str, Any]:
+        """Build the ``ConditionCheck`` that pins a bucket create to its owner's META (ADR-150).
+
+        Rides in the create's own transaction: the owner's META must still
+        hold the parent generation and incarnation the create read (or still
+        be absent, when the read found none), so a move landing between the
+        read and the create cancels it instead of leaving the old parent on a
+        new bucket. Needs ``dynamodb:ConditionCheckItem``. Writes nothing.
+
+        Args:
+            entity_id: The owner whose bucket the transaction creates.
+            exists: Whether the create's read found the owner's META.
+            pgen: The parent generation that read returned.
+            pinc: The incarnation that read returned.
+        """
+        expression, names, values = schema.owner_meta_condition(exists=exists, pgen=pgen, pinc=pinc)
+        check: dict[str, Any] = {
+            "TableName": self.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_meta()},
+            },
+            "ConditionExpression": expression,
+        }
+        if names:
+            check["ExpressionAttributeNames"] = names
+        if values:
+            check["ExpressionAttributeValues"] = {
+                token: {"N": str(value)} if isinstance(value, int) else {"S": value}
+                for token, value in values.items()
+            }
+        return {"ConditionCheck": check}
 
     def build_composite_create(
         self,
@@ -3838,31 +3921,6 @@ class Repository:
                 await asyncio.sleep(delay)
         return await client.update_item(**kwargs)
 
-    def build_vu_reset(self, entity_id: str, resource: str, shard_id: int = 0) -> dict[str, Any]:
-        """Build an UpdateItem that forces one materialising pass (#679).
-
-        ``vu = 0`` fails the speculative condition, so the next acquire takes the
-        slow path, whose rf-locked write clears ``vu`` again — the mechanism the
-        limit-change sync uses after a capacity shrink (#222 Task 13). Used after
-        a created bucket's owner check failed (ADR-150), so the slow pass
-        re-stamps the owner from META.
-        """
-        return {
-            "Update": {
-                "TableName": self.table_name,
-                "Key": {
-                    "PK": {
-                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
-                    },
-                    "SK": {"S": schema.sk_state()},
-                },
-                "UpdateExpression": "SET #vu = :zero",
-                "ConditionExpression": "attribute_exists(PK)",
-                "ExpressionAttributeNames": {"#vu": schema.BUCKET_FIELD_VU},
-                "ExpressionAttributeValues": {":zero": {"N": "0"}},
-            }
-        }
-
     async def transact_write(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
         """Execute a write, using single-item API when possible to halve WCU cost.
 
@@ -4067,8 +4125,15 @@ class Repository:
                         child_result.shard_count,
                         meta=(child_result.cascade, child_result.parent_id),
                         pgen=child_result.pgen,
+                        pinc=child_result.pinc,
                     )
-                else:
+                if self._stamp_is_outdated(entity_id, child_result.pinc, child_result.pgen):
+                    # A shard the move's fan-out has not reached yet (ADR-150):
+                    # its stamp is older than the cache's, so the parent this
+                    # path debited is the right one, and nothing is refunded.
+                    child_result.cascade = cascade_cached
+                    child_result.parent_id = parent_id_cached
+                elif not child_result.success:
                     # A failure image (ALL_OLD) carries the item's own stamp,
                     # and a stamp with a parent_id is this resource's policy
                     # (ADR-146): keep it, so an exhausted child whose policy
@@ -4104,7 +4169,15 @@ class Repository:
                 result.shard_count,
                 meta=(result.cascade, result.parent_id),
                 pgen=result.pgen,
+                pinc=result.pinc,
             )
+        if cache_entry is not None and self._stamp_is_outdated(entity_id, result.pinc, result.pgen):
+            # An older stamp than the cache's (ADR-150): the cached owner is
+            # the one to cascade to, not the one a not-yet-restamped shard names.
+            result.cascade = self._cascade_cache.get(
+                (self._namespace_id, entity_id, resource), cache_entry[0]
+            )
+            result.parent_id = cache_entry[1]
         return result
 
     async def _speculative_consume_single(
@@ -4259,6 +4332,7 @@ class Repository:
                 shard_id=shard_id,
                 shard_count=shard_count,
                 pgen=_stamped_pgen(item),
+                pinc=_stamped_pinc(item),
             )
 
         except ClientError as e:
@@ -4286,6 +4360,7 @@ class Repository:
                     old_cascade = old_item.get("cascade", {}).get("BOOL", False)
                     old_parent_id = old_item.get("parent_id", {}).get("S")
                     old_pgen = _stamped_pgen(old_item)
+                    old_pinc = _stamped_pinc(old_item)
                     # Keep the cached shard_count current from the failure
                     # image so later draws cover every shard (issue #439); the
                     # image also carries cascade/parent_id, so a cold cache
@@ -4296,6 +4371,7 @@ class Repository:
                         old_shard_count,
                         meta=(old_cascade, old_parent_id),
                         pgen=old_pgen,
+                        pinc=old_pinc,
                     )
 
                     # Disabled wins over every other classification: retrying on
@@ -4309,6 +4385,7 @@ class Repository:
                             shard_id=shard_id,
                             shard_count=old_shard_count,
                             pgen=old_pgen,
+                            pinc=old_pinc,
                             failure_reason=SpeculativeFailureReason.DISABLED,
                         )
 
@@ -4340,6 +4417,7 @@ class Repository:
                             shard_id=shard_id,
                             shard_count=old_shard_count,
                             pgen=old_pgen,
+                            pinc=old_pinc,
                             failure_reason=SpeculativeFailureReason.SCHEDULE_BOUNDARY,
                         )
 
@@ -4369,6 +4447,7 @@ class Repository:
                         shard_count=old_shard_count,
                         failure_reason=reason,
                         pgen=old_pgen,
+                        pinc=old_pinc,
                     )
                 else:
                     return SpeculativeResult(
@@ -4386,6 +4465,7 @@ class Repository:
         *,
         meta: tuple[bool, str | None] | None = None,
         pgen: int | None = None,
+        pinc: str | None = None,
     ) -> int:
         """Record an observed shard_count in the entity cache, monotonically.
 
@@ -4395,13 +4475,22 @@ class Repository:
         the draw range and stamp the next client-created shard with the
         lowered count (issue #439). ``meta`` supplies ``(cascade, parent_id)``
         for a new entry; without it an unknown entity is left uncached.
-        ``pgen`` is the parent generation the same item carries (ADR-150), or
-        None when it carries none.
+        ``pgen`` / ``pinc`` are the parent generation and incarnation the same
+        item carries (ADR-150), or None when it carries none. A stamp older
+        than the newest this process has seen for the entity (same
+        incarnation, lower generation: a shard a move's fan-out has not
+        reached) leaves the cached owner alone and teaches no policy; any
+        other stamp with a generation becomes the newest seen.
 
         Returns:
             The count now cached (``observed`` when nothing was cached).
         """
         cache_key = (self._namespace_id, entity_id)
+        if meta is not None and pgen is not None:
+            if self._stamp_is_outdated(entity_id, pinc, pgen):
+                meta = None
+            else:
+                self._owner_stamp_cache[cache_key] = (pinc, pgen)
         entry = self._entity_cache.get(cache_key)
         if entry is None:
             if meta is None:
@@ -4422,6 +4511,36 @@ class Repository:
             # it for a parent from its child's view (#684), so it teaches nothing.
             self._cascade_cache[(self._namespace_id, entity_id, resource)] = meta[0]
         return count
+
+    def _cache_owner_from_meta(self, entity_id: str, entity: Entity) -> None:
+        """Teach the entity cache the owner a META record names, unless it is older (ADR-150).
+
+        An eventually consistent META read can return a replica from before a
+        move: the same incarnation at a lower parent generation than this
+        process has already seen. Adopting it would put the old parent back,
+        and the warm path would then debit the old parent, be overruled by the
+        child's item and refund it (+2 WCU, never an over-admission). Such a
+        read keeps the cached cascade and parent and records nothing; any
+        other read replaces them and becomes the newest stamp seen. Shard
+        counts are kept either way.
+        """
+        if self._stamp_is_outdated(entity_id, entity.incarnation, entity.parent_generation):
+            return
+        cache_key = (self._namespace_id, entity_id)
+        shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
+        self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, shards)
+        self._owner_stamp_cache[cache_key] = (entity.incarnation, entity.parent_generation)
+
+    def _stamp_is_outdated(self, entity_id: str, pinc: str | None, pgen: int | None) -> bool:
+        """Whether an item's owner stamp is older than the newest seen (ADR-150).
+
+        Older means the same incarnation and a lower parent generation. A
+        stamp of another incarnation is not comparable, and is never older.
+        """
+        if pgen is None:
+            return False
+        newest = self._owner_stamp_cache.get((self._namespace_id, entity_id))
+        return newest is not None and newest[0] == pinc and pgen < newest[1]
 
     def _remember_bucket_image(
         self,
@@ -8587,53 +8706,6 @@ class Repository:
             # already stamped it — nothing to restamp either way.
             return False
         return True
-
-    async def repair_created_owner_stamp(
-        self,
-        entity_id: str,
-        resource: str,
-        shard_id: int,
-        stamped_pgen: int,
-        stamped_pinc: str | None = None,
-    ) -> bool:
-        """Restamp a bucket just created from a META read a move has overtaken (ADR-150).
-
-        One strongly consistent read of the owner's META (1 RCU). When its
-        parent generation still equals the one the create stamped, nothing is
-        written. Otherwise the bucket gets the move's stamp — the policy
-        resolved for this resource (3 consistent reads) and the new parent —
-        through the fan-out's own pinned write, so a newer stamp is never
-        lowered.
-
-        Returns:
-            Whether the bucket was restamped.
-        """
-        owner = await self.get_entity(entity_id, consistent_read=True)
-        if owner is None or (
-            owner.parent_generation == stamped_pgen and stamped_pinc in (None, owner.incarnation)
-        ):
-            return False
-        access = await self.resolve_access(entity_id, resource, consistent_read=True)
-        cascade = effective_cascade(access.cascade, owner)
-        await self._stamp_bucket_cascade(
-            schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id),
-            cascade,
-            owner.parent_id,
-            owner.parent_generation,
-            owner.incarnation,
-        )
-        self._cascade_cache[(self._namespace_id, entity_id, resource)] = cascade
-        return True
-
-    def start_background(self, work: Callable[[], Coroutine[Any, Any, None]]) -> asyncio.Task[None]:
-        """Run ``work()`` as a background task and return its handle (ADR-150).
-
-        The lease's post-create owner check runs this way, overlapping the
-        caller's block. The sync twin spawns it per ``parallel_mode``
-        (``SyncRepository._spawn``). The caller must join the handle.
-        """
-        task: asyncio.Task[None] = asyncio.create_task(work())
-        return task
 
     async def restamp_owner_if_current(
         self, entity_id: str, resource: str, shard_id: int, incarnation: str

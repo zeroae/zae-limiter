@@ -377,8 +377,9 @@ class TestSlowPathPlanning:
 
         await _admit(limiter)
 
-        # user/search + org/search + user/budget, one transaction.
-        assert writes == [3]
+        # user/search + org/search + user/budget, one transaction, with a
+        # META check for each owner whose bucket it creates (ADR-150).
+        assert writes == [5]
 
     async def test_a_plan_over_the_item_limit_is_re_planned_without_moves(self, repo, monkeypatch):
         limiter = RateLimiter(repository=repo, speculative_writes=False)
