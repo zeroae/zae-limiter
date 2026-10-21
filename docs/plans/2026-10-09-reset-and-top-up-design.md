@@ -30,7 +30,7 @@
 | A reset or roll sets `tk = C_eff // shard_count` and stamps `gc` | `BucketState.reset_target_milli`, `RateLimiter._apply_reset_edge` |
 | A calendar quota's period is current iff no reset edge falls after `rf` | `models.quota_period_is_current` |
 | `rsa` with no `ws` is a legal state; the next pass opens a window | `RateLimiter._open_window_if_elapsed`, `processor._window_in_force` |
-| A credit above the ceiling is clamped by stamping `vu = 0` | `Lease._clamps_for_credits_above_ceiling`, `Repository.build_vu_reset` (#679) |
+| A credit above the ceiling trims itself: it is conditioned on the ceiling and its inputs, and one that would overflow is re-issued with `vu = 0` in the same write | `lease.write_credit`, `Repository._credit_limit_terms` (#730, which replaced #679's `build_vu_reset`) |
 | Resource-scoped shard discovery already exists | `Repository._discover_entity_bucket_pks(entity_id, resource)`, `_entity_bucket_items` |
 | Audit actions today: `entity_created`, `entity_deleted`, `limits_set`, `limits_deleted` | `models.AuditAction` |
 | Version gate helper, shared by `reset_after` and cascade policy | `Repository._require_readers(minimum, refusal)` |
@@ -310,7 +310,7 @@ on every shard.
 | `BucketState.ceiling_milli` (vendored stub) | `+ tu` for a quota |
 | `check_availability` `min(total, capacity)` clamp (`limiter.py`) | Capacity + Σ `tu`, or the purchase is hidden from the display |
 | `Limit.per_shard` / 429 statuses | Report `C // gc + tu` on the drawn shard |
-| `#679` credit clamp | Uses `ceiling_milli`, so it inherits the change |
+| #730 self-trimming credit | Uses `ceiling_milli`, so it inherits the change, and pins `b_{q}_tu` beside the ceiling's other inputs |
 | Fast path | **Unchanged.** Pure `ADD`; never reads `tu` |
 
 A pre-0.17 client or aggregator clamps a quota to `C // gc` on its next pass. That destroys
@@ -328,10 +328,11 @@ writes `tu` must pass `_require_readers("0.17.0", …)` and ratchet `client_min_
   `client_min_version` ratchet. The residual is a pre-0.17 client that ignores the minimum,
   bounded by one `tu` per shard per period.
 - The same stale-ceiling problem exists inside one process: a lease that read `tu` holds it in
-  memory after a reset or period edge removed it. Its #679 check after a credit therefore
-  compares against `C // gc` **without** `tu`, forcing a clamping pass (which reads the real
-  `tu`) whenever a credit lands above the base ceiling (PR #720 review: 15 admitted in a new
-  period of 10).
+  memory after a reset or period edge removed it. A refund therefore pins `b_{q}_tu` beside the
+  other inputs of its ceiling, so a moved top-up sends it to the trimmed write (`vu = 0`) and
+  the next slow pass clamps it. Every calendar quota refund also pins the operator reset count
+  `b_{q}_rn`, so one across a reset is dropped outright (PR #720 review: 15 admitted in a new
+  period of 10; Stack C review F1, F2).
 
 ### 4.5 Missing bucket
 
@@ -348,7 +349,7 @@ writes `tu` must pass `_require_readers("0.17.0", …)` and ratchet `client_min_
 | Aggregator proactive doubling / propagation | Changes `shard_count` → our pin fails → re-plan at the new `S` |
 | Quota shard create/seed (ADR-145 move) | Donor debit pinned on `gc` and period: if we changed them it fails and re-plans; else it moves post-reset tokens (a move, not a mint). A create landing after our commit sees `gc = S` siblings and plans correctly (validator finding 3, interleaving 3) |
 | Window rollover fan-out | §2.1 ended-and-applied `ws` blocks a pre-reset fan-out |
-| `adjust()` / rollback credit | `ADD`; kept; a credit above the ceiling is clamped by the forced pass (`vu = 0`). The ceiling it is checked against takes the `tu` the credit write returns (`ALL_NEW` when the lease read one), never the lease's in-memory `tu`: a refund under a live top-up forces nothing, one after a reset removed `tu` forces the clamp. #730's self-trimming refund computes the same ceiling |
+| `adjust()` / rollback credit | `ADD`; kept. #730's self-trimming credit: conditioned on landing at or below its ceiling and on that ceiling's inputs, `b_{q}_tu` included; a moved input re-issues it with `vu = 0` and the next pass clamps it. A calendar quota's credit also pins `b_{q}_rn` and is dropped across an operator reset, like one across an edge |
 | Param sync (`set_limits`) | Does not move `rf`; it SETs `cp`/`vu = 0`. Ordering either way ends in one materialising pass at the newest params |
 | Disable stamp | Independent attribute; untouched |
 
