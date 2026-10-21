@@ -108,6 +108,45 @@ def _is_custom_config(config_source: str | None) -> bool:
     return config_source in _ENTITY_CONFIG_SOURCES
 
 
+def _item_overrules_debited_parent(result: "SpeculativeResult") -> bool:
+    """Whether the child's item says the warm path's parent write was wrong.
+
+    The warm parallel path debits the parent the entity cache guessed. The
+    child's own item is the authority on both whether this resource cascades
+    (ADR-146) and to which parent (ADR-150): when its stamp is a policy and it
+    either does not cascade or names a different parent from the one debited,
+    that debit must be refunded.
+    """
+    if not result.stamp_is_policy:
+        return False
+    if not (result.cascade and result.parent_id):
+        return True
+    return result.debited_parent_id is not None and result.debited_parent_id != result.parent_id
+
+
+def _failed_only_on_its_stamp(result: "SpeculativeResult", consume: dict[str, int]) -> bool:
+    """Whether a speculative failure image shows the request would have fit.
+
+    The write lost a condition other than its balances: in practice a
+    ``vu = 0`` that only trims (#679, and the ADR-150 owner-check fallback),
+    which the repository classifies as exhausted so a rejection stays one
+    write. The bucket needs a slow pass on **this** shard to clear the stamp;
+    another shard cannot do it.
+    """
+    if not result.old_buckets:
+        return False
+    for bucket in result.old_buckets:
+        needed = (
+            1000
+            if bucket.limit_name == WCU_LIMIT_NAME
+            else consume.get(bucket.limit_name, 0) * 1000
+        )
+        if bucket.tokens_milli < needed:
+            return False
+    names = {b.limit_name for b in result.old_buckets}
+    return all(name in names for name in consume)
+
+
 def _reader_window_end(limit: Limit, bucket: BucketState) -> int | None:
     """When a read-only view should treat ``bucket``'s duration window as over (ADR-139).
 
@@ -518,6 +557,42 @@ class RateLimiter:
         await self._ensure_initialized()
         return await self._repository.get_children(parent_id)
 
+    async def set_parent(
+        self,
+        entity_id: str,
+        parent_id: str | None,
+        *,
+        principal: str | None = None,
+    ) -> int:
+        """
+        Move an entity to a new parent, or to no parent (ADR-150).
+
+        Takes effect on the next acquire in every process: the entity's bucket
+        items are restamped, and a process whose cache still names the old
+        parent learns the new one from the item on its next call, refunding
+        the old parent. Consumption already charged to the old parent, including
+        by leases open across the move, stays there. Whether the entity debits
+        the new parent follows its cascade policy (ADR-146) or its own
+        ``cascade`` flag, which a move does not change.
+
+        Args:
+            entity_id: Entity to move.
+            parent_id: The new parent, which must exist, or None for no parent.
+            principal: Caller identity for audit logging (optional).
+
+        Returns:
+            Number of bucket items restamped.
+
+        Raises:
+            ValidationError: The move would make the entity its own ancestor.
+            EntityNotFoundError: The entity or the new parent does not exist.
+            VersionMismatchError: The stack's Lambdas predate parent moves.
+            FanoutIncomplete: The move landed but restamping stopped part-way;
+                repeating the call finishes it.
+        """
+        await self._ensure_initialized()
+        return await self._repository.set_parent(entity_id, parent_id, principal=principal)
+
     async def get_audit_events(
         self,
         entity_id: str,
@@ -877,6 +952,11 @@ class RateLimiter:
         except Exception:
             await lease._rollback()
             raise
+        finally:
+            # The owner check of any bucket the commit created (ADR-150) runs
+            # in the background from the moment the commit landed; join it so
+            # it never outlives the lease. It cannot raise.
+            await lease._await_owner_checks()
 
     async def _try_speculative_acquire(
         self,
@@ -975,9 +1055,10 @@ class RateLimiter:
 
             # Child failed — check if parent was also tried (parallel path)
             if result.parent_result is not None and result.parent_result.success:
-                assert result.parent_id is not None  # set by repository cache path
+                debited = result.debited_parent_id or result.parent_id
+                assert debited is not None  # set by repository cache path
                 await self._compensate_speculative(
-                    result.parent_id,
+                    debited,
                     resource,
                     consume,
                     result.parent_result.shard_id,
@@ -998,10 +1079,14 @@ class RateLimiter:
             # Only when the child cascades on this resource (ADR-146): the
             # parallel write followed the cache's guess, and a child whose own
             # stamp says it does not cascade is not answerable to that parent.
+            # Nor to one it has been moved away from (ADR-150): the parallel
+            # write went to the cached parent, and when the item names another
+            # one this falls through to the child's own failure.
             if (
                 result.cascade
                 and result.parent_result is not None
                 and result.parent_result.failure_reason == SpeculativeFailureReason.DISABLED
+                and result.debited_parent_id in (None, result.parent_id)
             ):
                 assert result.parent_id is not None  # set by repository cache path
                 raise ResourceDisabled(
@@ -1031,6 +1116,18 @@ class RateLimiter:
                     entity_id, resource, result, now_ms
                 )
                 return None, new_shard, new_count, parent_hint
+
+            # A sharded bucket whose write failed only on its stamp (a trimming
+            # `vu = 0`: #679, or the ADR-150 owner-check fallback) needs the
+            # slow path on this same shard, the only pass that clears it. The
+            # retry below would send it elsewhere, and the stamped shard would
+            # keep failing every fast-path write that draws it.
+            if (
+                result.shard_count > 1
+                and result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
+                and _failed_only_on_its_stamp(result, consume)
+            ):
+                return None, result.shard_id, result.shard_count, parent_hint
 
             # Shard retry: if multi-shard and app limit exhausted, try another shard
             if (
@@ -1113,11 +1210,18 @@ class RateLimiter:
         # keep a child-only lease. Once per (process, entity, resource): the
         # write just taught the cache the item's policy.
         #
-        # Only a stamp carrying `parent_id` is a policy: the owner stamp always
-        # writes both. `cascade=False` with no `parent_id` is a bucket an older
-        # version created for a parent from its child's view (#684); trusting
-        # it would stop the cascade, so the cache's answer stands, as before.
-        if result.parent_result is not None and not result.cascade and result.parent_id:
+        # The item also overrules the cache on WHICH parent (ADR-150): after a
+        # move, a process whose cache predates it debited the old parent. That
+        # debit is refunded too, and the parent the item names is debited by
+        # the sequential write below, which is the cold path's. Once per
+        # (process, entity): the write just taught the cache the item's parent.
+        #
+        # Only a stamp carrying `parent_id` or a parent generation is a policy:
+        # the owner stamp always writes both. `cascade=False` with neither is a
+        # bucket an older version created for a parent from its child's view
+        # (#684); trusting it would stop the cascade, so the cache's answer
+        # stands, as before.
+        if result.parent_result is not None and _item_overrules_debited_parent(result):
             parent_result = result.parent_result
             if parent_result.success and parent_result.buckets:
                 await self._compensate_speculative(
@@ -1128,6 +1232,10 @@ class RateLimiter:
                     parent_result.buckets,
                 )
             result.parent_result = None
+            # Refunded: from here on the only parent this call can debit is
+            # the item's. Every later use (the parent-only acquire, a disabled
+            # parent's 403, a wcu doubling) must name it, never the old one.
+            result.debited_parent_id = None
 
         # Handle parent result from parallel path (issue #318)
         if result.parent_result is not None:
@@ -1269,9 +1377,11 @@ class RateLimiter:
             RateLimitExceeded: If parent is truly exhausted.
         """
         assert result.parent_result is not None  # caller checks this
-        assert result.parent_id is not None  # set by repository cache path
+        # The parent the nested write went to: on the warm path the cached one
+        # (ADR-150), which the item names too unless the caller refunded it.
+        parent_id = result.debited_parent_id or result.parent_id
+        assert parent_id is not None  # set by repository cache path
         parent_result = result.parent_result
-        parent_id = result.parent_id
         parent_shard = parent_result.shard_id
         parent_shard_count = parent_result.shard_count
         # Same rule as the child-failure branch: only a MISSING parent shard
@@ -2330,6 +2440,8 @@ class RateLimiter:
                     ),
                     _parent_id=parent_entity.parent_id if parent_entity else None,
                     _stamp_owner=parent_entity is not None and parent_policy is not None,
+                    _parent_generation=(parent_entity.parent_generation if parent_entity else None),
+                    _parent_incarnation=(parent_entity.incarnation if parent_entity else None),
                     _boundary_ms=parent_boundary_ms,
                     _reset_edge_ms=parent_reset_edge_ms,
                     _window_start_ms=parent_new_ws,
@@ -3325,6 +3437,8 @@ class RateLimiter:
                         _cascade=cascades.get(eid, False),
                         _parent_id=owner.parent_id if owner else None,
                         _stamp_owner=owner is not None,
+                        _parent_generation=owner.parent_generation if owner else None,
+                        _parent_incarnation=owner.incarnation if owner else None,
                         _declared=status is not None,
                         _boundary_ms=boundary_ms,
                         _reset_edge_ms=reset_edge_ms,
@@ -3482,9 +3596,9 @@ class RateLimiter:
                     entry.state.total_consumed_milli -= entry.consumed * 1000
                 entry.consumed = 0
         try:
-            await Lease(
-                repository=self._repository, entries=entries, _carriers=carriers
-            )._commit_initial()
+            lease = Lease(repository=self._repository, entries=entries, _carriers=carriers)
+            await lease._commit_initial()
+            await lease._await_owner_checks()
         except Exception as exc:
             # Never the entity id: it is routinely an API key
             # (py/clear-text-logging-sensitive-data).

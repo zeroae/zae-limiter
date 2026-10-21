@@ -6,6 +6,8 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
+import concurrent.futures
+import functools
 import logging
 import random
 import time
@@ -21,6 +23,7 @@ from .bucket import (
     try_consume,
     window_end_in_force,
 )
+from .cancellation import sync_caller_is_cancelled
 from .exceptions import LeaseExpiredError, RateLimitExceeded, ValidationError
 from .models import (
     BucketState,
@@ -38,6 +41,7 @@ from .schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
     BUCKET_FIELD_GC,
+    BUCKET_FIELD_PINC,
     BUCKET_FIELD_RF,
     BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
@@ -83,6 +87,8 @@ class LeaseEntry:
     _cascade: bool = False
     _parent_id: str | None = None
     _stamp_owner: bool = False
+    _parent_generation: int | None = None
+    _parent_incarnation: str | None = None
     _declared: bool = True
     _boundary_ms: int | None = None
     _reset_edge_ms: int | None = None
@@ -422,6 +428,10 @@ class SyncLease:
     _unknown_keys: frozenset[str] = frozenset()
     _carriers: list[LeaseEntry] = field(default_factory=list)
     _cache_mark: int | None = None
+    _owner_task: concurrent.futures.Future[None] | None = field(default=None, repr=False)
+    _owner_checks: list[tuple[str, str, int, int, str | None]] = field(
+        default_factory=list, repr=False
+    )
     _declared_names: frozenset[str] = field(init=False, default=frozenset())
     _resources: tuple[str, ...] = ()
     _unknown_keys_by_resource: dict[str, frozenset[str]] = field(default_factory=dict)
@@ -760,6 +770,7 @@ class SyncLease:
         items: list[dict[str, Any]] = []
         window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]] = {}
         quota_creates: list[tuple[str, str, int, int, list[str]]] = []
+        owner_creates: list[tuple[str, str, int, int, str | None]] = []
         written_images: list[
             tuple[tuple[str, str, int], list[BucketState], int, int | None, tuple[bool, str | None]]
         ] = []
@@ -794,6 +805,8 @@ class SyncLease:
                         shard_count=first_entry._shard_count,
                         vu=vu,
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
+                        pgen=owner_entry._parent_generation if owner_entry is not None else None,
+                        pinc=owner_entry._parent_incarnation if owner_entry is not None else None,
                     )
                 )
                 created = items[-1].get("Put") if isinstance(items[-1], dict) else None
@@ -808,6 +821,16 @@ class SyncLease:
                 if created:
                     window_fanouts[entity_id, resource, shard_id, first_entry._shard_count] = (
                         created
+                    )
+                if owner_entry is not None and owner_entry._parent_generation is not None:
+                    owner_creates.append(
+                        (
+                            entity_id,
+                            resource,
+                            shard_id,
+                            owner_entry._parent_generation,
+                            owner_entry._parent_incarnation,
+                        )
                     )
                 created_quotas = [e.limit.name for e in group_entries if e.limit.is_quota]
                 if shard_id != 0 and created_quotas:
@@ -952,6 +975,12 @@ class SyncLease:
                         owner=(owner_entry._cascade, owner_entry._parent_id)
                         if owner_entry is not None
                         else None,
+                        owner_pgen=owner_entry._parent_generation
+                        if owner_entry is not None
+                        else None,
+                        owner_pinc=owner_entry._parent_incarnation
+                        if owner_entry is not None
+                        else None,
                     )
                 )
                 if windows:
@@ -998,6 +1027,19 @@ class SyncLease:
                         raise QuotaMoveLostError(contended=True) from exc
                     raise _contention_rejection(self.entries, now_ms) from exc
                 raise
+        if (
+            condition_failed
+            and condition_exc is not None
+            and self._claim_owner_stamps(groups, condition_exc)
+        ):
+            try:
+                repo.transact_write(items)
+                condition_failed = False
+                condition_exc = None
+            except Exception as exc:
+                if not _is_condition_check_failure(exc):
+                    raise
+                condition_exc = exc
         if condition_failed and donor_items:
             raise QuotaMoveLostError from condition_exc
         reissued_creates: set[tuple[str, str, int]] = set()
@@ -1129,13 +1171,20 @@ class SyncLease:
         self._record_written_states(
             groups, [] if condition_failed else written_images, condition_failed
         )
-        if not condition_failed:
-            self._repair_created_quota_shards(quota_creates)
-            self._fan_out_windows(window_fanouts)
-        elif reissued_creates:
-            self._repair_created_quota_shards(
-                [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
-            )
+        if condition_failed:
+            owner_creates = [c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates]
+        try:
+            if not condition_failed:
+                self._repair_created_quota_shards(quota_creates)
+                self._fan_out_windows(window_fanouts)
+            elif reissued_creates:
+                self._repair_created_quota_shards(
+                    [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
+                )
+        except BaseException:
+            self._abandon_owner_checks(owner_creates)
+            raise
+        self._start_owner_checks(owner_creates)
 
     def _record_written_states(
         self,
@@ -1224,6 +1273,181 @@ class SyncLease:
                     shard_id,
                     exc_info=True,
                 )
+
+    def _claim_owner_stamps(
+        self, groups: dict[tuple[str, str, int], list[LeaseEntry]], exc: Exception
+    ) -> bool:
+        """Claim buckets whose owner pin was lost to another incarnation (ADR-150).
+
+        The rf-locked owner stamp only overwrites a stamp of its own
+        incarnation, since this pass's META read may be a deleted
+        predecessor's. A bucket a predecessor left behind then refuses every
+        slow pass. Each failed item whose image carries a different ``pinc``
+        is settled by one strongly consistent META read
+        (:meth:`SyncRepository.restamp_owner_if_current`): restamped when this
+        pass's incarnation is current, left alone when this pass read a stale
+        record. When a bucket was claimed the caller re-sends its write once;
+        otherwise this acquire proceeds on the consumption-only retry with the
+        parents it planned: a pass that read a predecessor's record debits
+        that predecessor's parent once, like any lease opened before a move
+        (§7). Failures are logged without the entity id and swallowed.
+
+        Returns:
+            Whether any bucket was claimed.
+        """
+        restamp = getattr(self.repository, "restamp_owner_if_current", None)
+        if restamp is None:
+            return False
+        claimed = False
+        images = _retry_failure_images(exc, list(groups))
+        for key, group_entries in groups.items():
+            owner = next((e for e in group_entries if e._stamp_owner), None)
+            image = images.get(key)
+            if owner is None or owner._parent_incarnation is None or image is None:
+                continue
+            stored = image.get(BUCKET_FIELD_PINC, {}).get("S")
+            if stored is None or stored == owner._parent_incarnation:
+                continue
+            try:
+                claimed = restamp(*key, owner._parent_incarnation) or claimed
+            except Exception:
+                logger.warning(
+                    "could not claim a predecessor's bucket for resource=%s shard=%d",
+                    key[1],
+                    key[2],
+                    exc_info=True,
+                )
+        return claimed
+
+    def _start_owner_checks(self, checks: list[tuple[str, str, int, int, str | None]]) -> None:
+        """Start the owner checks of the buckets this commit created (ADR-150).
+
+        A background task, started the moment the commit lands: the check is
+        not needed for this acquire, only for the next one on those buckets,
+        so its strongly consistent read runs while the caller's block does. A
+        backend that cannot run one in the background runs the checks here.
+        """
+        if not checks:
+            return
+        start = getattr(self.repository, "start_background", None)
+        if start is None:
+            self._repair_created_owner_stamps(checks)
+            return
+        self._owner_checks = list(checks)
+        self._owner_task = start(functools.partial(self._repair_created_owner_stamps, checks))
+
+    def _await_owner_checks(self) -> None:
+        """Join the owner-check task this lease started, if any (ADR-150).
+
+        Called by ``SyncRateLimiter.acquire`` on exit, whether the caller's block
+        succeeded or raised, so the task never outlives the lease. A failure is
+        logged at WARNING without the entity id, routinely an API key, and can
+        neither fail the acquire nor mask the caller's exception.
+
+        A cancelled task never finishes its checks: the caller was cancelled
+        while joining (the join cancels the task with it), or someone else
+        cancelled the task, or, in the sync twin, its greenlet was killed.
+        Each bucket they covered then gets the safety net a failed check uses,
+        ``vu = 0``, so its next acquire takes the pinned slow path; a check
+        that had already finished costs one extra slow pass. The cancellation
+        is re-raised only when it is aimed at the caller
+        (:func:`~zae_limiter.cancellation.caller_is_cancelled`); otherwise the
+        caller's own exception, or its normal exit, stands. If the caller's own
+        code suppressed a cancellation without ``Task.uncancel()``,
+        ``cancelling()`` stays above 0 and such a cancel is re-raised in place of
+        the caller's exception; ``vu = 0`` still runs, so nothing is
+        over-admitted. The sync twin never reports a cancellation.
+
+        ``KeyboardInterrupt`` and ``SystemExit`` skip the ``vu = 0`` writes and
+        re-raise at once: the process is going down, and in the sync twin the
+        writes would hold Ctrl-C for their network round trips.
+        """
+        if self._owner_task is None:
+            return
+        try:
+            self._owner_task.result()
+        except concurrent.futures.CancelledError:
+            self._owner_task.cancel()
+            self._abandon_owner_checks(self._owner_checks)
+            if sync_caller_is_cancelled():
+                raise
+            logger.warning("owner stamp checks were cancelled; forced a slow pass instead")
+        except Exception:
+            logger.warning("owner stamp checks failed", exc_info=True)
+        except (KeyboardInterrupt, SystemExit):
+            self._owner_task.cancel()
+            raise
+        except BaseException:
+            self._owner_task.cancel()
+            self._abandon_owner_checks(self._owner_checks)
+            raise
+        finally:
+            self._owner_task = None
+            self._owner_checks = []
+
+    def _abandon_owner_checks(self, checks: list[tuple[str, str, int, int, str | None]]) -> None:
+        """Force each created bucket whose check will not run onto the slow path (ADR-150)."""
+        for entity_id, resource, shard_id, _stamped, _incarnation in checks:
+            self._force_owner_restamp(entity_id, resource, shard_id)
+
+    def _repair_created_owner_stamps(
+        self, owner_creates: list[tuple[str, str, int, int, str | None]]
+    ) -> None:
+        """Re-check each owner stamp this commit created against its META (ADR-150).
+
+        A create ``Put`` cannot pin the parent generation the way the
+        rf-locked write does: there is no item to compare with. One that read
+        META before a move and lands after the move's fan-out would keep the
+        old parent, and the next process to touch the bucket would learn it
+        from the item. So after the write, one strongly consistent read of the
+        owner's META per created bucket (1 RCU, once per shard created), and
+        a pinned restamp only when a move landed in between
+        (:meth:`SyncRepository.repair_created_owner_stamp`). A move whose META
+        write comes after this read runs its fan-out after the create, which
+        finds the bucket like any other.
+
+        After the commit, like the quota repair: the caller was admitted and
+        the write landed, so a failure is logged — without the entity id,
+        routinely an API key — and swallowed. A backend without the method
+        stamps no generation worth checking.
+        """
+        repair = getattr(self.repository, "repair_created_owner_stamp", None)
+        if repair is None:
+            return
+        for entity_id, resource, shard_id, stamped, incarnation in owner_creates:
+            try:
+                repair(entity_id, resource, shard_id, stamped, incarnation)
+            except Exception:
+                logger.warning(
+                    "owner stamp check failed for resource=%s shard=%d; forcing the next acquire onto the slow path, which restamps it",
+                    resource,
+                    shard_id,
+                    exc_info=True,
+                )
+                self._force_owner_restamp(entity_id, resource, shard_id)
+
+    def _force_owner_restamp(self, entity_id: str, resource: str, shard_id: int) -> None:
+        """Stamp ``vu = 0`` on a created bucket whose owner check failed (ADR-150).
+
+        The check could not tell whether a move overtook the create. ``vu = 0``
+        fails the fast path's condition, so the next acquire takes the slow
+        path, whose rf-locked write re-stamps the owner from META under the
+        owner pin — the same mechanism a limit change uses (#679). Conditioned
+        on the item existing. If this write fails too, it is logged and the
+        stamp waits for the bucket's next slow pass or a ``set_parent``.
+        """
+        build = getattr(self.repository, "build_vu_reset", None)
+        if build is None:
+            return
+        try:
+            self.repository.write_each([build(entity_id, resource, shard_id)])
+        except Exception:
+            logger.warning(
+                "could not force a slow pass after a failed owner check for resource=%s shard=%d",
+                resource,
+                shard_id,
+                exc_info=True,
+            )
 
     def _fan_out_windows(
         self, window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]]

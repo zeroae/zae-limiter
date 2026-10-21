@@ -6,9 +6,11 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
+import concurrent.futures
 import functools
 import logging
 import random
+import secrets
 import time
 import warnings
 from collections.abc import Callable, Sequence
@@ -109,6 +111,22 @@ _SEED_TOKEN = {
     schema.BUCKET_FIELD_WA: "g",
     schema.BUCKET_FIELD_GC: "k",
 }
+_MAX_ANCESTOR_HOPS = 32
+
+
+def _owner_pin(pinc: str, pgen: str, inc_value: str, gen_value: str) -> str:
+    """The owner-stamp pin (ADR-150): never lower a stamp of the same incarnation.
+
+    A stored stamp of another incarnation (or none) always loses; within one
+    incarnation, the higher generation wins.
+    """
+    return f"(attribute_not_exists({pinc}) OR {pinc} <> {inc_value} OR attribute_not_exists({pgen}) OR {pgen} <= {gen_value})"
+
+
+def _stamped_pgen(item: dict[str, Any]) -> int | None:
+    """The parent generation a bucket item carries (ADR-150), or None if none."""
+    raw = item.get(schema.BUCKET_FIELD_PGEN, {}).get("N")
+    return None if raw is None else int(raw)
 
 
 def _pin_string(alias: str, token: str, raw: str | None, values: dict[str, Any]) -> str:
@@ -692,6 +710,23 @@ class SyncRepository:
         except Exception:
             self._caller_identity_arn = None
         return self._caller_identity_arn
+
+    def _new_incarnation(self) -> str:
+        """A fresh incarnation token for an entity being created (ADR-150)."""
+        return secrets.token_hex(8)
+
+    def _creation_generation(self) -> int:
+        """The parent generation a new entity starts at (ADR-150): now, in epoch ms.
+
+        Not 0: a bucket can outlive its entity (a delete that missed it in
+        GSI3, an acquire in flight across the delete) and keep the generation
+        the old entity reached. A recreated entity starting at 0 would sit
+        below it, and the slow path's owner stamp, pinned on ``pgen <= :read``,
+        would fail on that bucket forever, leaving the old parent on it. A
+        creation instant is above every generation the old entity reached,
+        since a move adds 1 and no entity is moved once per millisecond.
+        """
+        return self._now_ms()
 
     def _now_ms(self) -> int:
         """Current time in epoch milliseconds — the token-bucket clock (#430).
@@ -1650,6 +1685,8 @@ class SyncRepository:
             validate_identifier(parent_id, "parent_id")
         client = self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        generation = self._creation_generation()
+        incarnation = self._new_incarnation()
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_meta()},
@@ -1657,6 +1694,8 @@ class SyncRepository:
             "name": {"S": name or entity_id},
             "parent_id": {"S": parent_id} if parent_id else {"NULL": True},
             "cascade": {"BOOL": cascade},
+            schema.ENTITY_FIELD_PGEN: {"N": str(generation)},
+            schema.ENTITY_FIELD_PINC: {"S": incarnation},
             "metadata": {"M": self._serialize_map(metadata or {})},
             "created_at": {"S": now},
             "GSI4PK": {"S": self._namespace_id},
@@ -1691,6 +1730,8 @@ class SyncRepository:
             cascade=cascade,
             metadata=metadata or {},
             created_at=now,
+            parent_generation=generation,
+            incarnation=incarnation,
         )
 
     def get_entity(self, entity_id: str, *, consistent_read: bool = False) -> Entity | None:
@@ -1778,6 +1819,186 @@ class SyncRepository:
             if entity:
                 entities.append(entity)
         return entities
+
+    @clears_rejection_cache
+    def set_parent(
+        self, entity_id: str, parent_id: str | None, *, principal: str | None = None
+    ) -> int:
+        """Move an entity to a new parent, or to no parent (ADR-150).
+
+        Rewrites the entity's META record and its GSI1 parent -> children keys,
+        bumping its parent generation, then restamps ``parent_id`` and the
+        effective ``cascade`` policy on every bucket the entity owns through
+        the ADR-146 cascade fan-out. Whether the entity debits its new parent
+        is the same decision as before the move: the per-resource cascade
+        policy (ADR-146), falling back to the entity's own ``cascade`` flag,
+        which a move does not change. An entity with no parent never cascades.
+
+        Nothing already debited moves: consumption charged to the old parent,
+        including by leases open across the move, stays there.
+
+        Idempotent: repeating a move re-runs the fan-out, which is also how a
+        move that raised ``FanoutIncomplete`` is finished.
+
+        Args:
+            entity_id: Entity to move.
+            parent_id: The new parent, which must exist, or None for no parent.
+            principal: Caller identity for audit logging.
+
+        Returns:
+            Number of bucket items stamped.
+
+        Raises:
+            ValidationError: The entity would become its own ancestor, or the
+                new parent's chain is deeper than 32 levels.
+            EntityNotFoundError: The entity or the new parent does not exist.
+            VersionMismatchError: The stack's Lambdas predate parent moves.
+            FanoutIncomplete: The META record moved but a bucket write failed
+                part-way; re-run the same call to finish.
+        """
+        validate_identifier(entity_id, "entity_id")
+        if parent_id is not None:
+            validate_identifier(parent_id, "parent_id")
+            if parent_id == entity_id:
+                raise ValidationError("parent_id", parent_id, "an entity cannot be its own parent")
+        self._require_parent_move_readers()
+        if parent_id is not None:
+            self._check_new_parent(entity_id, parent_id)
+        old_parent, entity = self._write_parent(entity_id, parent_id)
+        cache_key = (self._namespace_id, entity_id)
+        shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
+        self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, shards)
+        for key in [k for k in self._cascade_cache if k[:2] == cache_key]:
+            del self._cascade_cache[key]
+        count = 0
+        try:
+            count = self._fanout_cascade(entity_id=entity_id)
+        except FanoutIncomplete as e:
+            count = e.stamped
+            raise
+        finally:
+            self._log_audit_event(
+                action=AuditAction.ENTITY_PARENT_CHANGED,
+                entity_id=entity_id,
+                principal=principal,
+                details={
+                    "old_parent_id": old_parent,
+                    "parent_id": parent_id,
+                    "pgen": entity.parent_generation,
+                    "buckets_stamped": count,
+                },
+            )
+        return count
+
+    def _require_parent_move_readers(self) -> None:
+        """Refuse a move the stack cannot keep (ADR-150).
+
+        The ADR-141 gate at 0.17.0: one strongly consistent ``GetItem`` of the
+        version record (1 RCU), then the ``client_min_version`` ratchet to
+        0.17.0 the first time, so a client that does not pin its owner stamp on
+        the parent generation can no longer open the stack.
+
+        Raises:
+            VersionMismatchError: the record is missing, or its
+                ``lambda_version`` is unknown or predates parent moves.
+        """
+        from .version import MIN_READER_VERSION_FOR_PARENT_MOVE, parent_move_refusal
+
+        self._require_readers(MIN_READER_VERSION_FOR_PARENT_MOVE, parent_move_refusal)
+
+    def _check_new_parent(self, entity_id: str, parent_id: str) -> None:
+        """Refuse a missing parent, or one whose ancestors include the entity (ADR-150).
+
+        Walks the new parent's chain with strongly consistent META reads, one
+        per level (D4, D5). A guard against operator error, not a lock: two
+        concurrent moves can still build a cycle, which cascade (one hop, #686)
+        cannot loop on. A chain deeper than ``_MAX_ANCESTOR_HOPS`` is refused.
+        """
+        from .exceptions import EntityNotFoundError
+
+        parent = self.get_entity(parent_id, consistent_read=True)
+        if parent is None:
+            raise EntityNotFoundError(parent_id)
+        cursor = parent.parent_id
+        for _hop in range(_MAX_ANCESTOR_HOPS):
+            if cursor is None:
+                return
+            if cursor == entity_id:
+                raise ValidationError(
+                    "parent_id",
+                    parent_id,
+                    f"{entity_id} is an ancestor of {parent_id}; the move would make a cycle",
+                )
+            ancestor = self.get_entity(cursor, consistent_read=True)
+            cursor = ancestor.parent_id if ancestor is not None else None
+        if cursor is not None:
+            raise ValidationError(
+                "parent_id",
+                parent_id,
+                f"its ancestor chain is deeper than {_MAX_ANCESTOR_HOPS} levels",
+            )
+
+    def _write_parent(self, entity_id: str, parent_id: str | None) -> tuple[str | None, Entity]:
+        """Point an entity's META record at a new parent and bump its generation (ADR-150).
+
+        One ``UpdateItem``: ``parent_id``, the GSI1 keys (removed for no
+        parent), and ``pgen + 1``. ``ALL_OLD`` gives the old parent and
+        generation without a read. ``cascade`` is not touched (D3).
+
+        Returns:
+            ``(old_parent_id, entity_after_the_move)``.
+
+        Raises:
+            EntityNotFoundError: The entity has no META record.
+        """
+        from .exceptions import EntityNotFoundError
+
+        client = self._get_client()
+        names = {
+            "#pid": "parent_id",
+            "#g1pk": "GSI1PK",
+            "#g1sk": "GSI1SK",
+            "#pg": schema.ENTITY_FIELD_PGEN,
+        }
+        values: dict[str, Any] = {":zero": {"N": "0"}, ":one": {"N": "1"}}
+        bump = "#pg = if_not_exists(#pg, :zero) + :one"
+        if parent_id is not None:
+            update = f"SET #pid = :pid, #g1pk = :g1pk, #g1sk = :g1sk, {bump}"
+            values[":pid"] = {"S": parent_id}
+            values[":g1pk"] = {"S": schema.gsi1_pk_parent(self._namespace_id, parent_id)}
+            values[":g1sk"] = {"S": schema.gsi1_sk_child(entity_id)}
+        else:
+            update = f"SET #pid = :pid, {bump} REMOVE #g1pk, #g1sk"
+            values[":pid"] = {"NULL": True}
+        try:
+            response = client.update_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                    "SK": {"S": schema.sk_meta()},
+                },
+                UpdateExpression=update,
+                ConditionExpression="attribute_exists(PK)",
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+                ReturnValues="ALL_OLD",
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                raise EntityNotFoundError(entity_id) from e
+            raise
+        old = self._deserialize_entity(response["Attributes"])
+        moved = Entity(
+            id=old.id,
+            name=old.name,
+            parent_id=parent_id,
+            cascade=old.cascade,
+            metadata=old.metadata,
+            created_at=old.created_at,
+            parent_generation=old.parent_generation + 1,
+            incarnation=old.incarnation,
+        )
+        return (old.parent_id, moved)
 
     def get_bucket(
         self, entity_id: str, resource: str, limit_name: str, shard_id: int = 0
@@ -2390,6 +2611,8 @@ class SyncRepository:
         shard_count: int = 1,
         vu: int | None = None,
         rf_ms: int | None = None,
+        pgen: int | None = None,
+        pinc: str | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -2413,6 +2636,14 @@ class SyncRepository:
             rf_ms: The ``rf`` to stamp, when the caller has clamped it above
                 ``now_ms`` so that ``rf`` never sits below a window start the
                 item carries (ADR-140). ``None`` stamps ``now_ms``.
+            pgen: The owner's parent generation, read from its META with
+                ``cascade`` / ``parent_id`` (ADR-150), or ``None`` when those
+                did not come from the owner's META. A ``Put`` cannot pin it
+                (no item exists to compare with); a create that read META
+                before a move is the ADR-125 two-pass race, which the move's
+                second fan-out pass restamps with the higher generation.
+            pinc: The owner's incarnation, read with ``pgen`` (ADR-150), or
+                ``None`` to stamp none.
         """
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
@@ -2431,6 +2662,10 @@ class SyncRepository:
         }
         if parent_id is not None:
             item["parent_id"] = {"S": parent_id}
+        if pgen is not None:
+            item[schema.BUCKET_FIELD_PGEN] = {"N": str(pgen)}
+        if pinc is not None:
+            item[schema.BUCKET_FIELD_PINC] = {"S": pinc}
         if ttl_seconds is not None:
             item["ttl"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
         if vu is not None:
@@ -2478,6 +2713,8 @@ class SyncRepository:
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
+        owner_pgen: int | None = None,
+        owner_pinc: str | None = None,
         read_tokens: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
@@ -2595,6 +2832,17 @@ class SyncRepository:
                 that window has to stay unapplied until a pass rolls it. No
                 condition term is needed: the ``rf`` lock already serialises
                 every other writer of the marker.
+            owner_pgen: The owner's parent generation, read from its META with
+                ``owner`` (ADR-150), or ``None`` to stamp no generation. Stamped
+                beside the owner pair and pinned on ``attribute_not_exists(pgen)
+                OR pgen <= :pgen``: the move's fan-out never moves ``rf``, so
+                without the pin a pass that read META before a move could land
+                its owner stamp after the fan-out and put the old parent back
+                for good. Ignored without ``owner``.
+            owner_pinc: The owner's incarnation, read with ``owner_pgen``
+                (ADR-150), stamped beside it. With it the pin passes over a
+                stamp of another incarnation, so a bucket a deleted
+                predecessor left behind cannot outrank the recreated entity.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -2618,6 +2866,7 @@ class SyncRepository:
         elif clear_vu:
             remove_parts.append("#vu")
             attr_names["#vu"] = schema.BUCKET_FIELD_VU
+        pgen_pinned = False
         if owner is not None:
             owner_cascade, owner_parent = owner
             set_parts.append("#ocs = :ocs")
@@ -2629,6 +2878,15 @@ class SyncRepository:
                 attr_values[":opid"] = {"S": owner_parent}
             else:
                 remove_parts.append("#opid")
+            if owner_pgen is not None:
+                set_parts.append("#opg = :opg")
+                attr_names["#opg"] = schema.BUCKET_FIELD_PGEN
+                attr_values[":opg"] = {"N": str(owner_pgen)}
+                pgen_pinned = True
+                if owner_pinc is not None:
+                    set_parts.append("#opi = :opi")
+                    attr_names["#opi"] = schema.BUCKET_FIELD_PINC
+                    attr_values[":opi"] = {"S": owner_pinc}
         for i, (name, (ws, rsa)) in enumerate(sorted((windows or {}).items())):
             attr_names[f"#ws{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_WS)
             attr_names[f"#rsa{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)
@@ -2647,6 +2905,12 @@ class SyncRepository:
             set_parts.append(f"#wl{i} = :wl{i}")
             attr_values[f":wl{i}"] = {"N": str(rsa)}
         condition_parts: list[str] = ["#rf = :expected_rf"]
+        if pgen_pinned and owner_pinc is not None:
+            condition_parts.append(
+                "(attribute_not_exists(#opi) OR (#opi = :opi AND (attribute_not_exists(#opg) OR #opg <= :opg)))"
+            )
+        elif pgen_pinned:
+            condition_parts.append("(attribute_not_exists(#opg) OR #opg <= :opg)")
         for i, name in enumerate(consumed):
             c = consumed[name]
             r = refill_amounts.get(name, 0)
@@ -2722,6 +2986,11 @@ class SyncRepository:
                 "ConditionExpression": " AND ".join(condition_parts),
                 "ExpressionAttributeNames": attr_names,
                 "ExpressionAttributeValues": attr_values,
+                **(
+                    {"ReturnValuesOnConditionCheckFailure": "ALL_OLD"}
+                    if pgen_pinned and owner_pinc is not None
+                    else {}
+                ),
             }
         }
 
@@ -2981,6 +3250,31 @@ class SyncRepository:
                 time.sleep(delay)
         return client.update_item(**kwargs)
 
+    def build_vu_reset(self, entity_id: str, resource: str, shard_id: int = 0) -> dict[str, Any]:
+        """Build an UpdateItem that forces one materialising pass (#679).
+
+        ``vu = 0`` fails the speculative condition, so the next acquire takes the
+        slow path, whose rf-locked write clears ``vu`` again — the mechanism the
+        limit-change sync uses after a capacity shrink (#222 Task 13). Used after
+        a created bucket's owner check failed (ADR-150), so the slow pass
+        re-stamps the owner from META.
+        """
+        return {
+            "Update": {
+                "TableName": self.table_name,
+                "Key": {
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
+                },
+                "UpdateExpression": "SET #vu = :zero",
+                "ConditionExpression": "attribute_exists(PK)",
+                "ExpressionAttributeNames": {"#vu": schema.BUCKET_FIELD_VU},
+                "ExpressionAttributeValues": {":zero": {"N": "0"}},
+            }
+        }
+
     def transact_write(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
         """Execute a write, using single-item API when possible to halve WCU cost.
 
@@ -3148,19 +3442,24 @@ class SyncRepository:
                         resource,
                         child_result.shard_count,
                         meta=(child_result.cascade, child_result.parent_id),
+                        pgen=child_result.pgen,
                     )
-                else:
-                    if child_result.parent_id is None:
-                        child_result.cascade = cascade_cached
+                elif not child_result.stamp_is_policy:
+                    child_result.cascade = cascade_cached
                     child_result.parent_id = parent_id_cached
                 child_result.parent_result = parent_result
+                child_result.debited_parent_id = parent_id_cached
                 return child_result
         result = self._speculative_consume_single(
             entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id, now_ms=now_ms
         )
         if result.success:
             self._learn_shard_count(
-                entity_id, resource, result.shard_count, meta=(result.cascade, result.parent_id)
+                entity_id,
+                resource,
+                result.shard_count,
+                meta=(result.cascade, result.parent_id),
+                pgen=result.pgen,
             )
         return result
 
@@ -3275,6 +3574,7 @@ class SyncRepository:
                 parent_id=parent_id,
                 shard_id=shard_id,
                 shard_count=shard_count,
+                pgen=_stamped_pgen(item),
             )
         except ClientError as e:
             if _is_item_transaction_conflict(e):
@@ -3293,8 +3593,13 @@ class SyncRepository:
                     )
                     old_cascade = old_item.get("cascade", {}).get("BOOL", False)
                     old_parent_id = old_item.get("parent_id", {}).get("S")
+                    old_pgen = _stamped_pgen(old_item)
                     self._learn_shard_count(
-                        entity_id, resource, old_shard_count, meta=(old_cascade, old_parent_id)
+                        entity_id,
+                        resource,
+                        old_shard_count,
+                        meta=(old_cascade, old_parent_id),
+                        pgen=old_pgen,
                     )
                     if old_item.get(schema.BUCKET_FIELD_DISABLED, {}).get("BOOL", False):
                         return SpeculativeResult(
@@ -3304,6 +3609,7 @@ class SyncRepository:
                             parent_id=old_parent_id,
                             shard_id=shard_id,
                             shard_count=old_shard_count,
+                            pgen=old_pgen,
                             failure_reason=SpeculativeFailureReason.DISABLED,
                         )
                     vu_raw = old_item.get(schema.BUCKET_FIELD_VU, {}).get("N")
@@ -3319,6 +3625,7 @@ class SyncRepository:
                             parent_id=old_parent_id,
                             shard_id=shard_id,
                             shard_count=old_shard_count,
+                            pgen=old_pgen,
                             failure_reason=SpeculativeFailureReason.SCHEDULE_BOUNDARY,
                         )
                     wcu_exhausted = any(
@@ -3344,6 +3651,7 @@ class SyncRepository:
                         shard_id=shard_id,
                         shard_count=old_shard_count,
                         failure_reason=reason,
+                        pgen=old_pgen,
                     )
                 else:
                     return SpeculativeResult(
@@ -3360,6 +3668,7 @@ class SyncRepository:
         observed: int,
         *,
         meta: tuple[bool, str | None] | None = None,
+        pgen: int | None = None,
     ) -> int:
         """Record an observed shard_count in the entity cache, monotonically.
 
@@ -3369,6 +3678,8 @@ class SyncRepository:
         the draw range and stamp the next client-created shard with the
         lowered count (issue #439). ``meta`` supplies ``(cascade, parent_id)``
         for a new entry; without it an unknown entity is left uncached.
+        ``pgen`` is the parent generation the same item carries (ADR-150), or
+        None when it carries none.
 
         Returns:
             The count now cached (``observed`` when nothing was cached).
@@ -3386,7 +3697,7 @@ class SyncRepository:
         count = max(observed, shards.get(resource, 1))
         shards[resource] = count
         self._entity_cache[cache_key] = (cascade, parent_id, shards)
-        if meta is not None and meta[1] is not None:
+        if meta is not None and (meta[1] is not None or pgen is not None):
             self._cascade_cache[self._namespace_id, entity_id, resource] = meta[0]
         return count
 
@@ -5434,6 +5745,8 @@ class SyncRepository:
             else {}
         )
         created_val = item.get("created_at", {}).get("S")
+        pgen_val = int(item.get(schema.ENTITY_FIELD_PGEN, {}).get("N", "0"))
+        pinc_val = schema.entity_incarnation(item)
         return Entity(
             id=entity_id,
             name=name_val,
@@ -5441,6 +5754,8 @@ class SyncRepository:
             cascade=cascade_val,
             metadata=metadata_val,
             created_at=created_val,
+            parent_generation=pgen_val,
+            incarnation=pinc_val,
         )
 
     def _deserialize_bucket(self, item: dict[str, Any]) -> BucketState:
@@ -6760,32 +7075,139 @@ class SyncRepository:
                 stamped.add(pk)
         return len(stamped)
 
-    def _stamp_bucket_cascade(self, pk: str, cascade: bool, parent_id: str | None) -> None:
+    def _stamp_bucket_cascade(
+        self,
+        pk: str,
+        cascade: bool,
+        parent_id: str | None,
+        pgen: int | None = None,
+        pinc: str | None = None,
+    ) -> bool:
         """Write one bucket's effective cascade policy and owner `parent_id` (ADR-146).
 
         The same pair the slow path's owner stamp writes (#684), so whichever
-        writer runs last leaves a stamp the fast path can trust.
+        writer runs last leaves a stamp the fast path can trust. With ``pgen``
+        (the owner's parent generation, ADR-150) the stamp carries it and is
+        conditioned on not lowering it: a stamp that loses means a newer move
+        already stamped this bucket, and is skipped like a vanished bucket, so
+        two concurrent moves converge on the later one on every bucket. With
+        ``pinc`` (the owner's incarnation) a stamp of another incarnation never
+        blocks it: a predecessor's generation is not comparable.
+
+        Returns:
+            Whether the bucket was stamped (False: gone, or a newer stamp).
         """
         client = self._get_client()
         names = {"#c": "cascade", "#p": "parent_id"}
         values: dict[str, Any] = {":c": {"BOOL": cascade}}
+        sets = ["#c = :c"]
+        condition = "attribute_exists(PK)"
         if parent_id is not None:
-            update = "SET #c = :c, #p = :p"
+            sets.append("#p = :p")
             values[":p"] = {"S": parent_id}
-        else:
-            update = "SET #c = :c REMOVE #p"
+        if pgen is not None:
+            sets.append("#pg = :pg")
+            names["#pg"] = schema.BUCKET_FIELD_PGEN
+            values[":pg"] = {"N": str(pgen)}
+            if pinc is not None:
+                sets.append("#pi = :pi")
+                names["#pi"] = schema.BUCKET_FIELD_PINC
+                values[":pi"] = {"S": pinc}
+                condition += " AND " + _owner_pin("#pi", "#pg", ":pi", ":pg")
+            else:
+                condition += " AND (attribute_not_exists(#pg) OR #pg <= :pg)"
+        update = "SET " + ", ".join(sets) + ("" if parent_id is not None else " REMOVE #p")
         try:
             client.update_item(
                 TableName=self.table_name,
                 Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
                 UpdateExpression=update,
-                ConditionExpression="attribute_exists(PK)",
+                ConditionExpression=condition,
                 ExpressionAttributeNames=names,
                 ExpressionAttributeValues=values,
             )
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                 raise
+            return False
+        return True
+
+    def repair_created_owner_stamp(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        stamped_pgen: int,
+        stamped_pinc: str | None = None,
+    ) -> bool:
+        """Restamp a bucket just created from a META read a move has overtaken (ADR-150).
+
+        One strongly consistent read of the owner's META (1 RCU). When its
+        parent generation still equals the one the create stamped, nothing is
+        written. Otherwise the bucket gets the move's stamp — the policy
+        resolved for this resource (3 consistent reads) and the new parent —
+        through the fan-out's own pinned write, so a newer stamp is never
+        lowered.
+
+        Returns:
+            Whether the bucket was restamped.
+        """
+        owner = self.get_entity(entity_id, consistent_read=True)
+        if owner is None or (
+            owner.parent_generation == stamped_pgen and stamped_pinc in (None, owner.incarnation)
+        ):
+            return False
+        access = self.resolve_access(entity_id, resource, consistent_read=True)
+        cascade = effective_cascade(access.cascade, owner)
+        self._stamp_bucket_cascade(
+            schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id),
+            cascade,
+            owner.parent_id,
+            owner.parent_generation,
+            owner.incarnation,
+        )
+        self._cascade_cache[self._namespace_id, entity_id, resource] = cascade
+        return True
+
+    def start_background(self, work: Callable[[], None]) -> concurrent.futures.Future[None]:
+        """Run ``work()`` as a background task and return its handle (ADR-150).
+
+        The lease's post-create owner check runs this way, overlapping the
+        caller's block. The sync twin spawns it per ``parallel_mode``
+        (``SyncRepository._spawn``). The caller must join the handle.
+        """
+        task: concurrent.futures.Future[None] = self._spawn(lambda work=work: work())
+        return task
+
+    def restamp_owner_if_current(
+        self, entity_id: str, resource: str, shard_id: int, incarnation: str
+    ) -> bool:
+        """Claim a bucket stamped by another incarnation, if this one is current (ADR-150).
+
+        The slow path's owner pin refuses another incarnation's stamp, because
+        its META read is eventually consistent and may be a deleted
+        predecessor's. When that pin is lost to another incarnation, one
+        strongly consistent read of META (1 RCU) settles which is current: if
+        it is ``incarnation``, the bucket is a predecessor's leftover and is
+        restamped through the fan-out's write, which lets the current
+        incarnation overwrite any other; if not, the caller read a stale
+        record and the bucket is left alone.
+
+        Returns:
+            Whether the bucket was restamped.
+        """
+        owner = self.get_entity(entity_id, consistent_read=True)
+        if owner is None or owner.incarnation != incarnation:
+            return False
+        access = self.resolve_access(entity_id, resource, consistent_read=True)
+        cascade = effective_cascade(access.cascade, owner)
+        return self._stamp_bucket_cascade(
+            schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id),
+            cascade,
+            owner.parent_id,
+            owner.parent_generation,
+            owner.incarnation,
+        )
 
     def _fanout_cascade(self, *, resource: str | None = None, entity_id: str | None = None) -> int:
         """Restamp every bucket a cascade-policy change can reach (ADR-146).
@@ -6805,11 +7227,13 @@ class SyncRepository:
                 Every write is idempotent, so re-running reconciles the rest.
 
         Returns:
-            Number of bucket items stamped.
+            Number of bucket items stamped — a bucket gone, or already carrying
+            a newer stamp, is not counted.
         """
         stamped: set[str] = set()
+        written = 0
         entities: dict[str, Entity | None] = {}
-        targets: dict[tuple[str, str], tuple[bool, str | None] | None] = {}
+        targets: dict[tuple[str, str], tuple[bool, str | None, int, str] | None] = {}
         scope = None if resource == schema.DEFAULT_RESOURCE else resource
         for _pass in range(2):
             if entity_id is not None:
@@ -6830,7 +7254,12 @@ class SyncRepository:
                     targets[key] = (
                         None
                         if owner is None
-                        else (effective_cascade(access.cascade, owner), owner.parent_id)
+                        else (
+                            effective_cascade(access.cascade, owner),
+                            owner.parent_id,
+                            owner.parent_generation,
+                            owner.incarnation,
+                        )
                     )
                 target = targets[key]
                 if target is not None and target[1] is not None:
@@ -6838,13 +7267,12 @@ class SyncRepository:
                 if target is None:
                     continue
                 try:
-                    self._stamp_bucket_cascade(pk, *target)
+                    if self._stamp_bucket_cascade(pk, *target):
+                        written += 1
                 except Exception as e:
-                    raise FanoutIncomplete(
-                        len(stamped), e, resource=scope, entity_id=entity_id
-                    ) from e
+                    raise FanoutIncomplete(written, e, resource=scope, entity_id=entity_id) from e
                 stamped.add(pk)
-        return len(stamped)
+        return written
 
     def disable_resource(self, resource: str, principal: str | None = None) -> int:
         """Disable a resource for all entities without an explicit override (ADR-125).
@@ -7285,6 +7713,76 @@ class SyncRepository:
             self._thread_pool = ThreadPoolExecutor(max_workers=2)
         futures = [self._thread_pool.submit(fn) for fn in funcs]
         return tuple(f.result() for f in futures)
+
+    def _spawn(self, fn: Any) -> Any:
+        """Run ``fn`` in the background: the sync twin of ``asyncio.create_task``.
+
+        Returns a ``concurrent.futures.Future`` in every parallel_mode: ``.result()``
+        returns ``fn``'s value or re-raises the exception ``fn`` raised (held, never
+        lost). threadpool submits to the lazy executor; gevent (patched) spawns a
+        greenlet; serial runs ``fn`` inline and returns a completed future.
+
+        ``.cancel()`` keeps ``concurrent.futures`` semantics, not asyncio's: it
+        cancels only a spawn that has not started, and returns False for one that
+        is running. threadpool then runs ``fn`` to completion (a thread cannot be
+        interrupted). gevent also kills the running greenlet, and ``.result()``
+        raises ``concurrent.futures.CancelledError``, translated from the
+        ``GreenletExit`` the kill raises inside ``fn``. serial has always run ``fn``
+        to completion before ``.cancel()`` can be called.
+        """
+        from concurrent.futures import CancelledError, Future
+
+        executor_fn = self._executor_fn
+        if executor_fn is None:
+            if self._thread_pool is None:
+                from concurrent.futures import ThreadPoolExecutor
+
+                self._thread_pool = ThreadPoolExecutor(max_workers=2)
+            return self._thread_pool.submit(fn)
+        gevent_spawn: Any = None
+        killed: tuple[type[BaseException], ...] = ()
+        if self._parallel_mode in ("auto", "gevent"):
+            try:
+                from gevent import GreenletExit, monkey, spawn
+
+                if monkey.is_module_patched("socket"):
+                    gevent_spawn = spawn
+                    killed = (GreenletExit,)
+            except ImportError:
+                gevent_spawn = None
+
+        def run(future: Any) -> None:
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                future.set_result(fn())
+            except killed:
+                future.set_exception(CancelledError())
+            except BaseException as exc:
+                future.set_exception(exc)
+
+        if gevent_spawn is None:
+            done: Future[Any] = Future()
+            run(done)
+            return done
+
+        class _GreenletFuture(Future[Any]):
+            greenlet: Any = None
+
+            def cancel(self) -> bool:
+                cancelled = super().cancel()
+                if self.greenlet is not None and (not cancelled) and (not self.done()):
+                    self.greenlet.kill(block=False)
+                return cancelled
+
+        def settle_if_never_ran(_greenlet: Any) -> None:
+            if not pending.done():
+                pending.cancel()
+
+        pending = _GreenletFuture()
+        pending.greenlet = gevent_spawn(run, pending)
+        pending.greenlet.rawlink(settle_if_never_ran)
+        return pending
 
     def _cleanup_thread_pool(self) -> None:
         pool = getattr(self, "_thread_pool", None)

@@ -184,6 +184,33 @@ BUCKET_FIELD_DISABLED = "disabled"
 # policy for that (entity, resource).
 CONFIG_FIELD_CASCADE = "cascade"
 
+# Parent generation (ADR-150). A number on an entity's META, set to the
+# creation instant (epoch ms) by `create_entity` so a recreated entity is never
+# below a bucket its predecessor left, incremented by every move to a new
+# parent (absent = 0, an entity created before v0.17), and on its bucket items beside the
+# `cascade` / `parent_id` owner stamp: every writer of that stamp carries the
+# generation it read and is conditioned on not lowering it, so a writer that
+# read META before a move can lose but never undo it. A bucket item carrying
+# `pgen` is authoritative for both `cascade` and `parent_id`, with or without
+# a `parent_id`.
+ENTITY_FIELD_PGEN = "pgen"
+BUCKET_FIELD_PGEN = "pgen"
+
+# Incarnation (ADR-150). A random token `create_entity` writes on META, and
+# every owner stamp copies onto the bucket beside `pgen`. A generation is only
+# comparable within one incarnation: a bucket outliving its entity can carry a
+# higher `pgen` than the recreated entity (two clocks a few seconds apart), and
+# would then win every pinned write forever. So an owner-stamp pin passes when
+# the stored stamp belongs to another incarnation, whatever its generation:
+# `attribute_not_exists(pinc) OR pinc <> :inc OR attribute_not_exists(pgen) OR
+# pgen <= :pg`. An entity created before v0.17 has no `pinc`; it reads as its
+# `created_at`, which a recreate changes, and only an entity with neither reads
+# as the legacy incarnation below. #677 (`create_entity`) owns the write side;
+# every reader of an entity's incarnation goes through `entity_incarnation`.
+ENTITY_FIELD_PINC = "pinc"
+BUCKET_FIELD_PINC = "pinc"
+LEGACY_INCARNATION = "-"
+
 # Infrastructure limit: DynamoDB partition write capacity ceiling (GHSA-76rv)
 # Auto-injected on every bucket to track per-partition write pressure.
 # When exhausted, the client doubles shard_count to spread writes.
@@ -223,6 +250,26 @@ LIMIT_FIELD_RSA = "rsa"  # w_{name}_rsa — duration window length, seconds (ADR
 # and a reset schedule in another has nowhere to store the second one, so
 # `Limit.__post_init__` rejects the pair rather than letting storage pick.
 CONFIG_FIELD_SCHED_TZ = "sched_tz"
+
+
+def entity_incarnation(meta_item: dict[str, Any]) -> str:
+    """An entity's incarnation, read off its META item (ADR-150).
+
+    ``pinc`` when present (#677 writes it in ``create_entity``); else the
+    entity's ``created_at``, which differs between an entity created before
+    incarnations existed and one recreated in its place; else
+    ``LEGACY_INCARNATION``. Accepts both the low-level client's typed values
+    (``{"S": ...}``) and the boto3 ``Table`` resource's native ones (the
+    aggregator), so every reader shares one rule. Shared with #720 under the
+    same name and signature.
+    """
+    for field in (ENTITY_FIELD_PINC, "created_at"):
+        value = meta_item.get(field)
+        if isinstance(value, dict):
+            value = value.get("S")
+        if isinstance(value, str) and value:
+            return value
+    return LEGACY_INCARNATION
 
 
 def encode_disabled(value: bool | None) -> dict[str, Any] | None:

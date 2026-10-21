@@ -33,7 +33,29 @@ ADR-146 cascade fan-out, which remains the only writer of `cascade` and `parent_
 bucket items outside the slow path's owner stamp. Each move must increment a parent
 generation on META; every write of `parent_id` to a bucket item (owner stamp, create,
 fan-out, provisioner fan-out) must carry the generation it read and must not overwrite a
-higher one, so a stale writer can lose but never undo a move. A bucket item stamped with a
+higher one, so a stale writer can lose but never undo a move. A write that creates a bucket
+item cannot be pinned, so every such write (the client's create, the aggregator's shard
+clone) must re-check the owner's generation against META with a strongly consistent read
+once it lands, and restamp through the pinned write when a move overtook it; when that
+check fails, the bucket must be forced onto the slow path (`vu = 0`), whose pinned owner
+stamp then restamps it. The check is not needed for the acquire that created the bucket, so it
+must not hold that acquire up: it starts once the commit's last write lands, runs while
+the caller's block does, and is joined when the lease exits, so it never outlives the
+lease. A check that is cancelled before it finishes must leave the same `vu = 0` a
+failed one does; the cancellation is re-raised only when it was aimed at the caller, so a
+cancel of the check alone never replaces the caller's exception. Each entity must also carry an incarnation, a random
+token written at creation and copied onto every owner stamp beside the generation; a
+generation compares only within one incarnation. A writer that read META strongly
+consistently (the fan-outs, the owner checks) may overwrite a stamp of another incarnation; a
+writer that read it eventually consistently (the slow path's owner stamp) may overwrite only
+its own incarnation's, because its read may be a deleted predecessor's. When the slow path
+loses that pin to another incarnation, one strongly consistent read decides: if its
+incarnation is current, the bucket is a predecessor's leftover and is claimed; if not, it is
+left alone. So a bucket a deleted predecessor left behind never outranks the recreated
+entity, whatever the two clocks said, and a stale read can never undo the current stamp. An
+entity created before the incarnation existed is its own legacy incarnation. A stamped `vu = 0`
+on one shard of a sharded bucket is cleared by a slow pass on that same shard. A move's count reports only buckets actually stamped.
+A bucket item stamped with a
 generation is authoritative for both `cascade` and `parent_id`, including when it names no
 parent. On the warm path, when the child's returned item names a different parent from the
 one the cache debited, the limiter must refund that debit, debit the item's parent, and
@@ -46,7 +68,8 @@ by leases open across the move, stays where it was debited.
 
 **Positive:**
 - A move takes effect on the fast path of every process after at most one call per
-  (process, entity), with no added cost on any acquire.
+  (process, entity). An acquire that only touches existing buckets costs nothing more; one
+  that creates a bucket costs one more read (see Negative).
 - One write path owns `parent_id` on bucket items, as ADR-146 item 10 asked.
 - The generation also settles the "no `parent_id` = pre-#684" ambiguity for new stamps.
 - Parents are separate entities with their own buckets: no quota allowance moves
@@ -62,6 +85,35 @@ by leases open across the move, stays where it was debited.
   chain.
 - The rf-locked write gains one condition term; losing it costs that acquire the
   consumption-only retry (one extra write), only in the move's race window.
+- Every bucket created costs one more strongly consistent read (1 RCU, once per shard), and
+  every aggregator record that clones shards one more; a restamp only when a move overtook
+  the create. A `ConditionCheck` would avoid the read but needs
+  `dynamodb:ConditionCheckItem`, which no shipped policy grants. The read starts when the
+  commit lands and overlaps the caller's block; the lease exit joins it, which adds
+  latency only when the block is shorter than one strongly consistent `GetItem`, and then
+  only the difference.
+- Residual: a process that dies between a create and its owner check leaves a create that
+  read META before a move on the old parent until the bucket's next slow pass or a repeat
+  of the move. The check's own failure is covered (`vu = 0` forces that slow pass).
+- Residual: a cancelled check is covered the same way, by `vu = 0` on every bucket it
+  checked, but those writes are themselves cancellable. A second cancellation landing
+  while they run (an outer timeout, an event-loop shutdown) stops them where they stand,
+  and the buckets not yet written keep the create's stamp, wrong only if a move overtook
+  the create in that window, until their next slow pass or a repeat of the move. It is
+  bounded by the buckets one acquire created. A `KeyboardInterrupt` or `SystemExit` during
+  the join skips the writes on purpose, with the same residual: the process is going down.
+  Shielding the writes was not chosen, because the generated sync twin has no
+  `asyncio.shield`, and a detached write task needs a strong reference that would outlive
+  the lease.
+- Residual (ADR-125's two-pass race, here for moves): a move whose META write lands after a
+  create's owner check runs its fan-out after the bucket exists, but GSI3 can lag the
+  create, so both discovery passes can miss it. The bucket keeps the old parent until its
+  next slow pass or a repeat of the move — the same window ADR-125 accepts for `disabled`.
+- A slow pass whose eventually consistent META read returned a deleted predecessor's record
+  still commits, on the consumption-only retry: that one acquire debits the predecessor's
+  parent once, the same bound as a lease opened before a move. It never restamps the bucket.
+- A slow pass that loses its owner pin to another incarnation costs one strongly consistent
+  read (1 RCU); a predecessor's leftover is then claimed and the write re-sent once.
 
 ## Alternatives Considered
 
