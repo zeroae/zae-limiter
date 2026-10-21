@@ -1974,8 +1974,9 @@ exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed u
   replaced, and a call with no META takes any record for its key — so a reused key around a
   delete or a create returns the old result and grants nothing (under-grant, never
   over-grant). Residual: an entity deleted and
-  recreated *during* one call can see a key retry applied once more (closing it needs
-  `dynamodb:ConditionCheckItem`, which no shipped policy grants). `delete_entity` deletes the entity's
+  recreated *during* one call can see a key retry applied once more (closing it needs a META
+  `ConditionCheck` in every reset and top-up, +2 WCU a call; the permission ships in v0.17.0,
+  but ADR-150's check also pins `pgen`, so it is left open). `delete_entity` deletes the entity's
   records too (one Query per shard-0 partition), best effort only. The principal and key are validated before any I/O.
 - **Top-up:** a quota gains exactly N, split by coverage `S // gc` (`split_weighted`, remainder
   to the lowest shard, D1), and **`tu += portion`** — the whole portion, not only what lands

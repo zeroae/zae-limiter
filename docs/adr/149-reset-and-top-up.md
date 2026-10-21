@@ -69,8 +69,10 @@ process's rejection cache (ADR-147) and are audited. Details, costs and open dec
   caller; the operation record lives three days.
 - A record is tied to the entity's incarnation (#716's `pinc`), read before the write rather
   than checked inside it: an entity deleted and recreated during one call can see a key retry
-  applied once more. Checking it in the transaction would need `dynamodb:ConditionCheckItem`,
-  which no shipped policy grants.
+  applied once more. Closing it would put a `ConditionCheck` on META in every reset and
+  top-up (+2 WCU a call); v0.17.0 grants `dynamodb:ConditionCheckItem` (ADR-150), but its
+  check also pins the parent generation, so every `set_parent` would cancel resets in flight.
+  Left open. A top-up that creates the bucket already carries ADR-150's check.
 - After a plan upgrade a quota's ceiling is at most one top-up wider than the entitlement until
   the next reset; it under-clamps refunds, never mints.
 - A conflicting writer on any shard aborts the whole transaction; the operation retries a
