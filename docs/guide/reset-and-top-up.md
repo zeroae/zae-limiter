@@ -133,7 +133,9 @@ entity, and once the entity exists.
   the bucket yet: a top-up of it raises a `ValidationError` naming it, and writes nothing.
   Acquire once, then top up.
 - If another writer keeps changing the bucket, the operation retries three times and then
-  raises `RateLimiterUnavailable`; nothing was written.
+  raises `RateLimiterUnavailable`. The reset or top-up itself was not applied. One write can
+  remain: when the bucket's shards disagree on their shard count, the lagging shards are first
+  raised to the highest count (bookkeeping that moves no tokens), and that raise is kept.
 - A write whose response is lost is never applied twice: each call writes its own operation
   record in the same transaction, and a retry that finds it returns the stored result instead
   of re-applying — even when another reset or top-up landed on the bucket in between.
