@@ -92,7 +92,11 @@ and update, and the data commands that write register a missing namespace.
 
 `upgrade` applies this version's CloudFormation template to an existing stack before it pushes
 Lambda code, so the stack's IAM policies match the client (`deploy` leaves an existing stack's
-template alone). The template goes through a change set; a change that would replace or remove a
+template alone). Unlike the other writing commands it does not connect through
+`Repository.open()`: it never auto-updates the Lambdas on connect (that would push code before
+the template) and never provisions a missing stack. Its steps are the template, the Lambda code,
+the version record, then the stack tags; it reports "already up to date" when the template has
+nothing to change and the Lambdas already run this version. The template goes through a change set; a change that would replace or remove a
 resource is refused, nothing is applied, no code is pushed, and the command exits 1 naming each
 resource. `--lambda-only` skips the template. Run `zae-limiter upgrade` on each stack before
 rolling out v0.17.0 clients: their bucket writes need IAM actions the v0.16.0 policies lack.

@@ -597,7 +597,8 @@ The fix is `git fetch --tags` or a tagged build, not a code change; a default st
 cannot be parsed (garbage, not the tagless form) passes unconditionally, exactly as it does
 through `connect()`. Only commands that intend to write keep `cli._connect()` →
 `open()`, so `rg "Repository.open\(" src/zae_limiter/cli.py src/zae_limiter/limits_cli.py`
-matches write paths only — keep it that way when adding a command.
+matches write paths only — keep it that way when adding a command. `upgrade` is the one writer
+that does not: it must not auto-update on connect (#752), and writes only the version record.
 
 #### RepositoryBuilder (Infrastructure Provisioning)
 
@@ -1228,11 +1229,17 @@ move, which can only under-admit.
   (a FAILED "didn't contain changes" set, or a `CreateChangeSet` refusal saying so) is
   `no_changes`; no stack is `absent`. Any `ResourceChange` with `Action` `Remove` or
   `Replacement` `True` / `Conditional` is **refused**: the change set is deleted, nothing is
-  applied, and `StackOperationError` names each resource. `upgrade` runs it as step 1, before
-  the pushes, and on the "already up to date" path too — but only when the record names this
-  build (an older client would apply its older template). `--lambda-only` skips it. A refusal
-  exits 1 and pushes no code. `open(auto_update=True)` and `deploy` on an existing stack still
-  never touch the template; the tag step that follows is a separate, sequential update.
+  applied, and `StackOperationError` names each resource. `upgrade` connects through
+  `_connect_read_only(namespace=None)`, **not** `open()`: `open(auto_update=True)` pushed the
+  code before upgrade's own steps ran (code before IAM), and left them nothing to do. The
+  read-only connect still refuses a client below `client_min_version` or a schema needing
+  migration, and never provisions (a missing stack exits 1). The steps, in order: template →
+  aggregator push → provisioner push (`skip_absent`) → version record (`stack_lambdas_current`)
+  → tags. "Already up to date" means the template had no changes **and** the record names this
+  build: nothing is pushed or stamped (tags still refreshed). An older or tagless client that
+  reads as current changes nothing — not even the template, which would take actions away from
+  newer code. `--lambda-only` skips the template; a refusal exits 1 and pushes no code.
+  `open(auto_update=True)` and `deploy` on an existing stack still never touch the template.
 - **Missing version record fails closed** — nothing proves the readers (`can_auto_update=False`,
   remedy `zae-limiter deploy`).
 - **`--no-aggregator` gets no exemption in the gate** — the record cannot say the aggregator

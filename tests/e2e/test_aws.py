@@ -2116,10 +2116,9 @@ class TestE2EAWSUpgradeAppliesTemplate:
     The stack is created from the v0.16.0 template, read from the ``v0.16.0``
     tag (``git fetch --tags`` if missing), and stamped as running v0.16.0
     Lambdas. It has no aggregator, provisioner or alarms, so it holds only the
-    table and the managed policies. ``plain`` is what an operator runs:
-    ``open()`` brings the (absent) Lambdas current on connect, so the template
-    is applied on the "already up to date" path. ``force`` takes the step
-    path, where the template goes before the code push.
+    table and the managed policies. ``plain`` is what an operator runs and
+    ``force`` the same steps with ``--force``: the template, then the (absent)
+    Lambda pushes, the version record and the tags.
     """
 
     POLICY_ACTIONS = {"dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"}

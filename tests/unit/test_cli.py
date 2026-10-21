@@ -1850,13 +1850,11 @@ class TestCLI:
         )
 
         assert result.exit_code == 1  # Not initialized
-        # Verify Repository.open was called with endpoint_url
-        mock_repo_class.open.assert_called_once_with(
-            "default",
-            stack="test-table",
-            region="us-east-1",
-            endpoint_url="http://localhost:4566",
+        # Connected directly, never through open() and its Lambda auto-update (#752)
+        mock_repo_class.assert_called_once_with(
+            "test-table", "us-east-1", "http://localhost:4566", _skip_deprecation_warning=True
         )
+        mock_repo_class.open.assert_not_called()
 
 
 class TestUpgradeEnsureTags:
@@ -2108,23 +2106,39 @@ class TestUpgradeAppliesTemplate:
         ):
             repo_class.return_value = repo
             repo_class.open = AsyncMock(return_value=repo)
-            return runner.invoke(cli, ["upgrade", "--name", "test-app", *flags])
+            result = runner.invoke(cli, ["upgrade", "--name", "test-app", *flags])
+        # Never through open(), whose Lambda auto-update would push code
+        # before the template (#752).
+        repo_class.open.assert_not_called()
+        return result
 
-    @pytest.mark.parametrize("flags", [(), ("--force",)], ids=["bump", "force"])
-    def test_applies_the_template_before_the_code(self, runner: CliRunner, flags) -> None:
+    @pytest.mark.parametrize(
+        ("lambda_version", "flags"),
+        [("1.0.0", ()), ("1.0.0", ("--force",)), ("1.1.0", ("--force",))],
+        ids=["bump", "force", "force-current"],
+    )
+    def test_applies_the_template_before_the_code(
+        self, runner: CliRunner, lambda_version, flags
+    ) -> None:
         order: list[str] = []
+        repo = self._repo(lambda_version)
         manager = self._manager(
             AsyncMock(side_effect=lambda: order.append("template") or self.APPLIED)
         )
         manager.deploy_lambda_code.side_effect = lambda **_: (
             order.append("aggregator") or {"status": "deployed", "size_bytes": 1024}
         )
+        manager.deploy_provisioner_code.side_effect = lambda **_: (
+            order.append("provisioner") or {"status": "deployed", "size_bytes": 1024}
+        )
+        repo.set_version_record.side_effect = lambda **_: order.append("record")
         manager.ensure_tags.side_effect = lambda **_: order.append("tags") or True
 
-        result = self._upgrade(runner, self._repo("1.0.0"), manager, *flags)
+        result = self._upgrade(runner, repo, manager, *flags)
 
         assert result.exit_code == 0, result.output
-        assert order == ["template", "aggregator", "tags"]
+        assert order == ["template", "aggregator", "provisioner", "record", "tags"]
+        assert repo.set_version_record.call_args.kwargs["lambda_version"] == "1.1.0"
         assert "[1/5] Applying stack template..." in result.output
         assert "Stack template applied (1 resource(s) changed)" in result.output
         assert "Modify AcquireOnlyPolicy (AWS::IAM::ManagedPolicy)" in result.output
@@ -2176,21 +2190,40 @@ class TestUpgradeAppliesTemplate:
         manager.deploy_lambda_code.assert_called_once()
 
     def test_a_current_stack_still_gets_the_template(self, runner: CliRunner) -> None:
-        """open(auto_update=True) pushes this build's code without the
-        template, so a stack can be current on Lambda and old on IAM."""
+        """An application's open(auto_update=True) pushes this build's code
+        without the template, so a stack can be current on Lambda and old on
+        IAM. The template is applied; nothing is pushed or stamped."""
         order: list[str] = []
+        repo = self._repo("1.1.0")
         manager = self._manager(
             AsyncMock(side_effect=lambda: order.append("template") or self.APPLIED)
         )
         manager.ensure_tags.side_effect = lambda **_: order.append("tags") or True
 
-        result = self._upgrade(runner, self._repo("1.1.0"), manager)
+        result = self._upgrade(runner, repo, manager)
 
         assert result.exit_code == 0, result.output
         assert "already up to date" in result.output
         assert "Stack template applied (1 resource(s) changed)" in result.output
         assert order == ["template", "tags"]
         manager.deploy_lambda_code.assert_not_called()
+        manager.deploy_provisioner_code.assert_not_called()
+        repo.set_version_record.assert_not_called()
+
+    def test_up_to_date_is_an_unchanged_template_and_current_code(self, runner: CliRunner) -> None:
+        repo = self._repo("1.1.0")
+        manager = self._manager(AsyncMock(return_value={"status": "no_changes", "changes": []}))
+        manager.ensure_tags = AsyncMock(return_value=False)
+
+        result = self._upgrade(runner, repo, manager)
+
+        assert result.exit_code == 0, result.output
+        assert "Stack template already current" in result.output
+        assert "Lambda code is already up to date." in result.output
+        manager.apply_template.assert_awaited_once()
+        manager.deploy_lambda_code.assert_not_called()
+        manager.deploy_provisioner_code.assert_not_called()
+        repo.set_version_record.assert_not_called()
 
     def test_a_current_stack_refusal_exits_1(self, runner: CliRunner) -> None:
         manager = self._manager(
@@ -7830,6 +7863,45 @@ class TestUpgradeSkipsFunctionsTheStackDoesNotDeploy:
         assert result.exit_code == 0, result.output
         assert asyncio.run(self._stamp()) == "0.15.0"
         assert stack_lambda_versions(self.STACK) == dict.fromkeys(present, "0.15.0")
+
+    @pytest.mark.parametrize("flags", [(), ("--force",)], ids=["plain", "force"])
+    def test_upgrade_applies_the_template_before_any_push(
+        self, mock_dynamodb, runner: CliRunner, flags
+    ) -> None:
+        """Against a real repository: the connect never auto-updates the
+        Lambdas, so the template step runs before the first push (#752)."""
+        import asyncio
+
+        from tests.fixtures.moto import create_stack_lambdas, stack_lambda_versions
+        from zae_limiter.infra.stack_manager import StackManager
+        from zae_limiter.repository import Repository
+
+        asyncio.run(self._seed("0.14.0"))
+        create_stack_lambdas(self.STACK, "aggregator", "limits-provisioner")
+
+        def versions_at_apply(_self: StackManager) -> dict:
+            # What the functions ran when the template was applied.
+            seen.append(stack_lambda_versions(self.STACK))
+            return {"status": "applied", "changes": []}
+
+        seen: list[dict] = []
+        with (
+            patch.object(StackManager, "apply_template", autospec=True) as apply,
+            patch.object(
+                Repository, "_perform_lambda_update", new_callable=AsyncMock
+            ) as auto_update,
+        ):
+            apply.side_effect = versions_at_apply
+            result = self._upgrade(runner, *flags)
+
+        assert result.exit_code == 0, result.output
+        auto_update.assert_not_called()
+        assert seen == [{"aggregator": None, "limits-provisioner": None}]
+        assert stack_lambda_versions(self.STACK) == {
+            "aggregator": "0.15.0",
+            "limits-provisioner": "0.15.0",
+        }
+        assert asyncio.run(self._stamp()) == "0.15.0"
 
     @pytest.mark.parametrize("present", PRESENT)
     def test_forced_upgrade_reports_each_skip(self, mock_dynamodb, runner: CliRunner, present):

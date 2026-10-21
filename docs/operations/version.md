@@ -260,7 +260,10 @@ goes through a change set: a change that would **replace** or **remove** a resou
 the table would empty it) is refused, nothing is applied, no code is pushed, and the command
 exits 1 naming each resource. A template with nothing to change is reported as already current.
 A stack whose Lambda code is already current still gets the template, so running `upgrade`
-after clients have auto-updated the Lambdas is enough. Run it on each stack before rolling out
+after clients have auto-updated the Lambdas is enough; it reports "already up to date" only when
+the template has nothing to change and the Lambdas run this version. `upgrade` itself never
+auto-updates the Lambdas on connect, so the template always goes first. The steps are: template,
+Lambda code, provisioner code, version record, stack tags. Run it on each stack before rolling out
 v0.17.0 clients, whose bucket writes need IAM actions the v0.16.0 policies lack.
 
 ```

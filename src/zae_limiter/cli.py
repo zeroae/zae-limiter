@@ -1641,7 +1641,14 @@ def upgrade(
                 )
 
     async def _upgrade() -> None:
-        repo = await _connect(name, region, endpoint_url)
+        # Connected without Lambda auto-update (#752): open(auto_update=True)
+        # pushed the new code before these steps ran, so the stack ran it under
+        # the old IAM, and the steps below then saw nothing behind. The
+        # read-only connect still refuses a client below the stack's minimum
+        # (it would put older Lambdas back) and a schema needing migration,
+        # and never provisions a missing stack. The version record lives in
+        # the reserved namespace, so no namespace is resolved.
+        repo = await _connect_read_only(name, region, endpoint_url, namespace=None)
         try:
             click.echo()
             click.echo("Checking infrastructure version...")
@@ -1658,45 +1665,23 @@ def upgrade(
 
             # An unknown lambda_version (#638: the record was initialized by a
             # client that deployed no Lambda code) is not "up to date".
-            if (
+            lambdas_current = bool(
                 not force
                 and compat.is_compatible
                 and not compat.requires_lambda_update
                 and infra_version.lambda_version
-            ):
+            )
+            if lambdas_current and infra_version.lambda_version != __version__:
+                # An older or tagless client also reads as current against
+                # newer Lambdas. It must not apply its older template (taking
+                # actions away from the newer code) nor write its own version
+                # over a newer one, so it changes nothing.
                 click.echo()
                 click.echo("Lambda code is already up to date.")
                 click.echo(f"  Client:   {__version__}")
                 click.echo(f"  Lambda:   {infra_version.lambda_version}")
-                # open(auto_update=True) pushes Lambda code but leaves the stack
-                # template and tags alone, so a current version record can sit
-                # beside an old template (#752) and stale tags. Bring both up,
-                # but only when this build is the one the record names: an
-                # older or tagless client also lands here, and would apply its
-                # older template and write its own version over a newer one.
-                if infra_version.lambda_version == __version__:
-                    async with StackManager(name, region, endpoint_url) as manager:
-                        if not lambda_only:
-                            click.echo("  Applying stack template...")
-                            await _apply_stack_template(manager)
-                        try:
-                            if await manager.ensure_tags(
-                                refresh_versions=True,
-                                lambda_version=infra_version.lambda_version,
-                                wait=True,
-                            ):
-                                click.echo("  Stack tags updated")
-                        except Exception as e:
-                            click.echo(f"⚠️  Tag update failed: {e}", err=True)
                 return
 
-            if compat.requires_schema_migration:
-                click.echo()
-                click.echo("✗ Schema migration required - cannot auto-upgrade", err=True)
-                click.echo(f"  {compat.message}")
-                sys.exit(1)
-
-            # Perform upgrade
             click.echo()
             click.echo(f"Current: Lambda {infra_version.lambda_version or 'unknown'}")
             click.echo(f"Target:  Lambda {__version__}")
@@ -1713,6 +1698,25 @@ def upgrade(
                     click.echo("      Skipped (--lambda-only)")
                 else:
                     await _apply_stack_template(manager)
+
+                if lambdas_current:
+                    # This build's code is already running: nothing to push or
+                    # stamp. The tags may still be stale (a Lambda update by
+                    # open(auto_update=True) leaves them alone).
+                    click.echo()
+                    click.echo("Lambda code is already up to date.")
+                    click.echo(f"  Client:   {__version__}")
+                    click.echo(f"  Lambda:   {infra_version.lambda_version}")
+                    try:
+                        if await manager.ensure_tags(
+                            refresh_versions=True,
+                            lambda_version=infra_version.lambda_version,
+                            wait=True,
+                        ):
+                            click.echo("  Stack tags updated")
+                    except Exception as e:
+                        click.echo(f"⚠️  Tag update failed: {e}", err=True)
+                    return
 
                 # Step 2: Update Lambda code. A stack without an aggregator
                 # (--no-aggregator) or without a provisioner (--no-provisioner,
@@ -1760,11 +1764,22 @@ def upgrade(
                     provisioner_exists=provisioner_exists,
                 )
 
-                # Step 4: Refresh discovery and version tags. CloudFormation
+                # Step 4: Update version record
+                click.echo("[4/5] Updating version record...")
+                # client_min_version is left as stored (#638 C). The stored stamp is
+                # unreachable under skip_absent (each is pushed or proven absent); a guard.
+                await repo.set_version_record(
+                    schema_version=get_schema_version(),
+                    lambda_version=__version__ if current else infra_version.lambda_version,
+                    updated_by=f"cli:{__version__}",
+                )
+                click.echo("      Version record updated")
+
+                # Step 5: Refresh discovery and version tags. CloudFormation
                 # propagates them to the table and the Lambda functions. The
                 # template step kept the stack's tags as they were and waited
                 # for its update, so this update cannot collide with it.
-                click.echo("[4/5] Updating stack tags...")
+                click.echo("[5/5] Updating stack tags...")
                 try:
                     tags_updated = await manager.ensure_tags(
                         refresh_versions=True,
@@ -1777,18 +1792,7 @@ def upgrade(
                         click.echo("      Tags already current")
                 except Exception as e:
                     click.echo(f"⚠️  Tag update failed: {e}", err=True)
-                    # Non-fatal — continue with upgrade
-
-                # Step 5: Update version record
-                click.echo("[5/5] Updating version record...")
-                # client_min_version is left as stored (#638 C). The stored stamp is
-                # unreachable under skip_absent (each is pushed or proven absent); a guard.
-                await repo.set_version_record(
-                    schema_version=get_schema_version(),
-                    lambda_version=__version__ if current else infra_version.lambda_version,
-                    updated_by=f"cli:{__version__}",
-                )
-                click.echo("      Version record updated")
+                    # Non-fatal — the upgrade itself is complete
 
             click.echo()
             click.echo("✓ Upgrade complete!")
