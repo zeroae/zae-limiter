@@ -1309,42 +1309,11 @@ class Lease:
         first_check = len(items)
         items += meta_checks
 
-        # Retry loop for TransactionConflict (Issue #332)
-        condition_failed = False
-        condition_exc: Exception | None = None
-        for attempt in range(_CONFLICT_MAX_RETRIES + 1):
-            try:
-                await repo.transact_write(items)
-                break  # success
-            except Exception as exc:
-                # Check ConditionalCheckFailed first — it takes priority over
-                # TransactionConflict because it means the optimistic lock failed,
-                # requiring the consumption-only retry path.
-                if _is_condition_check_failure(exc):
-                    condition_failed = True
-                    condition_exc = exc
-                    break
-                if _is_transaction_conflict(exc):
-                    if attempt < _CONFLICT_MAX_RETRIES:
-                        delay = random.uniform(0, _CONFLICT_BASE_DELAY_S * (2**attempt))
-                        logger.debug(
-                            "TransactionConflict (attempt %d/%d), retrying in %.3fs",
-                            attempt + 1,
-                            _CONFLICT_MAX_RETRIES,
-                            delay,
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-                    if donor_items:
-                        # A move that kept conflicting wrote nothing; the
-                        # caller re-plans it rather than seeing a raw error.
-                        raise QuotaMoveLostError(contended=True) from exc
-                    # Sustained contention, not an outage (#724): the
-                    # transaction did not apply, so nothing was debited.
-                    # Reaching `on_unavailable` would admit without limit
-                    # under ALLOW; a short 429 asks the caller to retry.
-                    raise _contention_rejection(self.entries, now_ms) from exc
-                raise  # other errors propagate unchanged
+        # Every send of this transaction goes through `_send_commit`, which
+        # retries a TransactionConflict (Issue #332) and turns sustained
+        # contention into the contended 429 (#724) or a lost move.
+        condition_exc = await self._send_commit(items, bool(donor_items), now_ms)
+        condition_failed = condition_exc is not None
 
         if condition_failed and _meta_check_failed(condition_exc, first_check, len(meta_checks)):
             # An owner moved (or was recreated) since this pass read it: the
@@ -1360,16 +1329,14 @@ class Lease:
             # A predecessor's leftover was claimed for this incarnation
             # (ADR-150); the claim moves no `rf`, so the same write — refill
             # and owner stamp included — now passes the lock it lost. Once.
-            try:
-                await repo.transact_write(items)
+            resent_exc = await self._send_commit(items, bool(donor_items), now_ms)
+            if resent_exc is None:
                 condition_failed = False
                 condition_exc = None
-            except Exception as exc:
-                if not _is_condition_check_failure(exc):
-                    raise
-                if _meta_check_failed(exc, first_check, len(meta_checks)):
-                    raise _owner_stamp_lost(self.entries, now_ms) from exc
-                condition_exc = exc
+            else:
+                if _meta_check_failed(resent_exc, first_check, len(meta_checks)):
+                    raise _owner_stamp_lost(self.entries, now_ms) from resent_exc
+                condition_exc = resent_exc
 
         if condition_failed and donor_items:
             # The whole transaction rolled back — donor untouched — and the
@@ -1597,6 +1564,64 @@ class Lease:
             await self._repair_created_quota_shards(
                 [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
             )
+
+    async def _send_commit(
+        self, items: list[dict[str, Any]], carries_moves: bool, now_ms: int
+    ) -> Exception | None:
+        """Send the commit transaction once, retrying a write conflict (#332, #724).
+
+        A ``TransactionConflict`` rolls the whole transaction back, so it is
+        re-sent as-is with full jitter, up to ``_CONFLICT_MAX_RETRIES`` times.
+        Every send of the commit goes through here — the first, and the
+        re-send after a claimed predecessor's bucket (ADR-150) — so none of
+        them can let a conflict escape raw: under ``on_unavailable=ALLOW`` a
+        raw error is an unlimited degraded lease.
+
+        Returns:
+            None when the transaction landed, or the exception when it failed
+            a condition (checked first: a lost lock routes to the
+            consumption-only retry, a META check to a re-plan). The caller
+            decides which.
+
+        Raises:
+            QuotaMoveLostError: Sustained contention on a commit carrying an
+                ADR-145 move; nothing was written and the caller re-plans.
+            RateLimitExceeded: Sustained contention otherwise — the contended
+                429 (#724); nothing was debited.
+            Exception: Any other error, unchanged.
+        """
+        attempt = 0
+        while True:
+            try:
+                await self.repository.transact_write(items)
+                return None
+            except Exception as exc:
+                # ConditionalCheckFailed takes priority over TransactionConflict:
+                # it means a condition (a lock, a pin) failed, not contention.
+                if _is_condition_check_failure(exc):
+                    return exc
+                if not _is_transaction_conflict(exc):
+                    raise  # other errors propagate unchanged
+                if attempt < _CONFLICT_MAX_RETRIES:
+                    delay = random.uniform(0, _CONFLICT_BASE_DELAY_S * (2**attempt))
+                    logger.debug(
+                        "TransactionConflict (attempt %d/%d), retrying in %.3fs",
+                        attempt + 1,
+                        _CONFLICT_MAX_RETRIES,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    attempt += 1
+                    continue
+                if carries_moves:
+                    # A move that kept conflicting wrote nothing; the caller
+                    # re-plans it rather than seeing a raw error.
+                    raise QuotaMoveLostError(contended=True) from exc
+                # Sustained contention, not an outage (#724): the transaction
+                # did not apply, so nothing was debited. Reaching
+                # `on_unavailable` would admit without limit under ALLOW; a
+                # short 429 asks the caller to retry.
+                raise _contention_rejection(self.entries, now_ms) from exc
 
     def _record_written_states(
         self,

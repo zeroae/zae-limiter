@@ -552,6 +552,52 @@ class TestStaleWriters:
                 async with slow.acquire("user", "gpt-4", consume={"rpm": 1}):
                     pass
 
+    @pytest.mark.parametrize("mode", ["block", "allow"])
+    async def test_a_resent_write_that_keeps_conflicting_is_a_contended_rejection(
+        self, limiter, mode
+    ):
+        """F4 (review of Stack B): the re-send after a claim retries a conflict.
+
+        Sustained contention on it is the #724 contended 429, never a raw error
+        that `on_unavailable=ALLOW` would turn into an unlimited degraded lease.
+        """
+        from botocore.exceptions import ClientError
+
+        from zae_limiter import OnUnavailable
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._foreign_stamp(repo)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        real = repo.transact_write
+        calls = []
+        conflict = ClientError(
+            {
+                "Error": {"Code": "TransactionCanceledException", "Message": "conflict"},
+                "CancellationReasons": [{"Code": "TransactionConflict"}, {"Code": "None"}],
+            },
+            "TransactWriteItems",
+        )
+
+        async def conflicting_resend(items):
+            calls.append(items)
+            if len(calls) > 1:  # every send after the claim
+                raise conflict
+            return await real(items)
+
+        with (
+            patch.object(repo, "restamp_owner_if_current", return_value=True),
+            patch.object(repo, "transact_write", conflicting_resend),
+            patch("zae_limiter.lease.asyncio.sleep"),
+        ):
+            with pytest.raises(RateLimitExceeded) as raised:
+                async with slow.acquire(
+                    "user", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable(mode)
+                ):
+                    pass
+        assert raised.value.contended
+        assert len(calls) == 1 + 4  # the first send, then the re-send and its 3 retries
+
     async def test_a_predecessors_bucket_never_outranks_the_recreated_entity(self, repo, other):
         """Skew probe: its generation is higher, its incarnation is not this one."""
         await self._leftover_from_a_fast_clock(repo, other)
