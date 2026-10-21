@@ -129,7 +129,7 @@ def _failed_only_on_its_stamp(result: "SpeculativeResult", consume: dict[str, in
     """Whether a speculative failure image shows the request would have fit.
 
     The write lost a condition other than its balances: in practice a
-    ``vu = 0`` that only trims (#679, and the ADR-150 owner-check fallback),
+    ``vu = 0`` that only trims (#679's credit clamp, or the param sync),
     which the repository classifies as exhausted so a rejection stays one
     write. The bucket needs a slow pass on **this** shard to clear the stamp;
     another shard cannot do it.
@@ -953,11 +953,6 @@ class RateLimiter:
         except Exception:
             await lease._rollback()
             raise
-        finally:
-            # The owner check of any bucket the commit created (ADR-150) runs
-            # in the background from the moment the commit landed; join it so
-            # it never outlives the lease. It cannot raise.
-            await lease._await_owner_checks()
 
     async def _try_speculative_acquire(
         self,
@@ -1119,7 +1114,7 @@ class RateLimiter:
                 return None, new_shard, new_count, parent_hint
 
             # A sharded bucket whose write failed only on its stamp (a trimming
-            # `vu = 0`: #679, or the ADR-150 owner-check fallback) needs the
+            # `vu = 0`: #679's credit clamp, or the param sync) needs the
             # slow path on this same shard, the only pass that clears it. The
             # retry below would send it elsewhere, and the stamped shard would
             # keep failing every fast-path write that draws it.
@@ -3631,9 +3626,9 @@ class RateLimiter:
                     entry.state.total_consumed_milli -= entry.consumed * 1000
                 entry.consumed = 0
         try:
-            lease = Lease(repository=self._repository, entries=entries, _carriers=carriers)
-            await lease._commit_initial()
-            await lease._await_owner_checks()
+            await Lease(
+                repository=self._repository, entries=entries, _carriers=carriers
+            )._commit_initial()
         except Exception as exc:
             # Never the entity id: it is routinely an API key
             # (py/clear-text-logging-sensitive-data).

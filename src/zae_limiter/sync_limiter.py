@@ -113,7 +113,7 @@ def _failed_only_on_its_stamp(result: "SpeculativeResult", consume: dict[str, in
     """Whether a speculative failure image shows the request would have fit.
 
     The write lost a condition other than its balances: in practice a
-    ``vu = 0`` that only trims (#679, and the ADR-150 owner-check fallback),
+    ``vu = 0`` that only trims (#679's credit clamp, or the param sync),
     which the repository classifies as exhausted so a rejection stays one
     write. The bucket needs a slow pass on **this** shard to clear the stamp;
     another shard cannot do it.
@@ -797,8 +797,6 @@ class SyncRateLimiter:
         except Exception:
             lease._rollback()
             raise
-        finally:
-            lease._await_owner_checks()
 
     def _try_speculative_acquire(
         self,
@@ -2797,9 +2795,9 @@ class SyncRateLimiter:
                     entry.state.total_consumed_milli -= entry.consumed * 1000
                 entry.consumed = 0
         try:
-            lease = SyncLease(repository=self._repository, entries=entries, _carriers=carriers)
-            lease._commit_initial()
-            lease._await_owner_checks()
+            SyncLease(
+                repository=self._repository, entries=entries, _carriers=carriers
+            )._commit_initial()
         except Exception as exc:
             logger.warning(
                 "A rejected pass's quota move on resource %r was not written: %r",

@@ -6,7 +6,6 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
-import concurrent.futures
 import functools
 import logging
 import random
@@ -3284,31 +3283,6 @@ class SyncRepository:
                 )
                 time.sleep(delay)
         return client.update_item(**kwargs)
-
-    def build_vu_reset(self, entity_id: str, resource: str, shard_id: int = 0) -> dict[str, Any]:
-        """Build an UpdateItem that forces one materialising pass (#679).
-
-        ``vu = 0`` fails the speculative condition, so the next acquire takes the
-        slow path, whose rf-locked write clears ``vu`` again — the mechanism the
-        limit-change sync uses after a capacity shrink (#222 Task 13). Used after
-        a created bucket's owner check failed (ADR-150), so the slow pass
-        re-stamps the owner from META.
-        """
-        return {
-            "Update": {
-                "TableName": self.table_name,
-                "Key": {
-                    "PK": {
-                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
-                    },
-                    "SK": {"S": schema.sk_state()},
-                },
-                "UpdateExpression": "SET #vu = :zero",
-                "ConditionExpression": "attribute_exists(PK)",
-                "ExpressionAttributeNames": {"#vu": schema.BUCKET_FIELD_VU},
-                "ExpressionAttributeValues": {":zero": {"N": "0"}},
-            }
-        }
 
     def transact_write(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
         """Execute a write, using single-item API when possible to halve WCU cost.
@@ -7167,53 +7141,6 @@ class SyncRepository:
             return False
         return True
 
-    def repair_created_owner_stamp(
-        self,
-        entity_id: str,
-        resource: str,
-        shard_id: int,
-        stamped_pgen: int,
-        stamped_pinc: str | None = None,
-    ) -> bool:
-        """Restamp a bucket just created from a META read a move has overtaken (ADR-150).
-
-        One strongly consistent read of the owner's META (1 RCU). When its
-        parent generation still equals the one the create stamped, nothing is
-        written. Otherwise the bucket gets the move's stamp — the policy
-        resolved for this resource (3 consistent reads) and the new parent —
-        through the fan-out's own pinned write, so a newer stamp is never
-        lowered.
-
-        Returns:
-            Whether the bucket was restamped.
-        """
-        owner = self.get_entity(entity_id, consistent_read=True)
-        if owner is None or (
-            owner.parent_generation == stamped_pgen and stamped_pinc in (None, owner.incarnation)
-        ):
-            return False
-        access = self.resolve_access(entity_id, resource, consistent_read=True)
-        cascade = effective_cascade(access.cascade, owner)
-        self._stamp_bucket_cascade(
-            schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id),
-            cascade,
-            owner.parent_id,
-            owner.parent_generation,
-            owner.incarnation,
-        )
-        self._cascade_cache[self._namespace_id, entity_id, resource] = cascade
-        return True
-
-    def start_background(self, work: Callable[[], None]) -> concurrent.futures.Future[None]:
-        """Run ``work()`` as a background task and return its handle (ADR-150).
-
-        The lease's post-create owner check runs this way, overlapping the
-        caller's block. The sync twin spawns it per ``parallel_mode``
-        (``SyncRepository._spawn``). The caller must join the handle.
-        """
-        task: concurrent.futures.Future[None] = self._spawn(lambda work=work: work())
-        return task
-
     def restamp_owner_if_current(
         self, entity_id: str, resource: str, shard_id: int, incarnation: str
     ) -> bool:
@@ -7748,76 +7675,6 @@ class SyncRepository:
             self._thread_pool = ThreadPoolExecutor(max_workers=2)
         futures = [self._thread_pool.submit(fn) for fn in funcs]
         return tuple(f.result() for f in futures)
-
-    def _spawn(self, fn: Any) -> Any:
-        """Run ``fn`` in the background: the sync twin of ``asyncio.create_task``.
-
-        Returns a ``concurrent.futures.Future`` in every parallel_mode: ``.result()``
-        returns ``fn``'s value or re-raises the exception ``fn`` raised (held, never
-        lost). threadpool submits to the lazy executor; gevent (patched) spawns a
-        greenlet; serial runs ``fn`` inline and returns a completed future.
-
-        ``.cancel()`` keeps ``concurrent.futures`` semantics, not asyncio's: it
-        cancels only a spawn that has not started, and returns False for one that
-        is running. threadpool then runs ``fn`` to completion (a thread cannot be
-        interrupted). gevent also kills the running greenlet, and ``.result()``
-        raises ``concurrent.futures.CancelledError``, translated from the
-        ``GreenletExit`` the kill raises inside ``fn``. serial has always run ``fn``
-        to completion before ``.cancel()`` can be called.
-        """
-        from concurrent.futures import CancelledError, Future
-
-        executor_fn = self._executor_fn
-        if executor_fn is None:
-            if self._thread_pool is None:
-                from concurrent.futures import ThreadPoolExecutor
-
-                self._thread_pool = ThreadPoolExecutor(max_workers=2)
-            return self._thread_pool.submit(fn)
-        gevent_spawn: Any = None
-        killed: tuple[type[BaseException], ...] = ()
-        if self._parallel_mode in ("auto", "gevent"):
-            try:
-                from gevent import GreenletExit, monkey, spawn
-
-                if monkey.is_module_patched("socket"):
-                    gevent_spawn = spawn
-                    killed = (GreenletExit,)
-            except ImportError:
-                gevent_spawn = None
-
-        def run(future: Any) -> None:
-            if not future.set_running_or_notify_cancel():
-                return
-            try:
-                future.set_result(fn())
-            except killed:
-                future.set_exception(CancelledError())
-            except BaseException as exc:
-                future.set_exception(exc)
-
-        if gevent_spawn is None:
-            done: Future[Any] = Future()
-            run(done)
-            return done
-
-        class _GreenletFuture(Future[Any]):
-            greenlet: Any = None
-
-            def cancel(self) -> bool:
-                cancelled = super().cancel()
-                if self.greenlet is not None and (not cancelled) and (not self.done()):
-                    self.greenlet.kill(block=False)
-                return cancelled
-
-        def settle_if_never_ran(_greenlet: Any) -> None:
-            if not pending.done():
-                pending.cancel()
-
-        pending = _GreenletFuture()
-        pending.greenlet = gevent_spawn(run, pending)
-        pending.greenlet.rawlink(settle_if_never_ran)
-        return pending
 
     def _cleanup_thread_pool(self) -> None:
         pool = getattr(self, "_thread_pool", None)

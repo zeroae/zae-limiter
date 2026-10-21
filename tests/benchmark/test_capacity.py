@@ -196,8 +196,6 @@ class TestCapacityConsumption:
         - 1 BatchGetItem with 2 keys = entity META + 1 bucket
         - 1 TransactWriteItems: the create's Put and a ConditionCheck on the
           entity's META (ADR-150: pinned to what the read returned)
-        - GetItem of the entity's META, strongly consistent, after the create
-          (ADR-150: a move may have overtaken the META read)
 
         Note: When limits parameter is provided, config resolution is skipped
         (ADR-122: _resolve_limits short-circuits on explicit limits).
@@ -238,10 +236,9 @@ class TestCapacityConsumption:
         assert capacity_counter.transact_write_items == [2], (
             "The create's Put and its META ConditionCheck, in one transaction"
         )
-        # Version check, plus the owner check after a create (ADR-150): one
-        # strongly consistent META read, once per bucket created. Config
-        # resolution is skipped when limits are provided.
-        assert capacity_counter.get_item == 2, "Should have 2 GetItems (version + owner check)"
+        # Config resolution is skipped when limits are provided, and the
+        # create is pinned in its own transaction (ADR-150): no read after it.
+        assert capacity_counter.get_item == 1, "Should have 1 GetItem (version check only)"
 
     def test_acquire_batched_config_resolution_capacity(self, sync_limiter, capacity_counter):
         """Verify: acquire() without limits override uses BatchGetItem for configs (#298).
@@ -250,8 +247,8 @@ class TestCapacityConsumption:
         - 1 GetItem (version check)
         - 1 BatchGetItem for config resolution (entity, entity_default, resource, system)
         - 1 BatchGetItem with 2 keys = entity META + 1 bucket
-        - 1 PutItem (single-item optimization)
-        - 1 GetItem of the entity's META after the create (ADR-150)
+        - 1 TransactWriteItems: the create's Put and its META ConditionCheck
+          (ADR-150)
 
         The config BatchGetItem replaces up to 4 sequential GetItem calls.
 
@@ -293,9 +290,8 @@ class TestCapacityConsumption:
         assert capacity_counter.batch_get_item[1] == 2, (
             "Second BatchGetItem should fetch 1 bucket + 1 META"
         )
-        # No sequential GetItem for config resolution: the version check, and the
-        # owner check after this create (ADR-150)
-        assert capacity_counter.get_item == 2, "Should have 2 GetItems (version + owner check)"
+        # No sequential GetItem for config resolution
+        assert capacity_counter.get_item == 1, "Should have only 1 GetItem (version check)"
 
     def test_available_check_capacity(self, sync_limiter, capacity_counter):
         """Verify: available() reads bucket state without writes.

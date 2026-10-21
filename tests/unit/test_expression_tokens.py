@@ -380,11 +380,6 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
 
-    def test_vu_reset(self) -> None:
-        """ADR-150: forces a slow pass after a failed owner check."""
-        update = _repo().build_vu_reset("user-1", "api", shard_id=3)["Update"]
-        assert_expression_safe(update)
-
     @pytest.mark.parametrize(
         "exists, pgen, pinc",
         [(False, None, None), (True, 0, "-"), (True, 0, "2026-01-01T00:00:00Z"), (True, 7, "a1")],

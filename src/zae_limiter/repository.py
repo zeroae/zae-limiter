@@ -7,7 +7,7 @@ import random
 import secrets
 import time
 import warnings
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from aiobotocore.session import AioSession, get_session
@@ -3872,31 +3872,6 @@ class Repository:
                 )
                 await asyncio.sleep(delay)
         return await client.update_item(**kwargs)
-
-    def build_vu_reset(self, entity_id: str, resource: str, shard_id: int = 0) -> dict[str, Any]:
-        """Build an UpdateItem that forces one materialising pass (#679).
-
-        ``vu = 0`` fails the speculative condition, so the next acquire takes the
-        slow path, whose rf-locked write clears ``vu`` again — the mechanism the
-        limit-change sync uses after a capacity shrink (#222 Task 13). Used after
-        a created bucket's owner check failed (ADR-150), so the slow pass
-        re-stamps the owner from META.
-        """
-        return {
-            "Update": {
-                "TableName": self.table_name,
-                "Key": {
-                    "PK": {
-                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
-                    },
-                    "SK": {"S": schema.sk_state()},
-                },
-                "UpdateExpression": "SET #vu = :zero",
-                "ConditionExpression": "attribute_exists(PK)",
-                "ExpressionAttributeNames": {"#vu": schema.BUCKET_FIELD_VU},
-                "ExpressionAttributeValues": {":zero": {"N": "0"}},
-            }
-        }
 
     async def transact_write(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
         """Execute a write, using single-item API when possible to halve WCU cost.
@@ -8622,53 +8597,6 @@ class Repository:
             # already stamped it — nothing to restamp either way.
             return False
         return True
-
-    async def repair_created_owner_stamp(
-        self,
-        entity_id: str,
-        resource: str,
-        shard_id: int,
-        stamped_pgen: int,
-        stamped_pinc: str | None = None,
-    ) -> bool:
-        """Restamp a bucket just created from a META read a move has overtaken (ADR-150).
-
-        One strongly consistent read of the owner's META (1 RCU). When its
-        parent generation still equals the one the create stamped, nothing is
-        written. Otherwise the bucket gets the move's stamp — the policy
-        resolved for this resource (3 consistent reads) and the new parent —
-        through the fan-out's own pinned write, so a newer stamp is never
-        lowered.
-
-        Returns:
-            Whether the bucket was restamped.
-        """
-        owner = await self.get_entity(entity_id, consistent_read=True)
-        if owner is None or (
-            owner.parent_generation == stamped_pgen and stamped_pinc in (None, owner.incarnation)
-        ):
-            return False
-        access = await self.resolve_access(entity_id, resource, consistent_read=True)
-        cascade = effective_cascade(access.cascade, owner)
-        await self._stamp_bucket_cascade(
-            schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id),
-            cascade,
-            owner.parent_id,
-            owner.parent_generation,
-            owner.incarnation,
-        )
-        self._cascade_cache[(self._namespace_id, entity_id, resource)] = cascade
-        return True
-
-    def start_background(self, work: Callable[[], Coroutine[Any, Any, None]]) -> asyncio.Task[None]:
-        """Run ``work()`` as a background task and return its handle (ADR-150).
-
-        The lease's post-create owner check runs this way, overlapping the
-        caller's block. The sync twin spawns it per ``parallel_mode``
-        (``SyncRepository._spawn``). The caller must join the handle.
-        """
-        task: asyncio.Task[None] = asyncio.create_task(work())
-        return task
 
     async def restamp_owner_if_current(
         self, entity_id: str, resource: str, shard_id: int, incarnation: str
