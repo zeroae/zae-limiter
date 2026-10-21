@@ -2307,7 +2307,7 @@ class SyncRateLimiter:
                     )
                 if access.cascade is False:
                     continue
-                entity = self._repository.get_entity(entity_id)
+                entity = self._repository.get_entity(entity_id, consistent_read=True)
                 if entity is None or not effective_cascade(access.cascade, entity):
                     continue
                 parent_id = entity.parent_id

@@ -2908,8 +2908,10 @@ class RateLimiter:
                     continue
                 # The slow path would gate the parent too (ADR-125, ADR-146):
                 # its 403 outranks the child's 429 for a resource with no
-                # bucket yet, exactly as in a single-resource acquire.
-                entity = await self._repository.get_entity(entity_id)
+                # bucket yet, exactly as in a single-resource acquire. Read
+                # strongly consistently: after a move (ADR-150) an eventually
+                # consistent read can still name the old parent.
+                entity = await self._repository.get_entity(entity_id, consistent_read=True)
                 if entity is None or not effective_cascade(access.cascade, entity):
                     continue
                 parent_id = entity.parent_id

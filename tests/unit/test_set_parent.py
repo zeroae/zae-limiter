@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from zae_limiter import RateLimiter, RateLimitExceeded, __version__, schema
+from zae_limiter import RateLimiter, RateLimitExceeded, ResourceDisabled, __version__, schema
 from zae_limiter.exceptions import (
     EntityNotFoundError,
     FanoutIncomplete,
@@ -1619,3 +1619,35 @@ class TestTheParentShardHint:
         assert limiter._slow_path_shard("org-b", "gpt-4", 3, 4) == (3, 4)  # a doubling's draw
         repo._entity_cache[(repo._namespace_id, "org-b")] = (False, None, {"gpt-4": 4})
         assert limiter._slow_path_shard("org-b", "gpt-4", 3) == (3, 4)  # ADR-133: in range
+
+
+class TestTheDisabledLookAcrossResources:
+    """F5 (review of Stack B): the multi-resource 403 names the parent META names now."""
+
+    async def test_a_stale_read_of_the_old_parent_cannot_hide_the_new_ones_403(self, limiter):
+        repo = limiter._repository
+        for resource in ("chat", "code"):
+            await repo.set_resource_defaults(resource, [RPM])
+        await repo.create_entity("org-a")
+        await repo.create_entity("org-b")
+        await repo.create_entity("user", parent_id="org-a", cascade=True)
+        await repo.set_limits("user", [Limit.per_day("rpm", 1)], resource="chat")
+        async with limiter.acquire("user", "chat", consume={"rpm": 1}):
+            pass  # user/chat is now spent: a fast-path 429
+        stale = await repo.get_entity("user", consistent_read=True)
+        await repo.set_parent("user", "org-b")
+        await repo.disable_entity("org-b", resource="code")
+        real = repo.get_entity
+
+        async def stale_unless_consistent(entity_id, *, consistent_read=False):
+            if entity_id == "user" and not consistent_read:
+                return stale  # an eventually consistent replica from before the move
+            return await real(entity_id, consistent_read=consistent_read)
+
+        with patch.object(repo, "get_entity", stale_unless_consistent):
+            with pytest.raises(ResourceDisabled) as raised:
+                async with limiter.acquire(
+                    "user", "chat", consume={"rpm": 1}, also={"code": {"rpm": 1}}
+                ):
+                    pytest.fail("a disabled parent must not admit")
+        assert (raised.value.entity_id, raised.value.resource) == ("org-b", "code")
