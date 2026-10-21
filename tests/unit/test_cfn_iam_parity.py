@@ -71,6 +71,9 @@ def _snake_to_iam_action(method_name: str) -> str:
 # Table management (create_table, delete_table, describe_table) and
 # waiters (get_waiter) are excluded — they use different IAM actions
 # and are not relevant to the App/Admin/ReadOnly role policies.
+# transact_write_items / transact_get_items are excluded too: IAM defines no
+# action for them, and each item inside is authorised by its own PutItem,
+# UpdateItem, DeleteItem, GetItem or ConditionCheckItem (ADR-152).
 _DYNAMODB_DATA_METHODS = {
     "get_item",
     "put_item",
@@ -80,8 +83,13 @@ _DYNAMODB_DATA_METHODS = {
     "scan",
     "batch_get_item",
     "batch_write_item",
-    "transact_write_items",
-    "transact_get_items",
+}
+
+# Not IAM actions: absent from the DynamoDB service reference
+# (https://servicereference.us-east-1.amazonaws.com/v1/dynamodb/dynamodb.json).
+_UNDEFINED_TRANSACTION_ACTIONS = {
+    "dynamodb:TransactWriteItems",
+    "dynamodb:TransactGetItems",
 }
 
 
@@ -142,11 +150,10 @@ class TestIAMRoleParity:
         - UpdateItem: the speculative write, adjustments, rollbacks, and every
           Update inside the slow path's transaction
         - ConditionCheckItem: a bucket create's META pin (ADR-150)
-        - TransactWriteItems: the multi-item commit
 
         AWS authorises each Put / Update inside TransactWriteItems by PutItem /
-        UpdateItem, not by TransactWriteItems (#750), so without them a
-        principal holding only this policy cannot write at all.
+        UpdateItem; IAM defines no TransactWriteItems action (#750), so without
+        them a principal holding only this policy cannot write at all.
         """
         acq_actions = _extract_policy_actions(self.template, "AcquireOnlyPolicy")
         required_acq_actions = {
@@ -155,7 +162,6 @@ class TestIAMRoleParity:
             "dynamodb:Query",
             "dynamodb:PutItem",
             "dynamodb:UpdateItem",
-            "dynamodb:TransactWriteItems",
             "dynamodb:ConditionCheckItem",
         }
         missing = required_acq_actions - acq_actions
@@ -164,6 +170,26 @@ class TestIAMRoleParity:
             f"AcquireOnlyPolicy is missing required DynamoDB actions: {missing}. "
             f"Add them to the AcquireOnlyPolicy in cfn_template.yaml."
         )
+
+    def test_no_policy_grants_an_undefined_transaction_action(self) -> None:
+        """No policy or role grants an action IAM does not define (ADR-152).
+
+        A transaction is authorised item by item, so a TransactWriteItems
+        entry grants nothing and reads as if it covered the writes (#750).
+        """
+
+        def strings(node: object) -> list[str]:
+            if isinstance(node, str):
+                return [node]
+            if isinstance(node, dict):
+                return [s for value in node.values() for s in strings(value)]
+            if isinstance(node, list):
+                return [s for value in node for s in strings(value)]
+            return []
+
+        for key, resource in self.template["Resources"].items():
+            undefined = set(strings(resource)) & _UNDEFINED_TRANSACTION_ACTIONS
+            assert not undefined, f"{key} grants {undefined}, which IAM does not define"
 
     def test_acquire_only_policy_stays_below_full_access(self) -> None:
         """AcquireOnlyPolicy grants no delete, batch write or scan (ADR-152)."""

@@ -478,7 +478,7 @@ The stack creates three managed IAM policies by default for different access pat
 
 | Policy | Suffix | Use Case | DynamoDB Permissions |
 |--------|--------|----------|---------------------|
-| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, TransactWriteItems, ConditionCheckItem, PutItem, UpdateItem |
+| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, ConditionCheckItem, PutItem, UpdateItem |
 | `FullAccessPolicy` | `-full` | Ops teams managing config | All of the above + DeleteItem, BatchWriteItem, Scan, DescribeTable |
 | `ReadOnlyPolicy` | `-read` | Monitoring and dashboards | GetItem, BatchGetItem, Query, Scan, DescribeTable |
 
@@ -501,6 +501,9 @@ The stack creates three managed IAM policies by default for different access pat
     Before v0.17.0 `AcquireOnlyPolicy` granted neither, so a principal holding only it
     (including the `{stack}-app` role) could not write a bucket, and
     `NamespaceAcquirePolicy` lacked `PutItem`, so it could never create one (ADR-152).
+    The policies no longer list `dynamodb:TransactWriteItems`: IAM defines no such action
+    ([service reference](https://servicereference.us-east-1.amazonaws.com/v1/dynamodb/dynamodb.json)),
+    so it never granted anything.
     A stack deployed earlier keeps its old policies until its template is updated:
     `zae-limiter upgrade` applies the new template through a CloudFormation change set
     (and refuses a change that would replace or remove a resource), so run it on each

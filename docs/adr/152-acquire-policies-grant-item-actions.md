@@ -21,7 +21,9 @@ action, you can use the dynamodb:ConditionCheckItem permission"
 `acquire()` writes with `UpdateItem` (the speculative fast path, adjustments, rollbacks, and
 every `Update` in the slow path's transaction) and with `PutItem` (every bucket create). A
 principal holding only `-acq` could therefore not write at all, and one holding only `-ns-acq`
-could never create a bucket. The optional `{stack}-app` role carries `-acq` alone. moto and
+could never create a bucket. IAM defines no `TransactWriteItems` action at all: the DynamoDB
+[service reference](https://servicereference.us-east-1.amazonaws.com/v1/dynamodb/dynamodb.json)
+lists none, so the entry granted nothing. The optional `{stack}-app` role carries `-acq` alone. moto and
 LocalStack do not evaluate IAM, so no test below real AWS could see it.
 
 ## Decision
@@ -31,7 +33,7 @@ following. Each namespace-scoped policy (`-ns-read`, `-ns-acq`, `-ns-full`) mirr
 table-level counterpart within its `dynamodb:LeadingKeys` condition: it must grant the same
 item actions (`GetItem`, `BatchGetItem`, `Query`, `ConditionCheckItem`, `PutItem`, `UpdateItem`,
 `DeleteItem`, as the row allows), and leaves out the table-wide ones (`Scan`, `DescribeTable`,
-`BatchWriteItem`, `TransactWriteItems`).
+`BatchWriteItem`). No policy lists `TransactWriteItems`, which IAM does not define.
 
 | Action | ReadOnly (`-read`) | AcquireOnly (`-acq`) | FullAccess (`-full`) |
 |--------|:--------:|:-----------:|:----------:|
@@ -40,7 +42,6 @@ item actions (`GetItem`, `BatchGetItem`, `Query`, `ConditionCheckItem`, `PutItem
 | `Query` | ✅ | ✅ | ✅ |
 | `Scan` | ✅ | ❌ | ✅ |
 | `DescribeTable` | ✅ | ❌ | ✅ |
-| `TransactWriteItems` | ❌ | ✅ | ✅ |
 | `ConditionCheckItem` | ❌ | ✅ | ✅ |
 | `PutItem` | ❌ | ✅ | ✅ |
 | `UpdateItem` | ❌ | ✅ | ✅ |

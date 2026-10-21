@@ -519,11 +519,6 @@ Resources:
   AcquireOnlyPolicy:
     Type: AWS::IAM::ManagedPolicy
     Condition: DeployIAM
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
     Properties:
       ManagedPolicyName: !If
         - HasCustomAcquireOnlyPolicyName
@@ -538,10 +533,10 @@ Resources:
               - dynamodb:GetItem
               - dynamodb:BatchGetItem
               - dynamodb:Query
-              - dynamodb:TransactWriteItems
               # Each Put / Update inside TransactWriteItems is authorised by
-              # PutItem / UpdateItem, and the fast path, adjustments and
-              # rollbacks are plain UpdateItems (ADR-152)
+              # PutItem / UpdateItem (IAM defines no TransactWriteItems
+              # action), and the fast path, adjustments and rollbacks are
+              # plain UpdateItems (ADR-152)
               - dynamodb:PutItem
               - dynamodb:UpdateItem
               # A bucket create is pinned to its owner's META (ADR-150)
@@ -554,11 +549,6 @@ Resources:
   FullAccessPolicy:
     Type: AWS::IAM::ManagedPolicy
     Condition: DeployIAM
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
     Properties:
       ManagedPolicyName: !If
         - HasCustomFullAccessPolicyName
@@ -575,7 +565,6 @@ Resources:
               - dynamodb:Query
               - dynamodb:Scan
               - dynamodb:DescribeTable
-              - dynamodb:TransactWriteItems
               - dynamodb:PutItem
               - dynamodb:DeleteItem
               - dynamodb:UpdateItem
