@@ -720,6 +720,7 @@ class SyncRepository:
         scoped._on_unavailable_cache = None
         scoped._lambda_version_read = self._lambda_version_read
         scoped._lambda_version = self._lambda_version
+        scoped._top_up_readers_proven = self._top_up_readers_proven
         scoped._deployed_lambda_version = None
         if on_unavailable is not None:
             existing_limits, _ = scoped.get_system_defaults()

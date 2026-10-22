@@ -850,6 +850,8 @@ class Repository:
         # The stack's Lambdas are table-wide, so the #638 reading carries over.
         scoped._lambda_version_read = self._lambda_version_read
         scoped._lambda_version = self._lambda_version
+        # ADR-149's gate reads the same table-wide record, so a pass carries over.
+        scoped._top_up_readers_proven = self._top_up_readers_proven
         scoped._deployed_lambda_version = None
 
         # Persist on_unavailable as system config if set
