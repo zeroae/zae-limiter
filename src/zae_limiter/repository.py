@@ -844,6 +844,7 @@ class Repository:
         scoped._owner_stamp_cache = self._owner_stamp_cache
         scoped._rejection_cache = self._rejection_cache
         scoped._namespace_cache = self._namespace_cache
+        scoped._shard_cap_warned = self._shard_cap_warned
         # Scoped repos start with no on_unavailable cache (each namespace
         # has its own system config)
         scoped._on_unavailable_cache = None
