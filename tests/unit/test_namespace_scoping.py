@@ -53,6 +53,36 @@ class TestNamespaceScopedRepo:
         assert scoped._namespace_cache is repo._namespace_cache
 
     @pytest.mark.asyncio
+    async def test_scoped_repo_sets_every_attribute_init_does(self, repo):
+        """namespace() builds the scope field by field (``__new__``); a new
+        attribute it forgets is an AttributeError on the scope only, which no
+        test on a plain repository sees (Stack C validation, F10)."""
+        scoped = await repo.namespace("tenant-a")
+        assert set(vars(repo)) - set(vars(scoped)) == set()
+
+    @pytest.mark.asyncio
+    async def test_namespace_shares_shard_cap_warnings(self, repo):
+        """The one-time MAX_SHARD_COUNT warning is per process, not per scope."""
+        scoped = await repo.namespace("tenant-a")
+        assert scoped._shard_cap_warned is repo._shard_cap_warned
+
+    @pytest.mark.asyncio
+    async def test_a_quota_top_up_through_a_scoped_repo(self, repo):
+        """ADR-149's 0.17.0 gate runs on a scope (it raised AttributeError)."""
+        from zae_limiter import Limit, __version__
+        from zae_limiter.version import get_schema_version
+
+        await repo.set_version_record(
+            schema_version=get_schema_version(), lambda_version=__version__
+        )
+        scoped = await repo.namespace("tenant-a")
+        await scoped.set_limits("e", [Limit.quota("cal", 10, cron="0 0 * * *")], resource="r")
+
+        result = await scoped.top_up("e", "r", {"cal": 5})
+
+        assert result.amounts == {"cal": 5}
+
+    @pytest.mark.asyncio
     async def test_namespace_caches_resolved_ids(self, repo):
         """Resolved namespace IDs are cached for subsequent calls."""
         scoped1 = await repo.namespace("tenant-a")
