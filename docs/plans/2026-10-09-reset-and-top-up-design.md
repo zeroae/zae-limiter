@@ -20,7 +20,7 @@
 - `design-validator` was run on this design: **sound with changes**. All its changes are in
   here (see [Validation](#validation)).
 
-## 1. What the code does today (verified)
+## 1. What the code did at design time (2026-10-09, verified)
 
 | Fact | Where |
 |------|-------|
@@ -32,7 +32,7 @@
 | `rsa` with no `ws` is a legal state; the next pass opens a window | `RateLimiter._open_window_if_elapsed`, `processor._window_in_force` |
 | A credit above the ceiling trims itself: it is conditioned on the ceiling and its inputs, and one that would overflow is re-issued with `vu = 0` in the same write | `lease.write_credit`, `Repository._credit_limit_terms` (#730, which replaced #679's `build_vu_reset`) |
 | Resource-scoped shard discovery already exists | `Repository._discover_entity_bucket_pks(entity_id, resource)`, `_entity_bucket_items` |
-| Audit actions today: `entity_created`, `entity_deleted`, `limits_set`, `limits_deleted` | `models.AuditAction` |
+| Audit actions then: `entity_created`, `entity_deleted`, `limits_set`, `limits_deleted` (`entity_parent_changed`, ADR-150, has landed since) | `models.AuditAction` |
 | Version gate helper, shared by `reset_after` and cascade policy | `Repository._require_readers(minimum, refusal)` |
 
 So after a plan upgrade a **quota** keeps its old remaining balance until the next reset (it never
@@ -67,8 +67,8 @@ window opened **after** the reset passes, as it should.
 | Dripping | Adds up to N, **bounded by the ceiling** (a refund of consumption). The amount actually granted is returned. No new attribute. |
 | Calendar or session quota | Adds **exactly N** for the current period, spread over the shards (§4.3), recorded in `b_{q}_tu`. Each shard's ceiling becomes `C // gc + tu`. Cleared by the next reset or roll. |
 
-- **Upgrade:** `set_limits(new plan)` then `top_up(N = new C − old C)`. Open decision D3 is
-  whether to wrap these two calls into one. The top-up records `tu` like any other, so the
+- **Upgrade:** `set_limits(new plan)` then `top_up(N = new C − old C)`. Decision D3 keeps
+  these two calls separate for now (revisit after the #678 guide). The top-up records `tu` like any other, so the
   upgrade needs the 0.17.0 gate too. **`tu` records every purchased token** (`tu += portion`),
   not only what lands above `C // gc`: what `tk` held when the top-up landed says nothing about
   how many tokens are still out in leases, and an overflow-only `tu` let their later refunds
@@ -111,7 +111,8 @@ window opened **after** the reset passes, as it should.
 | Test "items deleted" / "shard_count collapsed to 1" | **Dropped** | That is the behaviour being rejected. |
 | Docs (`docs/operations/rate-limits.md` runbook rewrite, auditing, CLI) | **Kept in spirit**, rewritten | |
 
-The rework happens on #471's branch, as the epic plans.
+The rework landed as a new stack (#714, #720, #723, #754) rather than on #471's branch, which
+keeps the delete-based design; #471 is superseded by it.
 
 ## 4. Mechanism
 
@@ -418,9 +419,12 @@ event (§4.2), so a one-shard operation is a 3-item transaction: 6 WRU where a b
 Even at 32 shards, a million operations cost about $70 in total. At #674's scale (one operation
 per plan change or purchase) that is negligible.
 
-## 8. Open decisions
+## 8. Decisions
 
-| # | Decision | Options | Recommendation | Why |
+All seven were decided by the owner on 2026-10-21 as recommended, in the Stack C validation
+against #470; D3 is to be revisited after the #678 guide.
+
+| # | Decision | Options | Decided | Why |
 |---|----------|---------|----------------|-----|
 | D1 | How a quota top-up is spread over shards | (a) weighted by coverage `1/gc`; (b) all on one shard (shard 0 or most headroom); (c) equal split | **(a)** | Puts tokens where draws land; (b) conserves trivially but a draw on any other shard rejects while the entity holds the purchase. |
 | D2 | API shape | (a) two methods `reset_bucket` + `top_up(amounts={…})`; (b) one `reset_bucket(…, add=N)` as in the reshaped issue; (c) one `adjust_bucket(op=…)` | **(a)** | Different semantics, gates and return values; `amounts` dict matches `consume=` and allows several limits with different N. CLI `--add L:N` likewise. |
