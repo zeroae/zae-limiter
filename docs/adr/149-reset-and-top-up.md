@@ -3,6 +3,7 @@
 **Status:** Proposed
 **Date:** 2026-10-09
 **Issue:** [#470](https://github.com/zeroae/zae-limiter/issues/470)
+**Amends:** [ADR-145](145-sharded-quota-conserves-allowance.md) (I1, I7, I8: a top-up is an operator grant above the plan)
 **Related:** [ADR-125](125-resource-disable.md), [ADR-137](137-reset-replaces-drip.md), [ADR-139](139-duration-reset-windows.md), [ADR-140](140-duration-window-shard-coherence.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-147](147-client-side-rejection-cache.md), [#471](https://github.com/zeroae/zae-limiter/pull/471), [#674](https://github.com/zeroae/zae-limiter/issues/674)
 
 ## Context
@@ -26,39 +27,32 @@ is counted.
 
 ## Decision
 
-A reset or top-up of an (entity, resource) must be written in place, never by deleting items,
-as one transaction over every existing shard of that pair. Each shard write must be a
-zero-consumption slow-path pass: it materialises every limit on the item as an acquire would,
-applies the operation to the named limits as a token delta (never a set), never changes the
-consumption counter, `disabled` or the parent's buckets, is conditioned on the shard's `rf`
-and `shard_count` as read, and forces the shard's next acquire through one materialising pass.
-Each call must write one operation record of its own, keyed by its operation id, in the same
-transaction as the shard writes and only if it does not exist yet, so that exactly one write
-per id can commit and an unclear failure can be resolved by reading it; a caller may supply the
-id as an idempotency key. Nothing may fail the call after the write commits.
-
-A reset restores each named limit to its full effective share and starts a new period: a quota
-records the grant at the planned shard count; a session quota's current window is marked
-ended and applied, never removed, so the next admitted request opens one and no in-flight
-rollover can re-apply the old one, and its balance is left for that opener to restore — a share
-written into an ended window can be spent twice. A top-up of a quota adds exactly N across the shards and must
-record every purchased token per shard as allowance above the ceiling for the current period,
-cleared by the next reset or window roll; a limit not yet on the bucket is refused; a top-up of a dripping limit is bounded by its ceiling. A top-up above the
-ceiling must pass the ADR-141 version gate at 0.17.0 and ratchet `client_min_version`, because
-an older client or aggregator clamps the balance and destroys it.
-
-The operations are imperative and have no manifest or CloudFormation surface. They clear this
-process's rejection cache (ADR-147) and are audited. Details, costs and open decisions are in
-`docs/plans/2026-10-09-reset-and-top-up-design.md`.
+Reset and top-up of an (entity, resource) must be in-place, `rf`-locked passes over every
+existing shard in one transaction, recorded by one operation record per call. A quota may be
+topped up above its ceiling only through `b_{q}_tu`, which ends with the period and is gated at
+0.17.0.
 
 ## Consequences
 
 **Positive:**
 - Plan upgrades, purchases and session resets take effect on the next request, on every shard.
-- Nothing the item carries is lost; the fast path stays 0 RCU + 1 WCU and reads nothing new.
-- ADR-145 conservation extends by one explicit term: per period, admitted plus held plus
+- Each shard write is a zero-consumption slow-path pass: every limit materialised, the named
+  ones changed by a token delta (never a set), `tc`, `disabled` and the parent untouched, and
+  the shard's next acquire forced through one materialising pass. Nothing the item carries is
+  lost; the fast path stays 0 RCU + 1 WCU and reads nothing new.
+- The operation record (put only if absent, in the same transaction) lets exactly one write per
+  id commit and resolves an unclear failure; a caller may supply the id as an idempotency key.
+- A reset starts a new period: a quota's grant is recorded at the planned count; a session
+  window is marked ended and applied, its balance left for the next opener to restore.
+- A quota top-up adds exactly N. A dripping limit's is capped at its ceiling: it has no period
+  to bound extra headroom, so raising its rate is `set_limits`' job.
+- ADR-145 is amended, not replaced: a top-up is an operator grant above the plan, so I1 gains
+  it as a source, I7's ceiling becomes `C // gc + tu`, and I8 reads admitted plus held plus
   still-grantable equals the capacity plus the top-ups granted.
-- The aggregator and concurrent slow paths are excluded by the `rf` lock they already honour.
+- The aggregator and concurrent slow paths are excluded by the `rf` lock they already honour;
+  older clients and aggregators, which would clamp `tu` away, by the ADR-141 gate.
+- Imperative only (no manifest or CloudFormation surface); audited; this process's rejection
+  cache (ADR-147) is cleared. Details and costs: `docs/plans/2026-10-09-reset-and-top-up-design.md`.
 
 **Negative:**
 - Cost is O(shards) reads and two write units per shard, plus two for the operation record
