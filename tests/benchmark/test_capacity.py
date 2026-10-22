@@ -404,6 +404,8 @@ class TestCapacityConsumption:
 
         Expected calls:
         - 2 Queries: 1 table query (entity items) + 1 GSI3 query (bucket items)
+        - 1 Query per resource with a bucket, for its reset / top-up operation
+          records (ADR-149), all issued at once
         - BatchWriteItem in chunks of 25 items
 
         For small entities (few items), only 1 BatchWriteItem call.
@@ -429,8 +431,9 @@ class TestCapacityConsumption:
             sync_limiter.delete_entity("cap-delete")
 
         # Verify capacity consumption
-        assert capacity_counter.query == 2, (
-            "Should have 2 Queries: entity items + GSI3 bucket discovery"
+        assert capacity_counter.query == 2 + 3, (
+            "Should have 2 Queries (entity items + GSI3 bucket discovery) "
+            "+ 1 per resource for its operation records"
         )
         assert len(capacity_counter.batch_write_item) >= 1, "Should have at least 1 BatchWriteItem"
         # All items should be deleted in the batch
@@ -462,8 +465,9 @@ class TestCapacityConsumption:
             sync_limiter.delete_entity("cap-delete-large")
 
         # Verify capacity consumption
-        assert capacity_counter.query == 2, (
-            "Should have 2 Queries: entity items + GSI3 bucket discovery"
+        assert capacity_counter.query == 2 + 30, (
+            "Should have 2 Queries (entity items + GSI3 bucket discovery) "
+            "+ 1 per resource for its operation records"
         )
         # Should have at least 2 batch write calls (30 items / 25 per batch = 2 batches)
         assert len(capacity_counter.batch_write_item) >= 2, (

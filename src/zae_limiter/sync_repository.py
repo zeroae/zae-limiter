@@ -1863,11 +1863,9 @@ class SyncRepository:
             },
         )
         bucket_items = gsi3_response.get("Items", [])
-        record_items: list[dict[str, Any]] = []
-        for item in bucket_items:
-            pk = item["PK"]["S"]
-            if not pk.endswith("#0"):
-                continue
+
+        def _records_in(pk: str) -> list[dict[str, Any]]:
+            found: list[dict[str, Any]] = []
             start_key: dict[str, Any] | None = None
             while True:
                 params: dict[str, Any] = {
@@ -1882,10 +1880,14 @@ class SyncRepository:
                 if start_key:
                     params["ExclusiveStartKey"] = start_key
                 page = client.query(**params)
-                record_items.extend(page.get("Items", []))
+                found.extend(page.get("Items", []))
                 start_key = page.get("LastEvaluatedKey")
                 if not start_key:
-                    break
+                    return found
+
+        shard0_pks = [item["PK"]["S"] for item in bucket_items if item["PK"]["S"].endswith("#0")]
+        pages = self._run_in_executor(*[lambda pk=pk: _records_in(pk) for pk in shard0_pks])
+        record_items = [record for page in pages for record in page]
         all_items = items + bucket_items + record_items
         if not all_items:
             return

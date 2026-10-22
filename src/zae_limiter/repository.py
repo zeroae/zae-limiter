@@ -2209,12 +2209,10 @@ class Repository:
         # shard-0 bucket partition with no GSI3 keys. Left to their three-day
         # ttl, a recreated entity reusing an idempotency key would get the old
         # entity's result back. One Query per resource the entity had a bucket
-        # on; an admin path.
-        record_items: list[dict[str, Any]] = []
-        for item in bucket_items:
-            pk = item["PK"]["S"]
-            if not pk.endswith("#0"):
-                continue
+        # on (each at least 0.5 RCU, even when empty), all issued at once: an
+        # admin path, so one round trip rather than R.
+        async def _records_in(pk: str) -> list[dict[str, Any]]:
+            found: list[dict[str, Any]] = []
             start_key: dict[str, Any] | None = None
             while True:
                 params: dict[str, Any] = {
@@ -2229,10 +2227,14 @@ class Repository:
                 if start_key:
                     params["ExclusiveStartKey"] = start_key
                 page = await client.query(**params)
-                record_items.extend(page.get("Items", []))
+                found.extend(page.get("Items", []))
                 start_key = page.get("LastEvaluatedKey")
                 if not start_key:
-                    break
+                    return found
+
+        shard0_pks = [item["PK"]["S"] for item in bucket_items if item["PK"]["S"].endswith("#0")]
+        pages = await asyncio.gather(*[_records_in(pk) for pk in shard0_pks])
+        record_items = [record for page in pages for record in page]
 
         all_items = items + bucket_items + record_items
         if not all_items:
