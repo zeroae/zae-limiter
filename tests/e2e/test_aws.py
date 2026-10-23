@@ -1982,7 +1982,8 @@ class TestE2EAWSAcquirePolicies:
         for key, value in credentials.items():
             monkeypatch.setenv(key, value)
 
-    async def _connect(self, stack: str, namespace: str, *, timeout: float = 60.0) -> Repository:
+    @staticmethod
+    async def _connect(stack: str, namespace: str, *, timeout: float = 60.0) -> Repository:
         """Connect as the assumed role, retrying while a fresh grant propagates.
 
         ``connect()`` only reads, which every acquire policy has always
@@ -2107,6 +2108,203 @@ class TestE2EAWSAcquirePolicies:
                 iam.detach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
             finally:
                 iam.delete_role(RoleName=role_name)
+
+
+class TestE2EAWSResetAndTopUp:
+    """Reset and top-up under each managed policy, on real IAM (ADR-149, #470).
+
+    moto and LocalStack evaluate no IAM and ignore ``ClientRequestToken``, so
+    only real AWS shows which policies can run these operations and that a
+    retried call is applied once. Each test runs as a principal holding
+    **only** the policy under test: the stack's admin role (``full``), a
+    namespace-scoped role (``ns-full``) and the stack's app role (``acq``).
+    Each starts the stack's ``client_min_version`` at 0.0.0, so its first
+    quota top-up has to ratchet it: that write targets the version record in
+    the reserved namespace, outside a namespace-scoped grant.
+    """
+
+    RESOURCE = "budget"
+    CAL = Limit.quota("cal", 10, cron="0 0 * * *")
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def reset_policy_stack(self, unique_name_class):
+        """A stack with the optional IAM roles, no aggregator and no provisioner."""
+        repo = await (
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .enable_aggregator(False)
+            .enable_provisioner(False)
+            .enable_alarms(False)
+            .usage_retention_days(1)
+            .create_iam_roles(True)
+            .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
+            .role_name_format("PowerUserPB-{}")
+            .policy_name_format("PowerUserPB-{}")
+            .build()
+        )
+
+        yield repo
+
+        try:
+            await repo.delete_stack()
+        except Exception as e:
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.close()
+
+    async def _seed(self, admin_repo: Repository, namespace: str) -> str:
+        """Register ``namespace``, give ``budget`` a daily quota of 10 there,
+        and start the stack's client minimum at 0.0.0, as the caller (admin)."""
+        from zae_limiter import __version__
+        from zae_limiter.version import get_schema_version
+
+        namespace_id = await admin_repo.register_namespace(namespace)
+        repo = await admin_repo.namespace(namespace)
+        await repo.set_resource_defaults(self.RESOURCE, [self.CAL])
+        await repo.create_entity("solo")
+        await repo.create_entity("fresh")
+        await admin_repo.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version=__version__,
+            client_min_version="0.0.0",
+        )
+        return namespace_id
+
+    @staticmethod
+    async def _admitted(limiter: RateLimiter, entity_id: str, resource: str) -> int:
+        from zae_limiter import OnUnavailable, RateLimitExceeded
+
+        n = 0
+        while n < 50:
+            try:
+                async with limiter.acquire(
+                    entity_id, resource, consume={"cal": 1}, on_unavailable=OnUnavailable.BLOCK
+                ):
+                    pass
+            except RateLimitExceeded:
+                return n
+            n += 1
+        return n
+
+    async def _exercise(self, stack: str, namespace: str) -> None:
+        """Reset, top up, top up a missing bucket, and retry a keyed top-up."""
+        repo = await TestE2EAWSAcquirePolicies._connect(stack, namespace)
+        try:
+            limiter = RateLimiter(repository=repo)
+            assert await self._admitted(limiter, "solo", self.RESOURCE) == 10
+
+            reset = await repo.reset_bucket("solo", self.RESOURCE)
+            assert reset.shards == 1
+            assert await self._admitted(limiter, "solo", self.RESOURCE) == 10
+
+            # The first quota top-up passes the 0.17.0 gate and ratchets the
+            # stack's client minimum (a write to the reserved namespace).
+            topped = await repo.top_up("solo", self.RESOURCE, {"cal": 5})
+            assert topped.amounts == {"cal": 5}
+            assert await self._admitted(limiter, "solo", self.RESOURCE) == 5
+
+            # No bucket yet: the top-up creates shard 0 with the owner's
+            # ConditionCheck (ADR-150), the share plus the purchase.
+            created = await repo.top_up("fresh", self.RESOURCE, {"cal": 3})
+            assert (created.shards, created.amounts) == (1, {"cal": 3})
+
+            # The same key twice is applied once, on real ClientRequestToken rules.
+            first = await repo.top_up("fresh", self.RESOURCE, {"cal": 2}, idempotency_key="k-1")
+            again = await repo.top_up("fresh", self.RESOURCE, {"cal": 2}, idempotency_key="k-1")
+            assert again.amounts == first.amounts == {"cal": 2}
+            assert await self._admitted(limiter, "fresh", self.RESOURCE) == 10 + 3 + 2
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_admin_role_with_full_can_reset_and_top_up(
+        self, reset_policy_stack, unique_name_class, monkeypatch
+    ):
+        """The stack's admin role (FullAccessPolicy only) runs every operation."""
+        namespace = "full-policy"
+        await self._seed(reset_policy_stack, namespace)
+        outputs = TestE2EAWSAcquirePolicies._outputs(unique_name_class)
+        role_arn = outputs["AdminRoleArn"]
+
+        TestE2EAWSAcquirePolicies._become(monkeypatch, TestE2EAWSAcquirePolicies._assume(role_arn))
+        await self._exercise(unique_name_class, namespace)
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_role_with_ns_full_can_reset_and_top_up(
+        self, reset_policy_stack, unique_name_class, monkeypatch
+    ):
+        """A role holding only NamespaceFullAccessPolicy runs every operation in
+        its namespace, the gate's ratchet in the reserved namespace included.
+
+        The stack creates no namespace-scoped role, so the test makes one,
+        tagged with the namespace id the policy's ``LeadingKeys`` condition
+        reads, and deletes it afterwards.
+        """
+        import json
+
+        import boto3
+
+        namespace = "ns-full-policy"
+        namespace_id = await self._seed(reset_policy_stack, namespace)
+
+        policy_arn = TestE2EAWSAcquirePolicies._outputs(unique_name_class)[
+            "NamespaceFullAccessPolicyArn"
+        ]
+        partition, account = TestE2EAWSAcquirePolicies._caller_partition_and_account()
+
+        iam = boto3.client("iam")
+        role_name = f"PowerUserPB-{unique_name_class}-nsfull"
+        assert len(role_name) <= 64
+        iam.create_role(
+            RoleName=role_name,
+            PermissionsBoundary=f"arn:{partition}:iam::aws:policy/PowerUserAccess",
+            AssumeRolePolicyDocument=json.dumps(
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {"AWS": f"arn:{partition}:iam::{account}:root"},
+                            "Action": "sts:AssumeRole",
+                        }
+                    ],
+                }
+            ),
+            Tags=[{"Key": "zael_namespace_id", "Value": namespace_id}],
+        )
+        try:
+            iam.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+            role_arn = f"arn:{partition}:iam::{account}:role/{role_name}"
+
+            TestE2EAWSAcquirePolicies._become(
+                monkeypatch, TestE2EAWSAcquirePolicies._assume(role_arn)
+            )
+            await self._exercise(unique_name_class, namespace)
+        finally:
+            try:
+                iam.detach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+            finally:
+                iam.delete_role(RoleName=role_name)
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_app_role_with_acq_can_also_reset_and_top_up(
+        self, reset_policy_stack, unique_name_class, monkeypatch
+    ):
+        """The stack's app role (AcquireOnlyPolicy only) is not refused either.
+
+        DynamoDB IAM cannot tell a top-up's ``UpdateItem`` from an acquire's on
+        the same item, so a principal that may acquire may also reset and top
+        up (ADR-149: operator actions by contract). Pinned so a change is
+        noticed: a bucket-only write rule for the acquire policies would keep
+        an app role out of these calls (the audit ``Put`` would be refused), and
+        this test would then expect ``PermissionDenied``.
+        """
+        namespace = "acq-policy"
+        await self._seed(reset_policy_stack, namespace)
+        role_arn = TestE2EAWSAcquirePolicies._outputs(unique_name_class)["AppRoleArn"]
+
+        TestE2EAWSAcquirePolicies._become(monkeypatch, TestE2EAWSAcquirePolicies._assume(role_arn))
+        await self._exercise(unique_name_class, namespace)
 
 
 class TestE2EAWSUpgradeAppliesTemplate:

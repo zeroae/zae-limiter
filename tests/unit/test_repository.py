@@ -9073,6 +9073,32 @@ class TestResetAndTopUp:
             await repo.top_up("e", "r", {"cal": 1})
         await repo.reset_bucket("e", "r")  # a reset is never gated
 
+    async def test_a_quota_top_up_ratchets_client_min_version(self, repo):
+        """#470: the gate also raises the stack's client minimum past the last
+        release, so a v0.16 client is refused; a reset and a dripping top-up,
+        which no older reader misreads, leave it alone."""
+        from zae_limiter import __version__
+        from zae_limiter.version import get_schema_version, parse_version
+
+        await repo.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version=__version__,
+            client_min_version="0.0.0",
+        )
+        await repo.set_limits("e", [_OP_RPM], resource="drip")
+        await _op_put_shard(repo, "e", "drip", [_OP_RPM], tokens={"rpm": 50_000})
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL])
+        repo._now_ms = lambda: _OP_T0 + 1
+
+        await repo.reset_bucket("e", "r")
+        await repo.top_up("e", "drip", {"rpm": 10})
+        assert (await repo.get_version_record())["client_min_version"] == "0.0.0"
+
+        await repo.top_up("e", "r", {"cal": 1})
+        stored = (await repo.get_version_record())["client_min_version"]
+        assert parse_version(stored) > parse_version("0.16.0")
+
     async def test_the_top_up_gate_is_read_once_per_repository(self, repo):
         await _stamp_deployed(repo)
         await repo.set_limits("e", [_OP_CAL], resource="r")

@@ -377,9 +377,11 @@ class TestCompositeBuilders:
             top_ups={HYPHENATED: 7},
             cleared_top_ups={DOTTED},
             cleared_window_marks={DOTTED},
+            reset_numbers={DOTTED, HYPHENATED},
         )
         update = _repo().build_bucket_operation("e", "r", write)["Update"]
         assert_expression_safe(update)
+        assert "#on0 :on0" in update["UpdateExpression"]
         update = _repo().build_bucket_operation("e", "r", write, ttl=123)["Update"]
         assert_expression_safe(update)
         assert "#ottl = :ottl" in update["UpdateExpression"]
@@ -501,6 +503,29 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "#bu0 = :bu0" in update["ConditionExpression"]
         assert "attribute_not_exists(#bu1)" in update["ConditionExpression"]
+
+    def test_quota_reset_number_pin(self) -> None:
+        """ADR-149 (F1): a calendar quota credit pins its operator reset count."""
+        from zae_limiter.models import QuotaPeriodPin
+
+        sched = ("1m0h0", None, None)
+        update = _repo().build_composite_adjust(
+            "user-1",
+            "api",
+            deltas={DOTTED: -1000, HYPHENATED: -2000},
+            ceilings={
+                DOTTED: CreditCeiling(
+                    5000, 10_000, 2, (None, None), True, QuotaPeriodPin(9, None, sched, 3)
+                ),
+                HYPHENATED: CreditCeiling(
+                    9000, 9000, 1, (None, "1m0h0"), True, QuotaPeriodPin(9, None, sched)
+                ),
+            },
+            pin=(2, None, (None, None, None)),
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#bqn0 = :bqn0" in update["ConditionExpression"]
+        assert "attribute_not_exists(#bqn1)" in update["ConditionExpression"]
 
     def test_trimmed_credit(self) -> None:
         """#721: the fallback re-issues the credit with ``vu = 0`` in the same write."""

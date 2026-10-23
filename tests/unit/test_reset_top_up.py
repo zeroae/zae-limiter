@@ -383,11 +383,10 @@ class TestRefundAfterATopUpEnded:
             await repo.reset_bucket("e", "r")
             clock[0] += 1
 
-        vu, admitted = await self._refund_into_new_period(limiter, clock, reset)
-        assert vu == 0  # the credit above C // gc forced a clamping pass
-        # The new period admits its 10 plus, until the refund write trims
-        # itself (#721), the one old-period token the clamp cannot tell apart.
-        assert admitted <= 11
+        _vu_after, admitted = await self._refund_into_new_period(limiter, clock, reset)
+        # The reset moved `b_cal_rn`, so the quota credit's period guard drops
+        # the old period's refund outright, as across an edge (F1).
+        assert admitted <= 10
 
     async def test_after_the_period_edge(self, limiter, clock):
         async def edge(repo):
@@ -397,6 +396,137 @@ class TestRefundAfterATopUpEnded:
         # #721: the quota credit's period guard drops the old period's refund
         # outright, so no clamping pass (`vu = 0`) is needed.
         assert admitted <= 10
+
+
+class TestRefundAcrossAReset:
+    """Stack C review, F1: an operator reset of a calendar quota crosses no cron
+    edge, so it bumps `b_{name}_rn`; a refund of a debit made before it is then
+    dropped, exactly like one across an edge, instead of landing in the new
+    period (15 admitted against 10)."""
+
+    @pytest.mark.parametrize("speculative", [True, False])
+    async def test_a_pre_reset_refund_is_dropped(self, limiter, clock, speculative):
+        repo = limiter._repository
+        lim = RateLimiter(repository=repo, speculative_writes=speculative)
+        await limiter.set_limits("e", [CAL], resource="r")
+        with pytest.raises(RuntimeError):
+            async with lim.acquire("e", "r", {"cal": 5}):  # old period: 5 spent
+                clock[0] += 1
+                await repo.reset_bucket("e", "r")  # a new period: 10
+                clock[0] += 1
+                assert await _try(lim, "e", {"cal": 5})
+                clock[0] += 1
+                raise RuntimeError("body fails")  # the old 5 must not come back
+        clock[0] += 1
+        assert await _drain(lim, "e", "cal") == 5
+
+    async def test_a_refund_after_the_reset_still_lands(self, limiter, clock):
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        await repo.reset_bucket("e", "r")
+        clock[0] += 1
+        with pytest.raises(RuntimeError):
+            async with limiter.acquire("e", "r", {"cal": 5}):  # debited after it
+                clock[0] += 1
+                raise RuntimeError("body fails")
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 10
+
+    async def test_a_multi_resource_refund_drops_only_the_reset_quota(self, limiter, clock):
+        """ADR-148: one lease over `r` (a rate limit) and `budget` (the quota);
+        the reset drops the quota's refund, and `r`'s refund still lands."""
+        repo = limiter._repository
+        await limiter.set_limits("e", [RPM], resource="r")
+        await limiter.set_limits("e", [CAL], resource="budget")
+        with pytest.raises(RuntimeError):
+            async with limiter.acquire("e", "r", {"rpm": 4}, also={"budget": {"cal": 5}}):
+                clock[0] += 1
+                await repo.reset_bucket("e", "budget")
+                clock[0] += 1
+                await _spend(limiter, "e", {"cal": 5}, resource="budget")
+                clock[0] += 1
+                raise RuntimeError("body fails")
+        clock[0] += 1
+        budget = 0
+        while budget < 100 and await _try_on(limiter, "e", {"cal": 1}, "budget"):
+            budget += 1
+        assert budget == 5
+        assert await _drain(limiter, "e", "rpm") == 10
+
+
+class TestTopUpCreateChecksTheOwner:
+    """Stack C review, F3: a top-up that creates the bucket pins the owner's
+    META (ADR-150) like every other bucket create, so a `set_parent` landing
+    between its META read and its create cancels it, and the retry stamps the
+    new parent instead of leaving the old one on the item."""
+
+    @staticmethod
+    async def _top_up_racing_a_move(limiter):
+        repo = limiter._repository
+        for parent in ("p1", "p2"):
+            await repo.create_entity(parent)
+            await limiter.set_limits(parent, [CAL], resource="budget")
+            await limiter.set_limits(parent, [RPM], resource="r")
+            # Each parent's bucket exists, so a cascade on a stale stamp lands
+            # on the fast path instead of falling back on a missing bucket.
+            await _spend(limiter, parent, {"cal": 0}, resource="budget")
+        await repo.create_entity("c", parent_id="p1", cascade=True)
+        await limiter.set_limits("c", [CAL], resource="budget")
+        await limiter.set_limits("c", [RPM], resource="r")
+        real = repo.transact_write
+        armed = [True]
+
+        async def move_first(items, *a, **k):
+            if armed[0]:  # the top-up's create: META was read for p1
+                armed[0] = False
+                await repo.set_parent("c", "p2")
+            return await real(items, *a, **k)
+
+        repo.transact_write = move_first
+        try:
+            await repo.top_up("c", "budget", {"cal": 5})
+        finally:
+            repo.transact_write = real
+        assert not armed[0]
+
+    async def test_the_created_bucket_names_the_new_parent(self, limiter, clock):
+        repo = limiter._repository
+        await self._top_up_racing_a_move(limiter)
+        client = await repo._get_client()
+        item = (
+            await client.get_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": schema.pk_bucket(repo._namespace_id, "c", "budget", 0)},
+                    "SK": {"S": schema.sk_state()},
+                },
+                ConsistentRead=True,
+            )
+        )["Item"]
+        meta = await repo.get_entity("c", consistent_read=True)
+        assert item["parent_id"] == {"S": "p2"}
+        assert item[schema.BUCKET_FIELD_PGEN] == {"N": str(meta.parent_generation)}
+        assert await _tu(repo, "c", "cal", resource="budget") == 5_000
+
+    async def test_a_multi_resource_acquire_debits_the_new_parent(self, limiter, clock):
+        """ADR-148: one lease over `r` and `budget` after the race; both
+        cascade to p2, and p1's budget is never touched."""
+        await self._top_up_racing_a_move(limiter)
+        clock[0] += 1
+        async with limiter.acquire("c", "r", {"rpm": 1}, also={"budget": {"cal": 3}}):
+            pass
+        p2 = await limiter.check_availability("p2", "budget")
+        p1 = await limiter.check_availability("p1", "budget")
+        assert p2.status("cal").available == 7
+        assert p1.status("cal").available == 10
+
+
+async def _try_on(lim, entity, amounts, resource):
+    try:
+        await _spend(lim, entity, amounts, resource)
+        return True
+    except RateLimitExceeded:
+        return False
 
 
 async def _vu(repo, entity, resource="r", shard=0):
@@ -595,6 +725,64 @@ def _tx_error(code):
     from botocore.exceptions import ClientError
 
     return ClientError({"Error": {"Code": code, "Message": code}}, "TransactWriteItems")
+
+
+class TestPermanentCancellation:
+    """Stack C review, F5: a cancellation no retry can clear raises AWS's own
+    error at once, instead of four attempts and "kept changing"."""
+
+    @staticmethod
+    async def _cancel_every_write(limiter, reason):
+        from botocore.exceptions import ClientError
+
+        client = await limiter._repository._get_client()
+        calls = []
+
+        async def cancelled(**kw):
+            calls.append(1)
+            reasons = [{"Code": "None"} for _ in kw["TransactItems"]]
+            reasons[0] = {"Code": reason, "Message": reason}
+            raise ClientError(
+                {
+                    "Error": {"Code": "TransactionCanceledException", "Message": reason},
+                    "CancellationReasons": reasons,
+                },
+                "TransactWriteItems",
+            )
+
+        client.transact_write_items = cancelled
+        return calls
+
+    @pytest.mark.parametrize("reason", ["ValidationError", "ItemCollectionSizeLimitExceeded"])
+    async def test_a_permanent_reason_is_raised_after_one_attempt(self, limiter, clock, reason):
+        from botocore.exceptions import ClientError
+
+        await limiter.set_limits("e", [CAL], resource="r")
+        await _spend(limiter, "e", {"cal": 1})
+        calls = await self._cancel_every_write(limiter, reason)
+        with pytest.raises(ClientError) as info:
+            await limiter._repository.reset_bucket("e", "r")
+        assert info.value.response["CancellationReasons"][0]["Code"] == reason
+        assert len(calls) == 1
+
+    async def test_a_lost_condition_is_still_retried(self, limiter, clock):
+        from zae_limiter import RateLimiterUnavailable
+
+        await limiter.set_limits("e", [CAL], resource="r")
+        await _spend(limiter, "e", {"cal": 1})
+        calls = await self._cancel_every_write(limiter, "ConditionalCheckFailed")
+        with pytest.raises(RateLimiterUnavailable, match="kept changing"):
+            await limiter._repository.reset_bucket("e", "r")
+        assert len(calls) == 4
+
+    async def test_a_permanent_reason_on_a_top_up_create_is_raised(self, limiter, clock):
+        from botocore.exceptions import ClientError
+
+        await limiter.set_limits("e", [CAL], resource="r")
+        calls = await self._cancel_every_write(limiter, "ValidationError")
+        with pytest.raises(ClientError):
+            await limiter._repository.top_up("e", "r", {"cal": 5})
+        assert len(calls) == 1
 
 
 def _carries_record(kw):

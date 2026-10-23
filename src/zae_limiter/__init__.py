@@ -76,6 +76,7 @@ from .models import (
     AuditEvent,
     Availability,
     BackendCapabilities,
+    BucketOperationResult,
     BucketState,
     Entity,
     EntityCapacity,
@@ -128,6 +129,7 @@ __all__ = [
     "SyncStackManager",
     # Models
     "Availability",
+    "BucketOperationResult",
     "Limit",
     "LimiterInfo",
     "LimitName",

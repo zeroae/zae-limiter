@@ -122,6 +122,20 @@ entity, and once the entity exists.
 - **Another process may refuse for up to its rejection-cache TTL** (default 1 s) after a reset
   or top-up made elsewhere. The process that made the change admits at once.
 
+## Who may reset or top up
+
+Reset and top-up are **operator actions**: call them from a principal holding the `full` or
+`ns-full` policy (or your own equivalent), never from the application that is being limited.
+
+!!! warning "IAM cannot stop an application from granting itself allowance"
+    A principal that may `acquire()` must be able to update its own bucket items, so it can also
+    raise their balance, or a quota's top-up, with a direct DynamoDB write, and the stack's
+    acquire policies (`acq`, `ns-acq`) do not refuse `reset_bucket()` or `top_up()` either. An
+    application enforces its own limits; it can also simply not call `acquire()`. When paid
+    allowance must hold even against the application, the application must hold no DynamoDB
+    write credentials: run `acquire()` in a service it can only invoke, and top-ups in an
+    operator-only one.
+
 ## Edge cases
 
 - A reset of an entity that has never acquired on the resource is a no-op (`result.shards ==
@@ -133,7 +147,9 @@ entity, and once the entity exists.
   the bucket yet: a top-up of it raises a `ValidationError` naming it, and writes nothing.
   Acquire once, then top up.
 - If another writer keeps changing the bucket, the operation retries three times and then
-  raises `RateLimiterUnavailable`; nothing was written.
+  raises `RateLimiterUnavailable`. The reset or top-up itself was not applied. One write can
+  remain: when the bucket's shards disagree on their shard count, the lagging shards are first
+  raised to the highest count (bookkeeping that moves no tokens), and that raise is kept.
 - A write whose response is lost is never applied twice: each call writes its own operation
   record in the same transaction, and a retry that finds it returns the stored result instead
   of re-applying — even when another reset or top-up landed on the bucket in between.

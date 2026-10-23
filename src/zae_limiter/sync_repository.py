@@ -87,6 +87,18 @@ _OPERATION_RETRY_CODES = frozenset(
         "IdempotentParameterMismatchException",
     }
 )
+_OPERATION_PERMANENT_REASONS = frozenset({"ValidationError", "ItemCollectionSizeLimitExceeded"})
+
+
+def _operation_retryable(error: ClientError) -> bool:
+    """Whether a reset or top-up should re-read and retry after ``error``."""
+    code = error.response.get("Error", {}).get("Code")
+    if code not in _OPERATION_RETRY_CODES:
+        return False
+    reasons = error.response.get("CancellationReasons") or []
+    return not any(reason.get("Code") in _OPERATION_PERMANENT_REASONS for reason in reasons)
+
+
 _IDEMPOTENCY_KEY = re.compile("[A-Za-z0-9._:-]{1,64}")
 
 
@@ -243,8 +255,9 @@ def _credit_period_terms(
     Calendar: the item's ``rf`` is still before the first reset edge after the
     one the lease saw (a reset pass stamps ``rf`` at or past it), and the
     reset schedule that edge came from is still the item's (``rsched``,
-    ``sched_tz``, ``b_{name}_rsched``). Session: the window start and applied
-    marker are still the ones the lease saw. Tokens are positional (#634).
+    ``sched_tz``, ``b_{name}_rsched``), and no operator reset has landed since
+    (``b_{name}_rn``, ADR-149). Session: the window start and applied marker
+    are still the ones the lease saw. Tokens are positional (#634).
     """
     terms: list[str] = []
     if period.reset_edge_ms is not None:
@@ -262,6 +275,12 @@ def _credit_period_terms(
                 terms.append(_pin_string(alias, token, raw, values))
         names[f"#bqo{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED)
         terms.append(_pin_string(f"#bqo{i}", f":bqo{i}", own_rsched, values))
+        names[f"#bqn{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RN)
+        if period.reset_number is None:
+            terms.append(f"attribute_not_exists(#bqn{i})")
+        else:
+            values[f":bqn{i}"] = {"N": str(period.reset_number)}
+            terms.append(f"#bqn{i} = :bqn{i}")
     if period.window is not None:
         for code, field, number in zip(
             ("w", "a"), (schema.BUCKET_FIELD_WS, schema.BUCKET_FIELD_WA), period.window, strict=True
@@ -698,9 +717,11 @@ class SyncRepository:
         scoped._owner_stamp_cache = self._owner_stamp_cache
         scoped._rejection_cache = self._rejection_cache
         scoped._namespace_cache = self._namespace_cache
+        scoped._shard_cap_warned = self._shard_cap_warned
         scoped._on_unavailable_cache = None
         scoped._lambda_version_read = self._lambda_version_read
         scoped._lambda_version = self._lambda_version
+        scoped._top_up_readers_proven = self._top_up_readers_proven
         scoped._deployed_lambda_version = None
         if on_unavailable is not None:
             existing_limits, _ = scoped.get_system_defaults()
@@ -1844,11 +1865,9 @@ class SyncRepository:
             },
         )
         bucket_items = gsi3_response.get("Items", [])
-        record_items: list[dict[str, Any]] = []
-        for item in bucket_items:
-            pk = item["PK"]["S"]
-            if not pk.endswith("#0"):
-                continue
+
+        def _records_in(pk: str) -> list[dict[str, Any]]:
+            found: list[dict[str, Any]] = []
             start_key: dict[str, Any] | None = None
             while True:
                 params: dict[str, Any] = {
@@ -1863,10 +1882,14 @@ class SyncRepository:
                 if start_key:
                     params["ExclusiveStartKey"] = start_key
                 page = client.query(**params)
-                record_items.extend(page.get("Items", []))
+                found.extend(page.get("Items", []))
                 start_key = page.get("LastEvaluatedKey")
                 if not start_key:
-                    break
+                    return found
+
+        shard0_pks = [item["PK"]["S"] for item in bucket_items if item["PK"]["S"].endswith("#0")]
+        pages = self._run_in_executor(*[lambda pk=pk: _records_in(pk) for pk in shard0_pks])
+        record_items = [record for page in pages for record in page]
         all_items = items + bucket_items + record_items
         if not all_items:
             return
@@ -6151,6 +6174,8 @@ class SyncRepository:
             grant_count = self._decode_stored_window_int(gc_name, item.get(gc_name, {}).get("N"))
             tu_name = schema.bucket_attr(name, schema.BUCKET_FIELD_TU)
             topped_up = self._decode_stored_window_int(tu_name, item.get(tu_name, {}).get("N"))
+            rn_name = schema.bucket_attr(name, schema.BUCKET_FIELD_RN)
+            reset_number = self._decode_stored_window_int(rn_name, item.get(rn_name, {}).get("N"))
             is_wcu = name == schema.WCU_LIMIT_NAME
             sched = (
                 () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_SCHED, item_sched, False)
@@ -6178,6 +6203,7 @@ class SyncRepository:
                     window_consumed_mark_milli=window_consumed_mark,
                     grant_count=grant_count,
                     topped_up_milli=topped_up,
+                    reset_number=reset_number,
                     stored_vu_ms=stored_vu,
                     stored_vu_read=True,
                     stored_item_sched_raw=(item_sched, item_rsched, raw_sched_tz),
@@ -8024,6 +8050,11 @@ class SyncRepository:
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
                     )
                 else:
+                    if attempt:
+                        meta = self._get_item_consistent(
+                            schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
+                        )
+                        entity = self._deserialize_entity(meta) if meta is not None else None
                     try:
                         result, landed = self._top_up_new_bucket(
                             entity_id,
@@ -8095,7 +8126,7 @@ class SyncRepository:
             try:
                 self.transact_write(items, client_request_token=f"{token}-{attempt}")
             except ClientError as e:
-                if e.response.get("Error", {}).get("Code") in _OPERATION_RETRY_CODES:
+                if _operation_retryable(e):
                     last_error = e
                     continue
                 mine = self._landed_by(
@@ -8341,8 +8372,9 @@ class SyncRepository:
         A dripping limit is created full anyway, so it gains nothing and, when
         no quota is named, nothing is written. Returns the result and whether
         the create is known to have landed: False when its condition failed —
-        another writer created the bucket first, or this very create landed and
-        its response was lost — and the caller re-reads to tell which.
+        another writer created the bucket first, this very create landed and
+        its response was lost, or the owner's META moved since ``entity`` was
+        read (ADR-150's check) — and the caller re-reads to tell which.
         """
         states = {
             limit.name: BucketState.from_limit(entity_id, resource, limit, now_ms)
@@ -8379,6 +8411,8 @@ class SyncRepository:
             shard_count=1,
             vu=bucket_ops.creation_vu(resolved, states, now_ms),
             rf_ms=now_ms,
+            pgen=entity.parent_generation if entity is not None else None,
+            pinc=entity.incarnation if entity is not None else None,
         )
         result = BucketOperationResult(entity_id, resource, 1, amounts)
         try:
@@ -8389,11 +8423,17 @@ class SyncRepository:
                         bucket_ops.TOP_UP, operation_id, result, now_ms, token, incarnation
                     ),
                     self._operation_audit(bucket_ops.TOP_UP, result, principal),
+                    self.build_owner_check(
+                        entity_id,
+                        exists=entity is not None,
+                        pgen=entity.parent_generation if entity is not None else None,
+                        pinc=entity.incarnation if entity is not None else None,
+                    ),
                 ],
                 client_request_token=request_token,
             )
         except ClientError as e:
-            if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
+            if not _operation_retryable(e):
                 raise
             return (result, False)
         return (result, True)
@@ -8469,6 +8509,7 @@ class SyncRepository:
         Tokens are positional (#634): ``#ot``/``:ot`` deltas, ``#og``/``:og``
         grant counts, ``#ow``/``:ow`` + ``#or``/``:or`` windows, ``#oa``/``:oa``
         applied markers, ``#ou``/``:ou`` top-ups, ``#ox`` / ``#oy`` removals,
+        ``#on``/``:on`` the calendar quota reset counters (``b_{name}_rn``),
         ``#ottl``/``:ottl`` the ``ttl`` (epoch seconds) when one is given: a
         bucket on resource or system defaults (:meth:`_operation_ttl`), or
         ``REMOVE #ottl`` with ``remove_ttl``: an entity-level bucket (ADR-136).
@@ -8515,6 +8556,10 @@ class SyncRepository:
         for i, name in enumerate(sorted(write.cleared_window_marks)):
             names[f"#oy{i}"] = attr(name, schema.BUCKET_FIELD_WTC)
             remove_parts.append(f"#oy{i}")
+        for i, name in enumerate(sorted(write.reset_numbers)):
+            names[f"#on{i}"] = attr(name, schema.BUCKET_FIELD_RN)
+            values[f":on{i}"] = {"N": "1"}
+            add_parts.append(f"#on{i} :on{i}")
         if ttl is not None:
             names["#ottl"] = "ttl"
             values[":ottl"] = {"N": str(ttl)}

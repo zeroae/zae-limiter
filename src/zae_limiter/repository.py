@@ -112,6 +112,21 @@ _OPERATION_RETRY_CODES = frozenset(
         "IdempotentParameterMismatchException",
     }
 )
+# Cancellation reasons no retry can clear: a re-plan builds the same invalid
+# write, so retrying only hid the real error behind "kept changing" (Stack C
+# review, F5). Listed rather than the retryable ones, so a reason AWS adds
+# later keeps being retried as before.
+# https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TransactWriteItems.html#API_TransactWriteItems_Errors
+_OPERATION_PERMANENT_REASONS = frozenset({"ValidationError", "ItemCollectionSizeLimitExceeded"})
+
+
+def _operation_retryable(error: ClientError) -> bool:
+    """Whether a reset or top-up should re-read and retry after ``error``."""
+    code = error.response.get("Error", {}).get("Code")
+    if code not in _OPERATION_RETRY_CODES:
+        return False
+    reasons = error.response.get("CancellationReasons") or []
+    return not any(reason.get("Code") in _OPERATION_PERMANENT_REASONS for reason in reasons)
 
 
 _IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9._:-]{1,64}")
@@ -293,8 +308,9 @@ def _credit_period_terms(
     Calendar: the item's ``rf`` is still before the first reset edge after the
     one the lease saw (a reset pass stamps ``rf`` at or past it), and the
     reset schedule that edge came from is still the item's (``rsched``,
-    ``sched_tz``, ``b_{name}_rsched``). Session: the window start and applied
-    marker are still the ones the lease saw. Tokens are positional (#634).
+    ``sched_tz``, ``b_{name}_rsched``), and no operator reset has landed since
+    (``b_{name}_rn``, ADR-149). Session: the window start and applied marker
+    are still the ones the lease saw. Tokens are positional (#634).
     """
     terms: list[str] = []
     if period.reset_edge_ms is not None:
@@ -312,6 +328,13 @@ def _credit_period_terms(
                 terms.append(_pin_string(alias, token, raw, values))
         names[f"#bqo{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED)
         terms.append(_pin_string(f"#bqo{i}", f":bqo{i}", own_rsched, values))
+        # An operator reset (ADR-149) crosses no edge; it moves this count.
+        names[f"#bqn{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RN)
+        if period.reset_number is None:
+            terms.append(f"attribute_not_exists(#bqn{i})")
+        else:
+            values[f":bqn{i}"] = {"N": str(period.reset_number)}
+            terms.append(f"#bqn{i} = :bqn{i}")
     if period.window is not None:
         for code, field, number in zip(
             ("w", "a"),
@@ -821,12 +844,15 @@ class Repository:
         scoped._owner_stamp_cache = self._owner_stamp_cache
         scoped._rejection_cache = self._rejection_cache
         scoped._namespace_cache = self._namespace_cache
+        scoped._shard_cap_warned = self._shard_cap_warned
         # Scoped repos start with no on_unavailable cache (each namespace
         # has its own system config)
         scoped._on_unavailable_cache = None
         # The stack's Lambdas are table-wide, so the #638 reading carries over.
         scoped._lambda_version_read = self._lambda_version_read
         scoped._lambda_version = self._lambda_version
+        # ADR-149's gate reads the same table-wide record, so a pass carries over.
+        scoped._top_up_readers_proven = self._top_up_readers_proven
         scoped._deployed_lambda_version = None
 
         # Persist on_unavailable as system config if set
@@ -2186,12 +2212,10 @@ class Repository:
         # shard-0 bucket partition with no GSI3 keys. Left to their three-day
         # ttl, a recreated entity reusing an idempotency key would get the old
         # entity's result back. One Query per resource the entity had a bucket
-        # on; an admin path.
-        record_items: list[dict[str, Any]] = []
-        for item in bucket_items:
-            pk = item["PK"]["S"]
-            if not pk.endswith("#0"):
-                continue
+        # on (each at least 0.5 RCU, even when empty), all issued at once: an
+        # admin path, so one round trip rather than R.
+        async def _records_in(pk: str) -> list[dict[str, Any]]:
+            found: list[dict[str, Any]] = []
             start_key: dict[str, Any] | None = None
             while True:
                 params: dict[str, Any] = {
@@ -2206,10 +2230,14 @@ class Repository:
                 if start_key:
                     params["ExclusiveStartKey"] = start_key
                 page = await client.query(**params)
-                record_items.extend(page.get("Items", []))
+                found.extend(page.get("Items", []))
                 start_key = page.get("LastEvaluatedKey")
                 if not start_key:
-                    break
+                    return found
+
+        shard0_pks = [item["PK"]["S"] for item in bucket_items if item["PK"]["S"].endswith("#0")]
+        pages = await asyncio.gather(*[_records_in(pk) for pk in shard0_pks])
+        record_items = [record for page in pages for record in page]
 
         all_items = items + bucket_items + record_items
         if not all_items:
@@ -7470,6 +7498,9 @@ class Repository:
             # operator topped this quota shard up above its grant this period.
             tu_name = schema.bucket_attr(name, schema.BUCKET_FIELD_TU)
             topped_up = self._decode_stored_window_int(tu_name, item.get(tu_name, {}).get("N"))
+            # `b_{name}_rn` (ADR-149): absent until an operator reset.
+            rn_name = schema.bucket_attr(name, schema.BUCKET_FIELD_RN)
+            reset_number = self._decode_stored_window_int(rn_name, item.get(rn_name, {}).get("N"))
 
             # `wcu` is never scheduled — it tracks partition write pressure,
             # not a user limit, and is the one limit `effective_params` must
@@ -7508,6 +7539,7 @@ class Repository:
                     window_consumed_mark_milli=window_consumed_mark,
                     grant_count=grant_count,
                     topped_up_milli=topped_up,
+                    reset_number=reset_number,
                     stored_vu_ms=stored_vu,
                     stored_vu_read=True,
                     stored_item_sched_raw=(item_sched, item_rsched, raw_sched_tz),
@@ -9659,6 +9691,15 @@ class Repository:
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
                     )
                 else:
+                    if attempt:
+                        # The create pins the owner's META (ADR-150): a retry
+                        # after a move or a recreate checks the META as it is
+                        # now, or it would fail the same check every attempt.
+                        # The record keeps the first read's incarnation.
+                        meta = await self._get_item_consistent(
+                            schema.pk_entity(self._namespace_id, entity_id), schema.sk_meta()
+                        )
+                        entity = self._deserialize_entity(meta) if meta is not None else None
                     try:
                         result, landed = await self._top_up_new_bucket(
                             entity_id,
@@ -9753,7 +9794,7 @@ class Repository:
                     client_request_token=f"{token}-{attempt}",
                 )
             except ClientError as e:
-                if e.response.get("Error", {}).get("Code") in _OPERATION_RETRY_CODES:
+                if _operation_retryable(e):
                     last_error = e
                     continue
                 mine = await self._landed_by(
@@ -10031,8 +10072,9 @@ class Repository:
         A dripping limit is created full anyway, so it gains nothing and, when
         no quota is named, nothing is written. Returns the result and whether
         the create is known to have landed: False when its condition failed —
-        another writer created the bucket first, or this very create landed and
-        its response was lost — and the caller re-reads to tell which.
+        another writer created the bucket first, this very create landed and
+        its response was lost, or the owner's META moved since ``entity`` was
+        read (ADR-150's check) — and the caller re-reads to tell which.
         """
         states = {
             limit.name: BucketState.from_limit(entity_id, resource, limit, now_ms)
@@ -10069,6 +10111,8 @@ class Repository:
             shard_count=1,
             vu=bucket_ops.creation_vu(resolved, states, now_ms),
             rf_ms=now_ms,
+            pgen=entity.parent_generation if entity is not None else None,
+            pinc=entity.incarnation if entity is not None else None,
         )
         result = BucketOperationResult(entity_id, resource, 1, amounts)
         try:
@@ -10079,11 +10123,20 @@ class Repository:
                         bucket_ops.TOP_UP, operation_id, result, now_ms, token, incarnation
                     ),
                     await self._operation_audit(bucket_ops.TOP_UP, result, principal),
+                    # ADR-150: the owner stamps above came from this META read;
+                    # a move or recreate since cancels the create (a retry
+                    # re-reads META), like every other bucket create.
+                    self.build_owner_check(
+                        entity_id,
+                        exists=entity is not None,
+                        pgen=entity.parent_generation if entity is not None else None,
+                        pinc=entity.incarnation if entity is not None else None,
+                    ),
                 ],
                 client_request_token=request_token,
             )
         except ClientError as e:
-            if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
+            if not _operation_retryable(e):
                 raise
             return result, False
         return result, True
@@ -10160,6 +10213,7 @@ class Repository:
         Tokens are positional (#634): ``#ot``/``:ot`` deltas, ``#og``/``:og``
         grant counts, ``#ow``/``:ow`` + ``#or``/``:or`` windows, ``#oa``/``:oa``
         applied markers, ``#ou``/``:ou`` top-ups, ``#ox`` / ``#oy`` removals,
+        ``#on``/``:on`` the calendar quota reset counters (``b_{name}_rn``),
         ``#ottl``/``:ottl`` the ``ttl`` (epoch seconds) when one is given: a
         bucket on resource or system defaults (:meth:`_operation_ttl`), or
         ``REMOVE #ottl`` with ``remove_ttl``: an entity-level bucket (ADR-136).
@@ -10206,6 +10260,10 @@ class Repository:
         for i, name in enumerate(sorted(write.cleared_window_marks)):
             names[f"#oy{i}"] = attr(name, schema.BUCKET_FIELD_WTC)
             remove_parts.append(f"#oy{i}")
+        for i, name in enumerate(sorted(write.reset_numbers)):
+            names[f"#on{i}"] = attr(name, schema.BUCKET_FIELD_RN)
+            values[f":on{i}"] = {"N": "1"}
+            add_parts.append(f"#on{i} :on{i}")
 
         if ttl is not None:
             names["#ottl"] = "ttl"

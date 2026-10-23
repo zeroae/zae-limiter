@@ -4507,6 +4507,11 @@ def entity_set_parent(
     asyncio.run(_run())
 
 
+def _shards(count: int) -> str:
+    """``1 shard`` / ``N shards``, for the reset and top-up summaries."""
+    return f"{count} shard" if count == 1 else f"{count} shards"
+
+
 @entity.command(
     "reset",
     epilog="""\b
@@ -4588,7 +4593,9 @@ def entity_reset(
                 click.echo(f"Nothing to reset: '{entity_id}' has no bucket for '{resource}'")
                 return
             restored = ", ".join(f"{k}: {v:+,}" for k, v in sorted(result.amounts.items()))
-            click.echo(f"Reset '{entity_id}' on '{resource}' ({result.shards} shards; {restored})")
+            click.echo(
+                f"Reset '{entity_id}' on '{resource}' ({_shards(result.shards)}; {restored})"
+            )
         except Exception as e:
             click.echo(f"Error: Failed to reset bucket: {e}", err=True)
             sys.exit(1)
@@ -4691,10 +4698,16 @@ def entity_top_up(
             result = await repo.top_up(
                 entity_id, resource, amounts, idempotency_key=idempotency_key
             )
-            granted = ", ".join(f"{k}: +{v:,}" for k, v in sorted(result.amounts.items()))
-            click.echo(
-                f"Topped up '{entity_id}' on '{resource}' ({result.shards} shards; {granted})"
-            )
+            if not result.shards:
+                click.echo(
+                    f"Nothing to top up: '{entity_id}' has no bucket for '{resource}', "
+                    "and a dripping limit starts full"
+                )
+            else:
+                granted = ", ".join(f"{k}: +{v:,}" for k, v in sorted(result.amounts.items()))
+                click.echo(
+                    f"Topped up '{entity_id}' on '{resource}' ({_shards(result.shards)}; {granted})"
+                )
             short = sorted(k for k, v in result.amounts.items() if v < amounts[k])
             if short:
                 click.echo(

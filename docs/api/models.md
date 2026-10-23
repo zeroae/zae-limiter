@@ -68,6 +68,15 @@ is rejected rather than rounded. `scale` is the field that takes a fraction.
       members_order: source
       heading_level: 3
 
+## BucketOperationResult
+
+::: zae_limiter.models.BucketOperationResult
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+
 ## BucketState
 
 ::: zae_limiter.models.BucketState
