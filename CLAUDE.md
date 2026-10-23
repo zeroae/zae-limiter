@@ -1650,7 +1650,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Limit-change sync, per shard (#468), per resource under `_default_` (#487) | `SET cp/ra/rp, sched/rsched/sched_tz, per-limit sched/rsched (compact, or "-" for unscheduled), b_{n}_rsa for a session quota, vu = 0 (+ ttl) REMOVE stale, per-limit overrides that now match the item default, b_{n}_rsa for a limit without a window` (never writes `ws`, ADR-139) | `attribute_exists(PK)` | No |
 | Disable / bypass stamp (ADR-125, #311) | `SET disabled = :true REMOVE bypass` / `SET bypass = :deadline REMOVE disabled` / `REMOVE disabled, bypass` (deadline = resolution time + `stamp_ttl × U(0.8, 1.0)`, ADR-151 decision 8) | `attribute_exists(PK)` | No |
 | Speculative consume, bypass shape (#311) | `ADD tc +c, wcu_tk -1000, wcu_tc +1000` (no `tk`, no `vu` guard) | `attribute_exists(PK) AND bypass > :now AND wcu_tk >= 1000 AND ttl-guard AND attribute_not_exists(disabled)` (a stamp at or past its deadline: `SCHEDULE_BOUNDARY`, the slow path renews or removes it) | No |
-| Bypass refund (#311), once per process per pair | `ADD tk +c` (`build_composite_adjust(counter=False)`) | (unconditional) | No |
+| Bypass refund (#311), once per process per pair | `ADD tk +c` (`lease.write_credit(counter=False)`: no `tc`) | a self-trimming credit like every other (#721, review D6): `attribute_exists(PK)`, each limit's ceiling and pins from the debit's `ALL_NEW` image, a quota's period guard; an overflowing one is re-issued with `SET vu = 0` | No |
 | Bypassed slow path (#311) | `ADD tc +c`, `SET bypass = :deadline` (`build_bypass_consume`: the renewal, from config read uncached) | `attribute_exists(PK) AND attribute_exists(bypass)` (any deadline) | No |
 | Soft restamp, resource/system change (#467) | `SET b_{n}_soft = :deadline` / `REMOVE` (`_stamp_bucket_soft`) | `attribute_exists(PK)` | No |
 | Speculative consume, enforce shape: stamp terms (ADR-151 decision 8) | unchanged `ADD` | per declared limit `(bypass > :now OR (b_{n}_soft > :now AND attribute_exists(b_{n}_cp)) OR tk >= c) AND (attribute_not_exists(b_{n}_soft) OR b_{n}_soft > :now)`; once `(attribute_not_exists(bypass) OR bypass > :now)` and `(bypass > :now OR attribute_not_exists(vu) OR vu > :now)`; `:now` is the bound `:vu_now`. An expired stamp fails the write: `SCHEDULE_BOUNDARY`, never a 429 | No |
@@ -1979,8 +1979,10 @@ exact. User guide: `docs/guide/soft-limits-and-bypass.md`. Design:
   enforce). The fast path learns the mode per process (`Repository._bypass_cache`, positive
   entries only, the returned image always overrules it): a known pair is written bypass-shaped
   (`ADD tc` + `wcu`, condition `#byp > :now`, no `vu` guard); an enforce-shaped write
-  on a bypassed item is admitted by the `#byp > :now` OR terms and refunded (`build_composite_adjust(
-  counter=False)`, once per process per pair); a cleared bypass fails the bypass shape and is
+  on a bypassed item is admitted by the `#byp > :now` OR terms and refunded (a self-trimming
+  `tk`-only credit, `lease.write_credit(counter=False)`, once per process per pair; a bypassed
+  lease's own `tc`-only adjustments carry no ceiling, since a counter credit admits nothing);
+  a cleared bypass fails the bypass shape and is
   re-written enforced. `wcu` is never bypassed (`_deserialize_composite_bucket` keeps it hard),
   so shard doubling works unchanged. Slow path: bypass needs uncached config **and** the item's
   stamp; existing items get `build_bypass_consume` (`tc` only plus the renewed deadline,

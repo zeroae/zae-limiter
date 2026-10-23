@@ -197,6 +197,33 @@ class TestWarmPathLearning:
         with pytest.raises(RateLimitExceeded):
             await _use(limiter)
 
+    async def test_a_refund_after_a_refill_to_capacity_trims_itself(self, repo, limiter):
+        """Review D6: the bypass refund was a bare `ADD tk`, outside the #721
+        self-trimming credit. A refill to capacity landing between the debit
+        and the refund lifted the balance above the ceiling with nothing to
+        stop the fast path spending it once the bypass is lifted."""
+        await _use(limiter)  # warm, enforce-shaped cache; 1 of 2 left
+        await repo.bypass_resource("llm")
+        real = repo._refund_bypassed_debit
+        client = await repo._get_client()
+
+        async def refilled_first(*args, **kwargs):
+            await client.update_item(
+                TableName=repo.table_name,
+                Key={"PK": {"S": _pk(repo)}, "SK": {"S": schema.sk_state()}},
+                UpdateExpression="SET b_rpm_tk = :cap",
+                ExpressionAttributeValues={":cap": {"N": "2000"}},
+            )
+            return await real(*args, **kwargs)
+
+        with patch.object(repo, "_refund_bypassed_debit", side_effect=refilled_first):
+            await _use(limiter)
+        item = await _item(repo)
+        # Above the ceiling only with `vu = 0`: the fast path cannot spend it,
+        # and the next slow pass clamps it.
+        assert _n(item, "b_rpm_tk") <= 2_000 or _n(item, "vu") == 0
+        assert _n(item, "b_rpm_tc") == 2_000  # the refund leaves the count alone
+
     async def test_a_failed_refund_is_logged_and_keeps_the_debit(self, repo, limiter):
         await _use(limiter)
         await repo.bypass_resource("llm")

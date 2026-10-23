@@ -154,8 +154,11 @@ term becomes `(#byp > :now OR attribute_not_exists(#vu) OR #vu > :now)`.
   limit's term, so an enforce-shaped write on a bypassed bucket never produces a 429.
   Rejected alternative: leave that out and let the failure image route the retry — it costs
   the same write but surfaces a spurious failure path through the rejection classifier.
-- A refund that lifts `tk` above the ceiling is handled by the existing #679 clamp
-  (`build_vu_reset`), unchanged.
+- The refund is a self-trimming credit (`lease.write_credit(counter=False)`, #721), its
+  ceilings and pins taken from the debit's `ALL_NEW` image: a refill to capacity or a reset
+  landing between the debit and the refund would otherwise lift `tk` above the ceiling, and a
+  quota reset in between would put the old period's refund in the new period (review D6). One
+  that would overflow is re-issued with `vu = 0` in the same write, as every credit is.
 
 ### 3.3 Failure classification and fast rejection
 

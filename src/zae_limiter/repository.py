@@ -4143,10 +4143,9 @@ class Repository:
                 add_parts.append(f"{tc_alias} {tc_val}")
 
             # The ceiling and period terms bound a `tk` credit, and the ceiling
-            # term names `#bt{i}`: a `tc`-only write (``tokens=False``) has
-            # neither.
-            # TODO(D6): a bypassed lease's `tc`-only credit skips the #721
-            # ceilings and pins outright; decide what it should carry.
+            # term names `#bt{i}`: a `tc`-only write (``tokens=False``, a
+            # bypassed lease's adjustment) has neither, and needs neither — a
+            # counter credit moves no balance and can admit nothing (review D6).
             if tokens and delta < 0 and not trim and name in ceilings:
                 ceiling_terms = True
                 condition_parts += _credit_limit_terms(
@@ -4717,19 +4716,32 @@ class Repository:
         """Give back the ``tk`` an enforce-shaped write debited from a bypassed bucket.
 
         ``tk`` only: the consumption was real and stays counted in ``tc``. The
-        balance returns to what it was, so no ceiling clamp is needed. A failed
-        refund is logged and leaves the debit (under-admission, never over).
+        credit trims itself like any other (``lease.write_credit``, #721): a
+        reset edge or a refill to capacity landing after the debit would
+        otherwise lift the balance above the ceiling — spendable once the
+        bypass is lifted — and a quota reset in between would put the old
+        period's refund in the new period's allowance (review D6). Its ceilings
+        and pins come from the debit's ``ALL_NEW`` image. A failed refund is
+        logged and leaves the debit (under-admission, never over).
         """
+        from .lease import credit_ceilings, credit_image, write_credit
+
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
-        # TODO(D6): this `tk` credit bypasses `lease.write_credit` (#721), so it
-        # carries no ceiling or pin terms.
-        item = self.build_composite_adjust(
-            entity_id, resource, deltas, shard_id=shard_id, counter=False
+        image = credit_image(result.buckets)
+        ceilings = credit_ceilings(
+            [(b.limit_name, b) for b in result.buckets], deltas, self._now_ms(), image, image
         )
-        if not item:
-            return
         try:
-            await self.write_each([item])
+            await write_credit(
+                self,
+                entity_id,
+                resource,
+                deltas,
+                shard_id,
+                ceilings,
+                image.pin if image is not None else None,
+                counter=False,
+            )
         except Exception:
             # The entity id is routinely an API key; never log it.
             logger.warning(

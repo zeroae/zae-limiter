@@ -335,6 +335,7 @@ async def write_credit(
     pin: CreditPin | None,
     *,
     tokens: bool = True,
+    counter: bool = True,
 ) -> None:
     """Write one adjust item whose credits trim themselves (#721, refs #680).
 
@@ -372,10 +373,12 @@ async def write_credit(
     not an error. Errors other than a failed condition propagate.
 
     ``tokens=False`` is a bypassed item's adjustment (#311): it writes ``tc``
-    only, so there is no balance to bound and no ceiling or period applies.
+    only, so there is no balance to bound and no ceiling or period applies —
+    a counter credit can admit nothing (review D6). ``counter=False`` is the
+    opposite, ``tk`` only: the bypass refund (#311), whose consumption stays
+    counted; its credit trims itself like any other.
     """
     if not tokens:
-        # TODO(D6): a bypassed `tc`-only credit skips the #721 ceilings and pins.
         item = repository.build_composite_adjust(
             entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, tokens=False
         )
@@ -392,9 +395,11 @@ async def write_credit(
         deltas = {name: delta for name, delta in deltas.items() if name not in unknown}
         ceilings = {name: c for name, c in ceilings.items() if name not in unknown}
     if ceilings and (pin is None or any(c.sched_raw is None for c in ceilings.values())):
-        await _write_trimmed(repository, entity_id, resource, deltas, shard_id, ceilings)
+        await _write_trimmed(repository, entity_id, resource, deltas, shard_id, ceilings, counter)
         return
     kwargs: dict[str, Any] = {"ceilings": ceilings, "pin": pin} if ceilings else {}
+    if not counter:
+        kwargs["counter"] = False
     item = repository.build_composite_adjust(
         entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, **kwargs
     )
@@ -408,7 +413,7 @@ async def write_credit(
     except Exception as exc:
         if not _is_condition_check_failure(exc):
             raise
-        await _write_trimmed(repository, entity_id, resource, deltas, shard_id, ceilings)
+        await _write_trimmed(repository, entity_id, resource, deltas, shard_id, ceilings, counter)
 
 
 async def _write_trimmed(
@@ -418,6 +423,7 @@ async def _write_trimmed(
     deltas: dict[str, int],
     shard_id: int,
     ceilings: dict[str, CreditCeiling],
+    counter: bool = True,
 ) -> None:
     """Step 2 of a credit: the same ``ADD`` plus ``vu = 0``, quota credits period-guarded.
 
@@ -428,6 +434,9 @@ async def _write_trimmed(
     (#721). That costs one write per quota credit on the item, on a path
     taken only after a reset or roll raced a refund.
     """
+    # `tk` only for the bypass refund (#311); omitted otherwise, so a backend
+    # predating the keyword still takes an ordinary credit.
+    shape: dict[str, Any] = {} if counter else {"counter": False}
     trimmed = repository.build_composite_adjust(
         entity_id=entity_id,
         resource=resource,
@@ -435,6 +444,7 @@ async def _write_trimmed(
         shard_id=shard_id,
         ceilings=ceilings,
         trim=True,
+        **shape,
     )
     if not trimmed:
         return
@@ -457,6 +467,7 @@ async def _write_trimmed(
             deltas={name: delta for name, delta in deltas.items() if name not in guarded},
             shard_id=shard_id,
             trim=True,
+            **shape,
         )
         if rest:
             await _write_unless_gone(repository, rest, resource)
@@ -468,6 +479,7 @@ async def _write_trimmed(
                 shard_id=shard_id,
                 ceilings={name: ceilings[name]},
                 trim=True,
+                **shape,
             )
             try:
                 await repository.write_each([single])
