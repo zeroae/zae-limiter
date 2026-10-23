@@ -739,6 +739,7 @@ class RepositoryProtocol(Protocol):
         owner_pinc: str | None = None,
         read_tokens: dict[str, int] | None = None,
         cleared_top_ups: Sequence[str] = (),
+        bypass_stamp: tuple[bool, bool] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -796,6 +797,10 @@ class RepositoryProtocol(Protocol):
             grant_counts: Limit name -> the shard count a quota reset or roll
                 on this write re-granted it at, stamped as ``b_{name}_gc``
                 (ADR-145 I3).
+            bypass_stamp: ``(stamp, read)``: SET or REMOVE the item's
+                ``bypass`` stamp from bypass config read uncached on this pass,
+                pinned on whether the pass read one (#311, ADR-151); ``None``
+                leaves it.
         """
         ...
 

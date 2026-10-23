@@ -3439,6 +3439,7 @@ class Repository:
         owner_pinc: str | None = None,
         read_tokens: dict[str, int] | None = None,
         cleared_top_ups: Sequence[str] = (),
+        bypass_stamp: tuple[bool, bool] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -3580,6 +3581,13 @@ class Repository:
             cleared_top_ups: Quotas whose ``b_{name}_tu`` this write removes
                 (ADR-149): a reset or roll on it ends the period the top-up
                 was bought in. Only names the item was read carrying one.
+            bypass_stamp: ``(stamp, read)`` to SET (``stamp`` true) or REMOVE
+                the item's ``bypass`` stamp, from bypass config read uncached
+                on this pass (#311, ADR-151 decision 4), or ``None`` to leave
+                it. ``read`` is whether the pass read the item carrying one:
+                the write is pinned on that, so a pass that read config before
+                a fan-out cannot undo the fan-out. A lost pin falls to the
+                consumption-only retry, which writes no stamp.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -3763,6 +3771,20 @@ class Repository:
                 attr_values[f":bs{k}"] = {"BOOL": True}
             else:
                 remove_parts.append(alias)
+
+        # #311, ADR-151 decision 4: the item's bypass stamp follows config read
+        # uncached on this pass, pinned on the stamp as read.
+        if bypass_stamp is not None:
+            stamp, read = bypass_stamp
+            attr_names["#byp"] = schema.BUCKET_FIELD_BYPASS
+            if stamp:
+                set_parts.append("#byp = :byp")
+                attr_values[":byp"] = {"BOOL": True}
+            else:
+                remove_parts.append("#byp")
+            condition_parts.append(
+                "attribute_exists(#byp)" if read else "attribute_not_exists(#byp)"
+            )
 
         # #633: limits missing from this existing item are seeded in full.
         seeded_tz: str | None = None

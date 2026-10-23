@@ -270,6 +270,41 @@ class TestSlowPath:
         with pytest.raises(RateLimitExceeded):
             await RateLimiter(repository=repo)._do_acquire("u", "llm", None, {"rpm": 1})
 
+    async def test_a_slow_pass_removes_a_stamp_config_no_longer_backs(self, repo, limiter):
+        """Review D16: the clear's fan-out missed this bucket, and the slow
+        pass that read config uncached removes the stale stamp (ADR-151
+        decision 4) instead of leaving it to admit on the fast path."""
+        await repo.bypass_resource("llm")
+        await _use(limiter)  # created stamped, nothing debited
+        assert "bypass" in await _item(repo)
+        await repo._write_resource_config_flag("llm", schema.CONFIG_FIELD_DISABLED, None)
+        async with RateLimiter(repository=repo, speculative_writes=False) as slow:
+            async with slow.acquire("u", "llm", {"rpm": 1}) as lease:
+                assert lease.bypassed is False
+        item = await _item(repo)
+        assert "bypass" not in item
+        assert _n(item, "b_rpm_tk") == 1_000  # enforced: debited
+        # The fast path enforces from here on.
+        await _use(limiter)
+        with pytest.raises(RateLimitExceeded):
+            await _use(limiter)
+
+    async def test_a_slow_pass_sets_a_stamp_config_asks_for(self, repo, limiter):
+        """Review D16, the other direction: bypass config whose fan-out never
+        reached the bucket. This request is enforced; its write stamps the
+        bucket, and the fast path bypasses from then on."""
+        await _use(limiter)
+        await repo._write_resource_config_flag("llm", schema.CONFIG_FIELD_DISABLED, "bypass")
+        async with RateLimiter(repository=repo, speculative_writes=False) as slow:
+            async with slow.acquire("u", "llm", {"rpm": 1}) as lease:
+                assert lease.bypassed is False
+        item = await _item(repo)
+        assert "bypass" in item
+        assert _n(item, "b_rpm_tk") < 1_000  # this request was enforced
+        for _ in range(5):
+            await _use(limiter)
+        assert _n(await _item(repo), "b_rpm_tc") == 7_000
+
     async def test_a_bypass_lost_before_the_write_is_replanned_enforced(self, repo, limiter):
         await _use(limiter)
         await repo.bypass_resource("llm")

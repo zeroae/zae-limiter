@@ -2696,9 +2696,16 @@ class SyncRateLimiter:
                 state for (b_eid, _res, _name), state in existing_buckets.items() if b_eid == eid
             ]
             any_existing = bool(item_states)
-            eid_bypass = bypass_mode.get(eid, False) and (not disable_bypass)
+            config_bypass = bypass_mode.get(eid, False)
+            stamp_read = any(state.bypass for state in item_states)
+            eid_bypass = config_bypass and (not disable_bypass)
             if any_existing:
-                eid_bypass = eid_bypass and any(state.bypass for state in item_states)
+                eid_bypass = eid_bypass and stamp_read
+            bypass_restamp = (
+                (config_bypass, stamp_read)
+                if any_existing and (not eid_bypass) and (config_bypass != stamp_read)
+                else None
+            )
             if not eid_bypass:
                 for state in item_states:
                     state.bypass = False
@@ -2927,6 +2934,7 @@ class SyncRateLimiter:
                         _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM,
                         _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG,
                         _bypass=eid_bypass,
+                        _bypass_restamp=bypass_restamp,
                         _stored_top_up=stored_top_up,
                     )
                 )

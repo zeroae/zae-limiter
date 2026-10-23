@@ -451,6 +451,25 @@ class TestCompositeBuilders:
         assert "(attribute_exists(#bo0) OR #bt0 >= :bf0)" in update["ConditionExpression"]
         assert "#bt1 >=" not in update["ConditionExpression"]
 
+    @pytest.mark.parametrize("stamp, read", [(True, False), (False, True)])
+    def test_normal_setting_or_removing_the_bypass_stamp(self, stamp, read) -> None:
+        """#311, ADR-151 decision 4: the stamp follows config, pinned as read."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            bypass_stamp=(stamp, read),
+        )["Update"]
+        assert_expression_safe(update)
+        expression = update["UpdateExpression"]
+        assert ("#byp = :byp" in expression) is stamp
+        assert ("REMOVE #byp" in expression) is not stamp
+        pin = "attribute_exists(#byp)" if read else "attribute_not_exists(#byp)"
+        assert pin in update["ConditionExpression"]
+
     def test_normal_with_a_soft_seed(self) -> None:
         from zae_limiter.models import BucketState
 

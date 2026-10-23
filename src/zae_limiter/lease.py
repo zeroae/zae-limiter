@@ -195,6 +195,11 @@ class LeaseEntry:
     # bypassed request never debited are never owed, even if the bypass is
     # cleared mid-lease (ADR-151 §5).
     _bypass: bool = False
+    # #311, ADR-151 decision 4: `(stamp, read)` for an enforced write on an
+    # existing item whose `bypass` stamp disagrees with the bypass config this
+    # pass read uncached — SET (`stamp`) or REMOVE it, pinned on whether the
+    # pass read one (`read`). None leaves the stamp alone.
+    _bypass_restamp: tuple[bool, bool] | None = None
     # ADR-149: the item as read carries `b_{name}_tu` for this limit, so a
     # reset or roll this commit applies must REMOVE it (the top-up belonged to
     # the period that just ended).
@@ -1382,6 +1387,14 @@ class Lease:
                         ),
                         soft_stamps=soft_stamps or None,
                         soft_trusted=_soft_trusted(group_entries),
+                        bypass_stamp=next(
+                            (
+                                e._bypass_restamp
+                                for e in group_entries
+                                if e._bypass_restamp is not None
+                            ),
+                            None,
+                        ),
                         owner_pgen=(
                             owner_entry._parent_generation if owner_entry is not None else None
                         ),

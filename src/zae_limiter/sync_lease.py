@@ -101,6 +101,7 @@ class LeaseEntry:
     _soft_trusted: bool = False
     _soft_restamp: bool = False
     _bypass: bool = False
+    _bypass_restamp: tuple[bool, bool] | None = None
     _stored_top_up: bool = False
 
 
@@ -1064,6 +1065,14 @@ class SyncLease:
                         else None,
                         soft_stamps=soft_stamps or None,
                         soft_trusted=_soft_trusted(group_entries),
+                        bypass_stamp=next(
+                            (
+                                e._bypass_restamp
+                                for e in group_entries
+                                if e._bypass_restamp is not None
+                            ),
+                            None,
+                        ),
                         owner_pgen=owner_entry._parent_generation
                         if owner_entry is not None
                         else None,

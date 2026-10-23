@@ -3394,14 +3394,24 @@ class RateLimiter:
             any_existing = bool(item_states)
             # Bypass (#311) needs both the uncached config and, for an existing
             # item, its stamp: a stamp alone may be stale (a clear whose fan-out
-            # has not reached it yet), and config alone may be ahead of a
-            # fan-out still stamping. Either missing means enforce, which only
-            # under-admits until the fan-out lands. A stamp config no longer
-            # backs is cleared from the states, so nothing below treats them
-            # as bypassed.
-            eid_bypass = bypass_mode.get(eid, False) and not disable_bypass
+            # has not reached it yet, or missed it), and config alone may be
+            # ahead of a fan-out still stamping. Either missing means enforce.
+            # This pass then makes the stamp agree with the config it read
+            # (ADR-151 decision 4): the enforced write SETs a missing stamp or
+            # REMOVEs one config no longer backs, pinned on the stamp as read,
+            # so a stale stamp cannot outlive the next slow pass. A stamp config
+            # no longer backs is cleared from the states, so nothing below
+            # treats them as bypassed.
+            config_bypass = bypass_mode.get(eid, False)
+            stamp_read = any(state.bypass for state in item_states)
+            eid_bypass = config_bypass and not disable_bypass
             if any_existing:
-                eid_bypass = eid_bypass and any(state.bypass for state in item_states)
+                eid_bypass = eid_bypass and stamp_read
+            bypass_restamp = (
+                (config_bypass, stamp_read)
+                if any_existing and not eid_bypass and config_bypass != stamp_read
+                else None
+            )
             if not eid_bypass:
                 for state in item_states:
                     state.bypass = False
@@ -3806,6 +3816,7 @@ class RateLimiter:
                         _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM,
                         _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG,
                         _bypass=eid_bypass,
+                        _bypass_restamp=bypass_restamp,
                         _stored_top_up=stored_top_up,
                     )
                 )
