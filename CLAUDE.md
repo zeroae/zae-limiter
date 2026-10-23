@@ -788,6 +788,10 @@ Users provide a short identifier (e.g., `my-app`), and the system uses it direct
 **Namespace-scoped policies** use Tag-Based Access Control (TBAC) with `dynamodb:LeadingKeys` condition:
 - Restrict DynamoDB access to items prefixed with the caller's `zael_namespace_id` principal tag
 - Also grant read access to the reserved namespace `_/*` (namespace registry, shared config)
+- `ns-full` also matches the bare namespace id, the namespace's GSI4 partition key: a
+  system-level soft change discovers its buckets there (`Repository._fanout_soft`), and with
+  only `{id}/*` its config write landed and the fan-out was denied (review D4). No table item
+  has it as its PK
 - Attach the `zael_namespace_id` tag to IAM roles/users to scope their access
 
 ```bash

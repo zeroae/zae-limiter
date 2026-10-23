@@ -684,6 +684,10 @@ Resources:
               ForAllValues:StringLike:
                 dynamodb:LeadingKeys:
                   - "${aws:PrincipalTag/zael_namespace_id}/*"
+                  # The bare id is the namespace's GSI4 partition key: a
+                  # system-level soft change discovers its buckets there
+                  # (ADR-151, #467). No table item has it as its PK.
+                  - "${aws:PrincipalTag/zael_namespace_id}"
                   - "_/*"
 
   # NamespaceReadOnlyPolicy: Read-only access scoped to namespace + shared prefix

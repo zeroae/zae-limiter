@@ -131,6 +131,8 @@ The stack creates three additional namespace-scoped policies:
 
 These policies use `dynamodb:LeadingKeys` with the `zael_namespace_id` principal tag to restrict DynamoDB access to items whose partition key starts with the tenant's namespace ID.
 
+`NamespaceFullAccessPolicy` also matches the bare namespace ID: that is the namespace's partition key on GSI4 (a keys-only index), which a system-level soft-limit change queries to find every bucket it must restamp. No table item has it as its partition key. A custom config-management policy needs the same key, or `set_system_defaults()` with a changed `soft` writes the config and is then denied on its fan-out.
+
 `NamespaceAcquirePolicy` grants `GetItem`, `BatchGetItem`, `Query`, `PutItem`, `UpdateItem` and `ConditionCheckItem` within the namespace, plus reads of the reserved `_/` prefix (the namespace registry). `PutItem` and `UpdateItem` are what authorise the bucket create and update inside `acquire()`'s transactions: AWS checks each item in a `TransactWriteItems` against its own action (ADR-152).
 
 ##### Single Namespace (Most Common)
