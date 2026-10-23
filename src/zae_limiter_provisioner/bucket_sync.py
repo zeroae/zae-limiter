@@ -18,6 +18,7 @@ millitokens and milliseconds. Everything crossing over is multiplied by 1000.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
@@ -142,6 +143,11 @@ _STALE_FIELDS = (
 #: T for the stamps this provisioner writes (ADR-151 decision 8): a `bypass` or
 #: soft stamp stands at most this long after the config read that justified it.
 STAMP_TTL_SECONDS = DEFAULT_STAMP_TTL_SECONDS
+
+
+def read_clock_ms() -> int:
+    """Wall-clock epoch milliseconds, taken just before a resolution is read."""
+    return int(time.time() * 1000)
 
 
 def _encode_one_tuple(
@@ -534,6 +540,9 @@ def sync_bucket_params(
                 synced.add(pk)
                 _ns, _eid, bucket_resource, _shard = parse_bucket_pk(pk)
                 if bucket_resource not in plans:
+                    # Timed from just before this resolution's own read, not
+                    # the caller's `now_ms`: a soft stamp's deadline counts
+                    # from the read behind it (ADR-151 decision 8, review E4).
                     plans[bucket_resource] = _resolved_plan(
                         client,
                         table_name,
@@ -542,7 +551,7 @@ def sync_bucket_params(
                         bucket_resource,
                         limits,
                         stale_limit_names,
-                        now_ms,
+                        read_clock_ms(),
                     )
                 plan = plans[bucket_resource]
                 if plan is None:

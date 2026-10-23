@@ -253,6 +253,47 @@ class TestDurationWindowParamSync:
         alias = next(a for a, attr in names.items() if attr == bucket_attr("session", "rsa"))
         assert values[f":{alias[1:]}"] == {"N": "18000"}
 
+    def test_entity_wide_sync_times_each_resource_from_its_own_resolution(self):
+        """Review E4: under `_default_` each resource's soft stamp deadline
+        counts from that resource's own resolution (ADR-151 decision 8), not
+        from the caller's instant, so a late resolution is not stamped with a
+        deadline already near or past."""
+        from unittest.mock import patch
+
+        from zae_limiter_provisioner import bucket_sync
+
+        client = _make_client()
+        early, late = _pk(resource="a"), _pk(resource="b")
+        client.query.side_effect = _query_pages(
+            {"Items": [{"PK": {"S": early}}, {"PK": {"S": late}}]}
+        )
+        entity_default = _limits_item(tpm=(100, 100, 60))
+        entity_default[limit_attr("tpm", "soft")] = {"BOOL": True}
+        client.get_item.side_effect = _levels(
+            {(pk_entity("ns123", "user-1"), sk_config("_default_")): entity_default}
+        )
+        with patch.object(bucket_sync, "read_clock_ms", side_effect=[0, 50_000]):
+            written = sync_bucket_params(
+                client,
+                "tbl",
+                "ns123",
+                "user-1",
+                "_default_",
+                {"tpm": {"capacity": 100, "refill_amount": 100, "refill_period": 60}},
+                ttl_multiplier=0,
+                stale_limit_names=None,
+                now_ms=0,
+            )
+        assert written == 2
+        deadlines = {
+            c.kwargs["Key"]["PK"]["S"]: int(v["N"])
+            for c in client.update_item.call_args_list
+            for k, v in c.kwargs["ExpressionAttributeValues"].items()
+            if k.startswith(":sft")
+        }
+        assert 48_000 <= deadlines[early] <= 60_000
+        assert 50_000 + 48_000 <= deadlines[late] <= 50_000 + 60_000
+
     def test_ttl_reconstruction_does_not_crash_on_a_duration_quota(self):
         """The TTL branch rebuilds a `Limit` from the manifest-shaped decl;
         before `reset_after` was threaded through it, a session quota raised

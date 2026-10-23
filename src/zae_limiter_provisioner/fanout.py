@@ -164,18 +164,21 @@ def fanout_resource(
 
     Returns the number of buckets stamped.
     """
-    effective_by_entity: dict[str, bool | str] = {}
+    effective_by_entity: dict[str, tuple[bool | str, int]] = {}
 
-    def _decide(pk: str) -> bool | str | None:
+    def _decide(pk: str) -> tuple[bool | str, int] | None:
         _ns, entity_id, _res, _shard = parse_bucket_pk(pk)
         if entity_id not in effective_by_entity:
-            effective_by_entity[entity_id] = resolve_disabled(
-                client, table_name, namespace_id, entity_id, resource
+            read_ms = now_ms()
+            effective_by_entity[entity_id] = (
+                resolve_disabled(client, table_name, namespace_id, entity_id, resource),
+                read_ms,
             )
-        if effective_by_entity[entity_id] != disabled:
+        value, read_ms = effective_by_entity[entity_id]
+        if value != disabled:
             # This entity overrides the resource-level value; leave it alone.
             return None
-        return disabled
+        return disabled, read_ms
 
     return _fanout(
         client,
@@ -216,15 +219,15 @@ def fanout_entity(
     scoped to one resource, the caller's directive is unambiguous for every
     discovered bucket, so all buckets are stamped with `disabled` directly.
     """
-    effective_by_resource: dict[str, bool | str] = {}
+    effective_by_resource: dict[str, tuple[bool | str, int]] = {}
 
-    def _decide(pk: str) -> bool | str | None:
-        if resource is not None:
-            return disabled
+    def _decide(pk: str) -> tuple[bool | str, int] | None:
         _ns, _eid, bucket_resource, _shard = parse_bucket_pk(pk)
         if bucket_resource not in effective_by_resource:
-            effective_by_resource[bucket_resource] = resolve_disabled(
-                client, table_name, namespace_id, entity_id, bucket_resource
+            read_ms = now_ms()
+            effective_by_resource[bucket_resource] = (
+                resolve_disabled(client, table_name, namespace_id, entity_id, bucket_resource),
+                read_ms,
             )
         return effective_by_resource[bucket_resource]
 
@@ -237,7 +240,9 @@ def fanout_entity(
         pk_value=gsi3_pk_entity(namespace_id, entity_id),
         sk_prefix=f"BUCKET#{resource}#" if resource else "BUCKET#",
         disabled=disabled,
-        decide=_decide,
+        # Scoped to one resource, the caller's directive is unambiguous for
+        # every discovered bucket: stamp it directly, timed from the start.
+        decide=None if resource is not None else _decide,
     )
 
 
@@ -250,20 +255,25 @@ def _fanout(
     pk_value: str,
     sk_prefix: str,
     disabled: bool | str,
-    decide: Callable[[str], bool | str | None] | None = None,
+    decide: Callable[[str], tuple[bool | str, int] | None] | None = None,
 ) -> int:
     """Discover and stamp matching bucket items, across two passes.
 
     Runs the paginated discovery query twice (see module docstring), with
     `stamped` shared across both passes so a PK visited on pass one is never
     re-stamped on pass two. `decide`, when given, chooses the value to stamp
-    on each newly-discovered PK, or returns None to leave it alone; a PK it
-    declines is NOT added to `stamped`, so it is re-considered (cheaply,
-    since the caller's resolutions are memoized) on a later pass or page.
+    on each newly-discovered PK and the instant just before the resolution it
+    came from was read, or returns None to leave it alone; a PK it declines is
+    NOT added to `stamped`, so it is re-considered (cheaply, since the
+    caller's resolutions are memoized) on a later pass or page.
+
+    A deadline counts from the read behind its value (ADR-151 decision 8),
+    like ``Repository._stamp_bucket_disabled``: counted from the fan-out's
+    start, a long fan-out stamped late buckets with deadlines already near or
+    past, each paying an immediate renewal (review E4). The caller's own
+    directive (`decide` None) counts from the start.
     """
     stamped: set[str] = set()
-    # Every resolution this fan-out stamps from is read after this instant, so
-    # a deadline counted from it is at most T after the read (ADR-151 decision 8).
     started_ms = now_ms()
 
     for _pass in range(2):
@@ -271,10 +281,11 @@ def _fanout(
             client, table_name, index, pk_name, sk_name, pk_value, sk_prefix
         ):
             if pk not in stamped:
-                value = disabled if decide is None else decide(pk)
-                if value is None:
+                decided = (disabled, started_ms) if decide is None else decide(pk)
+                if decided is None:
                     continue
-                stamp_bucket(client, table_name, pk, value, deadline_from(started_ms))
+                value, read_ms = decided
+                stamp_bucket(client, table_name, pk, value, deadline_from(read_ms))
                 stamped.add(pk)
 
     return len(stamped)

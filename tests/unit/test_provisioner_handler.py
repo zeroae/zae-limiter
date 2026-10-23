@@ -822,6 +822,24 @@ class TestSyncBucketParamChanges:
             _sync_bucket_param_changes("tbl", "ns123", changes)
         sync.assert_not_called()
 
+    def test_each_change_is_timed_on_its_own(self, mock_handler_boto3):
+        """Review E4: one instant for a whole apply stamped soft deadlines
+        already expired on a long one; each change's sync is timed just
+        before it runs (ADR-151 decision 8)."""
+        limits = {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}
+        changes = [
+            Change(
+                action="update", level="entity", target=f"user-{i}/gpt-4", data={"limits": limits}
+            )
+            for i in (1, 2)
+        ]
+        with (
+            patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync,
+            patch("zae_limiter_provisioner.handler.time.time", side_effect=[1.0, 51.0]),
+        ):
+            _sync_bucket_param_changes("tbl", "ns123", changes)
+        assert [c.kwargs["now_ms"] for c in sync.call_args_list] == [1_000, 51_000]
+
 
 class TestCfnPropertiesToManifestSchedules:
     """CFN `Schedule` / `ResetSchedule` -> manifest `schedule` / `reset_schedule`.

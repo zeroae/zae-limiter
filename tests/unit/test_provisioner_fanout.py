@@ -446,6 +446,73 @@ class TestFanoutEntityUnscopedOverride:
         client.get_item.assert_not_called()
 
 
+def _bypass_at(*config_keys: tuple[str, str]):
+    """A `get_item` side_effect where the given config levels say bypass."""
+
+    def _get_item(*args, **kwargs):
+        raw_key = kwargs["Key"]
+        if (raw_key["PK"]["S"], raw_key["SK"]["S"]) in config_keys:
+            return {"Item": {"disabled": {"S": "bypass"}}}
+        return {}
+
+    return _get_item
+
+
+def _deadlines(client: MagicMock) -> dict[str, int]:
+    return {
+        c.kwargs["Key"]["PK"]["S"]: int(c.kwargs["ExpressionAttributeValues"][":until"]["N"])
+        for c in client.update_item.call_args_list
+    }
+
+
+class TestDeadlineCountsFromTheRead:
+    """Review E4: a stamp's deadline counts from the read behind it (ADR-151
+    decision 8), not from the fan-out's start, so a resolution read late in a
+    long fan-out does not stamp a deadline already near or past."""
+
+    NS = "ns123"
+
+    def test_fanout_resource_times_each_entity_from_its_own_resolution(self):
+        from zae_limiter_provisioner import fanout
+
+        client = _make_client()
+        early, late = pk_bucket(self.NS, "u1", "gpt-4", 0), pk_bucket(self.NS, "u2", "gpt-4", 0)
+        client.query.return_value = {"Items": [{"PK": {"S": early}}, {"PK": {"S": late}}]}
+        client.get_item.side_effect = _bypass_at((pk_resource(self.NS, "gpt-4"), sk_config()))
+        # The fan-out's start, then one read per entity, the second 50 s on.
+        with patch.object(fanout, "now_ms", side_effect=[0, 0, 50_000]):
+            assert fanout_resource(client, "t", self.NS, "gpt-4", disabled="bypass") == 2
+        deadlines = _deadlines(client)
+        assert 48_000 <= deadlines[early] <= 60_000
+        assert 50_000 + 48_000 <= deadlines[late] <= 50_000 + 60_000
+
+    def test_unscoped_fanout_entity_times_each_resource_from_its_own_resolution(self):
+        from zae_limiter_provisioner import fanout
+
+        client = _make_client()
+        early, late = pk_bucket(self.NS, "u1", "a", 0), pk_bucket(self.NS, "u1", "b", 0)
+        client.query.return_value = {"Items": [{"PK": {"S": early}}, {"PK": {"S": late}}]}
+        client.get_item.side_effect = _bypass_at(
+            (pk_entity(self.NS, "u1"), sk_config(DEFAULT_RESOURCE))
+        )
+        with patch.object(fanout, "now_ms", side_effect=[0, 0, 50_000]):
+            assert fanout_entity(client, "t", self.NS, "u1", None, disabled="bypass") == 2
+        deadlines = _deadlines(client)
+        assert 48_000 <= deadlines[early] <= 60_000
+        assert 50_000 + 48_000 <= deadlines[late] <= 50_000 + 60_000
+
+    def test_a_scoped_directive_counts_from_the_start(self):
+        from zae_limiter_provisioner import fanout
+
+        client = _make_client()
+        pks = [pk_bucket(self.NS, "u1", "gpt-4", shard) for shard in (0, 1)]
+        client.query.return_value = {"Items": [{"PK": {"S": pk}} for pk in pks]}
+        with patch.object(fanout, "now_ms", side_effect=[0]):
+            assert fanout_entity(client, "t", self.NS, "u1", "gpt-4", disabled="bypass") == 2
+        assert all(48_000 <= d <= 60_000 for d in _deadlines(client).values())
+        client.get_item.assert_not_called()
+
+
 class TestResolveDisabled:
     """Tests for resolve_disabled: the sync boto3 mirror of Repository.resolve_disabled.
 
