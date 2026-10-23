@@ -452,6 +452,7 @@ src/zae_limiter/
 ├── limiter.py         # RateLimiter (async)
 ├── config_cache.py    # Client-side config caching with TTL (CacheStats)
 ├── rejection_cache.py # Last bucket state seen per shard; rejects without a DynamoDB call (ADR-147)
+├── bucket_ops.py      # Pure planner for Repository.reset_bucket / top_up (ADR-149); not generated
 ├── sync_repository_protocol.py  # Generated: SyncRepositoryProtocol
 ├── sync_repository.py           # Generated: SyncRepository
 ├── sync_repository_builder.py   # Generated: SyncRepositoryBuilder
@@ -1630,6 +1631,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Disable stamp (ADR-125) | `SET disabled = :true` / `REMOVE disabled` | `attribute_exists(PK)` | No |
 | Cascade / owner stamp fan-out, per bucket (ADR-146; a move, ADR-150; provisioner mirror) | `SET cascade = :c, parent_id = :p, pgen = :pg, pinc = :inc` (or `REMOVE parent_id`) | `attribute_exists(PK) AND (attribute_not_exists(pinc) OR pinc <> :inc OR attribute_not_exists(pgen) OR pgen <= :pg)`; a lost pin means a newer move of this incarnation stamped it: skipped, and not counted | No |
 | Entity META move (`set_parent`, ADR-150; not a bucket) | `SET parent_id, GSI1PK, GSI1SK, pgen = if_not_exists(pgen, 0) + 1` (to no parent: `parent_id = NULL`, `REMOVE GSI1PK, GSI1SK`), `ALL_OLD` | `attribute_exists(PK)` | — |
+| Reset / top-up, every shard in one transaction (ADR-149) | `ADD b_{n}_tk :delta` per limit, `SET rf = max(now, rf + 1, ws), vu = 0` (+ `gc`, `ws`/`rsa`, `wa`, `b_{q}_tu`, `ttl` on a default bucket) `REMOVE b_{q}_tu, b_{n}_wtc` | `rf = :read AND shard_count = :read`; the call's operation record (`SK = #OP#{id}`) and its audit event are `Put`s in the same transaction, the record under `attribute_not_exists(PK) OR (:ent <> :legacy AND ent <> :ent AND ent <> :legacy)` | Yes (optimistic lock) |
 
 **Expression tokens are positional (#634).** Every `#…` alias and `:…` placeholder in a bucket
 write is built from a loop index, never from a limit name, and the alias *value* carries the real
@@ -1912,6 +1914,92 @@ supported on system config.
   set-cascade ID on|off [--resource R]` / `entity clear-cascade ID [--resource R]`;
   `resource get-defaults` / `entity get-limits` print `Cascade: on|off (explicit)` for a level
   that sets one.
+
+### Reset and Top-Up (ADR-149, #470)
+
+`Repository.reset_bucket(entity_id, resource, limits=None, principal=None)` and
+`Repository.top_up(entity_id, resource, amounts, principal=None)` (both on
+`RepositoryProtocol`, generated sync twins; CLI `entity reset ID -r R [-l L ...]` /
+`entity top-up ID -r R --add L:N ...`) change one (entity, resource)'s balance **now**, on every
+shard. Both return `models.BucketOperationResult(entity_id, resource, shards, amounts)` (not
+exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed until v0.17.0.
+
+- **In place, never delete** (#471's delete lost `tc`, `disabled`, `shard_count`, `gc`). Each
+  shard gets one rf-locked, zero-consumption pass; every shard of the pair goes in **one
+  transaction** (`build_bucket_operation`, positional `#ot/#og/#ow/#or/#oa/#ou/#ox/#oy` tokens).
+  Planning is pure, in `bucket_ops.plan_operation`: each shard is **materialised** first with the
+  `RateLimiter` helpers (`_apply_reset_edge`, `_apply_window_roll`, then `force_consume(0)`),
+  then the op lands as a token **delta** (`ADD`, never `SET`, so a fast-path debit in between is
+  kept). Every write: `rf = max(now, stored rf + 1, applied ws)`, `vu = 0`, condition
+  `rf = :read AND shard_count = :read`; never `tc`, `disabled`, owner stamps, config, the
+  parent. A bucket on resource or system defaults also gets `SET ttl` (`#ottl`), the later of
+  the acquire path's rule and every quota's current period end (`_operation_ttl`; D5's create
+  too); an entity-level bucket gets none, and a stale one is `REMOVE`d, as acquire does (ADR-136). A conflict re-reads and re-plans (3 retries, full jitter, then `RateLimiterUnavailable`).
+- **Shards** are read strongly consistent: GSI3 discovery plus shard 0 and every slot below the
+  stored count **by key** (GSI3 can miss a just-created shard). Lagging counts are raised first
+  with the R5 freeze, then re-read (D7).
+- **Reset:** dripping → ceiling; calendar quota → share, `gc = S`, `tu` removed; session quota →
+  window ended **and applied** (`ws = wa = now − rsa·1000`, so a pre-reset fan-out's
+  `ws <= :open_floor` fails), `wtc` removed, and **`tk`, `gc`, `tu` left alone** — the next
+  opener restores the share (writing it here let lost-lock retries spend it twice, PR #720
+  review). Not gated. Missing bucket → no-op.
+- **Exactly once — one operation record per call:** `PK` = shard 0's bucket `PK`,
+  `SK = #OP#{id}` (`schema.sk_operation`), `Put` under `attribute_not_exists(PK)` in the same
+  transaction as the shard writes (`build_operation_record`), holding the result, `ttl` three
+  days out (`OPERATION_RECORD_TTL_SECONDS`), GSI4 keys for `purge_namespace`, no GSI1-3 keys.
+  At most one transaction per id commits; after any unclear failure (`_OPERATION_RETRY_CODES`,
+  including `TransactionInProgressException`) one consistent `GetItem` of the record decides.
+  The audit event's `Put` rides in the same transaction (`_operation_audit`, built by
+  `_build_audit_item`, the item `_log_audit_event` writes), so a grant and its audit commit
+  together. So every operation is a transaction — a one-shard one is 3 items, 6 WRU, at most
+  32 + 2 = 34 items. A keyed call that writes no bucket still writes its record and audit
+  (result 0, zero amounts); an unkeyed one writes nothing. A per-bucket `op`
+  marker was tried first and lost to a concurrent operation overwriting it. `idempotency_key`
+  (API and CLI `--idempotency-key`, 1-64 of `[A-Za-z0-9._:-]`) is the id when given: the record
+  is read first (+1 RCU) and a hit returns its result; reused for the other operation kind it
+  is a `ValidationError`. Without a key an error leaves the outcome unknown. The
+  `ClientRequestToken` is a random per-call nonce plus the attempt, **never** derived from the
+  key (DynamoDB answers a reused token with a new payload with
+  `IdempotentParameterMismatchException`, itself an unclear outcome resolved by the record).
+  The record stores its `writer` (that nonce); any other error after the write (timeout, 5xx)
+  returns the result only if this call's own record is there, else re-raises. A record belongs to one **incarnation** of its entity:
+  `schema.entity_incarnation(meta)` (shared with #716: `pinc` -> `created_at` ->
+  `LEGACY_INCARNATION = "-"`, also for no META); each call reads META once (consistent,
+  +1 RCU, reused for a create's cascade stamps) and stores it as `ent`; a record of another
+  incarnation reads as absent and is replaced
+  (`attribute_not_exists(PK) OR (:ent <> :legacy AND ent <> :ent AND ent <> :legacy)`). `"-"`
+  matches every incarnation **both ways**: a record written before META existed is never
+  replaced, and a call with no META takes any record for its key — so a reused key around a
+  delete or a create returns the old result and grants nothing (under-grant, never
+  over-grant). Residual: an entity deleted and
+  recreated *during* one call can see a key retry applied once more (closing it needs
+  `dynamodb:ConditionCheckItem`, which no shipped policy grants). `delete_entity` deletes the entity's
+  records too (one Query per shard-0 partition), best effort only. The principal and key are validated before any I/O.
+- **Top-up:** a quota gains exactly N, split by coverage `S // gc` (`split_weighted`, remainder
+  to the lowest shard, D1), and **`tu += portion`** — the whole portion, not only what lands
+  above the ceiling, or a refund of spent room is clamped away (design-validator). A dripping
+  limit gains at most its headroom (`split_by_headroom`). A session quota with no live window
+  opens one (D4). No bucket → shard 0 created holding share + N, `tu = N` (D5;
+  `ResourceDisabled` if disabled; a dripping-only top-up writes nothing). A limit not yet on any
+  shard (configured after the bucket existed) raises `ValidationError` naming it. `tu` takes the
+  whole portion even on a plan upgrade (`set_limits` then `top_up`), so the upgrade is gated too
+  and the ceiling is up to one top-up wider than the plan until the next reset — under-clamping
+  refunds only, never minting (design-validator).
+- **`b_{name}_tu`** (`schema.BUCKET_FIELD_TU`, millitokens, quotas only): the quota's ceiling is
+  **`C // gc + tu`** (`BucketState.ceiling_milli`, aggregator clamp, `Limit.per_shard(...,
+  topped_up_milli)` in every 429, `check_availability` clamp). Removed by every reset, roll and
+  opener — client (`LeaseEntry._stored_top_up` → `build_composite_normal(cleared_top_ups=)`) and
+  aggregator (`#tq{i}`) — and never copied by a Path 2 clone. The fast path never reads it.
+  A lease's refund is a self-trimming credit (#721) whose ceiling includes the `tu` the lease
+  read; `tu` itself is not pinned (see the open question on the merge of `main`).
+- **Gate (D6):** a write that sets `tu` needs `lambda_version >= 0.17.0`
+  (`version.MIN_READER_VERSION_FOR_TOP_UP`, `top_up_refusal`) and ratchets `client_min_version`;
+  checked once per repository (`_top_up_readers_proven`). An older client or aggregator would
+  clamp the purchase away (under-admission only).
+- **ADR-145:** I1 gains a source (an operator top-up, exactly N); **I7** becomes `C // gc + tu`;
+  **I8** becomes `admitted + held + still-grantable = C + Σ top-ups this period` (the fuzz test
+  drives `top_up` and `reset_bucket`). Both methods are `@clears_rejection_cache`; another
+  process may refuse for up to its TTL (under-admission only).
 
 ### Namespace Registry
 

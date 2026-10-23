@@ -13,6 +13,8 @@ The audit system automatically logs:
 | `entity_parent_changed` | Moving an entity to a new parent (`set_parent`) | old_parent_id, parent_id, pgen, buckets_stamped |
 | `limits_set` | Configuring limits | all limit configurations |
 | `limits_deleted` | Removing limits | resource name |
+| `bucket_reset` | `Repository.reset_bucket()` / `entity reset` | per-limit tokens restored, shards written |
+| `bucket_topped_up` | `Repository.top_up()` / `entity top-up` | per-limit tokens granted, shards written |
 
 Each audit event includes:
 
@@ -48,6 +50,8 @@ event = AuditEvent(
 | `ENTITY_PARENT_CHANGED` | `"entity_parent_changed"` | Entity was moved to a new parent |
 | `LIMITS_SET` | `"limits_set"` | Limits were configured |
 | `LIMITS_DELETED` | `"limits_deleted"` | Limits were removed |
+| `BUCKET_RESET` | `"bucket_reset"` | A bucket was reset to its full share |
+| `BUCKET_TOPPED_UP` | `"bucket_topped_up"` | Tokens were added to a bucket |
 
 ## Principal Tracking
 
