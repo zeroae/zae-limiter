@@ -2362,7 +2362,11 @@ class SyncRateLimiter:
         """
 
         def _plan(
-            part: _SlowPart, disable_moves: bool, moves_contended: bool, reread: bool
+            part: _SlowPart,
+            disable_moves: bool,
+            moves_contended: bool,
+            reread: bool,
+            enforced: bool,
         ) -> SyncLease | Exception:
             resource, consume, shard, shard_count, parent_hint = part
             try:
@@ -2377,6 +2381,7 @@ class SyncRateLimiter:
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
                     consistent_owner=reread,
+                    disable_bypass=enforced,
                 )
             except Exception as exc:
                 return exc
@@ -2386,10 +2391,11 @@ class SyncRateLimiter:
             moves_contended: bool = False,
             redone: bool = False,
             reread: bool = False,
+            enforced: bool = False,
         ) -> tuple[SyncLease, dict[str, frozenset[str]]]:
             outcomes = self._run_in_executor(
                 *[
-                    lambda part=part: _plan(part, disable_moves, moves_contended, reread)
+                    lambda part=part: _plan(part, disable_moves, moves_contended, reread, enforced)
                     for part in slow_parts
                 ]
             )
@@ -2404,7 +2410,7 @@ class SyncRateLimiter:
                         self._fix_rejected_stamps(plan.entries, self._repository._now_ms())
                 raise error
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return plan_and_commit(True, moves_contended, redone, reread)
+                return plan_and_commit(True, moves_contended, redone, reread, enforced)
             marks = [plan._cache_mark for plan in planned]
             lease = SyncLease(
                 repository=self._repository,
@@ -2414,14 +2420,18 @@ class SyncRateLimiter:
             )
             try:
                 lease._commit_initial()
+            except BypassLostError:
+                if enforced:
+                    raise AssertionError("an enforced plan carries no bypass write") from None
+                return plan_and_commit(disable_moves, moves_contended, redone, reread, True)
             except PeriodNotAppliedError:
                 if redone:
                     raise
-                return plan_and_commit(disable_moves, moves_contended, True, reread)
+                return plan_and_commit(disable_moves, moves_contended, True, reread, enforced)
             except OwnerStampLostError:
                 if reread:
                     raise
-                return plan_and_commit(disable_moves, moves_contended, redone, True)
+                return plan_and_commit(disable_moves, moves_contended, redone, True, enforced)
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }

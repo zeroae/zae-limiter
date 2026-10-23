@@ -2954,7 +2954,11 @@ class RateLimiter:
         """
 
         async def _plan(
-            part: _SlowPart, disable_moves: bool, moves_contended: bool, reread: bool
+            part: _SlowPart,
+            disable_moves: bool,
+            moves_contended: bool,
+            reread: bool,
+            enforced: bool,
         ) -> Lease | Exception:
             resource, consume, shard, shard_count, parent_hint = part
             try:
@@ -2969,6 +2973,7 @@ class RateLimiter:
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
                     consistent_owner=reread,
+                    disable_bypass=enforced,
                 )
             except Exception as exc:
                 return exc
@@ -2978,10 +2983,14 @@ class RateLimiter:
             moves_contended: bool = False,
             redone: bool = False,
             reread: bool = False,
+            enforced: bool = False,
         ) -> tuple[Lease, dict[str, frozenset[str]]]:
             # One name per part keeps the sync twin's lambda on one line (#513).
             outcomes = await asyncio.gather(
-                *[_plan(part, disable_moves, moves_contended, reread) for part in slow_parts]
+                *[
+                    _plan(part, disable_moves, moves_contended, reread, enforced)
+                    for part in slow_parts
+                ]
             )
             planned = [outcome for outcome in outcomes if isinstance(outcome, Lease)]
             errors = [outcome for outcome in outcomes if not isinstance(outcome, Lease)]
@@ -3003,7 +3012,7 @@ class RateLimiter:
             # at most 2 META checks (the entity and its parent, ADR-150), so
             # MAX_ACQUIRE_RESOURCES keeps the re-plan under the limit.
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return await plan_and_commit(True, moves_contended, redone, reread)
+                return await plan_and_commit(True, moves_contended, redone, reread, enforced)
             marks = [plan._cache_mark for plan in planned]
             lease = Lease(
                 repository=self._repository,
@@ -3011,17 +3020,24 @@ class RateLimiter:
                 _carriers=[carrier for plan in planned for carrier in plan._carriers],
                 _cache_mark=None if None in marks else min(m for m in marks if m is not None),
             )
-            # TODO(D5): no `BypassLostError` handling here: a bypass cleared
-            # between a part's config read and this commit propagates.
             try:
                 await lease._commit_initial()
+            except BypassLostError:
+                # A part's bypass was cleared between its config read and this
+                # commit (#311, review D5). Nothing was written; re-plan every
+                # part enforced, as `_slow_acquire` re-plans its pass. Left to
+                # propagate, it reached `acquire()`'s generic handler, which
+                # under ALLOW admitted the request without any limit.
+                if enforced:  # pragma: no cover
+                    raise AssertionError("an enforced plan carries no bypass write") from None
+                return await plan_and_commit(disable_moves, moves_contended, redone, reread, True)
             except PeriodNotAppliedError:
                 # The retry found a quota period nobody has applied (#743):
                 # redo the pass once from a fresh read, which applies it. A
                 # second loss stands as the rejection it was raised as.
                 if redone:
                     raise
-                return await plan_and_commit(disable_moves, moves_contended, True, reread)
+                return await plan_and_commit(disable_moves, moves_contended, True, reread, enforced)
             except OwnerStampLostError:
                 # A bucket this commit created lost its META check: an owner
                 # moved since the read (ADR-150). Nothing was written; re-plan
@@ -3029,7 +3045,7 @@ class RateLimiter:
                 # loss stands as the contended 429 it was raised as.
                 if reread:
                     raise
-                return await plan_and_commit(disable_moves, moves_contended, redone, True)
+                return await plan_and_commit(disable_moves, moves_contended, redone, True, enforced)
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }
