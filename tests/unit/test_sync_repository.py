@@ -7646,12 +7646,12 @@ class TestResetAndTopUp:
         """#470: the gate also raises the stack's client minimum past the last
         release, so a v0.16 client is refused; a reset and a dripping top-up,
         which no older reader misreads, leave it alone."""
-        import zae_limiter
+        from zae_limiter import __version__
         from zae_limiter.version import get_schema_version, parse_version
 
         repo.set_version_record(
             schema_version=get_schema_version(),
-            lambda_version=zae_limiter.__version__,
+            lambda_version=__version__,
             client_min_version="0.0.0",
         )
         repo.set_limits("e", [_OP_RPM], resource="drip")
