@@ -22,6 +22,7 @@ level is written before anything reads it back.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -33,6 +34,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_SOFT,
     BUCKET_PREFIX,
     DEFAULT_RESOURCE,
+    DEFAULT_STAMP_TTL_SECONDS,
     DISABLED_BYPASS,
     ENTITY_FIELD_PGEN,
     GSI2_NAME,
@@ -49,19 +51,41 @@ from zae_limiter.schema import (
     sk_config,
     sk_meta,
     sk_state,
+    stamp_deadline,
 )
 
 from .bucket_sync import resolve_bucket_limits
 
 logger = logging.getLogger(__name__)
 
+#: T for the stamps this provisioner writes (ADR-151 decision 8): a `bypass` or
+#: soft stamp stands at most this long after the config read that justified it.
+STAMP_TTL_SECONDS = DEFAULT_STAMP_TTL_SECONDS
 
-def stamp_bucket(client: Any, table_name: str, pk: str, disabled: bool | str) -> None:
+
+def now_ms() -> int:
+    """Wall-clock epoch milliseconds, the instant a stamp's deadline counts from."""
+    return int(time.time() * 1000)
+
+
+def deadline_from(read_ms: int) -> int:
+    """A stamp's deadline for a resolution read no earlier than ``read_ms``."""
+    return stamp_deadline(read_ms, STAMP_TTL_SECONDS)
+
+
+def stamp_bucket(
+    client: Any,
+    table_name: str,
+    pk: str,
+    disabled: bool | str,
+    bypass_until_ms: int | None = None,
+) -> None:
     """Stamp one bucket item with its access mode (ADR-125, #311).
 
     Mirrors ``Repository._stamp_bucket_disabled``: True SETs ``disabled``,
-    ``"bypass"`` SETs ``bypass``, False clears both; each write removes the
-    stamp it does not set.
+    ``"bypass"`` SETs ``bypass`` to a deadline (ADR-151 decision 8;
+    ``bypass_until_ms``, or T from now), False clears both; each write removes
+    the stamp it does not set.
     """
     kwargs: dict[str, Any] = {
         "TableName": table_name,
@@ -73,8 +97,10 @@ def stamp_bucket(client: Any, table_name: str, pk: str, disabled: bool | str) ->
         "ConditionExpression": "attribute_exists(PK)",
     }
     if disabled == DISABLED_BYPASS:
-        kwargs["UpdateExpression"] = "SET #byp = :true REMOVE #disabled"
-        kwargs["ExpressionAttributeValues"] = {":true": {"BOOL": True}}
+        if bypass_until_ms is None:
+            bypass_until_ms = deadline_from(now_ms())
+        kwargs["UpdateExpression"] = "SET #byp = :until REMOVE #disabled"
+        kwargs["ExpressionAttributeValues"] = {":until": {"N": str(bypass_until_ms)}}
     elif disabled:
         kwargs["UpdateExpression"] = "SET #disabled = :true REMOVE #byp"
         kwargs["ExpressionAttributeValues"] = {":true": {"BOOL": True}}
@@ -241,6 +267,9 @@ def _fanout(
     since the caller's resolutions are memoized) on a later pass or page.
     """
     stamped: set[str] = set()
+    # Every resolution this fan-out stamps from is read after this instant, so
+    # a deadline counted from it is at most T after the read (ADR-151 decision 8).
+    started_ms = now_ms()
 
     for _pass in range(2):
         for pk in _query_bucket_pks(
@@ -250,7 +279,7 @@ def _fanout(
                 value = disabled if decide is None else decide(pk)
                 if value is None:
                     continue
-                stamp_bucket(client, table_name, pk, value)
+                stamp_bucket(client, table_name, pk, value, deadline_from(started_ms))
                 stamped.add(pk)
 
     return len(stamped)

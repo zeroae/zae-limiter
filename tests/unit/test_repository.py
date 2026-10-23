@@ -4218,7 +4218,9 @@ class TestScheduleBoundaryFastPathCost:
         # changed: the SET/ADD expression is untouched.
         condition = captured[0]["ConditionExpression"]
         assert condition.count("#vu") == 2, condition  # attribute_not_exists(#vu) OR #vu > :vu_now
-        assert condition.count(":vu_now") == 1, condition
+        assert condition.count("#vu > :vu_now") == 1, condition
+        # The same bound instant judges the stamp deadlines (ADR-151 decision 8).
+        assert set(captured[0]["ExpressionAttributeValues"]) >= {":vu_now"}
         assert "#vu" not in captured[0]["UpdateExpression"]
 
     async def test_vu_clause_costs_no_extra_call_when_present(self, repo):

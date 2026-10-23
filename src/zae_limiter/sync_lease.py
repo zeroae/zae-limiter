@@ -101,7 +101,8 @@ class LeaseEntry:
     _soft_trusted: bool = False
     _soft_restamp: bool = False
     _bypass: bool = False
-    _bypass_restamp: tuple[bool, bool] | None = None
+    _bypass_until_ms: int | None = None
+    _bypass_restamp: tuple[int | None, int | None] | None = None
     _stored_top_up: bool = False
 
 
@@ -873,6 +874,7 @@ class SyncLease:
                         resource,
                         {e.limit.name: e.consumed * 1000 for e in group_entries if e._declared},
                         shard_id,
+                        bypass_until_ms=_bypass_deadline(group_entries, now_ms, repo),
                     )
                 )
                 continue
@@ -891,7 +893,9 @@ class SyncLease:
                         shard_count=first_entry._shard_count,
                         vu=vu,
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
-                        bypass=group_entries[0]._bypass,
+                        bypass_until_ms=_bypass_deadline(group_entries, now_ms, repo)
+                        if group_entries[0]._bypass
+                        else None,
                         pgen=owner_entry._parent_generation if owner_entry is not None else None,
                         pinc=owner_entry._parent_incarnation if owner_entry is not None else None,
                     )
@@ -1143,7 +1147,13 @@ class SyncLease:
                 }
                 if group_entries[0]._bypass:
                     return (
-                        repo.build_bypass_consume(entity_id, resource, consumed, shard_id)
+                        repo.build_bypass_consume(
+                            entity_id,
+                            resource,
+                            consumed,
+                            shard_id,
+                            bypass_until_ms=_bypass_deadline(group_entries, now_ms, repo),
+                        )
                         if consumed
                         else None
                     )
@@ -1935,6 +1945,18 @@ def _bypass_write_failed(
         if reason_codes[idx] == "ConditionalCheckFailed":
             return True
     return False
+
+
+def _bypass_deadline(group: list[LeaseEntry], now_ms: int, repo: Any) -> int:
+    """The deadline a bypassed group's write stamps (ADR-151 decision 8).
+
+    The one the acquire computed from its uncached config read; a lease built
+    without one (a hand-built entry) takes the commit's own reading, which is
+    later than any read the entry could have come from only by the commit's
+    own latency.
+    """
+    deadline = group[0]._bypass_until_ms
+    return deadline if deadline is not None else int(repo._stamp_deadline(now_ms))
 
 
 def _bypass_shape(group: list[LeaseEntry]) -> dict[str, bool]:

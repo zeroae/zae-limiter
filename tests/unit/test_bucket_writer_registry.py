@@ -193,6 +193,19 @@ def test_only_grant_writers_write_gc():
     }
 
 
+def test_the_aggregator_never_writes_a_bypass_or_soft_stamp():
+    """ADR-151 decision 8: only a write built from a fresh config read may set
+    or extend a stamp's deadline. The aggregator reads no config, so none of
+    its writers names either stamp; a Path 2 clone copies them verbatim from
+    shard 0's image (``dict(base_item)``), deadline included, and so can never
+    extend one."""
+    for name in AGGREGATOR:
+        source = inspect.getsource(getattr(processor, name))
+        for stamp in ("BUCKET_FIELD_BYPASS", "BUCKET_FIELD_SOFT", '"bypass"', "_soft"):
+            assert stamp not in source, f"aggregator writer {name} names {stamp}"
+    assert "dict(base_item)" in inspect.getsource(processor.propagate_shard_count)
+
+
 # --- Behavioural: what the pure builders actually write -----------------------
 
 CAL = Limit.quota("cal", 1000, cron="0 0 * * *")

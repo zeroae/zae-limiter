@@ -3214,6 +3214,10 @@ class RateLimiter:
         now_ms = self._repository._now_ms()
         # (entity, limit) slots `disable_moves` granted 0 instead of a move.
         zeroed: set[tuple[str, str]] = set()
+        # The deadline every stamp this pass writes carries (ADR-151 decision
+        # 8): taken before any config read, so it is at most T after the read
+        # that justifies the stamp.
+        stamp_deadline = self._repository._stamp_deadline(now_ms)
 
         # The shard is part of a bucket's identity (GHSA-76rv). Resolve it
         # once here and carry it through the read, the LeaseEntry and the
@@ -3402,14 +3406,19 @@ class RateLimiter:
             # so a stale stamp cannot outlive the next slow pass. A stamp config
             # no longer backs is cleared from the states, so nothing below
             # treats them as bypassed.
+            # A stamp present on the item counts whatever its deadline: the
+            # bypassed write renews it (ADR-151 decision 8).
             config_bypass = bypass_mode.get(eid, False)
-            stamp_read = any(state.bypass for state in item_states)
+            stamp_read = next(
+                (s.bypass_until_ms for s in item_states if s.bypass_until_ms is not None), None
+            )
             eid_bypass = config_bypass and not disable_bypass
             if any_existing:
-                eid_bypass = eid_bypass and stamp_read
+                eid_bypass = eid_bypass and stamp_read is not None
+            wanted = stamp_deadline if config_bypass else None
             bypass_restamp = (
-                (config_bypass, stamp_read)
-                if any_existing and not eid_bypass and config_bypass != stamp_read
+                (wanted, stamp_read)
+                if any_existing and not eid_bypass and (wanted, stamp_read) != (None, None)
                 else None
             )
             if not eid_bypass:
@@ -3433,6 +3442,7 @@ class RateLimiter:
                             _shard_id=eid_shard,
                             _shard_count=eid_shard_count,
                             _bypass=True,
+                            _bypass_until_ms=stamp_deadline,
                         )
                     )
                 continue
@@ -3816,6 +3826,7 @@ class RateLimiter:
                         _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM,
                         _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG,
                         _bypass=eid_bypass,
+                        _bypass_until_ms=stamp_deadline if eid_bypass else None,
                         _bypass_restamp=bypass_restamp,
                         _stored_top_up=stored_top_up,
                     )
@@ -4382,7 +4393,11 @@ class RateLimiter:
         for bucket in await self._repository.get_buckets(entity_id):
             if bucket.resource != resource:
                 continue
-            bypassed = bypassed or bucket.bypass
+            # A live stamp only (ADR-151 decision 8): one past its deadline is
+            # renewed or removed on the next acquire, from config.
+            bypassed = bypassed or (
+                bucket.bypass_until_ms is not None and bucket.bypass_until_ms > now_ms
+            )
             name = bucket.limit_name
             limit_for_bucket = resolved_by_name.get(name)
             totals[name] = totals.get(name, 0) + self._readable_balance(

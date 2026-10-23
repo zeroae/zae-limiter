@@ -3298,7 +3298,8 @@ class TestScheduleBoundaryFastPathCost:
         assert counts == {"update_item": 1}, f"fast path issued {counts}"
         condition = captured[0]["ConditionExpression"]
         assert condition.count("#vu") == 2, condition
-        assert condition.count(":vu_now") == 1, condition
+        assert condition.count("#vu > :vu_now") == 1, condition
+        assert set(captured[0]["ExpressionAttributeValues"]) >= {":vu_now"}
         assert "#vu" not in captured[0]["UpdateExpression"]
 
     def test_vu_clause_costs_no_extra_call_when_present(self, repo):

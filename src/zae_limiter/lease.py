@@ -195,11 +195,15 @@ class LeaseEntry:
     # bypassed request never debited are never owed, even if the bypass is
     # cleared mid-lease (ADR-151 §5).
     _bypass: bool = False
-    # #311, ADR-151 decision 4: `(stamp, read)` for an enforced write on an
-    # existing item whose `bypass` stamp disagrees with the bypass config this
-    # pass read uncached — SET (`stamp`) or REMOVE it, pinned on whether the
-    # pass read one (`read`). None leaves the stamp alone.
-    _bypass_restamp: tuple[bool, bool] | None = None
+    # ADR-151 decision 8: the deadline a bypassed create or bypassed write
+    # stamps (renews), at most T after this pass's uncached config read.
+    _bypass_until_ms: int | None = None
+    # #311, ADR-151 decisions 4 and 8: `(deadline, read)` for an enforced
+    # write on an existing item whose `bypass` stamp disagrees with the bypass
+    # config this pass read uncached — SET it to `deadline`, or REMOVE it when
+    # None — pinned on the deadline read (`read`, None when absent). None
+    # leaves the stamp alone.
+    _bypass_restamp: tuple[int | None, int | None] | None = None
     # ADR-149: the item as read carries `b_{name}_tu` for this limit, so a
     # reset or roll this commit applies must REMOVE it (the top-up belonged to
     # the period that just ended).
@@ -1090,6 +1094,7 @@ class Lease:
                         resource,
                         {e.limit.name: e.consumed * 1000 for e in group_entries if e._declared},
                         shard_id,
+                        bypass_until_ms=_bypass_deadline(group_entries, now_ms, repo),
                     )
                 )
                 continue
@@ -1109,7 +1114,11 @@ class Lease:
                         shard_count=first_entry._shard_count,
                         vu=vu,
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
-                        bypass=group_entries[0]._bypass,
+                        bypass_until_ms=(
+                            _bypass_deadline(group_entries, now_ms, repo)
+                            if group_entries[0]._bypass
+                            else None
+                        ),
                         pgen=(owner_entry._parent_generation if owner_entry is not None else None),
                         pinc=(owner_entry._parent_incarnation if owner_entry is not None else None),
                     )
@@ -1518,7 +1527,13 @@ class Lease:
                     # count the consumption on the item that won, still only
                     # while it carries the stamp (#311).
                     return (
-                        repo.build_bypass_consume(entity_id, resource, consumed, shard_id)
+                        repo.build_bypass_consume(
+                            entity_id,
+                            resource,
+                            consumed,
+                            shard_id,
+                            bypass_until_ms=_bypass_deadline(group_entries, now_ms, repo),
+                        )
                         if consumed
                         else None
                     )
@@ -2406,6 +2421,18 @@ def _bypass_write_failed(
         if reason_codes[idx] == "ConditionalCheckFailed":
             return True
     return False
+
+
+def _bypass_deadline(group: list[LeaseEntry], now_ms: int, repo: Any) -> int:
+    """The deadline a bypassed group's write stamps (ADR-151 decision 8).
+
+    The one the acquire computed from its uncached config read; a lease built
+    without one (a hand-built entry) takes the commit's own reading, which is
+    later than any read the entry could have come from only by the commit's
+    own latency.
+    """
+    deadline = group[0]._bypass_until_ms
+    return deadline if deadline is not None else int(repo._stamp_deadline(now_ms))
 
 
 def _bypass_shape(group: list[LeaseEntry]) -> dict[str, bool]:

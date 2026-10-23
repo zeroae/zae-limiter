@@ -1,5 +1,6 @@
 """Bypass: admit everything, debit nothing, keep counting (#311, ADR-151)."""
 
+import time
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -10,6 +11,7 @@ from zae_limiter.exceptions import ResourceDisabled, VersionMismatchError
 from zae_limiter.lease import BypassLostError, LeaseEntry, _bypass_write_failed
 from zae_limiter.models import BucketState, Limit
 from zae_limiter.repository import Repository
+from zae_limiter.repository_protocol import SpeculativeFailureReason
 
 RPM = Limit.per_minute("rpm", 2)
 
@@ -51,6 +53,13 @@ async def _item(repo: Repository, entity: str = "u", resource: str = "llm", shar
 
 def _n(item, attr: str) -> int:
     return int(item[attr]["N"])
+
+
+def _live(item, now_ms: int | None = None) -> bool:
+    """The item's `bypass` stamp is a deadline still ahead (ADR-151 decision 8)."""
+    raw = (item or {}).get("bypass", {}).get("N")
+    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    return raw is not None and int(raw) > now_ms
 
 
 async def _use(limiter: RateLimiter, n: int = 1, entity: str = "u") -> None:
@@ -116,7 +125,7 @@ class TestWalk:
         for _ in range(5):
             await _use(limiter)
         lease_item = await _item(repo)
-        assert lease_item["bypass"] == {"BOOL": True}
+        assert _live(lease_item)
 
 
 class TestAdmission:
@@ -135,7 +144,7 @@ class TestAdmission:
         async with limiter.acquire("u", "llm", {"rpm": 5}) as lease:
             assert lease.bypassed is True
         item = await _item(repo)
-        assert item["bypass"] == {"BOOL": True}
+        assert _live(item)
         assert _n(item, "b_rpm_tk") == 2_000  # the full share, nothing debited
         assert _n(item, "b_rpm_tc") == 5_000
 
@@ -474,7 +483,7 @@ class TestFanout:
         await _use(limiter)
         assert await repo.bypass_resource("llm") == 1
         item = await _item(repo)
-        assert item["bypass"] == {"BOOL": True} and "disabled" not in item
+        assert _live(item) and "disabled" not in item
         await repo.disable_resource("llm")
         item = await _item(repo)
         assert item["disabled"] == {"BOOL": True} and "bypass" not in item
@@ -489,7 +498,7 @@ class TestFanout:
             pass
         await repo.disable_entity("u", "api")
         await repo.bypass_entity("u")
-        assert (await _item(repo))["bypass"] == {"BOOL": True}
+        assert _live(await _item(repo))
         assert (await _item(repo, resource="api"))["disabled"] == {"BOOL": True}
         await repo.clear_entity_disabled("u")
         assert "bypass" not in await _item(repo)
@@ -497,11 +506,11 @@ class TestFanout:
     async def test_setters_take_the_bypass_value(self, repo, limiter):
         await _use(limiter)
         await repo.set_resource_defaults("llm", [RPM], disabled="bypass")
-        assert (await _item(repo))["bypass"] == {"BOOL": True}
+        assert _live(await _item(repo))
         await repo.set_limits("u", [RPM], resource="llm", disabled="bypass")
         assert await repo.get_entity_disabled("u", "llm") == "bypass"
         await repo.set_resource_defaults("llm", [RPM], disabled=None)
-        assert (await _item(repo))["bypass"] == {"BOOL": True}  # the entity still bypasses
+        assert _live(await _item(repo))  # the entity still bypasses
         await repo.delete_limits("u", resource="llm")
         assert "bypass" not in await _item(repo)
 
@@ -511,6 +520,159 @@ class TestFanout:
         with pytest.raises(ValueError):
             await repo._set_entity_disabled("u", "llm", "maybe", None)
         assert await repo.get_resource_defaults("llm") == []
+
+
+#: Past every deadline a stamp written at the start could carry (ADR-151 decision 8).
+PAST_T_MS = schema.DEFAULT_STAMP_TTL_SECONDS * 1000 + 1
+
+
+async def _admitted(repo: Repository, attempts: int = 20) -> int:
+    """Acquire `rpm: 1` from fresh limiters on a cold config cache; count admits."""
+    admitted = 0
+    for _ in range(attempts):
+        async with RateLimiter(repository=repo) as fresh:
+            await repo.invalidate_config_cache()
+            try:
+                await _use(fresh)
+                admitted += 1
+            except RateLimitExceeded:
+                pass
+    return admitted
+
+
+class TestStampsExpire:
+    """Review D1: a `bypass` stamp a fan-out missed admitted without limit,
+    forever (20 admitted against rpm=2). A stamp is a deadline at most T after
+    the config read that justified it (ADR-151 decision 8)."""
+
+    async def test_a_stamp_a_fan_out_missed_stops_admitting_within_t(self, repo):
+        await repo.set_resource_defaults("llm", [RPM])
+        await repo.bypass_resource("llm")
+        start = repo._now_ms()
+        with patch.object(repo, "_now_ms", return_value=start):
+            async with RateLimiter(repository=repo) as limiter:
+                await _use(limiter)
+        assert _live(await _item(repo), start)
+        # The clear's fan-out misses this bucket (the ADR-125 in-flight race):
+        # config no longer says bypass, the stamp stays.
+        await repo._write_resource_config_flag("llm", schema.CONFIG_FIELD_DISABLED, None)
+        assert (await repo.resolve_access("u", "llm")).bypass is False
+
+        with patch.object(repo, "_now_ms", return_value=start + PAST_T_MS):
+            admitted = await _admitted(repo)
+        item = await _item(repo)
+        assert admitted <= 2, f"admitted {admitted} against rpm=2; stamp {item.get('bypass')}"
+        # The slow pass the expired stamp forced removed it.
+        assert "bypass" not in item
+
+    async def test_a_create_racing_a_bypass_clear_stops_admitting_within_t(self, repo):
+        """A bypassed create planned before `clear_resource_disabled()` lands
+        after its fan-out, which found no bucket: the new bucket carries the
+        stamp, but only until its deadline."""
+        await repo.set_resource_defaults("llm", [RPM])
+        await repo.bypass_resource("llm")
+        start = repo._now_ms()
+        with patch.object(repo, "_now_ms", return_value=start):
+            cold = RateLimiter(repository=repo)
+            lease = await cold._do_acquire("u", "llm", None, {"rpm": 1})  # a bypassed create
+            assert await repo.clear_resource_disabled("llm") == 0  # no bucket yet
+            await lease._commit_initial()  # lands stamped
+        assert _live(await _item(repo), start)
+
+        with patch.object(repo, "_now_ms", return_value=start + PAST_T_MS):
+            admitted = await _admitted(repo)
+        assert admitted <= 2, f"admitted {admitted} against rpm=2 after the bypass was cleared"
+        assert "bypass" not in await _item(repo)
+
+    async def test_an_expired_stamp_is_renewed_while_the_bypass_stands(self, repo, limiter):
+        await repo.bypass_resource("llm")
+        start = repo._now_ms()
+        with patch.object(repo, "_now_ms", return_value=start):
+            await _use(limiter)  # created stamped, nothing debited
+        later = start + PAST_T_MS
+        with patch.object(repo, "_now_ms", return_value=later):
+            for _ in range(5):
+                async with limiter.acquire("u", "llm", {"rpm": 1}) as lease:
+                    assert lease.bypassed is True
+        item = await _item(repo)
+        assert _live(item, later)  # renewed from config read uncached
+        assert _n(item, "bypass") <= later + schema.DEFAULT_STAMP_TTL_SECONDS * 1000
+        assert _n(item, "b_rpm_tk") == 2_000  # nothing debited
+        assert _n(item, "b_rpm_tc") == 6_000
+
+    async def test_an_expired_stamp_on_the_bypass_shape_costs_one_write(self, repo, limiter):
+        """The bypass shape fails on the deadline and goes straight to the slow
+        path: no second, enforce-shaped write that would fail the same way."""
+        await repo.bypass_resource("llm")
+        start = repo._now_ms()
+        with patch.object(repo, "_now_ms", return_value=start):
+            await _use(limiter)
+            await _use(limiter)  # learns the stamp
+        key = (repo._namespace_id, "u", "llm")
+        assert key in repo._bypass_cache
+        client = await repo._get_client()
+        writes = []
+        original = client.update_item
+
+        async def counting(**kwargs):
+            writes.append(kwargs["ConditionExpression"])
+            return await original(**kwargs)
+
+        with patch.object(client, "update_item", counting):
+            result = await repo._speculative_consume_single(
+                "u", "llm", {"rpm": 1}, now_ms=start + PAST_T_MS
+            )
+        assert result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY
+        assert result.bypassed is False
+        assert len(writes) == 1 and "#byp > :vu_now" in writes[0]
+        # The stamp is present, only not live: the pair stays learned.
+        assert key in repo._bypass_cache
+
+    async def test_a_pre_release_boolean_stamp_reads_as_expired(self, repo, limiter):
+        await repo.bypass_resource("llm")
+        await _use(limiter)
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={"PK": {"S": _pk(repo)}, "SK": {"S": schema.sk_state()}},
+            UpdateExpression="SET #byp = :t",
+            ExpressionAttributeNames={"#byp": "bypass"},
+            ExpressionAttributeValues={":t": {"BOOL": True}},
+        )
+        states = await repo.get_buckets("u", "llm")
+        assert {s.bypass_until_ms for s in states} == {schema.STAMP_EXPIRED}
+        async with limiter.acquire("u", "llm", {"rpm": 1}) as lease:
+            assert lease.bypassed is True
+        assert _live(await _item(repo))  # replaced by a deadline
+
+    async def test_a_restamp_is_pinned_on_the_stamp_as_read(self, repo, limiter):
+        """A pass that read config before a fan-out cannot undo the fan-out."""
+        await repo.bypass_resource("llm")
+        start = repo._now_ms()
+        with patch.object(repo, "_now_ms", return_value=start):
+            await _use(limiter)
+        await repo._write_resource_config_flag("llm", schema.CONFIG_FIELD_DISABLED, None)
+        with patch.object(repo, "_now_ms", return_value=start + 1_000):
+            # Plans an enforced write that REMOVEs the stamp it read.
+            lease = await RateLimiter(repository=repo)._do_acquire("u", "llm", None, {"rpm": 1})
+        with patch.object(repo, "_now_ms", return_value=start + 2_000):
+            await repo.bypass_resource("llm")  # a later fan-out stamps a new deadline
+        stamped = _n(await _item(repo), "bypass")
+        with patch.object(repo, "_now_ms", return_value=start + 3_000):
+            await lease._commit_initial()
+        item = await _item(repo)
+        assert _n(item, "bypass") == stamped  # the fan-out's stamp stands
+        assert _n(item, "b_rpm_tk") == 1_000  # the retry debited, enforced
+
+    def test_the_deadline_is_at_most_t_after_the_read(self):
+        deadlines = {schema.stamp_deadline(1_000, 60) for _ in range(200)}
+        assert all(1_000 + 48_000 <= d <= 1_000 + 60_000 for d in deadlines)
+        assert len(deadlines) > 1  # jittered, so renewals spread out
+        assert schema.decode_stamp(None) is None
+        assert schema.decode_stamp({"N": "5"}) == 5
+        assert schema.decode_stamp({"BOOL": True}) == schema.STAMP_EXPIRED
+        assert schema.stamp_value(schema.STAMP_EXPIRED) == {"BOOL": True}
+        assert schema.stamp_value(5) == {"N": "5"}
 
 
 class TestVersionGate:

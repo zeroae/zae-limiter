@@ -1283,10 +1283,17 @@ class BucketState:
     # True only for a state read off an item, where `stored_vu_ms` is known.
     stored_vu_read: bool = False
     # The item's `bypass` stamp (#311, ADR-151): item-level, copied onto each
-    # state read off it. `try_consume` admits a bypassed state, so no image of
-    # a bypassed bucket is ever read as a rejection; the slow path clears it on
-    # a state whose (uncached) config no longer says bypass.
+    # state read off it. True when the stamp is **present**, live or not; its
+    # deadline is `bypass_until_ms`. `try_consume` admits a bypassed state, so
+    # no image of a bypassed bucket is ever read as a rejection (an expired
+    # stamp is routed to the slow path before any image is judged); the slow
+    # path clears it on a state whose (uncached) config no longer says bypass.
     bypass: bool = False
+    # The `bypass` stamp's deadline as read, epoch ms (ADR-151 decision 8), or
+    # None when the item carries none. `schema.STAMP_EXPIRED` for a stamp a
+    # pre-release build wrote as `BOOL true`. The slow path pins its own stamp
+    # write on this value; for a state it creates, the deadline it stamps.
+    bypass_until_ms: int | None = None
     # `b_{name}_soft` (#467, ADR-151): the limit is metered but never rejects.
     # Read off the item on every image (speculative, rejection cache, slow
     # path); the slow path overrides it from config only when that config was

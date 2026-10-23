@@ -103,10 +103,11 @@ class SpeculativeResult:
     shard_id: int = 0
     shard_count: int = 1
     failure_reason: SpeculativeFailureReason | None = None
-    # The image carries the `bypass` stamp (#311): on success nothing was
-    # spent (the write was bypass-shaped, or an enforce-shaped write was
-    # refunded); on failure the bucket is bypassed and the image must not be
-    # read as a rejection.
+    # The image carries a **live** `bypass` stamp (#311), one before its
+    # deadline (ADR-151 decision 8): on success nothing was spent (the write
+    # was bypass-shaped, or an enforce-shaped write was refunded); on failure
+    # the bucket is bypassed and the image must not be read as a rejection. An
+    # expired stamp is never live: that failure is `SCHEDULE_BOUNDARY`.
     bypassed: bool = False
     pgen: int | None = None
     pinc: str | None = None
@@ -212,6 +213,14 @@ class RepositoryProtocol(Protocol):
     # -------------------------------------------------------------------------
     # Clock
     # -------------------------------------------------------------------------
+
+    def _stamp_deadline(self, now_ms: int) -> int:
+        """The deadline a ``bypass`` or soft stamp written now carries (ADR-151).
+
+        At most this writer's ``stamp_ttl`` after ``now_ms``, which must be no
+        later than the uncached config read that justifies the stamp.
+        """
+        ...
 
     def _now_ms(self) -> int:
         """Current time in epoch milliseconds — the token-bucket clock.
@@ -689,7 +698,7 @@ class RepositoryProtocol(Protocol):
         shard_count: int = 1,
         vu: int | None = None,
         rf_ms: int | None = None,
-        bypass: bool = False,
+        bypass_until_ms: int | None = None,
         pgen: int | None = None,
         pinc: str | None = None,
     ) -> dict[str, Any]:
@@ -705,6 +714,8 @@ class RepositoryProtocol(Protocol):
             parent_id: The entity's parent_id (if any)
             vu: Valid-until stamp in epoch ms, or None to omit (#222 §2.1)
             rf_ms: The ``rf`` to stamp, or None for ``now_ms`` (ADR-140)
+            bypass_until_ms: The ``bypass`` stamp's deadline for a bucket
+                created under bypass (#311, ADR-151), or None to stamp none
             pgen: The owner's parent generation read with ``cascade`` /
                 ``parent_id`` (ADR-150), or None to stamp none
             pinc: The owner's incarnation read with ``pgen``, or None
@@ -739,7 +750,7 @@ class RepositoryProtocol(Protocol):
         owner_pinc: str | None = None,
         read_tokens: dict[str, int] | None = None,
         cleared_top_ups: Sequence[str] = (),
-        bypass_stamp: tuple[bool, bool] | None = None,
+        bypass_stamp: tuple[int | None, int | None] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -797,10 +808,10 @@ class RepositoryProtocol(Protocol):
             grant_counts: Limit name -> the shard count a quota reset or roll
                 on this write re-granted it at, stamped as ``b_{name}_gc``
                 (ADR-145 I3).
-            bypass_stamp: ``(stamp, read)``: SET or REMOVE the item's
-                ``bypass`` stamp from bypass config read uncached on this pass,
-                pinned on whether the pass read one (#311, ADR-151); ``None``
-                leaves it.
+            bypass_stamp: ``(deadline, read)``: SET the item's ``bypass``
+                stamp to ``deadline`` (REMOVE it when None) from bypass config
+                read uncached on this pass, pinned on the deadline read
+                (absent when None) (#311, ADR-151); ``None`` leaves it.
         """
         ...
 
@@ -1603,11 +1614,15 @@ class RepositoryProtocol(Protocol):
         resource: str,
         consumed: dict[str, int],
         shard_id: int = 0,
+        *,
+        bypass_until_ms: int,
     ) -> dict[str, Any]:
         """The slow path's ``tc``-only write for a bypassed bucket (#311).
 
-        Conditioned on the item's ``bypass`` stamp, so a bypass cleared since the
-        pass read config fails the write rather than admitting unenforced.
+        Conditioned on the item carrying a ``bypass`` stamp (any deadline), so a
+        bypass cleared since the pass read config fails the write rather than
+        admitting unenforced. Renews the stamp to ``bypass_until_ms`` (ADR-151
+        decision 8).
         """
         ...
 

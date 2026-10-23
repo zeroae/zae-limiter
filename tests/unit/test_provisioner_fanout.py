@@ -93,7 +93,23 @@ class TestStampBucket:
         client = _make_client()
         stamp_bucket(client, "test-table", "ns123/BUCKET#user-1#gpt-4#0", disabled="bypass")
         kwargs = client.update_item.call_args.kwargs
-        assert kwargs["UpdateExpression"] == "SET #byp = :true REMOVE #disabled"
+        assert kwargs["UpdateExpression"] == "SET #byp = :until REMOVE #disabled"
+
+    def test_bypass_carries_a_deadline_at_most_t_out(self):
+        """ADR-151 decision 8: the stamp is a deadline, `T x U(0.8, 1.0)` out."""
+        from unittest.mock import patch
+
+        from zae_limiter_provisioner import fanout
+
+        client = _make_client()
+        with patch.object(fanout, "now_ms", return_value=1_000_000):
+            stamp_bucket(client, "test-table", "ns123/BUCKET#user-1#gpt-4#0", disabled="bypass")
+        values = client.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert 1_000_000 + 48_000 <= int(values[":until"]["N"]) <= 1_000_000 + 60_000
+        stamp_bucket(client, "test-table", "p", disabled="bypass", bypass_until_ms=7)
+        assert client.update_item.call_args.kwargs["ExpressionAttributeValues"] == {
+            ":until": {"N": "7"}
+        }
 
     def test_disabled_false_removes_attribute(self):
         client = _make_client()
