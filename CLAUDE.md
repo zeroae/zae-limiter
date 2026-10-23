@@ -224,7 +224,7 @@ repo = await (
 )
 ```
 
-Other builder methods: `.stack()`, `.region()`, `.endpoint_url()`, `.namespace()`, `.lambda_memory()`, `.enable_provisioner()`, `.usage_retention_days()`, `.audit_retention_days()`, `.enable_alarms()`, `.alarm_sns_topic()`, `.enable_audit_archival()`, `.audit_archive_glacier_days()`, `.enable_tracing()`, `.create_iam_roles()`, `.create_iam()`, `.aggregator_role_arn()`, `.enable_deletion_protection()`, `.tags()`, `.rejection_cache_ttl()`, `.rejection_cache_size()`.
+Other builder methods: `.stack()`, `.region()`, `.endpoint_url()`, `.namespace()`, `.lambda_memory()`, `.enable_provisioner()`, `.usage_retention_days()`, `.audit_retention_days()`, `.enable_alarms()`, `.alarm_sns_topic()`, `.enable_audit_archival()`, `.audit_archive_glacier_days()`, `.enable_tracing()`, `.create_iam_roles()`, `.create_iam()`, `.aggregator_role_arn()`, `.enable_deletion_protection()`, `.tags()`, `.rejection_cache_ttl()`, `.rejection_cache_size()`, `.stamp_ttl()`.
 
 **IAM Resource Defaults (ADR-117):**
 - **Managed policies** are **created by default** — both table-level (`acq`, `full`, `read`) and namespace-scoped (`ns-acq`, `ns-full`, `ns-read`)
@@ -2001,7 +2001,10 @@ exact. User guide: `docs/guide/soft-limits-and-bypass.md`. Design:
   returns live. A `BOOL true` stamp from a pre-release build reads as present and expired. Cost:
   one renewal per shard per T (≈ 2.5 RCU + 2 WCU). Residuals: a missed stamp keeps its meaning
   for at most T plus clock skew; a missing one under-admits until a slow pass or fan-out. Design
-  §6.3.
+  §6.3. **Option:** `stamp_ttl` (seconds, default 60, `ValueError` below 10,
+  `schema.validate_stamp_ttl`) on `Repository.open()` / `connect()` / the constructor and
+  `builder().stamp_ttl()`; `Repository._stamp_deadline(now_ms)` draws every deadline
+  (`schema.stamp_deadline`). The provisioner uses `bucket_sync.STAMP_TTL_SECONDS` (60).
 - **Version gate:** storing a soft limit or a bypass value needs `lambda_version >= 0.17.0`
   (`version.MIN_READER_VERSION_FOR_NON_ENFORCING`) or this build, and ratchets
   `client_min_version` (`_require_non_enforcing_readers`).

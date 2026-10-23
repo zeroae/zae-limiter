@@ -664,6 +664,42 @@ class TestStampsExpire:
         assert _n(item, "bypass") == stamped  # the fan-out's stamp stands
         assert _n(item, "b_rpm_tk") == 1_000  # the retry debited, enforced
 
+    async def test_stamp_ttl_bounds_every_deadline_this_writer_sets(self, mock_dynamodb):
+        """T is the writer's `stamp_ttl`: a create and a fan-out alike."""
+        from zae_limiter import __version__
+        from zae_limiter.version import get_schema_version
+
+        repo = Repository(
+            name="test-bypass-ttl",
+            region="us-east-1",
+            stamp_ttl=20,
+            _skip_deprecation_warning=True,
+        )
+        await repo.create_table()
+        await repo._register_namespace("default")
+        await repo.set_version_record(
+            schema_version=get_schema_version(), lambda_version=__version__
+        )
+        try:
+            await repo.set_resource_defaults("llm", [RPM])
+            now = repo._now_ms()
+            with patch.object(repo, "_now_ms", return_value=now):
+                await repo.bypass_resource("llm")
+                async with RateLimiter(repository=repo) as limiter:
+                    await _use(limiter)  # a bypassed create
+            created = _n(await _item(repo), "bypass")
+            assert now + 16_000 <= created <= now + 20_000
+            with patch.object(repo, "_now_ms", return_value=now + 1):
+                await repo._fanout_resource("llm", "bypass")
+            fanned = _n(await _item(repo), "bypass")
+            assert now + 1 + 16_000 <= fanned <= now + 1 + 20_000
+        finally:
+            await repo.close()
+
+    def test_stamp_ttl_below_ten_seconds_is_refused(self):
+        with pytest.raises(ValueError, match="at least 10"):
+            Repository(name="x", region="us-east-1", stamp_ttl=5, _skip_deprecation_warning=True)
+
     def test_the_deadline_is_at_most_t_after_the_read(self):
         deadlines = {schema.stamp_deadline(1_000, 60) for _ in range(200)}
         assert all(1_000 + 48_000 <= d <= 1_000 + 60_000 for d in deadlines)

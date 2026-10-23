@@ -379,6 +379,12 @@ class Repository:
         rejection_cache_ttl: Seconds a cached bucket state may be used to reject a
             request without a DynamoDB call (default: 1.0, 0 to disable). ADR-147.
         rejection_cache_size: Maximum cached bucket states (default: 10,000).
+        stamp_ttl: Seconds a ``bypass`` or soft stamp this repository writes
+            stands after the config read that justified it (default: 60, at
+            least 10). ADR-151 decision 8: a stamp a fan-out missed keeps its
+            old meaning for at most this long, and every bypassed or soft
+            bucket renews its stamp through one slow pass per shard per
+            ``stamp_ttl``.
 
     Example::
 
@@ -399,6 +405,7 @@ class Repository:
         *,
         rejection_cache_ttl: float = DEFAULT_REJECTION_CACHE_TTL,
         rejection_cache_size: int = DEFAULT_REJECTION_CACHE_SIZE,
+        stamp_ttl: float = schema.DEFAULT_STAMP_TTL_SECONDS,
         _skip_deprecation_warning: bool = False,
     ) -> None:
         if not _skip_deprecation_warning:
@@ -482,7 +489,7 @@ class Repository:
         self._bypass_cache: set[tuple[str, str, str]] = set()
         # T, the longest a `bypass` or soft stamp this writer sets may stand
         # after the config read that justified it (ADR-151 decision 8).
-        self._stamp_ttl_seconds: float = schema.DEFAULT_STAMP_TTL_SECONDS
+        self._stamp_ttl_seconds: float = schema.validate_stamp_ttl(stamp_ttl)
         # The newest owner stamp seen per (namespace, entity): (incarnation,
         # parent generation), ADR-150. During a move's fan-out the entity's
         # shards carry different stamps, and adopting each one as it is drawn
@@ -541,6 +548,7 @@ class Repository:
         auto_update: bool = True,
         rejection_cache_ttl: float = DEFAULT_REJECTION_CACHE_TTL,
         rejection_cache_size: int = DEFAULT_REJECTION_CACHE_SIZE,
+        stamp_ttl: float = schema.DEFAULT_STAMP_TTL_SECONDS,
     ) -> "Repository":
         """Open a repository, auto-provisioning infrastructure if needed.
 
@@ -581,6 +589,9 @@ class Repository:
                 disable). See ADR-147.
             rejection_cache_size: Maximum cached bucket states (default:
                 10,000).
+            stamp_ttl: Seconds a ``bypass`` or soft stamp this repository
+                writes stands after the config read that justified it
+                (default: 60, at least 10). See ADR-151 decision 8.
 
         Returns:
             Fully initialized Repository ready for use.
@@ -615,6 +626,7 @@ class Repository:
             config_cache_ttl=config_cache_ttl,
             rejection_cache_ttl=rejection_cache_ttl,
             rejection_cache_size=rejection_cache_size,
+            stamp_ttl=stamp_ttl,
             _skip_deprecation_warning=True,
         )
         repo._auto_update = auto_update
@@ -662,6 +674,7 @@ class Repository:
         config_cache_ttl: int = 60,
         rejection_cache_ttl: float = DEFAULT_REJECTION_CACHE_TTL,
         rejection_cache_size: int = DEFAULT_REJECTION_CACHE_SIZE,
+        stamp_ttl: float = schema.DEFAULT_STAMP_TTL_SECONDS,
     ) -> "Repository":
         """Connect to existing infrastructure without provisioning anything.
 
@@ -702,6 +715,9 @@ class Repository:
                 disable). See ADR-147.
             rejection_cache_size: Maximum cached bucket states (default:
                 10,000).
+            stamp_ttl: Seconds a ``bypass`` or soft stamp this repository
+                writes stands after the config read that justified it
+                (default: 60, at least 10). See ADR-151 decision 8.
 
         Returns:
             Repository bound to the existing infrastructure.
@@ -735,6 +751,7 @@ class Repository:
             config_cache_ttl=config_cache_ttl,
             rejection_cache_ttl=rejection_cache_ttl,
             rejection_cache_size=rejection_cache_size,
+            stamp_ttl=stamp_ttl,
             _skip_deprecation_warning=True,
         )
         repo._auto_update = False

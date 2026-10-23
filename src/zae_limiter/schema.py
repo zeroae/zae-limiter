@@ -258,6 +258,23 @@ STAMP_EXPIRED = -1
 _STAMP_RNG = random.Random()
 
 
+def validate_stamp_ttl(seconds: float) -> float:
+    """Check a writer's ``stamp_ttl`` (ADR-151 decision 8) and return it.
+
+    Raises:
+        ValueError: Below :data:`MIN_STAMP_TTL_SECONDS`: every bypassed or soft
+            bucket renews its stamp through a slow pass once per shard per T,
+            so a T of a few seconds would demote it to the slow path.
+    """
+    if seconds < MIN_STAMP_TTL_SECONDS:
+        raise ValueError(
+            f"stamp_ttl must be at least {MIN_STAMP_TTL_SECONDS} seconds, got {seconds!r}: "
+            "every bypassed or soft bucket renews its stamp through a slow pass once per "
+            "shard per stamp_ttl"
+        )
+    return seconds
+
+
 def decode_stamp(attr: dict[str, Any] | None) -> int | None:
     """A stamp's deadline (epoch ms) from its attribute, or None when absent.
 

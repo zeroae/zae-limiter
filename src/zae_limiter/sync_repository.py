@@ -322,6 +322,12 @@ class SyncRepository:
         rejection_cache_ttl: Seconds a cached bucket state may be used to reject a
             request without a DynamoDB call (default: 1.0, 0 to disable). ADR-147.
         rejection_cache_size: Maximum cached bucket states (default: 10,000).
+        stamp_ttl: Seconds a ``bypass`` or soft stamp this repository writes
+            stands after the config read that justified it (default: 60, at
+            least 10). ADR-151 decision 8: a stamp a fan-out missed keeps its
+            old meaning for at most this long, and every bypassed or soft
+            bucket renews its stamp through one slow pass per shard per
+            ``stamp_ttl``.
 
     Example::
 
@@ -343,6 +349,7 @@ class SyncRepository:
         *,
         rejection_cache_ttl: float = DEFAULT_REJECTION_CACHE_TTL,
         rejection_cache_size: int = DEFAULT_REJECTION_CACHE_SIZE,
+        stamp_ttl: float = schema.DEFAULT_STAMP_TTL_SECONDS,
         _skip_deprecation_warning: bool = False,
     ) -> None:
         if not _skip_deprecation_warning:
@@ -386,7 +393,7 @@ class SyncRepository:
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
         self._cascade_cache: dict[tuple[str, str, str], bool] = {}
         self._bypass_cache: set[tuple[str, str, str]] = set()
-        self._stamp_ttl_seconds: float = schema.DEFAULT_STAMP_TTL_SECONDS
+        self._stamp_ttl_seconds: float = schema.validate_stamp_ttl(stamp_ttl)
         self._owner_stamp_cache: dict[tuple[str, str], tuple[str | None, int]] = {}
         self._rejection_cache = RejectionCache(
             ttl_seconds=rejection_cache_ttl, max_entries=rejection_cache_size
@@ -433,6 +440,7 @@ class SyncRepository:
         auto_update: bool = True,
         rejection_cache_ttl: float = DEFAULT_REJECTION_CACHE_TTL,
         rejection_cache_size: int = DEFAULT_REJECTION_CACHE_SIZE,
+        stamp_ttl: float = schema.DEFAULT_STAMP_TTL_SECONDS,
     ) -> "SyncRepository":
         """Open a repository, auto-provisioning infrastructure if needed.
 
@@ -473,6 +481,9 @@ class SyncRepository:
                 disable). See ADR-147.
             rejection_cache_size: Maximum cached bucket states (default:
                 10,000).
+            stamp_ttl: Seconds a ``bypass`` or soft stamp this repository
+                writes stands after the config read that justified it
+                (default: 60, at least 10). See ADR-151 decision 8.
 
         Returns:
             Fully initialized SyncRepository ready for use.
@@ -506,6 +517,7 @@ class SyncRepository:
             config_cache_ttl=config_cache_ttl,
             rejection_cache_ttl=rejection_cache_ttl,
             rejection_cache_size=rejection_cache_size,
+            stamp_ttl=stamp_ttl,
             _skip_deprecation_warning=True,
             parallel_mode=parallel_mode,
         )
@@ -544,6 +556,7 @@ class SyncRepository:
         config_cache_ttl: int = 60,
         rejection_cache_ttl: float = DEFAULT_REJECTION_CACHE_TTL,
         rejection_cache_size: int = DEFAULT_REJECTION_CACHE_SIZE,
+        stamp_ttl: float = schema.DEFAULT_STAMP_TTL_SECONDS,
     ) -> "SyncRepository":
         """Connect to existing infrastructure without provisioning anything.
 
@@ -584,6 +597,9 @@ class SyncRepository:
                 disable). See ADR-147.
             rejection_cache_size: Maximum cached bucket states (default:
                 10,000).
+            stamp_ttl: Seconds a ``bypass`` or soft stamp this repository
+                writes stands after the config read that justified it
+                (default: 60, at least 10). See ADR-151 decision 8.
 
         Returns:
             SyncRepository bound to the existing infrastructure.
@@ -614,6 +630,7 @@ class SyncRepository:
             config_cache_ttl=config_cache_ttl,
             rejection_cache_ttl=rejection_cache_ttl,
             rejection_cache_size=rejection_cache_size,
+            stamp_ttl=stamp_ttl,
             _skip_deprecation_warning=True,
         )
         repo._auto_update = False

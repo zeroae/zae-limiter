@@ -441,7 +441,9 @@ limiter = RateLimiter(repository=repo)
 
 `Repository.open()` also takes `rejection_cache_ttl` (seconds, default `1.0`, `0` disables) and
 `rejection_cache_size` (default `10_000`) for the rejection cache; see
-[Speculative Writes](#speculative-writes).
+[Speculative Writes](#speculative-writes). `stamp_ttl` (seconds, default `60`, at least `10`)
+bounds how long a soft or bypass stamp stands before it is renewed from configuration; see
+[Stamps expire](soft-limits-and-bypass.md#stamps-expire).
 
 ### Automatic Cache Eviction
 
