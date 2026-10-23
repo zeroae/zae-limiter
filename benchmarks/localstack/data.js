@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792607655623,
+  "lastUpdate": 1792773323252,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -34858,6 +34858,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.010956019276103885",
             "extra": "mean: 1.0919299361999948 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2733efd29c6560a55f5c4b8e38e12cd62dd894dc",
+          "message": "✨ feat(cli): entity reset and entity top-up, with docs (#723)\n\n## What it does\n\nThe CLI and documentation half of #470 (ADR-149).\n\n- **CLI**\n  - `zae-limiter entity reset ID -r R [--limit L ...]`\n  - `zae-limiter entity top-up ID -r R --add L:N [--add L:N ...]`\n  - Both are writes, so they go through `cli._connect()`.\n- A top-up that grants less than asked prints a note on stderr. This\nhappens for a dripping limit at its ceiling. A limit not yet on the\nbucket is refused instead (exit 1, naming it).\n  - A 0.17.0 gate refusal exits 1 and names `zae-limiter upgrade`.\n- **Docs**\n- New user guide page `docs/guide/reset-and-top-up.md` (plans,\npurchases, sessions, costs, edge cases).\n  - `docs/cli.md`: a \"Reset and Top-Up\" section.\n  - `docs/infra/auditing.md`: the two new actions.\n- `docs/operations/rate-limits.md`: the \"delete the bucket item\" runbook\nis replaced by `entity reset`, and a grant-more-allowance procedure and\nthe `b_{name}_tu` attribute are added.\n- `CLAUDE.md`: the #470 parts only (mechanism, provisional decisions,\ngate, ADR-145 invariant changes, writer table row, `bucket_ops.py`).\n\n**Stacked on:** #714 (design) → #720 (core) → this\n\n## Provisional decisions (owner has not ruled)\n\n| # | Built as |\n|---|---|\n| D1 | Quota top-up spread by coverage `S // gc` |\n| D2 | `entity reset` / `entity top-up --add L:N` (two commands, two\nmethods) |\n| D3 | Upgrade = `set-limits` then `top-up` of the difference\n(documented, no wrapper) |\n| D4 | Session top-up with no live window opens one |\n| D5 | Top-up with no bucket creates shard 0 |\n| D6 | Quota top-up above the plan ships, gated at 0.17.0 |\n| D7 | Plan at the highest stored shard count |\n\n## Reused from #471 (@mrohr, credited with `Co-Authored-By`)\n\n- The CLI command shape and the documentation structure: the runbook\nrewrite, the audit table and the CLI reference.\n- The command names follow the reshaped issue: `entity reset` / `entity\ntop-up` instead of `entity reset-bucket`.\n\n## Test evidence\n\n- `tests/unit/test_cli.py::TestResetAndTopUpCommands`: 15 cases covering\nparsing, output, exit codes and the gate refusal.\n- Doc examples run against moto (`tests/doctest/test_docs_run.py`) and\npass the lint check.\n- `uv run mkdocs build --strict -q` is clean.\n- The pre-push hook passed: full unit suite (6498 passed) and **diff\ncoverage 100%**.\n\nRefs #470\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01ASEDQdfdZZeqM2KMM1WTMo",
+          "timestamp": "2026-10-23T12:27:30-04:00",
+          "tree_id": "22a1c7a5c2bbf27202f1b42e8fd42993d11d07b4",
+          "url": "https://github.com/zeroae/zae-limiter/commit/2733efd29c6560a55f5c4b8e38e12cd62dd894dc"
+        },
+        "date": 1792773321865,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.783862619018425,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007085750187116324",
+            "extra": "mean: 40.34883566666596 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.479378831422043,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012748741563041927",
+            "extra": "mean: 60.68189888888595 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 38.52129972068068,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004306092161358411",
+            "extra": "mean: 25.959664062506604 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 35.61432580782634,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005236982215796865",
+            "extra": "mean: 28.078588526312842 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.610477515093013,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009891436538017755",
+            "extra": "mean: 44.2272835384603 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 73.66503498462623,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002592683220720459",
+            "extra": "mean: 13.57496131249647 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.630063749402332,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004345918090949301",
+            "extra": "mean: 40.60078813333424 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 26.878764217636352,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00723011429538294",
+            "extra": "mean: 37.20409137499914 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 25.168767049076347,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006288717768172686",
+            "extra": "mean: 39.73178336666668 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.574096545424815,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007303020670693067",
+            "extra": "mean: 37.6306302000008 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 26.10718280132617,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007463579606960431",
+            "extra": "mean: 38.30363496551619 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 22.912354936517396,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007819457803282956",
+            "extra": "mean: 43.64457528572124 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 29.723450849063,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0057828441821876665",
+            "extra": "mean: 33.64346909374838 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9304661617217849,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003140603715822325",
+            "extra": "mean: 518.009597799994 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9377836823993155,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00047352862267849635",
+            "extra": "mean: 516.0534733999953 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9445054097289884,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006940547235052626",
+            "extra": "mean: 1.058755185199982 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9248322569771715,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0058300139684503306",
+            "extra": "mean: 1.0812771640000052 sec\nrounds: 5"
           }
         ]
       }
