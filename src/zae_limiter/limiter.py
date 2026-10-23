@@ -4032,7 +4032,11 @@ class RateLimiter:
         """
         for entry in entries:
             if entry.consumed:
-                entry.state.tokens_milli += entry.consumed * 1000
+                # A bypassed entry (#311) only counted its consumption: its
+                # balance was never debited, so crediting it back mints tokens
+                # beside the move (ADR-145 I1, review D2).
+                if not entry._bypass:
+                    entry.state.tokens_milli += entry.consumed * 1000
                 if entry.state.total_consumed_milli is not None:
                     entry.state.total_consumed_milli -= entry.consumed * 1000
                 entry.consumed = 0

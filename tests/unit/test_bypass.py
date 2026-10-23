@@ -817,3 +817,33 @@ class TestRejectionCache:
             await _use(limiter)
         assert repo._rejection_cache.views(repo._namespace_id, "u", "llm", repo._now_ms()) == {}
         assert repo.get_cache_stats().local_rejections == 0
+
+
+class TestRejectedMoves:
+    async def test_a_rejected_bypassed_create_with_a_move_mints_nothing(self, repo):
+        """Review D2: a bypassed create carrying an ADR-145 move, rejected by
+        its cascade parent, is committed by `_commit_rejected_moves`, which
+        undid a debit the bypass never made: the new shard held the moved
+        tokens plus the request's consumption (I1)."""
+        quota = Limit.quota("rpd", 10, cron="0 0 * * *")
+        await repo.set_resource_defaults("llm", [quota])
+        await repo.create_entity("p")
+        await repo.create_entity("c", parent_id="p", cascade=True)
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("c", "llm", {"rpd": 1}):
+                pass
+            async with limiter.acquire("p", "llm", {"rpd": 9}):
+                pass
+        await repo.bump_shard_count("c", "llm", 1)
+        await repo.bypass_entity("c", resource="llm")
+        before = _n(await _item(repo, "c"), "b_rpd_tk")
+        with pytest.raises(RateLimitExceeded):  # the parent is spent
+            await RateLimiter(repository=repo)._do_acquire(
+                "c", "llm", None, {"rpd": 1}, shard_id=1, shard_count=2
+            )
+        created = await _item(repo, "c", shard=1)
+        assert created is not None  # the move was committed
+        after = _n(await _item(repo, "c"), "b_rpd_tk") + _n(created, "b_rpd_tk")
+        assert after == before, f"held {after} after the move, {before} before"
+        # The consumption was counted only to be undone: nothing is counted.
+        assert _n(created, "b_rpd_tc") == 0
