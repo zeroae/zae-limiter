@@ -1004,3 +1004,57 @@ class TestAggregatorOverdrawSignal:
         (snapshot,) = snapshots
         assert snapshot.counters == {"tpm": 11_000}
         assert snapshot.overdrawn == {"tpm": 2}
+
+
+class TestStampFallbacks:
+    """The defensive branches of the stamp-deadline work (ADR-151 decision 8)."""
+
+    def test_a_hand_built_entry_takes_the_commit_reading(self, soft_repo):
+        from zae_limiter.lease import LeaseEntry, _stamp_deadline
+
+        state = BucketState.from_limit("u", "llm", SOFT_TPM, 0)
+        entry = LeaseEntry(entity_id="u", resource="llm", limit=SOFT_TPM, state=state)
+        assert entry._stamp_deadline_ms is None
+        assert 1_000 + 48_000 <= _stamp_deadline(entry, 1_000, soft_repo) <= 1_000 + 60_000
+
+    async def test_a_parent_only_pass_defers_a_parent_soft_stamp_it_cannot_vouch_for(
+        self, soft_repo
+    ):
+        """A cached pass never takes the parent's soft stamp as the authority:
+        the full slow path reads soft-ness uncached and renews or removes it."""
+        from zae_limiter.limiter import _SOFT_FROM_ITEM
+
+        await soft_repo.set_resource_defaults("llm", [SOFT_TPM])
+        limiter = RateLimiter(repository=soft_repo)
+        state = BucketState.from_limit("org", "llm", SOFT_TPM, soft_repo._now_ms())
+        state.soft = True
+        state.soft_until_ms = soft_repo._now_ms() + 30_000
+        with (
+            patch.object(limiter, "_soft_authority", return_value=_SOFT_FROM_ITEM),
+            patch.object(
+                limiter,
+                "_fetch_entity_and_buckets",
+                return_value=(None, {("org", "llm", "tpm"): state}),
+            ),
+        ):
+            assert (
+                await limiter._try_parent_only_acquire("org", "llm", {"tpm": 1}, [], 0, 1)
+            ) is None
+
+    async def test_a_stamp_fix_propagates_an_error_that_is_not_a_lost_pin(self, soft_repo):
+        from botocore.exceptions import ClientError
+
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+        )
+        with (
+            patch.object(soft_repo, "_update_item_retrying_conflict", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            await soft_repo.fix_bucket_stamps("u", "llm", 0, bypass=(None, 1))
+
+    def test_the_param_sync_draws_its_own_deadline_when_none_is_given(self, soft_repo):
+        with patch.object(soft_repo, "_now_ms", return_value=1_000):
+            _expr, _names, values = soft_repo._build_bucket_param_update([SOFT_TPM], None, None)
+        (deadline,) = [int(v["N"]) for k, v in values.items() if k.startswith(":sft")]
+        assert 1_000 + 48_000 <= deadline <= 1_000 + 60_000
