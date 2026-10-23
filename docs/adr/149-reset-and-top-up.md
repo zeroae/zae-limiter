@@ -32,13 +32,18 @@ zero-consumption slow-path pass: it materialises every limit on the item as an a
 applies the operation to the named limits as a token delta (never a set), never changes the
 consumption counter, `disabled` or the parent's buckets, is conditioned on the shard's `rf`
 and `shard_count` as read, and forces the shard's next acquire through one materialising pass.
+Each call must write one operation record of its own, keyed by its operation id, in the same
+transaction as the shard writes and only if it does not exist yet, so that exactly one write
+per id can commit and an unclear failure can be resolved by reading it; a caller may supply the
+id as an idempotency key. Nothing may fail the call after the write commits.
 
 A reset restores each named limit to its full effective share and starts a new period: a quota
 records the grant at the planned shard count; a session quota's current window is marked
 ended and applied, never removed, so the next admitted request opens one and no in-flight
-rollover can re-apply the old one. A top-up of a quota adds exactly N across the shards and must
-be recorded per shard as allowance above the ceiling for the current period, cleared by the next
-reset or window roll; a top-up of a dripping limit is bounded by its ceiling. A top-up above the
+rollover can re-apply the old one, and its balance is left for that opener to restore — a share
+written into an ended window can be spent twice. A top-up of a quota adds exactly N across the shards and must
+record every purchased token per shard as allowance above the ceiling for the current period,
+cleared by the next reset or window roll; a limit not yet on the bucket is refused; a top-up of a dripping limit is bounded by its ceiling. A top-up above the
 ceiling must pass the ADR-141 version gate at 0.17.0 and ratchet `client_min_version`, because
 an older client or aggregator clamps the balance and destroys it.
 
@@ -56,7 +61,18 @@ process's rejection cache (ADR-147) and are audited. Details, costs and open dec
 - The aggregator and concurrent slow paths are excluded by the `rf` lock they already honour.
 
 **Negative:**
-- Cost is O(shards) reads and two write units per shard, against one delete per shard in #471.
+- Cost is O(shards) reads and two write units per shard, plus two for the operation record
+  and two for the audit event, which ride in the same transaction so a grant and its audit
+  commit together: even a one-shard operation is a three-item transaction (6 WRU where one
+  `UpdateItem` and a separate audit `PutItem` were 2), against one delete per shard in #471.
+- Without an idempotency key, an error from a reset or top-up leaves its outcome unknown to the
+  caller; the operation record lives three days.
+- A record is tied to the entity's incarnation (#716's `pinc`), read before the write rather
+  than checked inside it: an entity deleted and recreated during one call can see a key retry
+  applied once more. Checking it in the transaction would need `dynamodb:ConditionCheckItem`,
+  which no shipped policy grants.
+- After a plan upgrade a quota's ceiling is at most one top-up wider than the entitlement until
+  the next reset; it under-clamps refunds, never mints.
 - A conflicting writer on any shard aborts the whole transaction; the operation retries a
   bounded number of times and then fails.
 - A topped-up balance can sit on shards a request does not draw, so a draw can reject while

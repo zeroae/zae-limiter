@@ -15,7 +15,7 @@
   topped up this period), which raises that shard's ceiling until the next reset or roll.
   That one piece needs the ADR-141 version gate at **0.17.0**. Reset and dripping top-up need
   no gate.
-- **Cost:** about **$1.6/M** operations at one shard, **$45/M** at 32 shards, plus one
+- **Cost:** about **$3.5/M** operations at one shard, **$46/M** at 32 shards, plus one
   slow pass per shard afterwards. The fast path is unchanged.
 - `design-validator` was run on this design: **sound with changes**. All its changes are in
   here (see [Validation](#validation)).
@@ -50,7 +50,7 @@ is the schedule-effective capacity (#222) and `S` the planned shard count (§4).
 |-------------|-----------|
 | Dripping | `tk` → ceiling (`C_eff // S`). Debt is forgiven. |
 | Calendar quota (`reset_schedule`) | `tk` → share, `gc = S`, `tu` removed. `rf` moves to `now`, so the period counts as current. The next calendar edge still fires as usual. |
-| Session quota (`reset_after`) | `tk` → share, `tu` removed, and the window is **marked ended and applied**: `ws = wa = now − rsa·1000`, `wtc` removed. The next admitted request opens a fresh window (idle-restart, ADR-139). |
+| Session quota (`reset_after`) | The window is **marked ended and applied**: `ws = wa = now − rsa·1000`, `wtc` removed. `tk`, `gc` and `tu` are **left alone**: the next admitted request opens a fresh window (idle-restart, ADR-139) and that opener restores the share. Writing the share here was wrong (PR #720 review): it sat in a window already marked ended, where a consumption-only retry whose `rf` lock this write broke could spend it, and the opener then restored it again (20 admitted against 12). |
 | `wcu` | Never touched. Not a nameable limit. |
 
 Why "ended and applied" and not `REMOVE ws`: a rollover fan-out already in flight is guarded by
@@ -67,9 +67,18 @@ window opened **after** the reset passes, as it should.
 | Dripping | Adds up to N, **bounded by the ceiling** (a refund of consumption). The amount actually granted is returned. No new attribute. |
 | Calendar or session quota | Adds **exactly N** for the current period, spread over the shards (§4.3), recorded in `b_{q}_tu`. Each shard's ceiling becomes `C // gc + tu`. Cleared by the next reset or roll. |
 
-- **Upgrade:** `set_limits(new plan)` then `top_up(N = new C − old C)`. The result is within the
-  new ceiling, so no `tu` is needed once the new `cp` is on the item. Open decision D3 is whether
-  to wrap these two calls into one.
+- **Upgrade:** `set_limits(new plan)` then `top_up(N = new C − old C)`. Open decision D3 is
+  whether to wrap these two calls into one. The top-up records `tu` like any other, so the
+  upgrade needs the 0.17.0 gate too. **`tu` records every purchased token** (`tu += portion`),
+  not only what lands above `C // gc`: what `tk` held when the top-up landed says nothing about
+  how many tokens are still out in leases, and an overflow-only `tu` let their later refunds
+  be clamped away — the purchase lost (design-validator, PR #720 reviews; an "overflow against
+  the period's allowance" variant fails the same way). So after a plan upgrade the ceiling is
+  at most one top-up wider than the entitlement. That can only under-clamp refunds of tokens
+  that were spent, never mint, and it ends at the next reset.
+- **A limit not yet on the bucket** (configured after the bucket existed, not yet seeded by an
+  acquire) is refused with a `ValidationError` naming it: there is no shard to hold the tokens,
+  and granting 0 silently would lose a purchase.
 - **Purchase:** `top_up(N)` alone. The allowance is above the plan for this period only.
 - **A pending reset is applied first, in the same write.** A shard whose calendar edge has passed
   gets `tk = share + portion` and `gc = S`. Older `tu` is wiped, because it belonged to the
@@ -112,7 +121,9 @@ The rework happens on #471's branch, as the epic plans.
    `resolve_access` uses. Every named limit must be one of them. `wcu` and unknown names raise
    `ValidationError`.
 2. Discover the shards (GSI3, KEYS_ONLY, resource-scoped). Read them with a **strongly
-   consistent** `BatchGetItem`.
+   consistent** `BatchGetItem`. GSI3 is eventually consistent and can miss a shard created a
+   moment earlier, which a reset would then leave on an old-period grant: so shard 0 and every
+   slot below the highest stored `shard_count` that the index did not list are read by key too.
 3. Plan at `S = max(stored shard_count)`. A shard that lags is raised to `S` in its own write.
    Its legacy grant size is frozen first, as R5 does (`gc = if_not_exists(gc, inferred)`, with
    R7 inference). Without the freeze, the coverage weights in §4.3 are wrong (validator finding 6).
@@ -136,11 +147,120 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
 - `ADD b_{n}_tk :delta` for every limit, where delta = target − read balance. **Never SET.**
   A fast-path debit that lands between the read and the write is kept, and counts against the
   new balance. A SET would erase it.
-- `SET rf = max(now, stored rf, applied ws)` (ADR-140 rule), plus `gc`, `wa`, `tu` for the
-  limits this pass resets, rolls or tops up. `REMOVE tu` / `wtc` where §2 says.
+- `SET rf = max(now, stored rf + 1, applied ws)` (ADR-140 rule, strictly past the stored
+  `rf` so an aggregator refill of a stale image locked on it always loses), plus `gc`, `wa`,
+  `tu` for the limits this pass resets, rolls or tops up. `REMOVE tu` / `wtc` where §2 says.
+- **One operation record per call, in the same transaction.** `PK` = the shard-0 bucket's
+  `PK`, `SK = #OP#{id}`, `Put` under `attribute_not_exists(PK)`, holding the call's result and
+  a `ttl` three days out (GSI4 keys for `purge_namespace`, no GSI1-3 keys, so no bucket reader
+  sees it). At most one transaction carrying an id can commit. A write that committed but
+  whose response was lost is retried by the SDK with the identical request, which then fails
+  the `rf` condition; re-planning it applied the operation twice (one `top_up(5)` recorded 10,
+  PR #720 review). After any unclear failure the record (one strongly consistent `GetItem`)
+  decides: present means it landed, and its stored result is returned. A first fix put the id
+  on the bucket items instead (`op`), and a concurrent reset or top-up overwrote it between
+  the lost response and the re-read (two `top_up(5)` admitted 15 against 10, second review).
+  Every transaction carries a `ClientRequestToken`: a **random per-call nonce** plus the
+  attempt number, never derived from the id. DynamoDB keeps a token ten minutes and answers it
+  with a different payload with `IdempotentParameterMismatchException`, so a key-derived token
+  failed every second call with the same key for ten minutes (third review). That exception and
+  `TransactionInProgressException` (the SDK's retry of a transaction still running) are unclear
+  outcomes like the others, resolved by the record, never raised to the caller. The record
+  also stores its **writer** (that nonce), so a call can tell its own landed write from a
+  same-key duplicate's. Any other error after the write (a read timeout, a dropped connection,
+  a non-retryable 5xx) also reads the record: if this call wrote it, the result is returned,
+  else the error is raised.
+- **The audit event rides in the transaction (round-6 review).** The shard writes, the
+  operation record and the audit event `Put` are one `TransactWriteItems`, so a grant and its
+  audit commit or fail together and exactly one event exists per operation, however the call
+  ends. A separate post-commit write lost the event when a timed-out transaction committed
+  after the record read (P1: granted, 0 events), or when the record read failed too (the
+  former residual F3). A retry that finds the record writes nothing. At most 32 shard writes +
+  record + audit = 34 items, inside the limit of 100; the audit PK `{ns}/AUDIT#…` is inside
+  ns-full's `LeadingKeys`, and `PutItem` authorises a transaction's `Put`. The item is the one
+  `_log_audit_event` writes (`_build_audit_item`: the same `ttl` from the audit retention, the
+  same GSI4 keys), so archival is unchanged. An audit that cannot be built (the principal
+  lookup fails) now fails the call before any write.
+- **A record belongs to one incarnation of its entity.** `create_entity` stamps META with
+  `incarnation` (a ULID); each call reads META once, strongly consistent (**+1 RCU per call**),
+  and stores it on the record as `ent`. A record of another incarnation reads as absent and the
+  Put condition (`attribute_not_exists(PK) OR ent <> :ent`) lets the new operation replace it.
+  META without the stamp falls back to `created_at`, no META to a constant. `delete_entity`
+  also deletes the entity's records (one Query per resource's shard-0 partition), but only as
+  best effort: it finds them through a live shard-0 bucket, so a record whose bucket had
+  expired survives the delete (targeted review), and so can one written by a top-up racing
+  the delete. Either is harmless, because the next incarnation never reads it. A GSI4 sweep
+  is not an option: ns-full's `LeadingKeys` (`{ns}/*`) does not match `GSI4PK = {ns}`.
+- **Identity, as built (round-4 review).** The incarnation is #716's `pinc` on META, read
+  through `schema.entity_incarnation` (`pinc` → `created_at` → `"-"`); #720 writes no META
+  field of its own. A record written before the entity had META (`ent = "-"`) matches every
+  incarnation — otherwise a top-up retried across `create_entity` was granted twice (F1).
+  The match is two-sided (round-5 review): a call that read no META (`"-"`) also takes any
+  record for its key. One-sided, a same-key call that read META before a concurrent
+  `create_entity` replaced the record of one that landed after it and granted again (10
+  granted against 5 on a bucket, 20 admitted against 15 on the create path). The record's
+  condition is `attribute_not_exists(PK) OR (:ent <> :legacy AND ent <> :ent AND ent <> :legacy)`.
+  **Trade-off:** a caller with no META right after a delete gets the old entity's result
+  instead of a new grant. That under-grants and never over-grants.
+- **Residual P2 — a pre-META record outlives a recreate (round-6 review, accepted).** The
+  second case of the same trade-off. A top-up with key K made before the entity had META
+  writes its record with `ent = "-"`; if shard 0 then expires, `delete_entity` cannot find the
+  record, and after `create_entity` a top-up with K matches it, returns the old result and
+  grants 0 (probe: `first={'cal': 5} recreated_result={'cal': 5} tk_after=0`). Behaviour is
+  kept: making `"-"` match one way only is what over-granted in round 5. It ends with the
+  record's three-day TTL; callers should use a fresh key once the entity exists.
+  The create path reads META once, for both the identity and the cascade stamps (F4).
+- **Residual F2 — a delete and recreate during one call.** The call reads META, then writes;
+  if the entity is deleted and recreated in between, the record carries the old incarnation
+  and a caller retry under the new one is applied again, once. Not fixed: binding META into
+  the transaction needs a `ConditionCheck`, which needs `dynamodb:ConditionCheckItem`, and no
+  shipped policy grants it; a GSI4 cleanup sweep is blocked for ns-full by `LeadingKeys`. The
+  `"-"` rule has the same shape: a record written before META existed stays this entity id's
+  across later recreations until its three-day TTL, so a reused key there returns the old
+  result.
+- **Across the #716 upgrade.** On a branch without #716 nothing writes `pinc`, so an entity's
+  incarnation is its `created_at`, which still differs across a delete and recreate. After
+  #716, `create_entity` writes `pinc` on new META only; existing META keeps reading
+  `created_at`, so a record stamped before the upgrade still matches its entity. It would
+  mismatch only if something wrote `pinc` onto an *existing* META (a backfill): then a caller
+  retry that straddles that write, inside the record's three-day TTL, would be applied once
+  more.
+- **Residual — a recreate within the same second (until #716 merges).** On this branch an
+  incarnation is `created_at`, which has one-second resolution. A leftover record (one
+  `delete_entity` could not find, above) therefore matches an entity recreated within the
+  same second, and a top-up with the same key returns the old result and grants 0. It ends
+  once #716 merges, because #716 writes a random `pinc` on every create.
+- **Known, out of scope (pre-existing in `delete_entity`):** `BatchWriteItem`'s
+  `UnprocessedItems` is ignored, its META and GSI3 queries are not paginated, and the ns-full
+  policy lacks `BatchWriteItem`. None is introduced by #470; each predates it.
+- **Caller idempotency key.** `reset_bucket` / `top_up(..., idempotency_key=...)` (CLI
+  `--idempotency-key`) uses the caller's key as the id: a retry within three days returns the
+  first call's result and writes nothing (+1 RCU to read the record first). A key reused for the
+  other kind of operation is a `ValidationError`; keys are 1-64 of `[A-Za-z0-9._:-]`. **Without
+  a key, an error from these calls leaves the outcome unknown.**
+- **A keyed no-op is recorded too (round-6 review, P4).** A reset of a missing bucket, or a
+  top-up of dripping limits only with no bucket, writes nothing to a bucket. With a key it
+  still writes its operation record (result 0, same condition and incarnation rules) and its
+  audit event (zero amounts, so the trail shows the call happened), in one transaction; before,
+  a retry with the key after the bucket appeared applied the operation (probe:
+  `first={'rpm': 0}/0 retry={'rpm': 5}/1`). The retry now returns the first result, and the
+  key-kind check holds. Without a key a no-op still writes nothing.
+- **Nothing fails after the commit.** The principal is validated with the other inputs before
+  any I/O, and the audit event is part of the commit itself.
 - `SET vu = 0`. This forces one materialising pass per shard on the next acquire. That pass
   clamps any credit that slipped in between the read and the write, and re-stamps the correct
   `vu` (validator finding 4; the same mechanism as #679).
+- **`SET ttl` on a bucket that carries one (round-6 review, P3).** A bucket on resource or
+  system defaults has a `ttl` (ADR-136), and a write that left it alone let DynamoDB sweep the
+  item, purchase and all, before the period it was bought for ended (probe: `ttl` 60 s out,
+  period end 12 h out). Every reset and top-up write on such a bucket, and D5's create, stamps
+  the later of the acquire path's `now + calculate_bucket_ttl_seconds(limits, multiplier)` and
+  the end of every quota's current period (a calendar quota's next reset edge; a session
+  quota's window, which ends at most `reset_after` from now, so a window a D4 top-up opens
+  never outlives its bucket). With the multiplier at 1 or more the first already covers the
+  second; the `max` keeps that true by construction. An entity-level bucket never gets a `ttl`:
+  one left over from when it ran on defaults is `REMOVE`d, as acquire does (ADR-136; #720
+  review, Low 1). With the multiplier at 0 nothing is stamped. Same write, no extra cost.
 - **Condition:** `rf = :read_rf AND shard_count = :read_sc`, plus the existing I4 pin when `gc`
   is written.
 - **S = 1:** a single `UpdateItem`. `transact_write` already uses the single-item API, so this
@@ -201,8 +321,17 @@ writes `tu` must pass `_require_readers("0.17.0", …)` and ratchet `client_min_
   (`stack_lambdas_current`), so the gate covers the aggregator too (validator finding 1).
 - Reset and dripping top-up write only attributes that 0.15+ writers already understand, so they
   need **no gate**.
-- A stale `tu` left behind by an old writer's reset is benign: nothing fills tokens above share
-  except a top-up, and the next 0.17 reset clears it.
+- A stale `tu` left behind by an old writer's reset is **not** benign, as this design first
+  said. It raises the ceiling of a period it was not bought in, so a credit (a refund, a
+  rollback) can lift that shard above its plan by up to `tu`, and the clamp keeps it. The gate
+  is what excludes old writers: the aggregator through `lambda_version`, clients through the
+  `client_min_version` ratchet. The residual is a pre-0.17 client that ignores the minimum,
+  bounded by one `tu` per shard per period.
+- The same stale-ceiling problem exists inside one process: a lease that read `tu` holds it in
+  memory after a reset or period edge removed it. Its #679 check after a credit therefore
+  compares against `C // gc` **without** `tu`, forcing a clamping pass (which reads the real
+  `tu`) whenever a credit lands above the base ceiling (PR #720 review: 15 admitted in a new
+  period of 10).
 
 ### 4.5 Missing bucket
 
@@ -219,7 +348,7 @@ writes `tu` must pass `_require_readers("0.17.0", …)` and ratchet `client_min_
 | Aggregator proactive doubling / propagation | Changes `shard_count` → our pin fails → re-plan at the new `S` |
 | Quota shard create/seed (ADR-145 move) | Donor debit pinned on `gc` and period: if we changed them it fails and re-plans; else it moves post-reset tokens (a move, not a mint). A create landing after our commit sees `gc = S` siblings and plans correctly (validator finding 3, interleaving 3) |
 | Window rollover fan-out | §2.1 ended-and-applied `ws` blocks a pre-reset fan-out |
-| `adjust()` / rollback credit | `ADD`; kept; a credit above the ceiling is clamped by the forced pass (`vu = 0`) |
+| `adjust()` / rollback credit | `ADD`; kept; a credit above the ceiling is clamped by the forced pass (`vu = 0`). The ceiling it is checked against takes the `tu` the credit write returns (`ALL_NEW` when the lease read one), never the lease's in-memory `tu`: a refund under a live top-up forces nothing, one after a reset removed `tu` forces the clamp. #730's self-trimming refund computes the same ceiling |
 | Param sync (`set_limits`) | Does not move `rf`; it SETs `cp`/`vu = 0`. Ordering either way ends in one materialising pass at the newest params |
 | Disable stamp | Independent attribute; untouched |
 
@@ -243,8 +372,10 @@ writes `tu` must pass `_require_readers("0.17.0", …)` and ratchet `client_min_
 - **Manifest / provisioner / CFN:** **none.** These are one-off imperative events, not desired
   state. A manifest entry would re-apply on every `limits apply`.
 - **Audit:** `AuditAction.BUCKET_RESET` and `BUCKET_TOPPED_UP`, on `entity_id`, with
-  `resource`, the limits, the per-limit amounts, `shards`, and `principal`. Written after the
-  transaction commits, and only when at least one shard was written.
+  `resource`, the limits, the per-limit amounts, `shards`, and `principal`. Written in the
+  operation's own transaction, and only when at least one shard is written, so it commits
+  exactly when the operation does. The principal is validated with the other inputs before
+  any I/O.
 - **Docs:** user guide section in the #678 guide (plans, purchases, sessions);
   `docs/operations/rate-limits.md` runbook; CLI and API references; CLAUDE.md writer table.
 
@@ -259,11 +390,22 @@ Assumptions:
 - Transactional writes cost 2 WRU per item.
 - Prices are us-east-1 on-demand: $0.125/M RRU, $0.625/M WRU.
 
-| Shards | Round trips | RCU | WCU (incl. 1 audit) | $/M operations | Afterwards (one slow pass per shard) |
+Every write is one transaction of the shard updates, the operation record and the audit
+event (§4.2), so a one-shard operation is a 3-item transaction: 6 WRU where a bare
+`UpdateItem` was 1. The audit event costs 2 WRU in the transaction against 1 as a separate
+`PutItem` (+1 WCU per call), and saves the separate round trip.
+
+| Shards | Round trips | RCU | WCU (audit in the transaction) | $/M operations | Afterwards (one slow pass per shard) |
 |-------:|------------:|----:|-----:|----:|----:|
-| 1 | 4 (config, query, get, update) + audit | 3 | 2 | **$1.63** | +1 RCU +1 WCU ≈ +$0.75 |
-| 4 | 4 + audit | 6 | 9 | **$6.38** | ≈ +$3.00 |
-| 32 | 4 + audit | 34 | 65 | **$44.88** | ≈ +$24.00 |
+| 1 | 4 (config, query, get, transaction) | 3 | 6 | **$4.13** | +1 RCU +1 WCU ≈ +$0.75 |
+| 4 | 4 | 6 | 12 | **$8.25** | ≈ +$3.00 |
+| 32 | 4 | 34 | 68 | **$46.75** | ≈ +$24.00 |
+
+- **Entity identity:** +1 RCU on every call (the META read above).
+- **Idempotency key:** +1 RCU (the record is read first). A keyed no-op (no bucket to write)
+  costs one 2-item transaction, the record and the audit event: 4 WRU, where it wrote nothing
+  before. Without a key it still writes nothing.
+- **After an unclear failure:** +1 RCU per retry to read the record.
 
 - **Gated top-up:** +1 RCU on the first call per repository (the version read, strongly
   consistent; cached after that).

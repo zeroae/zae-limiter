@@ -343,6 +343,60 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "#pinsc <= :pinsc" in update["ConditionExpression"]
 
+    def test_normal_clearing_top_ups(self) -> None:
+        """ADR-149: a reset or roll removes `b_{name}_tu` on positional `#tu*`."""
+        update = _repo().build_composite_normal(
+            entity_id="e",
+            resource="r",
+            consumed={DOTTED: 0, HYPHENATED: 0},
+            refill_amounts={},
+            now_ms=2,
+            expected_rf=1,
+            grant_counts={DOTTED: 1, HYPHENATED: 1},
+            pin_shard_count=1,
+            cleared_top_ups=[DOTTED, HYPHENATED],
+        )["Update"]
+        assert_expression_safe(update)
+        assert update["UpdateExpression"].endswith("REMOVE #tu0, #tu1")
+
+    @pytest.mark.parametrize("stored", [True, False])
+    def test_bucket_operation(self, stored: bool) -> None:
+        """ADR-149: a reset or top-up's write, every clause at once."""
+        from zae_limiter.bucket_ops import ShardWrite
+
+        write = ShardWrite(
+            shard_id=1,
+            shard_count=2,
+            shard_count_stored=stored,
+            expected_rf=1,
+            written_rf=2,
+            deltas={DOTTED: 5, HYPHENATED: -5},
+            grant_counts={DOTTED: 2, HYPHENATED: 2},
+            windows={DOTTED: (1, 60)},
+            applied_windows={DOTTED: 1},
+            top_ups={HYPHENATED: 7},
+            cleared_top_ups={DOTTED},
+            cleared_window_marks={DOTTED},
+        )
+        update = _repo().build_bucket_operation("e", "r", write)["Update"]
+        assert_expression_safe(update)
+        update = _repo().build_bucket_operation("e", "r", write, ttl=123)["Update"]
+        assert_expression_safe(update)
+        assert "#ottl = :ottl" in update["UpdateExpression"]
+        update = _repo().build_bucket_operation("e", "r", write, remove_ttl=True)["Update"]
+        assert_expression_safe(update)
+        assert update["UpdateExpression"].endswith("#ottl")
+
+    def test_bucket_operation_with_nothing_but_the_lock(self) -> None:
+        from zae_limiter.bucket_ops import ShardWrite
+
+        write = ShardWrite(
+            shard_id=0, shard_count=1, shard_count_stored=True, expected_rf=1, written_rf=2
+        )
+        update = _repo().build_bucket_operation("e", "r", write)["Update"]
+        assert_expression_safe(update)
+        assert update["UpdateExpression"] == "SET #rf = :rf, #vu = :vu"
+
     def test_retry_with_seeds(self) -> None:
         seeds = self._seed_states()
         update = _repo().build_composite_retry(
@@ -426,6 +480,27 @@ class TestCompositeBuilders:
                 pin=(2, None, (None, None, None)),
             )["Update"]
             assert_expression_safe(update)
+
+    def test_quota_top_up_pin(self) -> None:
+        """ADR-149: a quota credit pins its top-up, present (`=`) or absent."""
+        from zae_limiter.models import QuotaPeriodPin
+
+        period = QuotaPeriodPin(9, None, ("1m0h0", None, None))
+        update = _repo().build_composite_adjust(
+            "user-1",
+            "api",
+            deltas={DOTTED: -1000, HYPHENATED: -2000},
+            ceilings={
+                DOTTED: CreditCeiling(
+                    5000, 10_000, 2, (None, None), True, period, topped_up_milli=3000
+                ),
+                HYPHENATED: CreditCeiling(9000, 9000, 1, (None, "1m0h0"), True, period),
+            },
+            pin=(2, None, (None, None, None)),
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#bu0 = :bu0" in update["ConditionExpression"]
+        assert "attribute_not_exists(#bu1)" in update["ConditionExpression"]
 
     def test_trimmed_credit(self) -> None:
         """#721: the fallback re-issues the credit with ``vu = 0`` in the same write."""

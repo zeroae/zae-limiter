@@ -55,6 +55,7 @@ from .models import (
     UsageSnapshot,
     UsageSummary,
     effective_cascade,
+    quota_grant_is_current,
     validate_identifier,
     validate_resource,
 )
@@ -1643,6 +1644,7 @@ class SyncRateLimiter:
             return False
         state.tokens_milli = state.reset_target_milli(now_ms)
         state.grant_count = state.shard_count
+        state.topped_up_milli = None
         return True
 
     @staticmethod
@@ -1701,6 +1703,7 @@ class SyncRateLimiter:
         )
         state.window_applied_ms = state.window_start_ms
         state.grant_count = state.shard_count
+        state.topped_up_milli = None
         return True
 
     @staticmethod
@@ -1828,7 +1831,7 @@ class SyncRateLimiter:
             entity_id=entity_id,
             resource=resource,
             limit_name=limit.name,
-            limit=limit.per_shard(state.report_shard_count, now_ms),
+            limit=limit.per_shard(state.report_shard_count, now_ms, state.report_top_up_milli),
             available=result.available,
             requested=amount,
             exceeded=not result.success,
@@ -1928,6 +1931,7 @@ class SyncRateLimiter:
             existing.reset_after_seconds = limit.reset_after_seconds
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
+            parent_stored_top_up = existing.topped_up_milli is not None
             parent_new_ws = self._open_window_if_elapsed(limit, existing, now_ms)
             parent_reset = self._apply_reset_edge(limit, existing, now_ms)
             parent_rolled = self._apply_window_roll(
@@ -1968,6 +1972,7 @@ class SyncRateLimiter:
                     _window_end_ms=window_end_in_force(limit, existing, now_ms),
                     _stored_reset_after_seconds=stored_rsa,
                     _granted=parent_granted,
+                    _stored_top_up=parent_stored_top_up,
                 )
             )
         carrier = self._wcu_carrier(
@@ -2390,7 +2395,9 @@ class SyncRateLimiter:
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                limit=entry.limit.per_shard(
+                    entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                ),
                 available=calculate_available(entry.state, now_ms),
                 requested=entry.consumed,
                 exceeded=False,
@@ -2671,6 +2678,7 @@ class SyncRateLimiter:
                     stored_rsa = state.reset_after_seconds
                     state.reset_after_seconds = limit.reset_after_seconds
                 original_tk = state.tokens_milli
+                stored_top_up = state.topped_up_milli is not None
                 original_rf = item_rf if seed else state.last_refill_ms
                 new_ws: int | None = created_anchor
                 granted = False
@@ -2714,6 +2722,7 @@ class SyncRateLimiter:
                         _stored_reset_after_seconds=stored_rsa,
                         _granted=granted or (is_new and limit.is_quota),
                         _donor_debit=donor,
+                        _stored_top_up=stored_top_up,
                     )
                 )
             carrier = self._wcu_carrier(
@@ -2834,7 +2843,9 @@ class SyncRateLimiter:
                     resource=resource,
                     limit_name=limit.name,
                     limit=limit.per_shard(
-                        state.report_shard_count if state is not None else plan_count, now_ms
+                        state.report_shard_count if state is not None else plan_count,
+                        now_ms,
+                        state.report_top_up_milli if state is not None else 0,
                     ),
                     available=state.tokens_milli // 1000 if state is not None else 0,
                     requested=consume.get(limit.name, 0),
@@ -3182,6 +3193,7 @@ class SyncRateLimiter:
         resolved_by_name = {limit.name: limit for limit in resolved_limits}
         totals: dict[str, int] = {}
         window_ends: dict[str, int] = {}
+        top_ups: dict[str, int] = {}
         for bucket in self._repository.get_buckets(entity_id):
             if bucket.resource != resource:
                 continue
@@ -3190,6 +3202,19 @@ class SyncRateLimiter:
             totals[name] = totals.get(name, 0) + self._readable_balance(
                 bucket, limit_for_bucket, now_ms
             )
+            if (
+                bucket.topped_up_milli
+                and limit_for_bucket is not None
+                and limit_for_bucket.is_quota
+                and quota_grant_is_current(
+                    limit_for_bucket,
+                    bucket.last_refill_ms,
+                    bucket.window_start_ms,
+                    bucket.window_applied_ms,
+                    now_ms,
+                )
+            ):
+                top_ups[name] = top_ups.get(name, 0) + bucket.topped_up_milli
             if limit_for_bucket is not None and limit_for_bucket.reset_after is not None:
                 end = _reader_window_end(limit_for_bucket, bucket)
                 if end is not None and end > now_ms:
@@ -3203,7 +3228,7 @@ class SyncRateLimiter:
                 limit.schedule,
                 now_ms,
             )
-            ceiling = max(1, eff_cp // 1000)
+            ceiling = max(1, (eff_cp + top_ups.get(limit.name, 0)) // 1000)
             if limit.name in totals:
                 available = min(totals[limit.name], ceiling)
             else:

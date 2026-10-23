@@ -48,6 +48,8 @@ REPOSITORY = {
     "build_composite_normal": (True, True),  # rf-locked: reset/roll/seed stamp gc, pinned
     "build_composite_retry": (True, False),  # ADD only; never seeds a quota
     "build_composite_adjust": (True, False),  # adjust / rollback ADD; vu = 0 on trim (#721)
+    "build_bucket_operation": (True, True),  # reset / top-up (ADR-149): tk delta, gc, tu
+    "build_operation_record": NOT_BUCKET,  # reset / top-up operation record (ADR-149)
     "build_quota_donor_debits": (True, False),  # the donor side of a move
     "_build_quota_count_freeze": (False, True),  # gc = if_not_exists(gc, :g) on a raise
     "_build_bucket_param_update": (False, False),  # param sync: cp/ra/rp/sched, vu = 0
@@ -72,6 +74,8 @@ REPOSITORY = {
     "_cleanup_entity_config_registry": NOT_BUCKET,
     "_initialize_version_record": NOT_BUCKET,
     "_log_audit_event": NOT_BUCKET,
+    "_build_audit_item": NOT_BUCKET,  # the audit item _log_audit_event puts
+    "_operation_audit": NOT_BUCKET,  # a reset / top-up's audit, in its transaction (ADR-149)
     "_register_namespace": NOT_BUCKET,
     "_require_readers": NOT_BUCKET,  # the version gate's client_min_version ratchet
     "_write_entity_config_flag": NOT_BUCKET,  # disabled / cascade on entity config
@@ -173,6 +177,7 @@ def test_only_grant_writers_write_gc():
         "build_bucket_put_item",
         "build_composite_create",
         "build_composite_normal",
+        "build_bucket_operation",
         "_build_quota_count_freeze",
         "_freeze_and_raise_shard_counts",
         "repair_created_quota_shard",

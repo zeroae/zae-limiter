@@ -63,6 +63,7 @@ from .models import (
     UsageSnapshot,
     UsageSummary,
     effective_cascade,
+    quota_grant_is_current,
     validate_identifier,
     validate_resource,
 )
@@ -2115,6 +2116,8 @@ class RateLimiter:
         # ADR-145 I3: the reset re-grants this shard at the item's count; the
         # commit stamps it as `b_{name}_gc` on the same rf-locked write.
         state.grant_count = state.shard_count
+        # ADR-149: a top-up above the grant belongs to the period just ended.
+        state.topped_up_milli = None
         return True
 
     @staticmethod
@@ -2179,6 +2182,8 @@ class RateLimiter:
         state.window_applied_ms = state.window_start_ms
         # ADR-145 I3: the roll re-grants this shard at the item's count.
         state.grant_count = state.shard_count
+        # ADR-149: a top-up above the grant belongs to the period just ended.
+        state.topped_up_milli = None
         return True
 
     @staticmethod
@@ -2310,7 +2315,7 @@ class RateLimiter:
             # The shard holds only its share, and only the window in force
             # scales it, so that is what is reported (#475, #222 §3.5);
             # identity only when the bucket is unsharded and unscheduled.
-            limit=limit.per_shard(state.report_shard_count, now_ms),
+            limit=limit.per_shard(state.report_shard_count, now_ms, state.report_top_up_milli),
             available=result.available,
             requested=amount,
             exceeded=not result.success,
@@ -2444,6 +2449,8 @@ class RateLimiter:
 
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
+            # A top-up (ADR-149) a reset or roll below ends; see `_do_acquire`.
+            parent_stored_top_up = existing.topped_up_milli is not None
 
             # The second, easily-missed reset seam. A cascading child whose own
             # bucket is fine but whose parent crossed a reset edge would be
@@ -2507,6 +2514,7 @@ class RateLimiter:
                     _window_end_ms=window_end_in_force(limit, existing, now_ms),
                     _stored_reset_after_seconds=stored_rsa,
                     _granted=parent_granted,
+                    _stored_top_up=parent_stored_top_up,
                 )
             )
 
@@ -2999,7 +3007,9 @@ class RateLimiter:
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                limit=entry.limit.per_shard(
+                    entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                ),
                 available=calculate_available(entry.state, now_ms),
                 requested=entry.consumed,
                 exceeded=False,
@@ -3464,6 +3474,9 @@ class RateLimiter:
 
                 # Capture original values before try_consume modifies them (ADR-115)
                 original_tk = state.tokens_milli
+                # Whether the item carries a top-up (ADR-149) the reset or roll
+                # below would end: the commit then REMOVEs `b_{name}_tu`.
+                stored_top_up = state.topped_up_milli is not None
                 # A seeded limit locks on the item's `rf`, never on the
                 # synthetic `now` its fresh state carries: that value can
                 # never match, and with the seed sorted first every write fell
@@ -3552,6 +3565,7 @@ class RateLimiter:
                         # it carries `gc` at the count it was sized at.
                         _granted=granted or (is_new and limit.is_quota),
                         _donor_debit=donor,
+                        _stored_top_up=stored_top_up,
                     )
                 )
 
@@ -3684,7 +3698,9 @@ class RateLimiter:
                     resource=resource,
                     limit_name=limit.name,
                     limit=limit.per_shard(
-                        state.report_shard_count if state is not None else plan_count, now_ms
+                        state.report_shard_count if state is not None else plan_count,
+                        now_ms,
+                        state.report_top_up_milli if state is not None else 0,
                     ),
                     available=state.tokens_milli // 1000 if state is not None else 0,
                     requested=consume.get(limit.name, 0),
@@ -4105,6 +4121,11 @@ class RateLimiter:
         # is back on its next acquire (`_readable_balance` reports it so), and
         # a shard with no window contributes nothing for the same reason.
         window_ends: dict[str, int] = {}
+        # Allowance topped up above the plan this period (ADR-149), per limit:
+        # it raises the clamp below, or a purchase would be hidden from the
+        # display. Only a shard whose period is current counts — a pending
+        # reset or roll clears it on the next acquire.
+        top_ups: dict[str, int] = {}
         for bucket in await self._repository.get_buckets(entity_id):
             if bucket.resource != resource:
                 continue
@@ -4113,6 +4134,19 @@ class RateLimiter:
             totals[name] = totals.get(name, 0) + self._readable_balance(
                 bucket, limit_for_bucket, now_ms
             )
+            if (
+                bucket.topped_up_milli
+                and limit_for_bucket is not None
+                and limit_for_bucket.is_quota
+                and quota_grant_is_current(
+                    limit_for_bucket,
+                    bucket.last_refill_ms,
+                    bucket.window_start_ms,
+                    bucket.window_applied_ms,
+                    now_ms,
+                )
+            ):
+                top_ups[name] = top_ups.get(name, 0) + bucket.topped_up_milli
             if limit_for_bucket is not None and limit_for_bucket.reset_after is not None:
                 end = _reader_window_end(limit_for_bucket, bucket)
                 if end is not None and end > now_ms:
@@ -4132,7 +4166,7 @@ class RateLimiter:
                 limit.schedule,
                 now_ms,
             )
-            ceiling = max(1, eff_cp // 1000)
+            ceiling = max(1, (eff_cp + top_ups.get(limit.name, 0)) // 1000)
             if limit.name in totals:
                 available = min(totals[limit.name], ceiling)
             else:
