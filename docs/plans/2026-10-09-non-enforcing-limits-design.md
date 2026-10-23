@@ -183,7 +183,9 @@ instead of costing a second, enforce-shaped write.
   rf-locked write SETs the stamp. Config enforce and a stamp: the request is enforced and the
   rf-locked write REMOVEs it. Each stamp write is pinned on the stamp as read
   (`attribute_not_exists` or `= :read`), so a pass that read config before a fan-out cannot undo
-  the fan-out; a lost pin falls to the consumption-only retry, which writes no stamp.
+  the fan-out; a lost pin falls to the consumption-only retry, which renews or removes no
+  stamp (a limit it seeds gets `b_{n}_soft = if_not_exists(…, :deadline)` from this pass's
+  uncached read).
 - **Soft stamps on the slow path.** A create or seed stamps `b_{n}_soft` with a deadline from
   config read **uncached in that pass** (§6.2). The rf-locked normal write re-stamps (SET the
   deadline or REMOVE) `b_{n}_soft` for every limit on the item whenever that pass's limits were
@@ -262,7 +264,7 @@ its Path 2 clone copies the base item verbatim, deadline included, and never ext
 | Fast path, bypass shape | `#byp > :now` |
 | Slow path, bypassed existing item (`build_bypass_consume`) | `ADD tc`, `SET bypass = :deadline`; condition `attribute_exists(#byp)` (any deadline: only a pass that read bypass config uncached builds it, so it is the renewal) |
 | Slow path, rf-locked normal write | `SET b_{n}_soft = :deadline` / `REMOVE`, `SET bypass = :deadline` / `REMOVE`, each pinned on the stamp as read; each balance floor `(#bo{i} > :now OR tk >= floor)` |
-| Consumption-only retry | floor `(#bo{i} > :now OR tk >= c)`; never writes a stamp |
+| Consumption-only retry | floor `(#bo{i} > :now OR tk >= c)`; never renews or removes a stamp; a limit it seeds gets `b_{n}_soft = if_not_exists(…, :deadline)` from this pass's uncached read |
 | Stamp correction before a rejection (`build_stamp_fix`) | `SET bypass = :deadline` / `REMOVE`, `SET b_{n}_soft = :deadline` / `REMOVE`, and nothing else; condition `attribute_exists(PK)` and each stamp pinned on its value as read |
 | Create / seed | `bypass`, `b_{n}_soft` = the pass's deadline, from its uncached read |
 | Fan-outs (`_stamp_bucket_disabled`, `_stamp_bucket_soft`, the param sync, provisioner `fanout.py` / `bucket_sync.py`) | `SET … = :deadline`, deadline = resolution time + `T × U(0.8, 1.0)` |
