@@ -39,6 +39,7 @@ from zae_limiter.schema import (
     BUCKET_SCHED_NONE,
     CONFIG_FIELD_SCHED_TZ,
     DEFAULT_RESOURCE,
+    DEFAULT_STAMP_TTL_SECONDS,
     GSI3_NAME,
     LIMIT_ATTR_PREFIX,
     LIMIT_FIELD_CP,
@@ -61,6 +62,7 @@ from zae_limiter.schema import (
     pk_system,
     sk_config,
     sk_state,
+    stamp_deadline,
 )
 
 from .manifest import entries_from_manifest
@@ -135,6 +137,11 @@ _STALE_FIELDS = (
     # And its soft stamp (#467), for the same reason.
     BUCKET_FIELD_SOFT,
 )
+
+
+#: T for the stamps this provisioner writes (ADR-151 decision 8): a `bypass` or
+#: soft stamp stands at most this long after the config read that justified it.
+STAMP_TTL_SECONDS = DEFAULT_STAMP_TTL_SECONDS
 
 
 def _encode_one_tuple(
@@ -214,7 +221,9 @@ def build_bucket_param_update(
         ttl_multiplier: None leaves ``ttl`` alone; 0 REMOVEs it (entity has
             custom limits, so the bucket must persist); >0 SETs it.
         stale_limit_names: Limit names to strip from the bucket entirely.
-        now_ms: Current time, epoch milliseconds.
+        now_ms: Current time, epoch milliseconds, taken no later than the
+            config these limits came from: a soft stamp's deadline counts from
+            it (ADR-151 decision 8).
 
     Returns:
         ``(update_expr, expr_names, expr_values)``.
@@ -265,11 +274,14 @@ def build_bucket_param_update(
 
         # Soft-ness travels with the limit (#467), mirroring
         # `Repository._build_bucket_param_update`: SET when soft, REMOVE when hard.
+        # SET as a deadline at most T after `now_ms` (ADR-151 decision 8).
         soft_alias = f"#sft{i}"
         expr_names[soft_alias] = bucket_attr(name, BUCKET_FIELD_SOFT)
         if decl.get("soft"):
             set_parts.append(f"{soft_alias} = :{soft_alias[1:]}")
-            expr_values[f":{soft_alias[1:]}"] = {"BOOL": True}
+            expr_values[f":{soft_alias[1:]}"] = {
+                "N": str(stamp_deadline(now_ms, STAMP_TTL_SECONDS))
+            }
         else:
             remove_parts.append(soft_alias)
 

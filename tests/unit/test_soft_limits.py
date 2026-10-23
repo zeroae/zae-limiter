@@ -1,5 +1,6 @@
 """Soft limits: metered, never enforced (#467, ADR-151)."""
 
+import time
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -50,8 +51,11 @@ async def _bucket_item(repo: Repository, entity_id: str, resource: str, shard: i
     return response.get("Item")
 
 
-def _soft_stamp(item, name: str) -> bool:
-    return bool(item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT), {}).get("BOOL"))
+def _soft_stamp(item, name: str, now_ms: int | None = None) -> bool:
+    """The item carries a live soft stamp: a deadline still ahead (ADR-151 decision 8)."""
+    raw = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT), {}).get("N")
+    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    return raw is not None and int(raw) > now_ms
 
 
 class TestLimitModel:
@@ -509,6 +513,154 @@ class TestResourceAndSystemFanout:
         # An undecodable old image errs toward restamping.
         corrupt = {**old, "l_tpm_ra": {"N": "0"}}
         assert soft_repo._soft_changed(corrupt, []) == {"tpm"}
+
+
+#: Past every deadline a stamp written at the start could carry (ADR-151 decision 8).
+PAST_T_MS = schema.DEFAULT_STAMP_TTL_SECONDS * 1000 + 1
+
+
+def _soft_deadline(item, name: str = "tpm") -> int | None:
+    raw = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT), {}).get("N")
+    return None if raw is None else int(raw)
+
+
+class TestStampsExpire:
+    """Review D1, soft: a `b_{name}_soft` stamp a fan-out missed admitted the
+    limit without limit, forever. A stamp is a deadline at most T after the
+    config read that justified it (ADR-151 decision 8)."""
+
+    async def _soft_then_missed_hard(self, repo: Repository) -> int:
+        """A soft bucket whose soft -> hard change the fan-out never reached."""
+        await repo.set_resource_defaults("llm", [SOFT_TPM])
+        start = repo._now_ms()
+        with patch.object(repo, "_now_ms", return_value=start):
+            async with RateLimiter(repository=repo) as limiter:
+                async with limiter.acquire("user-1", "llm", {"tpm": 600}):
+                    pass
+        assert _soft_stamp(await _bucket_item(repo, "user-1", "llm"), "tpm", start)
+        with patch.object(repo, "_fanout_soft", return_value=0):
+            await repo.set_resource_defaults("llm", [HARD_TPM])
+        return start
+
+    async def test_a_stamp_a_missed_soft_to_hard_change_left_stops_admitting_within_t(
+        self, soft_repo
+    ):
+        start = await self._soft_then_missed_hard(soft_repo)
+        admitted = 0
+        with patch.object(soft_repo, "_now_ms", return_value=start + PAST_T_MS):
+            for _ in range(10):
+                async with RateLimiter(repository=soft_repo) as fresh:
+                    await soft_repo.invalidate_config_cache()
+                    try:
+                        async with fresh.acquire("user-1", "llm", {"tpm": 600}):
+                            admitted += 1
+                    except RateLimitExceeded:
+                        pass
+        item = await _bucket_item(soft_repo, "user-1", "llm")
+        # Refilled to 1,000 by then: one 600 fits, a second does not.
+        assert admitted == 1, f"admitted {admitted} x 600 against tpm=1,000"
+        assert _soft_deadline(item) is None  # the slow pass removed the stale stamp
+
+    async def test_a_cached_pass_never_takes_the_stamp_as_the_authority(self, soft_repo):
+        """The config cache still says soft; the item's expired stamp sends the
+        pass to config read uncached, which says hard."""
+        await soft_repo.set_resource_defaults("llm", [SOFT_TPM])
+        start = soft_repo._now_ms()
+        async with RateLimiter(repository=soft_repo) as limiter:
+            with patch.object(soft_repo, "_now_ms", return_value=start):
+                async with limiter.acquire("user-1", "llm", {"tpm": 600}):
+                    pass
+            # Another process makes it hard and its fan-out misses this bucket.
+            other = Repository(name="test-soft", region="us-east-1", _skip_deprecation_warning=True)
+            with patch.object(other, "_fanout_soft", return_value=0):
+                await other.set_resource_defaults("llm", [HARD_TPM])
+            await other.close()
+            admitted = 0
+            with patch.object(soft_repo, "_now_ms", return_value=start + PAST_T_MS):
+                for _ in range(5):
+                    try:
+                        async with limiter.acquire("user-1", "llm", {"tpm": 600}):
+                            admitted += 1
+                    except RateLimitExceeded:
+                        pass
+        assert admitted == 1
+        assert _soft_deadline(await _bucket_item(soft_repo, "user-1", "llm")) is None
+
+    async def test_an_expired_stamp_is_renewed_while_the_limit_stays_soft(
+        self, soft_repo, soft_limiter
+    ):
+        await soft_repo.set_resource_defaults("llm", [RPM, SOFT_TPM])
+        start = soft_repo._now_ms()
+        with patch.object(soft_repo, "_now_ms", return_value=start):
+            async with soft_limiter.acquire("user-1", "llm", {"rpm": 1, "tpm": 900}):
+                pass
+        first = _soft_deadline(await _bucket_item(soft_repo, "user-1", "llm"))
+        assert first is not None and start < first <= start + PAST_T_MS
+        later = start + PAST_T_MS
+        with patch.object(soft_repo, "_now_ms", return_value=later):
+            for _ in range(3):
+                async with soft_limiter.acquire("user-1", "llm", {"rpm": 1, "tpm": 900}):
+                    pass
+        item = await _bucket_item(soft_repo, "user-1", "llm")
+        renewed = _soft_deadline(item)
+        assert renewed is not None and later < renewed <= later + PAST_T_MS
+        assert int(item["b_tpm_tk"]["N"]) < 0  # still metered into debt
+        assert _soft_deadline(item, "rpm") is None
+
+    async def test_the_fast_path_routes_an_expired_soft_stamp_to_the_slow_path(
+        self, soft_repo, soft_limiter
+    ):
+        await soft_repo.set_resource_defaults("llm", [SOFT_TPM])
+        start = soft_repo._now_ms()
+        with patch.object(soft_repo, "_now_ms", return_value=start):
+            async with soft_limiter.acquire("user-1", "llm", {"tpm": 1}):
+                pass
+        # Plenty of balance: without the guard this would debit silently and
+        # leave the expired stamp in place.
+        result = await soft_repo.speculative_consume(
+            "user-1", "llm", {"tpm": 1}, now_ms=start + PAST_T_MS
+        )
+        assert not result.success
+        assert result.failure_reason.name == "SCHEDULE_BOUNDARY"
+        item = await _bucket_item(soft_repo, "user-1", "llm")
+        assert int(item["b_tpm_tc"]["N"]) == 1_000  # nothing written
+
+    async def test_a_pre_release_boolean_stamp_reads_as_expired(self, soft_repo, soft_limiter):
+        await soft_repo.set_resource_defaults("llm", [SOFT_TPM])
+        async with soft_limiter.acquire("user-1", "llm", {"tpm": 1}):
+            pass
+        client = await soft_repo._get_client()
+        await client.update_item(
+            TableName=soft_repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(soft_repo._namespace_id, "user-1", "llm", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #s = :t",
+            ExpressionAttributeNames={"#s": "b_tpm_soft"},
+            ExpressionAttributeValues={":t": {"BOOL": True}},
+        )
+        (state,) = [
+            b for b in await soft_repo.get_buckets("user-1", "llm") if b.limit_name == "tpm"
+        ]
+        assert state.soft and state.soft_until_ms == schema.STAMP_EXPIRED
+        async with soft_limiter.acquire("user-1", "llm", {"tpm": 5_000}) as lease:
+            assert lease.overdrawn == ["tpm"]
+        assert _soft_stamp(await _bucket_item(soft_repo, "user-1", "llm"), "tpm")
+
+    async def test_fan_outs_stamp_a_deadline_at_most_t_out(self, soft_repo, soft_limiter):
+        await soft_repo.set_resource_defaults("llm", [HARD_TPM])
+        async with soft_limiter.acquire("user-1", "llm", {"tpm": 1}):
+            pass
+        now = soft_repo._now_ms()
+        with patch.object(soft_repo, "_now_ms", return_value=now):
+            await soft_repo.set_resource_defaults("llm", [SOFT_TPM])  # soft fan-out
+        deadline = _soft_deadline(await _bucket_item(soft_repo, "user-1", "llm"))
+        assert deadline is not None and now + 48_000 <= deadline <= now + 60_000
+        with patch.object(soft_repo, "_now_ms", return_value=now):
+            await soft_repo.set_limits("user-1", [SOFT_TPM], resource="llm")  # param sync
+        deadline = _soft_deadline(await _bucket_item(soft_repo, "user-1", "llm"))
+        assert deadline is not None and now + 48_000 <= deadline <= now + 60_000
 
 
 class TestVersionGate:

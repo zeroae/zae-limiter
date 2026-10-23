@@ -432,9 +432,10 @@ class TestCompositeBuilders:
         assert "ConditionExpression" not in update
 
     def test_normal_with_soft_stamps_and_floors(self) -> None:
-        """#467: soft floors OR the item's stamp, a trusted soft limit has no
-        floor, and the re-stamp reuses a floor's alias rather than declaring a
-        second one for the same attribute."""
+        """#467: soft floors OR the item's live stamp, a trusted soft limit has
+        no floor, and the re-stamp reuses a floor's alias rather than declaring
+        a second one for the same attribute. Each stamp is a deadline, pinned
+        on the one read (ADR-151 decisions 4 and 8)."""
         update = _repo().build_composite_normal(
             "user-1",
             "api",
@@ -442,15 +443,24 @@ class TestCompositeBuilders:
             refill_amounts={},
             now_ms=2_000,
             expected_rf=1_000,
-            soft_stamps={DOTTED: False, HYPHENATED: True, "rpm": True},
+            soft_stamps={DOTTED: None, HYPHENATED: 9_000, "rpm": 9_000},
+            soft_reads={DOTTED: 1_500, HYPHENATED: None, "rpm": STAMP_EXPIRED},
             soft_trusted=frozenset({HYPHENATED}),
         )["Update"]
         assert_expression_safe(update)
         names = update["ExpressionAttributeNames"]
+        values = update["ExpressionAttributeValues"]
+        condition = update["ConditionExpression"]
         soft_attrs = [v for v in names.values() if v.endswith("_soft")]
         assert len(soft_attrs) == len(set(soft_attrs)) == 3
-        assert "(attribute_exists(#bo0) OR #bt0 >= :bf0)" in update["ConditionExpression"]
-        assert "#bt1 >=" not in update["ConditionExpression"]
+        assert "(#bo0 > :bnow OR #bt0 >= :bf0)" in condition
+        assert values[":bnow"] == {"N": "2000"}
+        assert "#bt1 >=" not in condition
+        assert {"N": "9000"} in values.values()
+        # Restamps go in name order: req-min (#bs0), rpm (#bo2), then the dotted one (#bo0).
+        assert "attribute_not_exists(#bs0)" in condition
+        assert "#bo2 = :bsr1" in condition and values[":bsr1"] == {"BOOL": True}
+        assert "#bo0 = :bsr2" in condition and values[":bsr2"] == {"N": "1500"}
 
     @pytest.mark.parametrize(
         "deadline, read",
@@ -488,6 +498,7 @@ class TestCompositeBuilders:
         seed = BucketState.from_limit(
             "user-1", "api", Limit.per_minute(HYPHENATED, 10, soft=True), 2_000
         )
+        seed.soft_until_ms = 9_000
         update = _repo().build_composite_normal(
             "user-1",
             "api",
@@ -498,7 +509,7 @@ class TestCompositeBuilders:
             seeds={HYPHENATED: seed},
         )["Update"]
         assert_expression_safe(update)
-        assert update["ExpressionAttributeValues"][":so0"] == {"BOOL": True}
+        assert update["ExpressionAttributeValues"][":so0"] == {"N": "9000"}
 
     def test_retry_with_soft_limits(self) -> None:
         from zae_limiter.models import BucketState
@@ -515,7 +526,7 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
         condition = update["ConditionExpression"]
-        assert condition == "(attribute_exists(#bo0) OR #bt0 >= :bf0)"
+        assert condition == "(#bo0 > :bnow OR #bt0 >= :bf0)"
 
     def test_adjust(self) -> None:
         update = _repo().build_composite_adjust(

@@ -100,6 +100,7 @@ class LeaseEntry:
     _donor_debit: QuotaDonorDebit | None = None
     _soft_trusted: bool = False
     _soft_restamp: bool = False
+    _stamp_deadline_ms: int | None = None
     _bypass: bool = False
     _bypass_until_ms: int | None = None
     _bypass_restamp: tuple[int | None, int | None] | None = None
@@ -1032,11 +1033,16 @@ class SyncLease:
                             (owner_entry._cascade, owner_entry._parent_id),
                         )
                     )
-                soft_stamps = {
-                    e.limit.name: e.state.soft
-                    for e in group_entries
-                    if e._soft_restamp and (not e._seed)
-                }
+                soft_stamps: dict[str, int | None] = {}
+                soft_reads: dict[str, int | None] = {}
+                for e in group_entries:
+                    if not e._soft_restamp or e._seed:
+                        continue
+                    wanted = _stamp_deadline(e, now_ms, repo) if e.state.soft else None
+                    if wanted is None and e.state.soft_until_ms is None:
+                        continue
+                    soft_stamps[e.limit.name] = wanted
+                    soft_reads[e.limit.name] = e.state.soft_until_ms
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
@@ -1068,6 +1074,7 @@ class SyncLease:
                         if owner_entry is not None
                         else None,
                         soft_stamps=soft_stamps or None,
+                        soft_reads=soft_reads or None,
                         soft_trusted=_soft_trusted(group_entries),
                         bypass_stamp=next(
                             (
@@ -1179,6 +1186,7 @@ class SyncLease:
                         seeds=seeds or None,
                         soft_trusted=_soft_trusted(group_entries),
                         period_guards=guards,
+                        now_ms=now_ms,
                     )
                 return repo.build_composite_retry(
                     entity_id=entity_id,
@@ -1187,6 +1195,7 @@ class SyncLease:
                     shard_id=shard_id,
                     seeds=seeds or None,
                     soft_trusted=_soft_trusted(group_entries),
+                    now_ms=now_ms,
                 )
 
             retry_items: list[dict[str, Any]] = []
@@ -1945,6 +1954,17 @@ def _bypass_write_failed(
         if reason_codes[idx] == "ConditionalCheckFailed":
             return True
     return False
+
+
+def _stamp_deadline(entry: LeaseEntry, now_ms: int, repo: Any) -> int:
+    """The deadline a soft stamp this entry's write sets (ADR-151 decision 8).
+
+    The one the acquire computed before its uncached config read; an entry
+    built without one (by hand) takes the commit's own reading.
+    """
+    if entry._stamp_deadline_ms is not None:
+        return entry._stamp_deadline_ms
+    return int(repo._stamp_deadline(now_ms))
 
 
 def _bypass_deadline(group: list[LeaseEntry], now_ms: int, repo: Any) -> int:

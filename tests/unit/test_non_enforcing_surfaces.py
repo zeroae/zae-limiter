@@ -1,5 +1,6 @@
 """Soft limits and bypass on the CLI, manifest and CloudFormation surfaces (#467, #311)."""
 
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -238,7 +239,9 @@ class TestProvisionerFanoutSoft:
                 "SK": {"S": sk_state()},
             },
         )["Item"]
-        return bool(item.get("b_tpm_soft", {}).get("BOOL"))
+        # A deadline still ahead (ADR-151 decision 8).
+        raw = item.get("b_tpm_soft", {}).get("N")
+        return raw is not None and int(raw) > int(time.time() * 1000)
 
     def test_a_resource_change_restamps_its_buckets(self, setup):
         from zae_limiter_provisioner.fanout import fanout_soft
@@ -288,11 +291,13 @@ class TestProvisionerFanoutSoft:
         from zae_limiter_provisioner.bucket_sync import build_bucket_param_update
 
         expr, names, values = build_bucket_param_update(
-            {"tpm": SOFT_TPM, "rpm": RPM}, None, {"old"}, 0
+            {"tpm": SOFT_TPM, "rpm": RPM}, None, {"old"}, 1_000
         )
         soft_aliases = {k for k, v in names.items() if v.endswith("_soft")}
         assert len(soft_aliases) == 3  # tpm SET, rpm REMOVE, stale `old` REMOVE
-        assert {"BOOL": True} in values.values()
+        # A deadline at most T after `now_ms` (ADR-151 decision 8).
+        (deadline,) = [int(v["N"]) for k, v in values.items() if k.startswith(":sft")]
+        assert 1_000 + 48_000 <= deadline <= 1_000 + 60_000
 
 
 class TestCli:

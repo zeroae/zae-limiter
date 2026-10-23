@@ -673,13 +673,14 @@ class SyncRepositoryProtocol(Protocol):
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
-        soft_stamps: "dict[str, bool] | None" = None,
+        soft_stamps: "dict[str, int | None] | None" = None,
         soft_trusted: frozenset[str] = frozenset(),
         owner_pgen: int | None = None,
         owner_pinc: str | None = None,
         read_tokens: dict[str, int] | None = None,
         cleared_top_ups: Sequence[str] = (),
         bypass_stamp: tuple[int | None, int | None] | None = None,
+        soft_reads: dict[str, int | None] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -741,6 +742,11 @@ class SyncRepositoryProtocol(Protocol):
                 stamp to ``deadline`` (REMOVE it when None) from bypass config
                 read uncached on this pass, pinned on the deadline read
                 (absent when None) (#311, ADR-151); ``None`` leaves it.
+            soft_stamps: Limit name -> the ``b_{name}_soft`` deadline to SET,
+                or None to REMOVE it, from limits read uncached (#467, ADR-151).
+            soft_reads: Limit name -> the soft deadline read off the item
+                (None when absent), pinning each stamp write in
+                ``soft_stamps``.
         """
         ...
 
@@ -753,6 +759,7 @@ class SyncRepositoryProtocol(Protocol):
         seeds: "dict[str, BucketState] | None" = None,
         soft_trusted: frozenset[str] = frozenset(),
         period_guards: dict[str, tuple[int | None, int | None]] | None = None,
+        now_ms: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
 
@@ -772,6 +779,9 @@ class SyncRepositoryProtocol(Protocol):
             seeds: Limit name -> state of a limit still missing from the item
                 (#633), written with ``if_not_exists`` so a limit another
                 writer seeded first is debited, never re-seeded.
+            now_ms: The instant a soft stamp's deadline is judged against
+                (#467, ADR-151): a balance floor is waived only by a stamp
+                live at it. None reads the clock.
         """
         ...
 

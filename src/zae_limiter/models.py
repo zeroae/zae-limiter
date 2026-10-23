@@ -1296,9 +1296,17 @@ class BucketState:
     bypass_until_ms: int | None = None
     # `b_{name}_soft` (#467, ADR-151): the limit is metered but never rejects.
     # Read off the item on every image (speculative, rejection cache, slow
-    # path); the slow path overrides it from config only when that config was
-    # read fresh this pass. `try_consume` admits a soft state unconditionally.
+    # path) as "stamp present", live or not; its deadline is `soft_until_ms`.
+    # The slow path overrides it with the soft-ness it decides, from config
+    # read fresh or, when the item carries a stamp, read uncached — never from
+    # the stamp itself (decision 8). `try_consume` admits a soft state
+    # unconditionally.
     soft: bool = False
+    # The `b_{name}_soft` stamp's deadline as read, epoch ms (ADR-151 decision
+    # 8), or None when absent; `schema.STAMP_EXPIRED` for a pre-release `BOOL`.
+    # The slow path pins its own stamp write on it. On a state the slow path
+    # creates or seeds: the deadline it stamps (None stamps nothing).
+    soft_until_ms: int | None = None
     # The raw schedule strings on the item as this state was read (#721), or
     # `None` when the state was not read off an item. Item level: (`sched`,
     # `rsched`, `sched_tz`); this limit's own overrides: (`b_{name}_sched`,

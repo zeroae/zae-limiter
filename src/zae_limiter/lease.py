@@ -187,9 +187,14 @@ class LeaseEntry:
     # (config read fresh, or an `acquire(limits=...)` override), so a soft
     # limit's balance condition is omitted from the write.
     _soft_trusted: bool = False
-    # #467: config was read fresh this pass, so the rf-locked write re-stamps
-    # `b_{name}_soft` from it (SET or REMOVE) and a stale stamp self-heals.
+    # #467: config was read fresh (or, for an item carrying a soft stamp,
+    # uncached) this pass, so the rf-locked write re-stamps `b_{name}_soft`
+    # from it — SET to `_stamp_deadline_ms`, or REMOVE — pinned on the stamp as
+    # read, and a stale stamp self-heals (ADR-151 decisions 4 and 8).
     _soft_restamp: bool = False
+    # ADR-151 decision 8: the deadline a stamp this pass writes carries, at most
+    # T after its uncached config read.
+    _stamp_deadline_ms: int | None = None
     # #311: admitted under bypass. Fixed for the life of the lease: the initial
     # write, adjustments, release and rollback touch `tc` only, so tokens a
     # bypassed request never debited are never owed, even if the bypass is
@@ -1344,11 +1349,19 @@ class Lease:
                     )
                 # #467: soft stamps re-asserted from config read fresh, and the
                 # soft limits whose balance condition this write omits.
-                soft_stamps = {
-                    e.limit.name: e.state.soft
-                    for e in group_entries
-                    if e._soft_restamp and not e._seed
-                }
+                # Each as a deadline or a REMOVE, pinned on the stamp as read
+                # (ADR-151 decisions 4 and 8); nothing for a hard limit that
+                # carries no stamp.
+                soft_stamps: dict[str, int | None] = {}
+                soft_reads: dict[str, int | None] = {}
+                for e in group_entries:
+                    if not e._soft_restamp or e._seed:
+                        continue
+                    wanted = _stamp_deadline(e, now_ms, repo) if e.state.soft else None
+                    if wanted is None and e.state.soft_until_ms is None:
+                        continue
+                    soft_stamps[e.limit.name] = wanted
+                    soft_reads[e.limit.name] = e.state.soft_until_ms
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
@@ -1395,6 +1408,7 @@ class Lease:
                             else None
                         ),
                         soft_stamps=soft_stamps or None,
+                        soft_reads=soft_reads or None,
                         soft_trusted=_soft_trusted(group_entries),
                         bypass_stamp=next(
                             (
@@ -1570,6 +1584,7 @@ class Lease:
                         seeds=seeds or None,
                         soft_trusted=_soft_trusted(group_entries),
                         period_guards=guards,
+                        now_ms=now_ms,
                     )
                 return repo.build_composite_retry(
                     entity_id=entity_id,
@@ -1578,6 +1593,7 @@ class Lease:
                     shard_id=shard_id,
                     seeds=seeds or None,
                     soft_trusted=_soft_trusted(group_entries),
+                    now_ms=now_ms,
                 )
 
             retry_items: list[dict[str, Any]] = []
@@ -2421,6 +2437,17 @@ def _bypass_write_failed(
         if reason_codes[idx] == "ConditionalCheckFailed":
             return True
     return False
+
+
+def _stamp_deadline(entry: LeaseEntry, now_ms: int, repo: Any) -> int:
+    """The deadline a soft stamp this entry's write sets (ADR-151 decision 8).
+
+    The one the acquire computed before its uncached config read; an entry
+    built without one (by hand) takes the commit's own reading.
+    """
+    if entry._stamp_deadline_ms is not None:
+        return entry._stamp_deadline_ms
+    return int(repo._stamp_deadline(now_ms))
 
 
 def _bypass_deadline(group: list[LeaseEntry], now_ms: int, repo: Any) -> int:

@@ -34,7 +34,6 @@ from zae_limiter.schema import (
     BUCKET_FIELD_SOFT,
     BUCKET_PREFIX,
     DEFAULT_RESOURCE,
-    DEFAULT_STAMP_TTL_SECONDS,
     DISABLED_BYPASS,
     ENTITY_FIELD_PGEN,
     GSI2_NAME,
@@ -54,13 +53,9 @@ from zae_limiter.schema import (
     stamp_deadline,
 )
 
-from .bucket_sync import resolve_bucket_limits
+from .bucket_sync import STAMP_TTL_SECONDS, resolve_bucket_limits
 
 logger = logging.getLogger(__name__)
-
-#: T for the stamps this provisioner writes (ADR-151 decision 8): a `bypass` or
-#: soft stamp stands at most this long after the config read that justified it.
-STAMP_TTL_SECONDS = DEFAULT_STAMP_TTL_SECONDS
 
 
 def now_ms() -> int:
@@ -495,10 +490,17 @@ def fanout_cascade(
     return written
 
 
-def stamp_bucket_soft(client: Any, table_name: str, pk: str, targets: dict[str, bool]) -> None:
+def stamp_bucket_soft(
+    client: Any,
+    table_name: str,
+    pk: str,
+    targets: dict[str, bool],
+    soft_until_ms: int | None = None,
+) -> None:
     """SET or REMOVE ``b_{name}_soft`` on one bucket item (#467).
 
-    Mirrors ``Repository._stamp_bucket_soft``, positional tokens included.
+    Mirrors ``Repository._stamp_bucket_soft``, positional tokens included. A
+    stamp SET carries ``soft_until_ms`` (ADR-151 decision 8), or T from now.
     """
     set_parts: list[str] = []
     remove_parts: list[str] = []
@@ -510,7 +512,9 @@ def stamp_bucket_soft(client: Any, table_name: str, pk: str, targets: dict[str, 
     kwargs: dict[str, Any] = {}
     if set_parts:
         expr.append(f"SET {', '.join(set_parts)}")
-        kwargs["ExpressionAttributeValues"] = {":t": {"BOOL": True}}
+        if soft_until_ms is None:
+            soft_until_ms = deadline_from(now_ms())
+        kwargs["ExpressionAttributeValues"] = {":t": {"N": str(soft_until_ms)}}
     if remove_parts:
         expr.append(f"REMOVE {', '.join(remove_parts)}")
     try:
@@ -547,6 +551,8 @@ def fanout_soft(
     else:
         query = (GSI4_NAME, "GSI4PK", "GSI4SK", namespace_id)
     resolved: dict[tuple[str, str], tuple[dict[str, dict[str, Any]], str | None]] = {}
+    # Per bucket key, taken before the resolution its stamps come from.
+    deadlines: dict[tuple[str, str], int] = {}
     stamped: set[str] = set()
     for _pass in range(2):
         for pk in _query_bucket_pks(client, table_name, *query, BUCKET_PREFIX):
@@ -555,6 +561,7 @@ def fanout_soft(
             _ns, eid, bucket_resource, _shard = parse_bucket_pk(pk)
             key = (eid, bucket_resource)
             if key not in resolved:
+                deadlines[key] = deadline_from(now_ms())
                 resolved[key] = resolve_bucket_limits(
                     client, table_name, namespace_id, eid, bucket_resource, consistent_read=True
                 )
@@ -565,6 +572,6 @@ def fanout_soft(
             if level in ("entity", "entity_default") or (resource is None and level == "resource"):
                 continue
             targets = {name: bool(limits.get(name, {}).get("soft")) for name in names | set(limits)}
-            stamp_bucket_soft(client, table_name, pk, targets)
+            stamp_bucket_soft(client, table_name, pk, targets, deadlines[key])
             stamped.add(pk)
     return len(stamped)

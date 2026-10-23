@@ -2008,6 +2008,7 @@ class SyncRateLimiter:
         Returns None if parent acquire fails (caller should compensate child).
         """
         now_ms = self._repository._now_ms()
+        parent_stamp_deadline = self._repository._stamp_deadline(now_ms)
         fetched_cascade: dict[tuple[str, str], bool | str | None] = {}
         parent_limits, parent_config_source = self._resolve_limits(
             parent_id, resource, None, cascade_out=fetched_cascade
@@ -2030,6 +2031,8 @@ class SyncRateLimiter:
             if existing is None:
                 return None
             if existing.bypass:
+                return None
+            if existing.soft_until_ms is not None and parent_soft_authority != _SOFT_FROM_CONFIG:
                 return None
             existing.sched = limit.schedule
             existing.reset_sched = limit.reset_schedule
@@ -2083,6 +2086,7 @@ class SyncRateLimiter:
                     _granted=parent_granted,
                     _soft_trusted=parent_soft_authority == _SOFT_FROM_CONFIG,
                     _soft_restamp=parent_soft_authority == _SOFT_FROM_CONFIG,
+                    _stamp_deadline_ms=parent_stamp_deadline,
                     _stored_top_up=parent_stored_top_up,
                 )
             )
@@ -2795,7 +2799,11 @@ class SyncRateLimiter:
                 eid_shard_count = grant_count
             seed_ws = self._seed_window_starts(eid, resource, missing, seed_shard_count)
             fresh_soft: dict[str, bool] = {}
-            if soft_authority[eid] == _SOFT_FROM_ITEM and (missing or not any_existing):
+            soft_stamped = any(state.soft_until_ms is not None for state in item_states)
+            restamp_soft = soft_authority[eid] == _SOFT_FROM_ITEM and soft_stamped
+            if soft_authority[eid] == _SOFT_FROM_ITEM and (
+                missing or not any_existing or soft_stamped
+            ):
                 carried = uncached_soft.get(eid)
                 fresh_soft = (
                     carried
@@ -2872,13 +2880,19 @@ class SyncRateLimiter:
                     state.reset_after_seconds = limit.reset_after_seconds
                 if soft_authority[eid] != _SOFT_FROM_ITEM:
                     soft = limit.soft
-                elif existing is None:
+                elif existing is None or restamp_soft:
                     soft = fresh_soft.get(limit.name, False)
                 else:
                     soft = existing.soft
                 state.soft = soft
                 if limit.soft != soft:
                     limit = replace(limit, soft=soft)
+                if existing is None:
+                    state.soft_until_ms = (
+                        stamp_deadline
+                        if soft and soft_authority[eid] != _SOFT_FROM_OVERRIDE
+                        else None
+                    )
                 original_tk = state.tokens_milli
                 stored_top_up = state.topped_up_milli is not None
                 original_rf = item_rf if seed else state.last_refill_ms
@@ -2936,8 +2950,9 @@ class SyncRateLimiter:
                         _stored_reset_after_seconds=stored_rsa,
                         _granted=granted or (is_new and limit.is_quota),
                         _donor_debit=donor,
-                        _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM,
-                        _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG,
+                        _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM or restamp_soft,
+                        _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG or restamp_soft,
+                        _stamp_deadline_ms=stamp_deadline,
                         _bypass=eid_bypass,
                         _bypass_until_ms=stamp_deadline if eid_bypass else None,
                         _bypass_restamp=bypass_restamp,

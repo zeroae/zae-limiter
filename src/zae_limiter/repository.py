@@ -3225,10 +3225,12 @@ class Repository:
         if state.grant_count is not None:
             attrs[schema.BUCKET_FIELD_GC] = {"N": str(state.grant_count)}
         # #467: a soft limit is born soft. Taken from config read uncached on
-        # this pass (ADR-151 §6.2), never from the config cache: a stale soft
-        # stamp would admit without limit for as long as it stood.
-        if state.soft:
-            attrs[schema.BUCKET_FIELD_SOFT] = {"BOOL": True}
+        # this pass (ADR-151 §6.2), never from the config cache, and stamped
+        # as a deadline at most T after that read (decision 8): a stale soft
+        # stamp admits without limit for as long as it stands. A soft limit
+        # with no deadline (an `acquire(limits=...)` override) is not stamped.
+        if state.soft and state.soft_until_ms is not None:
+            attrs[schema.BUCKET_FIELD_SOFT] = {"N": str(state.soft_until_ms)}
         if state.topped_up_milli:
             # ADR-149: only a top-up into a bucket that did not exist yet
             # creates one carrying it (`Repository.top_up`, D5).
@@ -3446,13 +3448,14 @@ class Repository:
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
-        soft_stamps: dict[str, bool] | None = None,
+        soft_stamps: dict[str, int | None] | None = None,
         soft_trusted: frozenset[str] = frozenset(),
         owner_pgen: int | None = None,
         owner_pinc: str | None = None,
         read_tokens: dict[str, int] | None = None,
         cleared_top_ups: Sequence[str] = (),
         bypass_stamp: tuple[int | None, int | None] | None = None,
+        soft_reads: dict[str, int | None] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -3569,17 +3572,24 @@ class Repository:
                 that window has to stay unapplied until a pass rolls it. No
                 condition term is needed: the ``rf`` lock already serialises
                 every other writer of the marker.
-            soft_stamps: Limit name -> soft-ness to stamp as ``b_{name}_soft``
-                (SET when true, REMOVE when false) (#467, ADR-151). Only a pass
-                whose limits were read **uncached** passes it, so a stamp left
-                wrong — by an older client, or a missed fan-out — self-heals on
-                the next fresh slow pass. A seeded name must not appear here;
-                its stamp rides in the seed.
+            soft_stamps: Limit name -> the deadline to stamp as
+                ``b_{name}_soft``, or None to REMOVE it (#467, ADR-151
+                decisions 4 and 8). Only a pass whose limits were read
+                **uncached** passes it, so a stamp left wrong — by an older
+                client, or a missed fan-out — self-heals on the next fresh slow
+                pass. A seeded name must not appear here; its stamp rides in
+                the seed.
+            soft_reads: Limit name -> the deadline the pass read off the item
+                for that stamp (None when absent), for every name in
+                ``soft_stamps``: each stamp write is pinned on it, so a pass
+                that read config before a fan-out cannot undo the fan-out. A
+                lost pin falls to the consumption-only retry. Omitted: no pins.
             soft_trusted: Names the caller admitted as soft on authority it
                 trusts over the item's stamp (config read fresh, or an
                 ``acquire(limits=...)`` override). Their balance floor is
                 omitted. Every other floor is OR'ed with the item's own soft
-                stamp, so a limit soft on the item is never rejected here.
+                stamp while it is live (``> now_ms``), so a limit soft on the
+                item is never rejected here.
             owner_pgen: The owner's parent generation, read from its META with
                 ``owner`` (ADR-150), or ``None`` to stamp no generation. Stamped
                 beside the owner pair and pinned on ``attribute_not_exists(pgen)
@@ -3758,11 +3768,11 @@ class Repository:
                 floor_val = f":bf{i}"
                 soft_alias = f"#bo{i}"
                 attr_values[floor_val] = {"N": str(floor)}
+                attr_values[":bnow"] = {"N": str(now_ms)}
                 attr_names[soft_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
                 soft_aliases[name] = soft_alias
-                condition_parts.append(
-                    f"(attribute_exists({soft_alias}) OR {tk_alias} >= {floor_val})"
-                )
+                # Only a live stamp waives the floor (ADR-151 decision 8).
+                condition_parts.append(f"({soft_alias} > :bnow OR {tk_alias} >= {floor_val})")
 
             # A raise computed from the read must not stack on a credit that
             # landed since: speculative debits only lower `tk`, so `tk` above
@@ -3775,16 +3785,24 @@ class Repository:
         # pass. Positional tokens (`#bs{k}`), disjoint from the rest.
         # One alias per attribute: a name the floor above already aliased
         # reuses it rather than declaring a second alias for the same path.
-        for k, (name, is_soft) in enumerate(sorted((soft_stamps or {}).items())):
+        # Pinned on the stamp as read (ADR-151 decision 4): `:bsr{k}`.
+        for k, (name, deadline) in enumerate(sorted((soft_stamps or {}).items())):
             alias = soft_aliases.get(name)
             if alias is None:
                 alias = f"#bs{k}"
                 attr_names[alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
-            if is_soft:
+            if deadline is not None:
                 set_parts.append(f"{alias} = :bs{k}")
-                attr_values[f":bs{k}"] = {"BOOL": True}
+                attr_values[f":bs{k}"] = {"N": str(deadline)}
             else:
                 remove_parts.append(alias)
+            if soft_reads is not None and name in soft_reads:
+                read = soft_reads[name]
+                if read is None:
+                    condition_parts.append(f"attribute_not_exists({alias})")
+                else:
+                    attr_values[f":bsr{k}"] = schema.stamp_value(read)
+                    condition_parts.append(f"{alias} = :bsr{k}")
 
         # #311, ADR-151 decision 4: the item's bypass stamp follows config read
         # uncached on this pass, pinned on the stamp as read.
@@ -3892,6 +3910,7 @@ class Repository:
         seeds: dict[str, BucketState] | None = None,
         soft_trusted: frozenset[str] = frozenset(),
         period_guards: dict[str, tuple[int | None, int | None]] | None = None,
+        now_ms: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
 
@@ -3915,9 +3934,12 @@ class Repository:
                 therefore debited, never re-seeded.
             soft_trusted: As for :meth:`build_composite_normal` (#467): these
                 soft limits carry no balance condition, and every other limit's
-                condition admits on the item's own soft stamp. A soft seed
-                carries none either — its soft-ness came from config read
-                uncached on this pass.
+                condition admits on the item's own soft stamp while it is live
+                at ``now_ms``. A soft seed carries none either — its soft-ness
+                came from config read uncached on this pass. The retry never
+                writes a stamp, so an expired one admits nothing here.
+            now_ms: The instant a soft stamp's deadline is judged against
+                (ADR-151 decision 8); None reads the clock.
             period_guards: Limit name -> ``(reset_edge_ms, window_start_ms)``
                 for each quota the lost write was to reset, roll or open
                 (#743). The retry debits the item's balance as it stands, so it
@@ -3934,6 +3956,7 @@ class Repository:
         attr_names: dict[str, str] = {}
         attr_values: dict[str, Any] = {}
         guards = period_guards or {}
+        stamp_now = self._now_ms() if now_ms is None else now_ms
 
         # Index-derived tokens, never the limit name (#634); see
         # `build_composite_normal`.
@@ -3960,9 +3983,8 @@ class Repository:
             else:
                 soft_alias = f"#bo{i}"
                 attr_names[soft_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
-                condition_parts.append(
-                    f"(attribute_exists({soft_alias}) OR {tk_alias} >= {tk_threshold})"
-                )
+                attr_values[":bnow"] = {"N": str(stamp_now)}
+                condition_parts.append(f"({soft_alias} > :bnow OR {tk_alias} >= {tk_threshold})")
             edge, window_start = guards.get(name, (None, None))
             if edge is not None:
                 attr_names["#prf"] = schema.BUCKET_FIELD_RF
@@ -4685,10 +4707,16 @@ class Repository:
             soft_alias = f"#o{i}"
             attr_names[soft_alias] = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_SOFT)
             # A bypassed bucket admits on its stamp too (#311), so an enforce
-            # shape guessed wrong is admitted and refunded, never rejected —
-            # but only before the stamp's deadline (ADR-151 decision 8).
+            # shape guessed wrong is admitted and refunded, never rejected.
+            # Either stamp admits only before its deadline (ADR-151 decision 8).
             condition_parts.append(
-                f"(#byp > :vu_now OR attribute_exists({soft_alias}) OR {tk_alias} >= {thresh_val})"
+                f"(#byp > :vu_now OR {soft_alias} > :vu_now OR {tk_alias} >= {thresh_val})"
+            )
+            # An expired soft stamp is sent to the slow path to be renewed or
+            # removed; without this, a limit with `tk >= c` would be debited
+            # and the stamp never renewed or removed.
+            condition_parts.append(
+                f"(attribute_not_exists({soft_alias}) OR {soft_alias} > :vu_now)"
             )
 
         # The bound `now_ms` (#430) judges every stamp's deadline as well as
@@ -4853,14 +4881,27 @@ class Repository:
                             failure_reason=SpeculativeFailureReason.DISABLED,
                         )
 
-                    # A `bypass` stamp at or past its deadline (ADR-151
-                    # decision 8): neither a rejection nor a cleared bypass,
+                    # A `bypass` stamp, or a declared limit's soft stamp, at
+                    # or past its deadline (ADR-151 decision 8): neither a
+                    # rejection nor a cleared bypass,
                     # but a stamp to renew or remove from config read
                     # uncached, which only the slow path does. Routed like a
                     # closed schedule window — never a 429, never a shard
                     # retry — and checked before the cleared-bypass branch, so
                     # an expired stamp costs no second, enforce-shaped write.
-                    if not old_bypassed and schema.BUCKET_FIELD_BYPASS in old_item:
+                    expired_stamp = (
+                        not old_bypassed and schema.BUCKET_FIELD_BYPASS in old_item
+                    ) or (
+                        # Only the enforce shape tests a soft stamp.
+                        not bypass_shape
+                        and any(
+                            b.soft_until_ms is not None
+                            and b.soft_until_ms <= now_ms
+                            and b.limit_name in consume
+                            for b in old_buckets
+                        )
+                    )
+                    if expired_stamp:
                         return SpeculativeResult(
                             success=False,
                             old_buckets=old_buckets,
@@ -5753,8 +5794,13 @@ class Repository:
         unscoped = resource == schema.DEFAULT_RESOURCE
         plans: dict[str, tuple[str, dict[str, str], dict[str, dict[str, Any]]]] = {}
         if not unscoped:
+            # The caller just wrote these limits: the soft deadline counts
+            # from now (ADR-151 decision 8).
             plans[resource] = self._build_bucket_param_update(
-                limits, bucket_ttl_refill_multiplier, stale_limit_names
+                limits,
+                bucket_ttl_refill_multiplier,
+                stale_limit_names,
+                self._stamp_deadline(self._now_ms()),
             )
 
         # Two discovery passes, exactly like the ADR-125 disable fan-out: the
@@ -5823,6 +5869,8 @@ class Repository:
           limit absent from this resource's resolution is stale *here* even
           though the caller did not name it.
         """
+        # Taken before the resolution the soft stamps come from (decision 8).
+        soft_until = self._stamp_deadline(self._now_ms())
         resolved, _on_unavailable, source = await self.resolve_limits(entity_id, bucket_resource)
         if not resolved:
             # Nothing applies anywhere any more. There is no correct value to
@@ -5836,13 +5884,14 @@ class Repository:
         )
         entity_level = source in ("entity", "entity_default")
         multiplier = 0 if entity_level else self._bucket_ttl_refill_multiplier
-        return self._build_bucket_param_update(resolved, multiplier, stale or None)
+        return self._build_bucket_param_update(resolved, multiplier, stale or None, soft_until)
 
     def _build_bucket_param_update(
         self,
         limits: list[Limit],
         bucket_ttl_refill_multiplier: int | None,
         stale_limit_names: set[str] | None,
+        soft_until_ms: int | None = None,
     ) -> tuple[str, dict[str, str], dict[str, dict[str, Any]]]:
         """Build the SET/REMOVE UpdateExpression for one bucket item.
 
@@ -5852,6 +5901,9 @@ class Repository:
             bucket_ttl_refill_multiplier: None leaves `ttl` alone, 0 REMOVEs it,
                 >0 SETs it from the limits' max time-to-fill
             stale_limit_names: Limit names to strip from the bucket entirely
+            soft_until_ms: The deadline a soft limit's stamp carries (ADR-151
+                decision 8), at most T after the config these limits came
+                from; None takes it from now.
 
         Returns:
             `(update_expr, expr_names, expr_values)`
@@ -5862,6 +5914,8 @@ class Repository:
         remove_parts: list[str] = []
         expr_names: dict[str, str] = {}
         expr_values: dict[str, dict[str, Any]] = {}
+        if soft_until_ms is None and any(limit.soft for limit in limits):
+            soft_until_ms = self._stamp_deadline(self._now_ms())
 
         for i, limit in enumerate(limits):
             name = limit.name
@@ -5916,7 +5970,7 @@ class Repository:
             expr_names[f"#sft{i}"] = soft_attr
             if limit.soft:
                 set_parts.append(f"#sft{i} = :sft{i}")
-                expr_values[f":sft{i}"] = {"BOOL": True}
+                expr_values[f":sft{i}"] = {"N": str(soft_until_ms)}
             else:
                 remove_parts.append(f"#sft{i}")
 
@@ -7968,6 +8022,13 @@ class Repository:
             reset_sched = (
                 () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_RSCHED, item_rsched, True)
             )
+            soft_until = (
+                None
+                if is_wcu
+                else schema.decode_stamp(
+                    item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT))
+                )
+            )
 
             buckets.append(
                 BucketState(
@@ -7995,13 +8056,10 @@ class Repository:
                     # `wcu` still gates under bypass: it protects the partition.
                     bypass=bypassed and not is_wcu,
                     bypass_until_ms=None if is_wcu else bypass_until,
-                    # #467: `wcu` is never soft, whatever an item says.
-                    soft=not is_wcu
-                    and bool(
-                        item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT), {}).get(
-                            "BOOL", False
-                        )
-                    ),
+                    # #467: `wcu` is never soft, whatever an item says. Present,
+                    # live or not; the deadline rides beside it (decision 8).
+                    soft=soft_until is not None,
+                    soft_until_ms=soft_until,
                     stored_item_sched_raw=(item_sched, item_rsched, raw_sched_tz),
                     stored_sched_raw=(
                         item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED), {}).get("S"),
@@ -9622,6 +9680,9 @@ class Repository:
         await self.invalidate_config_cache()
         stamped: set[str] = set()
         resolved: dict[tuple[str, str], tuple[str | None, dict[str, bool]]] = {}
+        # Per bucket key, the deadline its soft stamps carry: taken before the
+        # resolution they come from (ADR-151 decision 8).
+        deadlines: dict[tuple[str, str], int] = {}
         for _pass in range(2):
             if resource is not None:
                 pks = [pk for pk, _eid in await self._discover_resource_bucket_pks(resource)]
@@ -9633,6 +9694,7 @@ class Repository:
                 _ns, eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
                 key = (eid, bucket_resource)
                 if key not in resolved:
+                    deadlines[key] = self._stamp_deadline(self._now_ms())
                     resolved[key] = await self._resolve_soft_levels(
                         eid, bucket_resource, consistent_read=True
                     )
@@ -9646,17 +9708,21 @@ class Repository:
                     continue
                 targets = {name: softness.get(name, False) for name in names | set(softness)}
                 try:
-                    await self._stamp_bucket_soft(pk, targets)
+                    await self._stamp_bucket_soft(pk, targets, deadlines[key])
                 except Exception as e:
                     raise FanoutIncomplete(len(stamped), e, resource=resource) from e
                 stamped.add(pk)
         return len(stamped)
 
-    async def _stamp_bucket_soft(self, pk: str, targets: dict[str, bool]) -> None:
+    async def _stamp_bucket_soft(
+        self, pk: str, targets: dict[str, bool], soft_until_ms: int | None = None
+    ) -> None:
         """SET or REMOVE ``b_{name}_soft`` on one bucket item (#467).
 
         Positional tokens (``#f{i}``, #634). A stamp for a limit the item does
-        not carry is harmless: discovery needs the ``_tk``/``_cp`` pair.
+        not carry is harmless: discovery needs the ``_tk``/``_cp`` pair. A
+        stamp SET carries ``soft_until_ms`` (ADR-151 decision 8), the deadline
+        from the resolution that decided it; None takes it from now.
         """
         client = await self._get_client()
         set_parts: list[str] = []
@@ -9672,7 +9738,9 @@ class Repository:
         expr = []
         if set_parts:
             expr.append(f"SET {', '.join(set_parts)}")
-            values[":t"] = {"BOOL": True}
+            if soft_until_ms is None:
+                soft_until_ms = self._stamp_deadline(self._now_ms())
+            values[":t"] = {"N": str(soft_until_ms)}
         if remove_parts:
             expr.append(f"REMOVE {', '.join(remove_parts)}")
         params: dict[str, Any] = {

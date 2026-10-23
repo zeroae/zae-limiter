@@ -54,6 +54,7 @@ from zae_limiter.schema import (
     SK_BUCKET,
     WCU_LIMIT_NAME,
     bucket_attr,
+    decode_stamp,
     gsi2_pk_resource,
     gsi2_sk_bucket,
     gsi2_sk_usage,
@@ -612,7 +613,11 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
             tc_milli=int(new_tc_raw),
             window_consumed_mark_milli=int(wtc_raw) if wtc_raw is not None else None,
             grant_count=int(gc_raw) if gc_raw is not None else None,
-            soft=bool(new_image.get(bucket_attr(limit_name, BUCKET_FIELD_SOFT), {}).get("BOOL")),
+            # A deadline (ADR-151 decision 8), read only as "stamp present":
+            # the overdraw signal counts a debit a soft limit took into debt.
+            # The aggregator never writes either stamp.
+            soft=decode_stamp(new_image.get(bucket_attr(limit_name, BUCKET_FIELD_SOFT)))
+            is not None,
             topped_up_milli=int(tu_raw) if tu_raw is not None else None,
         )
 

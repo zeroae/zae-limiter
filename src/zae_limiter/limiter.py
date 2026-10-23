@@ -2483,6 +2483,8 @@ class RateLimiter:
         Returns None if parent acquire fails (caller should compensate child).
         """
         now_ms = self._repository._now_ms()
+        # Before the config read a soft restamp comes from (ADR-151 decision 8).
+        parent_stamp_deadline = self._repository._stamp_deadline(now_ms)
 
         # Resolve parent limits. The fetch also records the parent's cascade
         # policy (ADR-146) when it actually read config; served from the config
@@ -2527,6 +2529,11 @@ class RateLimiter:
             if existing.bypass:
                 # A bypassed parent (#311) is written bypass-shaped, which only
                 # the full slow path decides, from config read uncached.
+                return None
+            if existing.soft_until_ms is not None and parent_soft_authority != _SOFT_FROM_CONFIG:
+                # A soft stamp is never the authority (ADR-151 decision 8): the
+                # full slow path reads the parent's soft-ness uncached and
+                # renews or removes it.
                 return None
 
             # See `_do_acquire`: the resolved config, not the item, is what
@@ -2618,6 +2625,7 @@ class RateLimiter:
                     _granted=parent_granted,
                     _soft_trusted=parent_soft_authority == _SOFT_FROM_CONFIG,
                     _soft_restamp=parent_soft_authority == _SOFT_FROM_CONFIG,
+                    _stamp_deadline_ms=parent_stamp_deadline,
                     _stored_top_up=parent_stored_top_up,
                 )
             )
@@ -3540,9 +3548,17 @@ class RateLimiter:
             seed_ws = await self._seed_window_starts(eid, resource, missing, seed_shard_count)
             # A create or seed is stamped soft from config read uncached this
             # pass (ADR-151 §6.2): when the cache served the limits, read the
-            # soft-ness again, uncached. Only here, never on a plain pass.
+            # soft-ness again, uncached. So is an item carrying a soft stamp:
+            # the stamp may be one a fan-out missed, so it is never the
+            # authority, and this pass renews or removes it from config read
+            # uncached (decisions 4 and 8). An item with no stamp and a cached
+            # pass pays nothing.
             fresh_soft: dict[str, bool] = {}
-            if soft_authority[eid] == _SOFT_FROM_ITEM and (missing or not any_existing):
+            soft_stamped = any(state.soft_until_ms is not None for state in item_states)
+            restamp_soft = soft_authority[eid] == _SOFT_FROM_ITEM and soft_stamped
+            if soft_authority[eid] == _SOFT_FROM_ITEM and (
+                missing or not any_existing or soft_stamped
+            ):
                 carried = uncached_soft.get(eid)
                 fresh_soft = (
                     carried
@@ -3702,13 +3718,24 @@ class RateLimiter:
                 # into the lease agrees with the state.
                 if soft_authority[eid] != _SOFT_FROM_ITEM:
                     soft = limit.soft
-                elif existing is None:
+                elif existing is None or restamp_soft:
                     soft = fresh_soft.get(limit.name, False)
                 else:
-                    soft = existing.soft
+                    soft = existing.soft  # no stamp on the item: hard
                 state.soft = soft
                 if limit.soft != soft:
                     limit = replace(limit, soft=soft)
+                if existing is None:
+                    # A created or seeded limit is stamped with this pass's
+                    # deadline (ADR-151 decision 8); an override is not config,
+                    # so its soft-ness is trusted for this write but stamped
+                    # on nothing. An existing state keeps the deadline it was
+                    # read with: the restamp is pinned on it.
+                    state.soft_until_ms = (
+                        stamp_deadline
+                        if soft and soft_authority[eid] != _SOFT_FROM_OVERRIDE
+                        else None
+                    )
 
                 # Capture original values before try_consume modifies them (ADR-115)
                 original_tk = state.tokens_milli
@@ -3823,8 +3850,9 @@ class RateLimiter:
                         # it carries `gc` at the count it was sized at.
                         _granted=granted or (is_new and limit.is_quota),
                         _donor_debit=donor,
-                        _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM,
-                        _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG,
+                        _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM or restamp_soft,
+                        _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG or restamp_soft,
+                        _stamp_deadline_ms=stamp_deadline,
                         _bypass=eid_bypass,
                         _bypass_until_ms=stamp_deadline if eid_bypass else None,
                         _bypass_restamp=bypass_restamp,
