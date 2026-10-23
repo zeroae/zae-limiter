@@ -1919,12 +1919,11 @@ supported on system config.
 
 ### Reset and Top-Up (ADR-149, #470)
 
-`Repository.reset_bucket(entity_id, resource, limits=None, principal=None)` and
-`Repository.top_up(entity_id, resource, amounts, principal=None)` (both on
+`Repository.reset_bucket(entity_id, resource, limits=None, principal=None, idempotency_key=None)`
+and `Repository.top_up(entity_id, resource, amounts, principal=None, idempotency_key=None)` (both on
 `RepositoryProtocol`, generated sync twins; CLI `entity reset ID -r R [-l L ...]` /
 `entity top-up ID -r R --add L:N ...`) change one (entity, resource)'s balance **now**, on every
-shard. Both return `models.BucketOperationResult(entity_id, resource, shards, amounts)` (not
-exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed until v0.17.0.
+shard. Both return `BucketOperationResult(entity_id, resource, shards, amounts)` (exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed until v0.17.0.
 
 - **In place, never delete** (#471's delete lost `tc`, `disabled`, `shard_count`, `gc`). Each
   shard gets one rf-locked, zero-consumption pass; every shard of the pair goes in **one
