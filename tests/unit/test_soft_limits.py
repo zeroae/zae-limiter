@@ -1006,6 +1006,35 @@ class TestAggregatorOverdrawSignal:
         assert snapshot.overdrawn == {"tpm": 2}
 
 
+class TestSoftLimitAddedLater:
+    async def test_a_soft_limit_added_after_the_bucket_exists_is_seeded(self, soft_repo):
+        """Review D3: the resource-level soft fan-out stamps `b_tpm_soft` on a
+        bucket created before `tpm` existed. On the stamp alone the fast path
+        admitted `tpm` and ADDed a `tk` with no `cp` that no reader sees, so
+        the #633 seed never ran and the limit was never metered."""
+        hard_rpm = Limit.per_minute("rpm", 2)
+        await soft_repo.set_resource_defaults("llm", [hard_rpm])
+        async with RateLimiter(repository=soft_repo) as limiter:
+            async with limiter.acquire("u", "llm", {"rpm": 1}):
+                pass
+        await soft_repo.set_resource_defaults(
+            "llm", [hard_rpm, Limit.per_minute("tpm", 100, soft=True)]
+        )
+        item = await _bucket_item(soft_repo, "u", "llm")
+        assert schema.bucket_attr("tpm", schema.BUCKET_FIELD_CP) not in item
+        assert _soft_stamp(item, "tpm")  # the fan-out stamped the missing limit
+
+        for _ in range(3):
+            async with RateLimiter(repository=soft_repo) as fresh:
+                async with fresh.acquire("u", "llm", {"rpm": 0, "tpm": 5}) as lease:
+                    assert lease.consumed["tpm"] == 5
+        item = await _bucket_item(soft_repo, "u", "llm")
+        assert schema.bucket_attr("tpm", schema.BUCKET_FIELD_CP) in item  # seeded
+        states = await soft_repo.get_buckets("u", "llm")
+        assert "tpm" in {s.limit_name for s in states}
+        assert int(item[schema.bucket_attr("tpm", schema.BUCKET_FIELD_TC)]["N"]) == 15_000
+
+
 class TestStampFallbacks:
     """The defensive branches of the stamp-deadline work (ADR-151 decision 8)."""
 

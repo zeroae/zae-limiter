@@ -1649,7 +1649,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Bypass refund (#311), once per process per pair | `ADD tk +c` (`build_composite_adjust(counter=False)`) | (unconditional) | No |
 | Bypassed slow path (#311) | `ADD tc +c`, `SET bypass = :deadline` (`build_bypass_consume`: the renewal, from config read uncached) | `attribute_exists(PK) AND attribute_exists(bypass)` (any deadline) | No |
 | Soft restamp, resource/system change (#467) | `SET b_{n}_soft = :deadline` / `REMOVE` (`_stamp_bucket_soft`) | `attribute_exists(PK)` | No |
-| Speculative consume, enforce shape: stamp terms (ADR-151 decision 8) | unchanged `ADD` | per declared limit `(bypass > :now OR b_{n}_soft > :now OR tk >= c) AND (attribute_not_exists(b_{n}_soft) OR b_{n}_soft > :now)`; once `(attribute_not_exists(bypass) OR bypass > :now)` and `(bypass > :now OR attribute_not_exists(vu) OR vu > :now)`; `:now` is the bound `:vu_now`. An expired stamp fails the write: `SCHEDULE_BOUNDARY`, never a 429 | No |
+| Speculative consume, enforce shape: stamp terms (ADR-151 decision 8) | unchanged `ADD` | per declared limit `(bypass > :now OR (b_{n}_soft > :now AND attribute_exists(b_{n}_cp)) OR tk >= c) AND (attribute_not_exists(b_{n}_soft) OR b_{n}_soft > :now)`; once `(attribute_not_exists(bypass) OR bypass > :now)` and `(bypass > :now OR attribute_not_exists(vu) OR vu > :now)`; `:now` is the bound `:vu_now`. An expired stamp fails the write: `SCHEDULE_BOUNDARY`, never a 429 | No |
 | Normal path, stamps (ADR-151 decisions 4, 8) | `SET b_{n}_soft = :deadline` / `REMOVE` per limit whenever the pass read its limits uncached; `SET bypass = :deadline` (config bypass, no stamp: the request is enforced) / `REMOVE bypass` (config enforce, a stamp); each balance floor `(b_{n}_soft > :now OR tk >= floor)` | each stamp written pinned on its value as read (`attribute_not_exists` or `= :read`); a lost pin takes the retry, which renews or removes no stamp (a limit it seeds gets its soft stamp `if_not_exists`) and whose floor is `(b_{n}_soft > :now OR tk >= c)` | Same write |
 | Stamp correction before a rejection (ADR-151 decisions 4, 8; review E1) | `SET bypass = :deadline` / `REMOVE bypass`, `SET b_{n}_soft = :deadline` / `REMOVE` per limit, nothing else (`build_stamp_fix`, via `Repository.fix_bucket_stamps`), only for stamps that disagree with the config the rejected pass read uncached: removed, set, or renewed once expired | `attribute_exists(PK)` and each stamp pinned on its value as read; a lost pin is a no-op; skipped when a rejected quota move commit carries the stamps | No |
 | Cascade / owner stamp fan-out, per bucket (ADR-146; a move, ADR-150; provisioner mirror) | `SET cascade = :c, parent_id = :p, pgen = :pg, pinc = :inc` (or `REMOVE parent_id`) | `attribute_exists(PK) AND (attribute_not_exists(pinc) OR pinc <> :inc OR attribute_not_exists(pgen) OR pgen <= :pg)`; a lost pin means a newer move of this incarnation stamped it: skipped, and not counted | No |
@@ -1947,8 +1947,10 @@ exact. User guide: `docs/guide/soft-limits-and-bypass.md`. Design:
 - **Soft** is a property of one limit (`Limit.soft`, every factory takes `soft=`), resolved with
   the limit (override, not merge). Config `l_{name}_soft` (`w_…` for `reset_after`), bucket
   `b_{name}_soft`. The fast path decides it **on the server**: each declared limit's condition
-  is `(#byp > :now OR #o{i} > :now OR #t{i} >= :h{i})`, the `ADD` set unchanged, so a soft
-  limit is debited into debt at 0 RCU + 1 WCU with no client knowledge.
+  is `(#byp > :now OR (#o{i} > :now AND attribute_exists(#oc{i})) OR #t{i} >= :h{i})`, the
+  `ADD` set unchanged, so a soft limit is debited into debt at 0 RCU + 1 WCU with no client
+  knowledge. The stamp admits only beside the limit's `cp` (`#oc{i}`): a soft fan-out stamps
+  buckets created before the limit existed, and those must reach the #633 seed (review D3).
   `try_consume` admits a soft (or bypassed) state, which covers slow-path admission,
   `Lease.consume`, failure classification and the rejection cache at once. Slow-path authority
   (`RateLimiter._soft_authority`): an override, config read fresh (`limits_read_fresh`), or —

@@ -4817,14 +4817,21 @@ class Repository:
             # client needs no knowledge of which limits are soft, so a stamp
             # changed elsewhere takes effect on the very next write. A soft
             # limit missing from the item fails both halves and goes to the
-            # slow path, which seeds it (#633).
+            # slow path, which seeds it (#633): the stamp admits only beside
+            # the limit's `cp`, because a resource- or system-level soft
+            # fan-out stamps every bucket, including one created before the
+            # limit existed. On the stamp alone the ADD wrote a `tk` with no
+            # `cp` that no reader sees, and the seed never ran (review D3).
             soft_alias = f"#o{i}"
+            soft_cp_alias = f"#oc{i}"
             attr_names[soft_alias] = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_SOFT)
+            attr_names[soft_cp_alias] = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_CP)
             # A bypassed bucket admits on its stamp too (#311), so an enforce
             # shape guessed wrong is admitted and refunded, never rejected.
             # Either stamp admits only before its deadline (ADR-151 decision 8).
             condition_parts.append(
-                f"(#byp > :vu_now OR {soft_alias} > :vu_now OR {tk_alias} >= {thresh_val})"
+                f"(#byp > :vu_now OR ({soft_alias} > :vu_now AND attribute_exists("
+                f"{soft_cp_alias})) OR {tk_alias} >= {thresh_val})"
             )
             # An expired soft stamp is sent to the slow path to be renewed or
             # removed; without this, a limit with `tk >= c` would be debited
