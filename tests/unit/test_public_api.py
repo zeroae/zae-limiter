@@ -77,3 +77,13 @@ def test_permission_denied_is_exported_as_an_unavailability():
     assert "PermissionDenied" in zae_limiter.__all__
     assert PermissionDenied is zae_limiter.exceptions.PermissionDenied
     assert issubclass(PermissionDenied, RateLimiterUnavailable)
+
+
+def test_bucket_operation_result_is_exported():
+    """`BucketOperationResult` is public (ADR-149): `reset_bucket()` and
+    `top_up()` return it, and a user names it to annotate code that inspects
+    what a top-up granted, as with `Availability`."""
+    from zae_limiter import BucketOperationResult
+
+    assert "BucketOperationResult" in zae_limiter.__all__
+    assert BucketOperationResult is zae_limiter.models.BucketOperationResult

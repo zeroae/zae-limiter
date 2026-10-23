@@ -439,7 +439,7 @@ Cascade classes create child entities under a shared parent and set `cascade=Tru
 ```
 src/zae_limiter/
 ├── __init__.py        # Public API exports
-├── models.py          # Limit, Entity, LimitStatus, Availability, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo, BackendCapabilities, Status, LimitName, ResourceCapacity, EntityCapacity
+├── models.py          # Limit, Entity, LimitStatus, Availability, BucketOperationResult, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo, BackendCapabilities, Status, LimitName, ResourceCapacity, EntityCapacity
 ├── exceptions.py      # RateLimitExceeded, LeaseExpiredError, RateLimiterUnavailable, PermissionDenied, StackOperationError, StackAlreadyExistsError, InfrastructureNotFoundError, NamespaceNotFoundError, NamespaceStateError, EntityNotFoundError, EntityExistsError, VersionError, ValidationError, ResourceDisabled
 ├── naming.py          # Resource name validation (ZAEL- prefix retained for legacy discovery)
 ├── bucket.py          # Token bucket math (integer arithmetic)
