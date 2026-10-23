@@ -8641,6 +8641,7 @@ class TestResetAndTopUpCommands:
             ],
         )
         assert result.exit_code == 0, result.output
+        assert "Reset 'user-123' on 'gpt-4' (1 shard; session: +9)" in result.output
         repo.reset_bucket.assert_called_once_with(
             "user-123", "gpt-4", limits=["session", "rpm"], idempotency_key="ticket-42"
         )
@@ -8678,7 +8679,9 @@ class TestResetAndTopUpCommands:
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "rpd: +7, session: +5,000" in result.output
+        assert "Topped up 'user-123' on 'gpt-4' (1 shard; rpd: +7, session: +5,000)" in (
+            result.output
+        )
         assert "less than asked" not in result.output
         repo.top_up.assert_called_once_with(
             "user-123", "gpt-4", {"session": 5000, "rpd": 7}, idempotency_key=None
@@ -8708,6 +8711,23 @@ class TestResetAndTopUpCommands:
             cli, ["entity", "top-up", "user-123", "-r", "gpt-4", "--add", "rpm:10"]
         )
         assert result.exit_code == 0, result.output
+        assert "rpm granted less than asked" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_top_up_that_writes_nothing_says_so(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """A dripping-only top-up of an entity with no bucket writes nothing."""
+        self._writable(mock_repo_class, top_up={"return_value": self._result(0, {"rpm": 0})})
+        result = runner.invoke(
+            cli, ["entity", "top-up", "user-123", "-r", "gpt-4", "--add", "rpm:10"]
+        )
+        assert result.exit_code == 0, result.output
+        assert (
+            "Nothing to top up: 'user-123' has no bucket for 'gpt-4', "
+            "and a dripping limit starts full"
+        ) in result.output
+        assert "Topped up" not in result.output
         assert "rpm granted less than asked" in result.output
 
     @pytest.mark.parametrize("value", ["rpm", ":5", "rpm:five", "rpm:0", "rpm:-3"])
