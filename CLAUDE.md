@@ -1952,8 +1952,8 @@ exact. User guide: `docs/guide/soft-limits-and-bypass.md`. Design:
   `try_consume` admits a soft (or bypassed) state, which covers slow-path admission,
   `Lease.consume`, failure classification and the rejection cache at once. Slow-path authority
   (`RateLimiter._soft_authority`): an override, config read fresh (`limits_read_fresh`), or —
-  when the config cache served — config read uncached whenever the item carries a soft stamp or
-  a cached limit says soft (never the item's stamp itself); a create or seed takes soft-ness from
+  when the config cache served — config read uncached whenever the item carries a soft stamp
+  (never the item's stamp itself); a create or seed takes soft-ness from
   the gate's uncached `resolve_access(include_limits=..., include_system=...)` read (+0.5 RCU
   only when the limits came from the system level) or `resolve_soft_limits`. A fresh pass
   re-stamps every limit (`build_composite_normal(soft_stamps=...)`, deadline or REMOVE, pinned

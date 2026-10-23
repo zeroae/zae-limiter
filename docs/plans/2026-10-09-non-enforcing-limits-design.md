@@ -188,8 +188,9 @@ instead of costing a second, enforce-shaped write.
   config read **uncached in that pass** (§6.2). The rf-locked normal write re-stamps (SET the
   deadline or REMOVE) `b_{n}_soft` for every limit on the item whenever that pass's limits were
   read uncached, and reads them uncached (`resolve_access(include_limits=True)`) whenever the
-  item carries a soft stamp or a cached limit says soft: the item's own stamp is never the
-  authority. Pinned on the stamp as read, like the bypass stamp.
+  item carries a soft stamp: the item's own stamp is never the authority. A soft limit whose
+  item lacks the stamp is enforced until a fresh pass or a fan-out stamps it (R2). Pinned on
+  the stamp as read, like the bypass stamp.
 
 ## 5. Leases (#455 declared scope)
 
