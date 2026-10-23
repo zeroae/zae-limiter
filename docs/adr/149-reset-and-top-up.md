@@ -74,6 +74,9 @@ topped up above its ceiling only through `b_{q}_tu`, which ends with the period 
 - A topped-up balance can sit on shards a request does not draw, so a draw can reject while
   the entity holds purchased tokens elsewhere, as ADR-145 already accepts for quotas.
 - Another process's rejection cache can refuse for up to its TTL after a reset elsewhere.
+- Reset and top-up are operator actions by contract. IAM cannot stop a principal that may
+  acquire from writing its own buckets, so an application can grant itself allowance; a policy
+  can only keep it out of the library's calls, not off the items.
 - Every reset and roll writer, client and aggregator, gains one attribute to clear, and ADR-145's
   conservation fuzz test and writer registry gain a term.
 - A credit landing between the read and the write can lift a balance above its target until the

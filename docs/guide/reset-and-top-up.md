@@ -122,6 +122,20 @@ entity, and once the entity exists.
 - **Another process may refuse for up to its rejection-cache TTL** (default 1 s) after a reset
   or top-up made elsewhere. The process that made the change admits at once.
 
+## Who may reset or top up
+
+Reset and top-up are **operator actions**: call them from a principal holding the `full` or
+`ns-full` policy (or your own equivalent), never from the application that is being limited.
+
+!!! warning "IAM cannot stop an application from granting itself allowance"
+    A principal that may `acquire()` must be able to update its own bucket items, so it can also
+    raise their balance, or a quota's top-up, with a direct DynamoDB write, and the stack's
+    acquire policies (`acq`, `ns-acq`) do not refuse `reset_bucket()` or `top_up()` either. An
+    application enforces its own limits; it can also simply not call `acquire()`. When paid
+    allowance must hold even against the application, the application must hold no DynamoDB
+    write credentials: run `acquire()` in a service it can only invoke, and top-ups in an
+    operator-only one.
+
 ## Edge cases
 
 - A reset of an entity that has never acquired on the resource is a no-op (`result.shards ==
