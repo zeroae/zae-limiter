@@ -189,7 +189,8 @@ def plan_operation(
                 rolled = RateLimiter._apply_window_roll(limit, state, now_ms)
                 if limit.is_quota and (reset or rolled):
                     regranted.add(name)
-            state.tokens_milli, _rf = force_consume(state, 0, now_ms)
+            # Only the balance: the `rf` this write stamps is `written_rf`, below.
+            state.tokens_milli = force_consume(state, 0, now_ms)[0]
             work[name] = state
         writes.append(write)
         working.append(work)
