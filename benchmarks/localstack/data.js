@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792773323252,
+  "lastUpdate": 1792773690070,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -35001,6 +35001,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0058300139684503306",
             "extra": "mean: 1.0812771640000052 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "321e6b63617359f82f6edb69c23a1693a90e55f9",
+          "message": "🐛 fix(repository): Stack C review fixes (reset and top-up) (#754)\n\n## Summary\n\nReview and validation fixes for Stack C (operator reset and top-up,\nADR-149), stacked on #723. From the fresh-context review: two\ncorrectness bugs in the refund and create paths, a retry-policy fix, a\n`delete_entity` speed-up and documentation corrections. From validating\nthe stack against #470: a namespace-scope bug the new LocalStack test\nfound (plus the same gap already on `main`), the missing LocalStack,\nratchet and real-AWS tests, CLI wording, a new public export\n(`BucketOperationResult`), and the owner's decisions written into\nADR-149 and the design plan.\n\nCloses #470\n\n### Commits on this PR\n\n| Commit | Item | What changed |\n|--------|------|--------------|\n| 2428d6a80 | F1 | A quota refund that an operator reset overtook is now\ndropped, detected through the `b_{q}_rn` reset counter. Before: 15\nadmitted against a quota of 10. After: ≤ 10 |\n| 33635bc30 | F3 | A top-up that creates a bucket now carries the\nADR-150 owner `ConditionCheck` and stamps `pgen` / `pinc`; a cancelled\ncheck re-reads META before retrying |\n| eff47f531 | F4 | Guide wording: what a reset or top-up that gives up\nleaves behind |\n| 7b2487668 | F5 | Permanent cancellation reasons (`ValidationError`,\n`ItemCollectionSizeLimitExceeded`) are no longer retried |\n| 988d41c81 | F6 | CLAUDE.md: the reset / top-up access pattern and its\ncost |\n| bdb3463da | F7 | Corrected the reason the incarnation residual stays\nopen |\n| 55fc23122 | F8 | The reset design plan now matches #730's refund and\nthe F1/F2 pins |\n| 1b54b3498 | F9 | `delete_entity` queries the operation records\nconcurrently (one round trip instead of R); capacity benchmarks assert 2\n+ R. GSI3 alternative to be measured in #755 |\n| 55483f613 | V1, V3, V9 | ADR-149 amends ADR-145 (I1, I7, I8), says why\na dripping top-up is capped, and its Decision fits the ADR format |\n| 1c5094d7a | V2, V4–V8 | Design plan: §8 decisions recorded, §1 dated\nas a snapshot, §3 no longer says the rework happened on #471 |\n| ba7d63b88 | F10 | A `repo.namespace(...)` scope carries the top-up\ngate flag; `top_up()` on a scope raised `AttributeError` |\n| 5a1e81df2 | F10 | A namespace scope shares the shard-cap warning set\n(the same gap, already on `main`) |\n| 40925d635 | F10 | Test: a scope sets every attribute `__init__` does |\n| 4f4df4fb3 | W1 | LocalStack tests: reset (fast and slow), top-up,\nsharded reset |\n| c45a22186 | W2 | Test: a quota top-up ratchets `client_min_version`\npast 0.16.0 |\n| d6e445cf5 | P1 | ADR-149 and the guide: reset and top-up are operator\nactions; IAM cannot stop an acquire-policy holder (follow-up #756) |\n| 17af48887 | AWS | `TestE2EAWSResetAndTopUp`: reset and top-up under\n`full`, `ns-full` and `acq` on real AWS |\n| d5be79de1 | X2 | CLI: \"1 shard\", and \"Nothing to top up\" when a top-up\nwrites nothing |\n| db67f7506 | X4 | `BucketOperationResult` is exported (public API) and\ndocumented |\n| 04ec01c69 | Y1 | CLAUDE.md: the reset / top-up signatures and export\nstatus |\n\n### Fixes that landed lower in the stack\n\n| Commit | PR | Item | What changed |\n|--------|----|------|--------------|\n| 8eef52f8c | #714 | F0 | ADR-149's link to ADR-137 fixed (unblocks the\nrequired `build` check) |\n| bb1bd1446 | #720 | F2 | A refund pins `b_{q}_tu`, the quota top-up its\nceiling includes (regression from merging main's #730) |\n\n### Validation against #470\n\nEach PR was validated against #470's revised acceptance criteria by a\nseparate agent, bottom up. At this PR's head all 12 criteria pass.\n\n## Test plan\n\n- [x] Targeted unit suites at this head: 400 + 118 + 71 + 20 + 17 + 5\npassed; capacity benchmarks 2 passed\n- [x] Each code fix's tests confirmed to fail with the fix disabled\n- [x] Multi-resource (`also=`) tests for F1 and F3\n- [x] LocalStack: `tests/integration/test_reset_top_up.py`, 4 passed\n- [x] Real AWS: `TestE2EAWSResetAndTopUp`, 3 passed (us-east-1,\n2026-10-22)\n- [x] `ruff`, `mypy`, sync generation clean\n- [x] `mkdocs build --strict` clean\n- [x] Pre-push hook: 100% patch coverage\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_017XzYMYKXNcZNQYS3xQhFdc",
+          "timestamp": "2026-10-23T12:35:23-04:00",
+          "tree_id": "3c234212b4cacf341e292f377a9761179b3342f7",
+          "url": "https://github.com/zeroae/zae-limiter/commit/321e6b63617359f82f6edb69c23a1693a90e55f9"
+        },
+        "date": 1792773688987,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 40.43487437827866,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006821595268671555",
+            "extra": "mean: 24.731126666667553 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 29.373615674531383,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008192746254574968",
+            "extra": "mean: 34.044157555552744 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 56.281971208251015,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0038802678200549096",
+            "extra": "mean: 17.767679037037684 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 54.222720696205116,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0049125356831295095",
+            "extra": "mean: 18.44245340625239 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 39.222114965920376,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004860540926316201",
+            "extra": "mean: 25.495820428574234 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 143.46737393103436,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0013361600538472416",
+            "extra": "mean: 6.9702258611125485 msec\nrounds: 36"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 28.70420688066968,
+            "unit": "iter/sec",
+            "range": "stddev: 0.046249590919349236",
+            "extra": "mean: 34.83809896428219 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 38.463639850808235,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005531376323898163",
+            "extra": "mean: 25.998579538462145 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 42.769463755574236,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004118413799775794",
+            "extra": "mean: 23.381167594594118 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 40.74864534730326,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005678409986862341",
+            "extra": "mean: 24.540693107143493 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 45.38414750996321,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006532749683852295",
+            "extra": "mean: 22.0341254571427 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 42.169203092462034,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005122985450339261",
+            "extra": "mean: 23.71398856666455 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 45.2317971518894,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005337438345197539",
+            "extra": "mean: 22.10834110000045 msec\nrounds: 60"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9473460118556416,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004391368444959849",
+            "extra": "mean: 513.5194228000046 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9558145146461217,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006165960073088978",
+            "extra": "mean: 511.29592940000066 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9670517191647497,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0012376160151058935",
+            "extra": "mean: 1.0340708569999832 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9443332587305099,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008334525162183914",
+            "extra": "mean: 1.0589481951999915 sec\nrounds: 5"
           }
         ]
       }
