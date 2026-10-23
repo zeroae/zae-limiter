@@ -262,6 +262,7 @@ its Path 2 clone copies the base item verbatim, deadline included, and never ext
 | Slow path, bypassed existing item (`build_bypass_consume`) | `ADD tc`, `SET bypass = :deadline`; condition `attribute_exists(#byp)` (any deadline: only a pass that read bypass config uncached builds it, so it is the renewal) |
 | Slow path, rf-locked normal write | `SET b_{n}_soft = :deadline` / `REMOVE`, `SET bypass = :deadline` / `REMOVE`, each pinned on the stamp as read; each balance floor `(#bo{i} > :now OR tk >= floor)` |
 | Consumption-only retry | floor `(#bo{i} > :now OR tk >= c)`; never writes a stamp |
+| Stamp correction before a rejection (`build_stamp_fix`) | `SET bypass = :deadline` / `REMOVE`, `SET b_{n}_soft = :deadline` / `REMOVE`, and nothing else; condition `attribute_exists(PK)` and each stamp pinned on its value as read |
 | Create / seed | `bypass`, `b_{n}_soft` = the pass's deadline, from its uncached read |
 | Fan-outs (`_stamp_bucket_disabled`, `_stamp_bucket_soft`, the param sync, provisioner `fanout.py` / `bucket_sync.py`) | `SET … = :deadline`, deadline = resolution time + `T × U(0.8, 1.0)` |
 | Aggregator | parses both as numbers; never writes them |
@@ -269,6 +270,21 @@ its Path 2 clone copies the base item verbatim, deadline included, and never ext
 A stamp stored as `BOOL true` by a pre-release build reads as present and already expired:
 `BOOL > N` is false on DynamoDB (mismatched types compare false) and on moto, so the fast path
 sends it to the slow path, which replaces it with a deadline or removes it.
+
+**A rejected slow pass still corrects the stamps.** A rejection writes nothing, so without
+this the restamp above never lands on a bucket that stays exhausted: an expired stamp config no
+longer backs sent every request to the slow path (a failed fast-path write, the reads, the
+uncached walk) and back to a 429, until refill admitted one — up to a day for a calendar quota
+(review E1: 10 rejections, 10 slow passes, the stamp still there). So a pass about to raise
+`RateLimitExceeded` first sends one stamp-only write per existing item whose stamps disagree
+with what it decided from config read uncached (`RateLimiter._fix_rejected_stamps` →
+`Repository.fix_bucket_stamps`): it removes a stamp config no longer backs, sets a missing one
+config wants, renews an expired one config still backs, and leaves a live one config agrees with
+alone. It moves no `tk`, `tc`, `rf` or `vu`, so it admits nothing. A pass committing a rejected
+quota move skips it (that rf-locked write carries the stamps), and so does a multi-resource part
+that planned fine beside a rejected one — its own correction is sent instead. Best effort: a lost
+pin is a no-op, any other failure is logged and the 429 stands. Cost: +1 WCU on that one
+rejection; the next ones are fast rejections again (1 WCU, or 0 from the rejection cache).
 
 **Cost.** A bypassed or soft bucket pays one renewal per shard per T: the failed fast-path
 write plus one slow pass, about 2.5 RCU + 2 WCU. At T = 60 s that is about +$0.016 per million
@@ -280,7 +296,7 @@ stamp pays nothing: `attribute_not_exists` passes.
 | | What | Bound |
 |---|---|---|
 | R1 | A stamp a fan-out missed keeps its old meaning | until its deadline: at most T after the read that justified it, plus clock skew between processes |
-| R2 | A stamp missing where config wants one (an old client's create, a top-up create, a clone of an older image) | under-admission until the next slow pass or fan-out; a request rejected in the meantime writes nothing, so it can repeat |
+| R2 | A stamp missing where config wants one (an old client's create, a top-up create, a clone of an older image) | under-admission until the next slow pass or fan-out, a rejected one included (it sets the stamp) |
 | R3 | The consumption-only retry omits the floor of a limit the pass read as soft (`soft_trusted`) though a fan-out has since made it hard | one request |
 | R4 | A cached pass's renewal read is eventually consistent | bounded by T: a stale read can extend a stamp once more |
 

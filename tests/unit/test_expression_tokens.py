@@ -559,6 +559,24 @@ class TestCompositeBuilders:
         assert update["UpdateExpression"] == "SET #byp = :byp"
 
     @pytest.mark.parametrize(
+        "bypass, soft",
+        [
+            # Renew a pre-release stamp, set a missing one, remove a stale one.
+            ((9_000, STAMP_EXPIRED), {DOTTED: (9_000, None), HYPHENATED: (None, 5)}),
+            ((None, 5), None),  # remove only: no values but the pin
+            (None, {DOTTED: (None, None)}),  # nothing read, nothing set
+            (None, {HYPHENATED: (9_000, 5)}),
+        ],
+    )
+    def test_stamp_fix(self, bypass, soft) -> None:
+        """Review E1: a rejected pass's stamp-only correction, pinned as read."""
+        update = _repo().build_stamp_fix("user-1", "api", 2, bypass=bypass, soft=soft)["Update"]
+        assert_expression_safe(update)
+        assert update["ConditionExpression"].startswith("attribute_exists(PK)")
+        written = set(update["ExpressionAttributeNames"].values())
+        assert all(name == "bypass" or name.endswith("_soft") for name in written)
+
+    @pytest.mark.parametrize(
         "exists, pgen, pinc",
         [(False, None, None), (True, 0, "-"), (True, 0, "2026-01-01T00:00:00Z"), (True, 7, "a1")],
     )

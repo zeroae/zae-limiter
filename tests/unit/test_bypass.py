@@ -664,6 +664,72 @@ class TestStampsExpire:
         assert _n(item, "bypass") == stamped  # the fan-out's stamp stands
         assert _n(item, "b_rpm_tk") == 1_000  # the retry debited, enforced
 
+    async def test_a_rejected_pass_removes_a_stamp_config_no_longer_backs(self, repo):
+        """Review E1: a rejection wrote nothing, so an expired stamp on an
+        exhausted quota kept every request on the slow path until the next
+        reset. The first rejection now removes it; the rest are fast."""
+        await repo.set_resource_defaults("llm", [Limit.quota("rpy", 2, cron="0 0 1 1 *")])
+        start = repo._now_ms()
+        limiter = RateLimiter(repository=repo)
+        with patch.object(repo, "_now_ms", return_value=start):
+            async with limiter.acquire("u", "llm", {"rpy": 2}):
+                pass  # spent
+            await repo.bypass_resource("llm")
+            async with limiter.acquire("u", "llm", {"rpy": 1}) as lease:
+                assert lease.bypassed is True  # learned, nothing debited
+        # The clear's fan-out misses this bucket.
+        await repo._write_resource_config_flag("llm", schema.CONFIG_FIELD_DISABLED, None)
+
+        slow = 0
+        original = limiter._do_acquire
+
+        async def counting(*args, **kwargs):
+            nonlocal slow
+            slow += 1
+            return await original(*args, **kwargs)
+
+        rejected = 0
+        with (
+            patch.object(repo, "_now_ms", return_value=start + PAST_T_MS),
+            patch.object(limiter, "_do_acquire", counting),
+        ):
+            for _ in range(10):
+                try:
+                    async with limiter.acquire("u", "llm", {"rpy": 1}):
+                        pass
+                except RateLimitExceeded:
+                    rejected += 1
+        item = await _item(repo)
+        assert rejected == 10
+        assert "bypass" not in item
+        assert slow == 1, f"{slow} slow passes for 10 rejections"
+        assert _n(item, "b_rpy_tk") == 0
+
+    async def test_a_bypassed_child_rejected_by_its_parent_renews_its_stamp(self, repo):
+        """Review E1, cascade: the child's bypassed write would have renewed its
+        stamp; the parent's 429 wrote nothing, so it is renewed alone."""
+        rph = Limit.per_hour("rph", 2)
+        await repo.set_resource_defaults("llm", [rph])
+        await repo.create_entity("p")
+        await repo.create_entity("c", parent_id="p", cascade=True)
+        await repo.bypass_entity("c", resource="llm")
+        start = repo._now_ms()
+        limiter = RateLimiter(repository=repo)
+        with patch.object(repo, "_now_ms", return_value=start):
+            async with limiter.acquire("c", "llm", {"rph": 1}) as lease:
+                assert lease.bypassed is True
+            async with limiter.acquire("p", "llm", {"rph": 1}):
+                pass  # the parent is spent
+        later = start + PAST_T_MS
+        with patch.object(repo, "_now_ms", return_value=later):
+            with pytest.raises(RateLimitExceeded):
+                async with limiter.acquire("c", "llm", {"rph": 1}):
+                    pass
+        child = await _item(repo, "c")
+        assert _live(child, later)
+        assert _n(child, "bypass") <= later + schema.DEFAULT_STAMP_TTL_SECONDS * 1000
+        assert _n(child, "b_rph_tk") == 2_000  # nothing debited
+
     async def test_stamp_ttl_bounds_every_deadline_this_writer_sets(self, mock_dynamodb):
         """T is the writer's `stamp_ttl`: a create and a fan-out alike."""
         from zae_limiter import __version__

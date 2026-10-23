@@ -3629,6 +3629,103 @@ class SyncRepository:
         }
         return {"Update": update}
 
+    def build_stamp_fix(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int = 0,
+        *,
+        bypass: tuple[int | None, int | None] | None = None,
+        soft: dict[str, tuple[int | None, int | None]] | None = None,
+    ) -> dict[str, Any]:
+        """A rejected slow pass's stamp correction (ADR-151 decisions 4 and 8).
+
+        The stamps only: ``SET`` a deadline or ``REMOVE``, for ``bypass`` and
+        each ``b_{name}_soft``, as the config this pass read uncached says.
+        Nothing else on the item moves (no ``tk``, ``tc``, ``rf`` or ``vu``),
+        so it admits nothing. Each stamp is pinned on its value as read, so a
+        fan-out or another pass that changed it since wins and this is a no-op.
+        Positional tokens (``#xb``, ``#xo{i}``).
+
+        Args:
+            bypass: ``(deadline, read)``: the deadline to set, None to remove;
+                the deadline read off the item, None when it carried none.
+            soft: Limit name -> ``(deadline, read)``, as for ``bypass``.
+        """
+        set_parts: list[str] = []
+        remove_parts: list[str] = []
+        conditions = ["attribute_exists(PK)"]
+        names: dict[str, str] = {}
+        values: dict[str, Any] = {}
+        stamps: list[tuple[str, str, str, tuple[int | None, int | None]]] = []
+        if bypass is not None:
+            stamps.append(("#xb", ":xb", ":xbr", bypass))
+            names["#xb"] = schema.BUCKET_FIELD_BYPASS
+        for i, (name, plan) in enumerate(sorted((soft or {}).items())):
+            stamps.append((f"#xo{i}", f":xo{i}", f":xr{i}", plan))
+            names[f"#xo{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
+        for alias, value, pin, (deadline, read) in stamps:
+            if deadline is not None:
+                set_parts.append(f"{alias} = {value}")
+                values[value] = {"N": str(deadline)}
+            else:
+                remove_parts.append(alias)
+            if read is None:
+                conditions.append(f"attribute_not_exists({alias})")
+            else:
+                values[pin] = schema.stamp_value(read)
+                conditions.append(f"{alias} = {pin}")
+        expression = []
+        if set_parts:
+            expression.append(f"SET {', '.join(set_parts)}")
+        if remove_parts:
+            expression.append(f"REMOVE {', '.join(remove_parts)}")
+        update: dict[str, Any] = {
+            "TableName": self.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            "UpdateExpression": " ".join(expression),
+            "ConditionExpression": " AND ".join(conditions),
+            "ExpressionAttributeNames": names,
+        }
+        if values:
+            update["ExpressionAttributeValues"] = values
+        return {"Update": update}
+
+    def fix_bucket_stamps(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int = 0,
+        *,
+        bypass: tuple[int | None, int | None] | None = None,
+        soft: dict[str, tuple[int | None, int | None]] | None = None,
+    ) -> bool:
+        """Write :meth:`build_stamp_fix`; False when a pin no longer matched.
+
+        Called by a slow pass about to raise ``RateLimitExceeded``, which
+        otherwise writes nothing: an expired stamp config no longer backs then
+        kept every rejection on the slow path until refill (review E1). The
+        shard's cached state is forgotten once it lands (ADR-147), so the next
+        fast rejection is remembered from the corrected item. Any error other
+        than a lost pin propagates.
+        """
+        if bypass is None and (not soft):
+            return False
+        update = self.build_stamp_fix(entity_id, resource, shard_id, bypass=bypass, soft=soft)
+        client = self._get_client()
+        try:
+            self._update_item_retrying_conflict(client, **update["Update"])
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            return False
+        finally:
+            self._forget_written_bucket(update)
+        return True
+
     def transact_write(
         self, items: list[dict[str, Any]], client_request_token: str | None = None
     ) -> dict[str, Any] | None:

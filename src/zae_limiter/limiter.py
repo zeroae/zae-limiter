@@ -44,6 +44,7 @@ from .lease import (
     QuotaMoveLostError,
     _contention_rejection,
     _is_transaction_conflict,
+    _stamp_deadline,
     credit_ceilings,
     credit_image,
     write_credit,
@@ -2993,6 +2994,10 @@ class RateLimiter:
                 for plan in planned:
                     if any(entry._donor_debit is not None for entry in plan.entries):
                         await self._commit_rejected_moves(plan.entries, plan._carriers)
+                    else:
+                        # Never committed: its stamps are corrected alone, as
+                        # the rejected part's own pass corrected its (E1).
+                        await self._fix_rejected_stamps(plan.entries, self._repository._now_ms())
                 raise error
             # Without moves a plan is at most 2 bucket items per resource, plus
             # at most 2 META checks (the entity and its parent, ADR-150), so
@@ -3876,7 +3881,10 @@ class RateLimiter:
         violations = [s for s in statuses if s.exceeded]
         if violations:
             if any(entry._donor_debit is not None for entry in entries):
+                # The move's rf-locked write carries this pass's stamps too.
                 await self._commit_rejected_moves(entries, carriers)
+            else:
+                await self._fix_rejected_stamps(entries, now_ms)
             if moves_contended and all((v.entity_id, v.limit_name) in zeroed for v in violations):
                 # Short only because a busy donor's move was given up (#724):
                 # nothing is debited, and the quota is not spent.
@@ -4040,6 +4048,72 @@ class RateLimiter:
                 entries[0].resource,
                 exc,
             )
+
+    async def _fix_rejected_stamps(self, entries: list[LeaseEntry], now_ms: int) -> None:
+        """Correct the stamps a rejected pass would have written (ADR-151, review E1).
+
+        A rejection writes nothing, so the restamp an rf-locked write carries
+        (D16, decisions 4 and 8) never lands: an expired stamp config no
+        longer backs kept every later request on the slow path — a failed
+        fast-path write, the reads and the uncached walk per rejection — until
+        refill admitted one, up to a day for a calendar quota. Here each
+        existing item whose stamps disagree with what this pass decided from
+        config read uncached gets one stamp-only write: a stamp config no
+        longer backs is removed, a missing one config wants is set, an expired
+        one config still backs is renewed. A live stamp config agrees with is
+        left alone. Nothing a rejected request asked for is written, so it
+        admits nothing (write-on-enter invariant 1).
+
+        Best effort, like :meth:`_commit_rejected_moves`: the rejection stands
+        whatever happens here.
+        """
+        fix = getattr(self._repository, "fix_bucket_stamps", None)
+        if fix is None:
+            return
+        plans: dict[
+            tuple[str, str, int],
+            tuple[tuple[int | None, int | None] | None, dict[str, tuple[int | None, int | None]]],
+        ] = {}
+
+        def _stale(deadline: int | None, read: int | None) -> bool:
+            if deadline is None or read is None:
+                return deadline != read
+            return read <= now_ms  # config backs it; renew only once expired
+
+        for entry in entries:
+            if entry._is_new or entry._seed:
+                continue  # nothing on the item to correct
+            key = (entry.entity_id, entry.resource, entry._shard_id)
+            bypass, soft = plans.get(key, (None, {}))
+            if entry._bypass:
+                # Admitted bypassed while another level rejected: the bypassed
+                # write would have renewed the stamp.
+                plan = (entry._bypass_until_ms, entry.state.bypass_until_ms)
+                if plan[0] is not None and _stale(*plan):
+                    bypass = plan
+            elif entry._bypass_restamp is not None and _stale(*entry._bypass_restamp):
+                bypass = entry._bypass_restamp
+            if entry._soft_restamp:
+                wanted = _stamp_deadline(entry, now_ms, self._repository)
+                plan = (wanted if entry.state.soft else None, entry.state.soft_until_ms)
+                if _stale(*plan):
+                    soft[entry.limit.name] = plan
+            plans[key] = (bypass, soft)
+
+        for (entity_id, resource, shard_id), (bypass, soft) in plans.items():
+            if bypass is None and not soft:
+                continue
+            try:
+                if not await fix(entity_id, resource, shard_id, bypass=bypass, soft=soft or None):
+                    logger.debug("A stamp correction on resource %r lost its pin", resource)
+            except Exception as exc:
+                # Never the entity id: it is routinely an API key
+                # (py/clear-text-logging-sensitive-data).
+                logger.warning(
+                    "A rejected pass's stamp correction on resource %r was not written: %r",
+                    resource,
+                    exc,
+                )
 
     @staticmethod
     def _granted_tokens(

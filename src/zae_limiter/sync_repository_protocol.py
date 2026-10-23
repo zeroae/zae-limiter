@@ -1498,6 +1498,25 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def fix_bucket_stamps(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int = 0,
+        *,
+        bypass: tuple[int | None, int | None] | None = None,
+        soft: dict[str, tuple[int | None, int | None]] | None = None,
+    ) -> bool:
+        """Correct a bucket's stamps before a slow-path rejection (ADR-151, review E1).
+
+        ``SET`` or ``REMOVE`` ``bypass`` and each ``b_{name}_soft`` as config
+        read uncached says, each given as ``(deadline, read)`` and pinned on
+        ``read``; nothing else is written. False when a pin no longer matched.
+        Optional: the limiter looks it up with ``getattr``, so a backend
+        without it simply skips the correction.
+        """
+        ...
+
     def resolve_bypass_from_fetched(
         self, entity_id: str, resource: str, fetched: "dict[tuple[str, str], bool | str | None]"
     ) -> "bool | None":

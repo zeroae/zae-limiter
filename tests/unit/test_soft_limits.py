@@ -663,6 +663,196 @@ class TestStampsExpire:
         assert deadline is not None and now + 48_000 <= deadline <= now + 60_000
 
 
+class TestRejectedPassFixesStamps:
+    """Review E1: a slow pass that ends in a 429 wrote nothing, so a stamp config
+    disagreed with stayed, and every rejection paid the slow path (measured: 10
+    rejections, 10 slow passes, the stamp still there). It now corrects the
+    stamps alone before raising (ADR-151 decisions 4 and 8)."""
+
+    TINY_SOFT = Limit.per_minute("tpm", 2, soft=True)
+
+    @staticmethod
+    def _count_slow(limiter: RateLimiter):
+        calls = {"n": 0}
+        original = limiter._do_acquire
+
+        async def counting(*args, **kwargs):
+            calls["n"] += 1
+            return await original(*args, **kwargs)
+
+        return calls, patch.object(limiter, "_do_acquire", counting)
+
+    async def _in_debt_then_missed_hard(self, repo: Repository, limiter: RateLimiter) -> int:
+        """tpm=2 soft driven to -8; the soft -> hard change reaches config only."""
+        await repo.set_resource_defaults("llm", [self.TINY_SOFT])
+        start = repo._now_ms()
+        with patch.object(repo, "_now_ms", return_value=start):
+            async with limiter.acquire("user-1", "llm", {"tpm": 10}):
+                pass
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_resource(repo._namespace_id, "llm")},
+                "SK": {"S": schema.sk_config()},
+            },
+            UpdateExpression="REMOVE #s",
+            ExpressionAttributeNames={"#s": "l_tpm_soft"},
+        )
+        await repo.invalidate_config_cache()
+        return start
+
+    async def _ten_rejections(self, repo, limiter, now_ms, consume=None) -> tuple[int, int]:
+        calls, counting = self._count_slow(limiter)
+        rejected = 0
+        with patch.object(repo, "_now_ms", return_value=now_ms), counting:
+            for _ in range(10):
+                try:
+                    async with limiter.acquire("user-1", "llm", consume or {"tpm": 1}):
+                        pass
+                except RateLimitExceeded:
+                    rejected += 1
+        return rejected, calls["n"]
+
+    async def test_the_first_rejection_removes_a_stamp_config_no_longer_backs(
+        self, soft_repo, soft_limiter
+    ):
+        start = await self._in_debt_then_missed_hard(soft_repo, soft_limiter)
+        rejected, slow = await self._ten_rejections(soft_repo, soft_limiter, start + PAST_T_MS)
+        item = await _bucket_item(soft_repo, "user-1", "llm")
+        assert rejected == 10
+        assert _soft_deadline(item) is None
+        assert slow == 1, f"{slow} slow passes for 10 rejections"
+        assert int(item["b_tpm_tk"]["N"]) == -8_000  # nothing debited, nothing refilled
+
+    async def test_an_expired_stamp_config_still_backs_is_renewed(self, soft_repo, soft_limiter):
+        """A hard limit beside it rejects: the soft stamp is renewed, not left
+        expired to send the next request to the slow path again."""
+        rph = Limit.per_hour("rph", 1)
+        await soft_repo.set_resource_defaults("llm", [rph, SOFT_TPM])
+        start = soft_repo._now_ms()
+        with patch.object(soft_repo, "_now_ms", return_value=start):
+            async with soft_limiter.acquire("user-1", "llm", {"rph": 1, "tpm": 1}):
+                pass
+        later = start + PAST_T_MS
+        rejected, slow = await self._ten_rejections(
+            soft_repo, soft_limiter, later, {"rph": 1, "tpm": 1}
+        )
+        deadline = _soft_deadline(await _bucket_item(soft_repo, "user-1", "llm"))
+        assert rejected == 10
+        assert deadline is not None and later < deadline <= later + PAST_T_MS
+        assert slow == 1
+
+    async def test_a_stamp_changed_since_the_read_is_left_alone(self, soft_repo, soft_limiter):
+        start = await self._in_debt_then_missed_hard(soft_repo, soft_limiter)
+        client = await soft_repo._get_client()
+        key = {
+            "PK": {"S": schema.pk_bucket(soft_repo._namespace_id, "user-1", "llm", 0)},
+            "SK": {"S": schema.sk_state()},
+        }
+        original = soft_repo.fix_bucket_stamps
+        landed: list[bool] = []
+
+        async def racing(*args, **kwargs):
+            # A fan-out lands between the read and the correction.
+            await client.update_item(
+                TableName=soft_repo.table_name,
+                Key=key,
+                UpdateExpression="SET #s = :d",
+                ExpressionAttributeNames={"#s": "b_tpm_soft"},
+                ExpressionAttributeValues={":d": {"N": "123"}},
+            )
+            landed.append(await original(*args, **kwargs))
+            return landed[-1]
+
+        with (
+            patch.object(soft_repo, "_now_ms", return_value=start + PAST_T_MS),
+            patch.object(soft_repo, "fix_bucket_stamps", racing),
+        ):
+            with pytest.raises(RateLimitExceeded):
+                async with soft_limiter.acquire("user-1", "llm", {"tpm": 1}):
+                    pass
+        assert landed == [False]
+        assert _soft_deadline(await _bucket_item(soft_repo, "user-1", "llm")) == 123
+
+    async def test_a_failed_correction_is_logged_and_the_rejection_stands(
+        self, soft_repo, soft_limiter, caplog
+    ):
+        from botocore.exceptions import ClientError
+
+        start = await self._in_debt_then_missed_hard(soft_repo, soft_limiter)
+
+        async def failing(*args, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ValidationException", "Message": "boom"}}, "UpdateItem"
+            )
+
+        with (
+            patch.object(soft_repo, "_now_ms", return_value=start + PAST_T_MS),
+            patch.object(soft_repo, "fix_bucket_stamps", failing),
+            caplog.at_level("WARNING", logger="zae_limiter.limiter"),
+        ):
+            with pytest.raises(RateLimitExceeded):
+                async with soft_limiter.acquire("user-1", "llm", {"tpm": 1}):
+                    pass
+        assert "stamp correction" in caplog.text
+        assert "user-1" not in caplog.text
+        assert _soft_deadline(await _bucket_item(soft_repo, "user-1", "llm")) is not None
+
+    async def test_an_agreeing_live_stamp_costs_no_write(self, soft_repo, soft_limiter):
+        """A rejection whose stamps already agree with config writes nothing."""
+        rph = Limit.per_hour("rph", 1)
+        await soft_repo.set_resource_defaults("llm", [rph, SOFT_TPM])
+        async with soft_limiter.acquire("user-1", "llm", {"rph": 1, "tpm": 1}):
+            pass
+        await soft_repo.invalidate_config_cache()
+        with patch.object(soft_repo, "fix_bucket_stamps") as fix:
+            with pytest.raises(RateLimitExceeded):
+                await soft_limiter._do_acquire("user-1", "llm", None, {"rph": 1, "tpm": 1})
+        fix.assert_not_called()
+
+    async def test_a_multi_resource_part_planned_fine_is_corrected_too(
+        self, soft_repo, soft_limiter
+    ):
+        """ADR-148: one part rejects; the part that planned fine had its expired
+        stamp renewed by its plan, and that plan is never committed."""
+        rph = Limit.per_hour("rph", 1)
+        await soft_repo.set_resource_defaults("llm", [SOFT_TPM])
+        await soft_repo.set_resource_defaults("budget", [rph, SOFT_TPM])
+        start = soft_repo._now_ms()
+        with patch.object(soft_repo, "_now_ms", return_value=start):
+            async with soft_limiter.acquire(
+                "user-1", "llm", {"tpm": 1}, also={"budget": {"rph": 1, "tpm": 1}}
+            ):
+                pass
+        later = start + PAST_T_MS
+        with patch.object(soft_repo, "_now_ms", return_value=later):
+            with pytest.raises(RateLimitExceeded):
+                async with soft_limiter.acquire(
+                    "user-1", "llm", {"tpm": 1}, also={"budget": {"rph": 1, "tpm": 1}}
+                ):
+                    pass
+        for resource in ("llm", "budget"):
+            deadline = _soft_deadline(await _bucket_item(soft_repo, "user-1", resource))
+            assert deadline is not None and later < deadline <= later + PAST_T_MS, resource
+        assert int((await _bucket_item(soft_repo, "user-1", "llm"))["b_tpm_tc"]["N"]) == 1_000
+
+    async def test_nothing_to_correct_writes_nothing(self, soft_repo):
+        assert await soft_repo.fix_bucket_stamps("user-1", "llm") is False
+
+    async def test_a_backend_without_the_method_skips_it(self, soft_repo, soft_limiter):
+        """`getattr`: a third-party backend still gets its 429."""
+        start = await self._in_debt_then_missed_hard(soft_repo, soft_limiter)
+        with (
+            patch.object(soft_repo, "_now_ms", return_value=start + PAST_T_MS),
+            patch.object(soft_repo, "fix_bucket_stamps", None),
+        ):
+            with pytest.raises(RateLimitExceeded):
+                async with soft_limiter.acquire("user-1", "llm", {"tpm": 1}):
+                    pass
+        assert _soft_deadline(await _bucket_item(soft_repo, "user-1", "llm")) is not None
+
+
 class TestVersionGate:
     @staticmethod
     async def _stamp(repo, lambda_version):

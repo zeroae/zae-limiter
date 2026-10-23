@@ -49,6 +49,7 @@ REPOSITORY = {
     "build_composite_retry": (True, False),  # ADD only; never seeds a quota
     "build_composite_adjust": (True, False),  # adjust / rollback ADD; vu = 0 on trim (#721)
     "build_bypass_consume": (False, False),  # bypassed slow path: tc only (#311)
+    "build_stamp_fix": (False, False),  # stamps only, before a rejection (ADR-151, E1)
     "build_bucket_operation": (True, True),  # reset / top-up (ADR-149): tk delta, gc, tu
     "build_operation_record": NOT_BUCKET,  # reset / top-up operation record (ADR-149)
     "build_quota_donor_debits": (True, False),  # the donor side of a move
@@ -65,6 +66,7 @@ REPOSITORY = {
     "_stamp_bucket_disabled": (False, False),  # disabled flag
     "_stamp_bucket_cascade": (False, False),  # cascade + owner parent_id + pgen (ADR-146/150)
     "_stamp_bucket_soft": (False, False),  # b_{name}_soft SET/REMOVE (#467, ADR-151)
+    "fix_bucket_stamps": (False, False),  # issues build_stamp_fix
     "_sync_one_bucket_shard": (False, False),  # issues _build_bucket_param_update
     "get_or_create_bucket": (True, True),  # legacy create via build_bucket_put_item
     "purge_namespace": (True, True),  # deletes whole items, buckets included
