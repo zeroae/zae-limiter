@@ -121,6 +121,7 @@ nav:
       - Reset and Top-Up: guide/reset-and-top-up.md
       - Hierarchical Limits: guide/hierarchical.md
       - Several Resources per Acquire: guide/multi-resource.md
+      - Per-Resource Limits and a Shared Budget: guide/per-resource-budgets.md
       - LLM Integration: guide/llm-integration.md
       - Usage Snapshots: guide/usage-snapshots.md
       - Unavailability Handling: guide/unavailability.md

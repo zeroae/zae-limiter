@@ -360,6 +360,7 @@ debiting the old parent until it reopens it. Each move is recorded as an
 
 ## Next Steps
 
+- [Per-Resource Limits and a Shared Budget](per-resource-budgets.md) - Users under organisations, cascade per resource and a per-user budget, end to end
 - [LLM Integration](llm-integration.md) - Token estimation patterns
 - [Unavailability Handling](unavailability.md) - Handling service outages
 - [API Reference](../api/limiter.md) - Complete API documentation

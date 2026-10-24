@@ -132,4 +132,6 @@ window cost nothing.
     it is refunded. That can only make them reject a little early; it never admits anything
     extra.
 
-See [ADR-148](../adr/148-multi-resource-acquire.md) for the full design.
+See [ADR-148](../adr/148-multi-resource-acquire.md) for the full design, and
+[Per-Resource Limits and a Shared Budget](per-resource-budgets.md) for a worked example with
+plans and organisations.
