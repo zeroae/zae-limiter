@@ -5398,9 +5398,9 @@
 </tr>
 <tr>
 <td><code>delete_entity()</code></td>
-<td>1</td>
+<td>1 per query page</td>
 <td>batched</td>
-<td>Query + BatchWrite in 25-item chunks</td>
+<td>Queries every page of the entity's PK and of GSI3, then BatchWrite in 25-item chunks, resending unprocessed deletes</td>
 </tr>
 </tbody>
 </table>

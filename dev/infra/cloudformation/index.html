@@ -5151,6 +5151,77 @@ may acquire can still raise its own buckets' balances with a direct write (ADR-1
 </tbody>
 </table>
 <p>These policies use <code>dynamodb:LeadingKeys</code> with the caller's <code>zael_namespace_id</code> principal tag to scope DynamoDB operations to items prefixed with that namespace ID. Read access to the reserved namespace <code>_/*</code> (namespace registry, shared config) is always granted.</p>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th style="text-align: center;">NamespaceReadOnly</th>
+<th style="text-align: center;">NamespaceAcquire</th>
+<th style="text-align: center;">NamespaceFullAccess</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GetItem</code></td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>BatchGetItem</code></td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>Query</code></td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>ConditionCheckItem</code></td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>PutItem</code></td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">buckets</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>UpdateItem</code></td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">buckets</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>DeleteItem</code></td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>BatchWriteItem</code></td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">Y</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition warning">
+<p class="admonition-title"><code>NamespaceFullAccessPolicy</code> gains <code>BatchWriteItem</code> in v0.17.0</p>
+<p><code>delete_entity()</code> deletes with <code>BatchWriteItem</code>, which the policy did not grant, so a
+principal holding only <code>NamespaceFullAccessPolicy</code> got <code>AccessDeniedException</code> from it
+(#742). <code>dynamodb:LeadingKeys</code> is checked on every item of a <code>BatchWriteItem</code>
+(<a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/specifying-conditions.html">AWS docs</a>),
+so it can put or delete only the items the policy's <code>PutItem</code> and <code>DeleteItem</code> already
+reach: the namespace's own (<code>{id}/…</code>), the bare namespace ID, and the shared <code>_/</code> prefix
+(the namespace registry). It adds no reach. Run <code>zae-limiter upgrade</code> on an existing
+stack to apply it; custom IAM modelled on the policy must add the action.</p>
+</div>
 <p>For setup instructions, see <a href="../production/#namespace-scoped-access-control">Namespace-Scoped Access Control</a>.</p>
 <h2 id="customization">Customization<a class="headerlink" href="#customization" title="Permanent link">&para;</a></h2>
 <h3 id="add-dead-letter-queue">Add Dead Letter Queue<a class="headerlink" href="#add-dead-letter-queue" title="Permanent link">&para;</a></h3>

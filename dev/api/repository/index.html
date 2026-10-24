@@ -10473,6 +10473,18 @@ an active namespace).</p>
               </div>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            RateLimiterUnavailable (zae_limiter.exceptions.RateLimiterUnavailable)" href="../exceptions/#zae_limiter.exceptions.RateLimiterUnavailable">RateLimiterUnavailable</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>DynamoDB kept some deletes unprocessed
+after the retries. The namespace stays <code>"purging"</code>; re-run
+the purge to finish.</p>
+              </div>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -10781,6 +10793,11 @@ of 0.5): for a caller that must see a write it just made.</p>
     <div class="doc doc-contents ">
 
         <p>Delete an entity and all its related records.</p>
+<p>Deletes the entity's reset and top-up operation records, then every
+bucket item GSI3 indexes under it, then every item under the entity's
+PK (configs, usage snapshots, and <code>#META</code> last). The audit event
+records how many items this call deleted (<code>records_deleted</code>) and
+whether the entity is now gone (<code>complete</code>).</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -10824,6 +10841,33 @@ of 0.5): for a caller that must see a write it just made.</p>
             </td>
             <td>
                   <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            RateLimiterUnavailable (zae_limiter.exceptions.RateLimiterUnavailable)" href="../exceptions/#zae_limiter.exceptions.RateLimiterUnavailable">RateLimiterUnavailable</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>DynamoDB kept some deletes unprocessed
+after the retries (#742). What this call deleted is audited
+with <code>complete: False</code>, and what is left can still be found,
+so calling <code>delete_entity</code> again finishes it and audits the
+rest.</p>
+              </div>
             </td>
           </tr>
       </tbody>
@@ -19565,6 +19609,31 @@ see a write it just made</p>
             </td>
             <td>
                   <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            RateLimiterUnavailable (zae_limiter.exceptions.RateLimiterUnavailable)" href="../exceptions/#zae_limiter.exceptions.RateLimiterUnavailable">RateLimiterUnavailable</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The backend could not delete every record.
+What was deleted is audited, and calling <code>delete_entity</code>
+again finishes the rest.</p>
+              </div>
             </td>
           </tr>
       </tbody>

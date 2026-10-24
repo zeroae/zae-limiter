@@ -5522,6 +5522,17 @@ Those are operator actions: give them <code>FullAccessPolicy</code> or
 <code>NamespaceFullAccessPolicy</code>. It is least privilege, not a boundary: a principal that
 may acquire can still raise its own buckets' balances with a direct write (ADR-149).</p>
 </div>
+<div class="admonition warning">
+<p class="admonition-title"><code>NamespaceFullAccessPolicy</code> gains <code>BatchWriteItem</code> in v0.17.0</p>
+<p><code>delete_entity()</code> deletes with <code>BatchWriteItem</code>, which the policy did not grant, so a
+principal holding only <code>NamespaceFullAccessPolicy</code> got <code>AccessDeniedException</code> from it
+(#742). <code>dynamodb:LeadingKeys</code> is checked on every item of a <code>BatchWriteItem</code>
+(<a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/specifying-conditions.html">AWS docs</a>),
+so it can put or delete only the items the policy's <code>PutItem</code> and <code>DeleteItem</code> already
+reach: the namespace's own (<code>{id}/…</code>), the bare namespace ID, and the shared <code>_/</code> prefix
+(the namespace registry). It adds no reach. Run <code>zae-limiter upgrade</code> on an existing
+stack to apply it; custom IAM modelled on the policy must add the action.</p>
+</div>
 <h3 id="enablingdisabling-iam-resources">Enabling/Disabling IAM Resources<a class="headerlink" href="#enablingdisabling-iam-resources" title="Permanent link">&para;</a></h3>
 <div class="tabbed-set tabbed-alternate" data-tabs="5:2"><input checked="checked" id="__tabbed_5_1" name="__tabbed_5" type="radio" /><input id="__tabbed_5_2" name="__tabbed_5" type="radio" /><div class="tabbed-labels"><label for="__tabbed_5_1">CLI</label><label for="__tabbed_5_2">Programmatic</label></div>
 <div class="tabbed-content">
