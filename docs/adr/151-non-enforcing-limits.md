@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Date:** 2026-10-09
 **Issue:** [#467](https://github.com/zeroae/zae-limiter/issues/467), [#311](https://github.com/zeroae/zae-limiter/issues/311)
-**Related:** [ADR-125](125-resource-disable.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-146](146-per-resource-cascade-policy.md), [ADR-147](147-client-side-rejection-cache.md), [#674](https://github.com/zeroae/zae-limiter/issues/674)
+**Related:** [ADR-100](100-centralized-config.md), [ADR-114](114-composite-bucket-items.md), [ADR-125](125-resource-disable.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-146](146-per-resource-cascade-policy.md), [ADR-147](147-client-side-rejection-cache.md), [#674](https://github.com/zeroae/zae-limiter/issues/674)
 **Design:** `docs/plans/2026-10-09-non-enforcing-limits-design.md`
 
 ## Context

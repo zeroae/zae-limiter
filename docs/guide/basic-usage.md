@@ -421,6 +421,26 @@ debiting any limit, while still counting consumption — see
 [Soft Limits and Bypass](soft-limits-and-bypass.md#bypass). To meter one limit
 without enforcing it, make it [soft](soft-limits-and-bypass.md#soft-limits).
 
+## Hard vs Soft Limits
+
+Every limit is **hard** by default: a request that does not fit is rejected with
+`RateLimitExceeded`. A **soft** limit (`soft=True` on any `Limit` factory, `--soft NAME`
+on the CLI, `soft: true` in a manifest) is metered exactly the same way — its tokens are
+debited and the bucket may go into debt — but it never rejects a request. Use one for a
+billing-style `tpm` beside a hard `rpm`, or to roll a new limit out in shadow mode:
+
+```{.python .lint-only}
+await repo.set_resource_defaults("gpt-4", [
+    Limit.per_minute("rpm", 500),                # hard: rejects
+    Limit.per_minute("tpm", 50_000, soft=True),  # soft: metered only
+])
+```
+
+A soft limit is reported as `soft` in every `LimitStatus` and never appears among a
+rejection's `violations`; `lease.overdrawn` names the ones a request drove into debt. A
+cascading child's soft limit does not relax its parent: each entity resolves its own
+limits. See [Soft Limits and Bypass](soft-limits-and-bypass.md) for the details.
+
 ## Config Cache
 
 zae-limiter caches config data (system defaults, resource defaults, entity limits) to reduce DynamoDB reads. The cache has a 60-second TTL by default.
