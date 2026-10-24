@@ -200,16 +200,19 @@ def _failed_only_on_its_stamp(result: "SpeculativeResult", consume: dict[str, in
     which the repository classifies as exhausted so a rejection stays one
     write. The bucket needs a slow pass on **this** shard to clear the stamp;
     another shard cannot do it.
+
+    A declared limit's balance is judged exactly as the repository's failure
+    classification judges it (:meth:`BucketState.fast_path_short`): a soft
+    limit or a bypassed bucket is admitted on its stamp, so a soft limit in
+    debt cannot have failed the write (#741 review).
     """
     if not result.old_buckets:
         return False
     for bucket in result.old_buckets:
-        needed = (
-            1000
-            if bucket.limit_name == WCU_LIMIT_NAME
-            else consume.get(bucket.limit_name, 0) * 1000
-        )
-        if bucket.tokens_milli < needed:
+        if bucket.limit_name == WCU_LIMIT_NAME:
+            if bucket.tokens_milli < 1000:
+                return False
+        elif bucket.fast_path_short(consume.get(bucket.limit_name, 0)):
             return False
     names = {b.limit_name for b in result.old_buckets}
     return all(name in names for name in consume)

@@ -8220,14 +8220,14 @@ class TestAStampedShardIsTrimmedWhereItIs:
         return int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"])
 
     @staticmethod
-    def _set_tk(repo, entity_id, shard, tk_milli, *, stamp):
-        """Set shard ``shard``'s rpm balance; with ``stamp``, also `vu = 0`.
+    def _set_tk(repo, entity_id, shard, tk_milli, *, stamp, limit_name="rpm"):
+        """Set shard ``shard``'s balance of a limit; with ``stamp``, also `vu = 0`.
 
         With ``stamp`` this is what the #680 clamp leaves: a balance above the
         shard's ceiling and the `vu = 0` its trimmed credit writes beside it.
         """
         client = repo._get_client()
-        names = {"#tk": bucket_attr("rpm", BUCKET_FIELD_TK)}
+        names = {"#tk": bucket_attr(limit_name, BUCKET_FIELD_TK)}
         values = {":tk": {"N": str(tk_milli)}}
         expression = "SET #tk = :tk"
         if stamp:
@@ -8245,17 +8245,22 @@ class TestAStampedShardIsTrimmedWhereItIs:
             ExpressionAttributeValues=values,
         )
 
-    def _two_shards(self, sync_limiter, entity_id, limit=None, **create):
-        """`entity_id` with both of its two shards created, at a frozen clock."""
+    def _two_shards(self, sync_limiter, entity_id, limit=None, *, also=(), **create):
+        """`entity_id` with both of its two shards created, at a frozen clock.
+
+        ``also`` adds limits beside rpm; each acquire consumes 1 of every one.
+        """
         repo = sync_limiter._repository
         repo._now_ms = lambda: self.NOW
         repo.create_entity(entity_id, **create)
-        repo.set_limits(entity_id, [limit or self.RPM], resource="gpt-4")
-        with sync_limiter.acquire(entity_id, "gpt-4", consume={"rpm": 1}):
+        limits = [limit or self.RPM, *also]
+        repo.set_limits(entity_id, limits, resource="gpt-4")
+        consume = {each.name: 1 for each in limits}
+        with sync_limiter.acquire(entity_id, "gpt-4", consume=consume):
             pass
         repo.bump_shard_count(entity_id, "gpt-4", 1)
         with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
-            with sync_limiter.acquire(entity_id, "gpt-4", consume={"rpm": 1}):
+            with sync_limiter.acquire(entity_id, "gpt-4", consume=consume):
                 pass
         assert self._raw(repo, entity_id, 1) is not None
 
@@ -8273,6 +8278,26 @@ class TestAStampedShardIsTrimmedWhereItIs:
             with sync_limiter.acquire("solo", "gpt-4", consume={"rpm": 1}):
                 pass
         shard1 = self._raw(repo, "solo", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) <= self.CEILING_MILLI
+
+    def test_a_soft_limit_in_debt_does_not_hide_the_stamp(self, sync_limiter):
+        """A soft limit in debt beside the stamped hard one is still a stamp failure.
+
+        A live soft stamp admits the soft limit whatever its balance, so the
+        write failed only on `vu`. Judging the soft limit's debt as a short
+        balance (#741 review) sent the slow pass elsewhere and kept the stamp.
+        """
+        repo = sync_limiter._repository
+        soft_tpm = Limit.per_minute("tpm", 1000, soft=True)
+        self._two_shards(sync_limiter, "metered", also=(soft_tpm,))
+        self._set_tk(repo, "metered", 1, 98000, stamp=True)
+        self._set_tk(repo, "metered", 1, -5000, stamp=False, limit_name="tpm")
+        draws = iter([1, 0, 0, 0])
+        with patch("zae_limiter.sync_repository.random.randrange", lambda n: next(draws)):
+            with sync_limiter.acquire("metered", "gpt-4", consume={"rpm": 1, "tpm": 1}):
+                pass
+        shard1 = self._raw(repo, "metered", 1)
         assert BUCKET_FIELD_VU not in shard1
         assert self._tk(shard1) <= self.CEILING_MILLI
 
