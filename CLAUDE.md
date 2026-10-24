@@ -792,6 +792,9 @@ Users provide a short identifier (e.g., `my-app`), and the system uses it direct
   system-level soft change discovers its buckets there (`Repository._fanout_soft`), and with
   only `{id}/*` its config write landed and the fan-out was denied (review D4). No table item
   has it as its PK
+- `ns-full` grants `BatchWriteItem` (#742): `delete_entity` deletes with it, and without it a
+  principal holding only `ns-full` was refused. `LeadingKeys` is checked per item of a
+  `BatchWriteItem`, so it sits in the same namespace statement
 - **The acquire policies write bucket items only (#756, ADR-152):** `acq` grants `PutItem` /
   `UpdateItem` where `LeadingKeys` is `*/BUCKET#*`, `ns-acq` where it is `{id}/BUCKET#*`, each
   with `Null` false on the key; reads and `ConditionCheckItem` stay namespace-wide. Every

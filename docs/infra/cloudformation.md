@@ -447,6 +447,25 @@ The template also creates three namespace-scoped policies that restrict DynamoDB
 
 These policies use `dynamodb:LeadingKeys` with the caller's `zael_namespace_id` principal tag to scope DynamoDB operations to items prefixed with that namespace ID. Read access to the reserved namespace `_/*` (namespace registry, shared config) is always granted.
 
+| Action | NamespaceReadOnly | NamespaceAcquire | NamespaceFullAccess |
+|--------|:-----------------:|:----------------:|:-------------------:|
+| `GetItem` | Y | Y | Y |
+| `BatchGetItem` | Y | Y | Y |
+| `Query` | Y | Y | Y |
+| `ConditionCheckItem` | -- | Y | Y |
+| `PutItem` | -- | buckets | Y |
+| `UpdateItem` | -- | buckets | Y |
+| `DeleteItem` | -- | -- | Y |
+| `BatchWriteItem` | -- | -- | Y |
+
+!!! warning "`NamespaceFullAccessPolicy` gains `BatchWriteItem` in v0.17.0"
+    `delete_entity()` deletes with `BatchWriteItem`, which the policy did not grant, so a
+    principal holding only `NamespaceFullAccessPolicy` got `AccessDeniedException` from it
+    (#742). `dynamodb:LeadingKeys` is checked on every item of a `BatchWriteItem`
+    ([AWS docs](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/specifying-conditions.html)),
+    so the grant stays inside the namespace. Run `zae-limiter upgrade` on an existing
+    stack to apply it; custom IAM modelled on the policy must add the action.
+
 For setup instructions, see [Namespace-Scoped Access Control](production.md#namespace-scoped-access-control).
 
 ## Customization

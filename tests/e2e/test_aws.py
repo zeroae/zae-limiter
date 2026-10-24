@@ -2301,6 +2301,15 @@ class TestE2EAWSResetAndTopUp:
             )
             await self._exercise(unique_name_class, namespace)
             await self._system_soft(unique_name_class, namespace)
+
+            # delete_entity deletes with BatchWriteItem, which ns-full lacked
+            # before #742: the entity, its bucket and its operation records.
+            repo = await TestE2EAWSAcquirePolicies._connect(unique_name_class, namespace)
+            try:
+                await repo.delete_entity("solo")
+                assert await repo.get_entity("solo", consistent_read=True) is None
+            finally:
+                await repo.close()
         finally:
             try:
                 iam.detach_role_policy(RoleName=role_name, PolicyArn=policy_arn)

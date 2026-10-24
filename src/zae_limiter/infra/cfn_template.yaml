@@ -701,6 +701,10 @@ Resources:
               - dynamodb:PutItem
               - dynamodb:UpdateItem
               - dynamodb:DeleteItem
+              # delete_entity deletes with BatchWriteItem (#742). LeadingKeys
+              # is checked on every item it writes, so the condition below
+              # keeps it inside the namespace.
+              - dynamodb:BatchWriteItem
               - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt RateLimitsTable.Arn

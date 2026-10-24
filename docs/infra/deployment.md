@@ -523,6 +523,14 @@ The stack creates three managed IAM policies by default for different access pat
     `NamespaceFullAccessPolicy`. It is least privilege, not a boundary: a principal that
     may acquire can still raise its own buckets' balances with a direct write (ADR-149).
 
+!!! warning "`NamespaceFullAccessPolicy` gains `BatchWriteItem` in v0.17.0"
+    `delete_entity()` deletes with `BatchWriteItem`, which the policy did not grant, so a
+    principal holding only `NamespaceFullAccessPolicy` got `AccessDeniedException` from it
+    (#742). `dynamodb:LeadingKeys` is checked on every item of a `BatchWriteItem`
+    ([AWS docs](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/specifying-conditions.html)),
+    so the grant stays inside the namespace. Run `zae-limiter upgrade` on an existing
+    stack to apply it; custom IAM modelled on the policy must add the action.
+
 ### Enabling/Disabling IAM Resources
 
 === "CLI"
