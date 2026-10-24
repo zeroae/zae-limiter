@@ -1340,6 +1340,9 @@ class SyncRepository:
         Raises:
             NamespaceStateError: If the namespace is ``"active"`` (cannot purge
                 an active namespace).
+            RateLimiterUnavailable: DynamoDB kept some deletes unprocessed
+                after the retries. The namespace stays ``"purging"``; re-run
+                the purge to finish.
         """
         client = self._get_client()
         pk = schema.pk_system(schema.RESERVED_NAMESPACE)
@@ -1379,15 +1382,10 @@ class SyncRepository:
             response = client.query(**query_params)
             items = response.get("Items", [])
             if items:
-                delete_requests = [
-                    {"DeleteRequest": {"Key": {"PK": i["PK"], "SK": i["SK"]}}} for i in items
-                ]
-                for batch_start in range(0, len(delete_requests), 25):
-                    chunk = delete_requests[batch_start : batch_start + 25]
-                    unprocessed: list[Any] = chunk
-                    while unprocessed:
-                        resp = client.batch_write_item(RequestItems={self.table_name: unprocessed})
-                        unprocessed = resp.get("UnprocessedItems", {}).get(self.table_name, [])
+                self._batch_delete_all(
+                    [{"PK": i["PK"], "SK": i["SK"]} for i in items],
+                    context=f"namespace '{namespace_id}'",
+                )
             if "LastEvaluatedKey" not in response:
                 break
             exclusive_start_key = response["LastEvaluatedKey"]

@@ -1606,6 +1606,9 @@ class Repository:
         Raises:
             NamespaceStateError: If the namespace is ``"active"`` (cannot purge
                 an active namespace).
+            RateLimiterUnavailable: DynamoDB kept some deletes unprocessed
+                after the retries. The namespace stays ``"purging"``; re-run
+                the purge to finish.
         """
         client = await self._get_client()
         pk = schema.pk_system(schema.RESERVED_NAMESPACE)
@@ -1664,19 +1667,15 @@ class Repository:
             response = await client.query(**query_params)
             items = response.get("Items", [])
 
-            # Step 4: Batch delete items (25 per batch), retrying unprocessed
+            # Step 4: Batch delete items (25 per batch), resending unprocessed
+            # deletes with backoff and raising if they outlast the retries
+            # (#742). The reverse record stays "purging", so re-running the
+            # purge finishes it.
             if items:
-                delete_requests = [
-                    {"DeleteRequest": {"Key": {"PK": i["PK"], "SK": i["SK"]}}} for i in items
-                ]
-                for batch_start in range(0, len(delete_requests), 25):
-                    chunk = delete_requests[batch_start : batch_start + 25]
-                    unprocessed: list[Any] = chunk
-                    while unprocessed:
-                        resp = await client.batch_write_item(
-                            RequestItems={self.table_name: unprocessed}
-                        )
-                        unprocessed = resp.get("UnprocessedItems", {}).get(self.table_name, [])
+                await self._batch_delete_all(
+                    [{"PK": i["PK"], "SK": i["SK"]} for i in items],
+                    context=f"namespace '{namespace_id}'",
+                )
 
             if "LastEvaluatedKey" not in response:
                 break
