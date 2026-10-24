@@ -1477,14 +1477,14 @@ class TestPartialFanoutIsReported:
         original = disable_repo._stamp_bucket_disabled
         calls = {"n": 0}
 
-        async def failing_after_first(pk: str, disabled: bool) -> None:
+        async def failing_after_first(pk: str, disabled: bool, *deadline: int) -> None:
             calls["n"] += 1
             if calls["n"] > 1:
                 raise ClientError(
                     {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "x"}},
                     "UpdateItem",
                 )
-            await original(pk, disabled)
+            await original(pk, disabled, *deadline)
 
         monkeypatch.setattr(disable_repo, "_stamp_bucket_disabled", failing_after_first)
 
@@ -1516,14 +1516,14 @@ class TestPartialFanoutIsReported:
         original = disable_repo._stamp_bucket_disabled
         calls = {"n": 0}
 
-        async def failing_after_first(pk: str, disabled: bool) -> None:
+        async def failing_after_first(pk: str, disabled: bool, *deadline: int) -> None:
             calls["n"] += 1
             if calls["n"] > 1:
                 raise ClientError(
                     {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "x"}},
                     "UpdateItem",
                 )
-            await original(pk, disabled)
+            await original(pk, disabled, *deadline)
 
         monkeypatch.setattr(disable_repo, "_stamp_bucket_disabled", failing_after_first)
 

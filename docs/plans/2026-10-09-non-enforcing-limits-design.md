@@ -16,8 +16,8 @@
 | `tk` | Debited — may go into debt | **Untouched** |
 | `tc` | Incremented | Incremented |
 | Config | `l_{name}_soft` beside `cp`/`ra`/`rp` (travels with the limit) | Fourth value of the ADR-125 `disabled` attribute |
-| Bucket stamp | `b_{name}_soft` per limit | `bypass` (item-level, separate from `disabled`) |
-| Fast path knows it by | **Nothing** — the server decides (`attribute_exists(soft) OR tk >= c`) | A per-process cache learned from returned item images |
+| Bucket stamp | `b_{name}_soft` per limit, holding a **deadline** (§6.3) | `bypass` (item-level, separate from `disabled`), holding a **deadline** (§6.3) |
+| Fast path knows it by | **Nothing** — the server decides (`soft > :now OR tk >= c`) | A per-process cache learned from returned item images; the server checks the deadline |
 | Fast-path cost | 0 RCU + 1 WCU (unchanged) | 0 RCU + 1 WCU (warm) |
 | Change reaches buckets by | Entity: existing param sync. Resource/system: new change-only fan-out | ADR-125 fan-out (GSI2 / GSI3), unchanged mechanism |
 
@@ -49,7 +49,7 @@ privileged entity must not carry into enforcement when the bypass ends.
 | Item | Attribute | Meaning |
 |---|---|---|
 | Config (system, resource, entity) | `l_{name}_soft` = `true` (or `w_{name}_soft` for a `reset_after` limit, ADR-142) | This limit is soft. Absent = hard. Two-state, not tri-state: it is part of the limit definition, and a level that redefines the limit redefines its soft-ness |
-| Bucket | `b_{name}_soft` = `true` | Denormalised copy; absent = hard |
+| Bucket | `b_{name}_soft` = `N deadline_ms` | Denormalised copy, honoured only before its deadline (§6.3); absent = hard |
 
 - `Limit` gains `soft: bool = False` (all factories pass it through; `to_dict()` / `from_dict`
   round-trip it). Not allowed on the reserved `wcu` limit.
@@ -65,7 +65,7 @@ privileged entity must not carry into enforcement when the bypass ends.
 | Item | Attribute | Values |
 |---|---|---|
 | Config (resource, entity(resource), entity(`_default_`)) | `disabled` (ADR-125) | absent = inherit; `BOOL true` = disabled; `BOOL false` = explicit enforce (carve-out); **`S "bypass"` = bypass** |
-| Bucket | **`bypass`** = `BOOL true` | present only while effectively bypassed |
+| Bucket | **`bypass`** = `N deadline_ms` | present only while effectively bypassed; honoured only before its deadline (§6.3) |
 
 - **One attribute, one walk, one precedence** (#311 DC1). `resolve_access` (`repository.py:7073`)
   already reads the three walk items in one uncached `BatchGetItem`; it returns an effective
@@ -94,8 +94,21 @@ attribute_not_exists(disabled) AND (attribute_not_exists(vu) OR vu > now)`.
 Each declared limit's term becomes
 
 ```
-(attribute_exists(#o{i}) OR #t{i} >= :h{i})        -- #o{i} -> b_{name}_soft
+(#byp > :now OR (#o{i} > :now AND attribute_exists(#oc{i})) OR #t{i} >= :h{i})
+                                                    -- #o{i} -> b_{name}_soft, #oc{i} -> b_{name}_cp
+AND (attribute_not_exists(#o{i}) OR #o{i} > :now)   -- an expired stamp is renewed first
 ```
+
+The stamp admits only beside the limit's `cp`: a resource- or system-level soft fan-out stamps
+every bucket, including one created before the limit existed, and on the stamp alone the `ADD`
+wrote a `tk` with no `cp` that no reader sees, so the #633 seed never ran (review D3). Without
+the limit, both halves fail and the slow path seeds it.
+
+`:now` is the bound `now_ms` the fast path already sends as `:vu_now` (#430). The stamp is a
+deadline (§6.3): a stamp past it admits nothing, and the second term sends the request to the
+slow path, which renews or removes it from config read uncached. Without that term an expired
+stamp on a limit with `tk >= c` would let the write debit `tk` and pass silently, and the stamp
+would never be renewed or removed.
 
 The `ADD` set is unchanged, so a soft limit is still debited and may go negative. The client
 needs **no** knowledge of which limits are soft; the item decides, so a stamp change made
@@ -113,9 +126,12 @@ Bypass shape (warm process, stamp known):
 
 ```
 ADD tc_i +c_i (declared limits), wcu_tk -1000, wcu_tc +1000   [SET ttl as today]
-CONDITION attribute_exists(PK) AND attribute_exists(#byp)
+CONDITION attribute_exists(PK) AND #byp > :now
           AND wcu_tk >= 1000 AND ttl-guard AND attribute_not_exists(#disabled)
 ```
+
+The enforce shape carries `(attribute_not_exists(#byp) OR #byp > :now)` once, and its `vu`
+term becomes `(#byp > :now OR attribute_not_exists(#vu) OR #vu > :now)`.
 
 - No `tk` term and no `vu` guard: nothing is spent, so a passed schedule boundary is
   irrelevant; a bypassed entity stays on the fast path across boundaries.
@@ -130,23 +146,31 @@ CONDITION attribute_exists(PK) AND attribute_exists(#byp)
 |---|---|---|---|
 | enforce | enforce | today's write | 0 |
 | bypass | bypass | bypass write | 0 |
-| enforce | **bypass** | enforce write with `(attribute_exists(#byp) OR …)` in every term ⇒ admitted; `ALL_NEW` shows the stamp; **refund** `ADD tk +c` (the existing `build_composite_adjust`, `tc` net 0 not touched); cache learns bypass | +1 WCU once per process per (entity, resource) per transition |
-| bypass | **enforce** (cleared) | bypass write fails on `attribute_exists(#byp)`; `ALL_OLD` shows no stamp; cache forgets; retry with the enforce write | +1 WCU (failed) once |
+| enforce | **bypass** | enforce write with `(#byp > :now OR …)` in every term ⇒ admitted; `ALL_NEW` shows the stamp; **refund** `ADD tk +c` (the existing `build_composite_adjust`, `tc` net 0 not touched); cache learns bypass | +1 WCU once per process per (entity, resource) per transition |
+| bypass | **enforce** (cleared) | bypass write fails on `#byp > :now`; `ALL_OLD` shows no stamp; cache forgets; retry with the enforce write | +1 WCU (failed) once |
+| either | **bypass, deadline passed** | the write fails; `ALL_OLD` shows a stamp at or past its deadline ⇒ `SCHEDULE_BOUNDARY`, the slow path, which renews the stamp (`build_bypass_consume`) or removes it, from config read uncached (§6.3). The cache keeps the pair: the stamp is present, only not live | +1 failed WCU and one slow pass, per shard per T |
 
-  The enforce write therefore carries `attribute_exists(#byp)` as a third alternative in each
+  The enforce write therefore carries `#byp > :now` as a third alternative in each
   limit's term, so an enforce-shaped write on a bypassed bucket never produces a 429.
   Rejected alternative: leave that out and let the failure image route the retry — it costs
   the same write but surfaces a spurious failure path through the rejection classifier.
-- A refund that lifts `tk` above the ceiling is handled by the existing #679 clamp
-  (`build_vu_reset`), unchanged.
+- The refund is a self-trimming credit (`lease.write_credit(counter=False)`, #721), its
+  ceilings and pins taken from the debit's `ALL_NEW` image: a refill to capacity or a reset
+  landing between the debit and the refund would otherwise lift `tk` above the ceiling, and a
+  quota reset in between would put the old period's refund in the new period (review D6). One
+  that would overflow is re-issued with `vu = 0` in the same write, as every credit is.
 
 ### 3.3 Failure classification and fast rejection
 
 `_check_speculative_failure` and `would_refill_satisfy` read the `ALL_OLD` image. They must
 skip every limit stamped soft (it cannot have failed), and a `bypass` stamp on the image is
 the "learn bypass, retry bypass-shaped" branch above, never a rejection.
-`SpeculativeFailureReason` precedence becomes `DISABLED` > bypass-learned > `SCHEDULE_BOUNDARY`
-> exhausted reasons.
+`SpeculativeFailureReason` precedence becomes `DISABLED` > **expired stamp** (a `bypass`, or a
+declared limit's `b_{n}_soft` on an enforce-shaped write, at or past its deadline:
+`SCHEDULE_BOUNDARY`, never a 429 and never a shard retry) > bypass cleared > `SCHEDULE_BOUNDARY`
+(`vu`, gated on a **live** bypass) > exhausted reasons. The expired-stamp check precedes the
+bypass-cleared one, so an expired bypass on a bypass-shaped write goes straight to the slow path
+instead of costing a second, enforce-shaped write.
 
 ## 4. The slow path
 
@@ -158,13 +182,26 @@ the "learn bypass, retry bypass-shaped" branch above, never a rejection.
   `resolve_access` already returns the mode uncached on every slow path that needs it, **0 extra
   RCU**. A **create** writes the full item exactly as an enforced create (ADR-145 move or fresh
   grant for quotas, `tk` at the starting share) **without** subtracting this request's
-  consumption, adds `tc`, and stamps `bypass`. A normal rf-locked write under bypass is the
-  bypass shape plus nothing else: it does **not** advance `rf`, apply a reset, or roll a window.
-- **Soft stamps on the slow path.** A create or seed stamps `b_{n}_soft` from config read
-  **uncached in that pass** (§6.2). The rf-locked normal write re-stamps (SET or REMOVE)
-  `b_{n}_soft` for every limit on the item only when that pass's limits were read uncached —
-  ADR-146's "stamp only when the config fetch read fresh" rule — so a wrong stamp left by an old
-  client self-heals on the next fresh slow pass.
+  consumption, adds `tc`, and stamps `bypass` with a deadline (§6.3). A normal write under
+  bypass is the bypass shape plus the renewed deadline (`SET bypass = :deadline`, conditioned on
+  a stamp being present, any deadline): it does **not** advance `rf`, apply a reset, or roll a
+  window.
+- **The slow path sets or removes the bypass stamp** (ADR-151 decision 4). Bypass mode is always
+  resolved uncached on the slow path. Config bypass and a stamp on the item: the bypass write
+  above, renewing the deadline. Config bypass and no stamp: the request is enforced and the
+  rf-locked write SETs the stamp. Config enforce and a stamp: the request is enforced and the
+  rf-locked write REMOVEs it. Each stamp write is pinned on the stamp as read
+  (`attribute_not_exists` or `= :read`), so a pass that read config before a fan-out cannot undo
+  the fan-out; a lost pin falls to the consumption-only retry, which renews or removes no
+  stamp (a limit it seeds gets `b_{n}_soft = if_not_exists(…, :deadline)` from this pass's
+  uncached read).
+- **Soft stamps on the slow path.** A create or seed stamps `b_{n}_soft` with a deadline from
+  config read **uncached in that pass** (§6.2). The rf-locked normal write re-stamps (SET the
+  deadline or REMOVE) `b_{n}_soft` for every limit on the item whenever that pass's limits were
+  read uncached, and reads them uncached (`resolve_access(include_limits=True)`) whenever the
+  item carries a soft stamp: the item's own stamp is never the authority. A soft limit whose
+  item lacks the stamp is enforced until a fresh pass or a fan-out stamps it (R2). Pinned on
+  the stamp as read, like the bypass stamp.
 
 ## 5. Leases (#455 declared scope)
 
@@ -207,11 +244,73 @@ only under-admission, but the same fan-out serves both. A partial failure raises
 
 **Stale config cache on create.** Bucket `cp`/`ra` on create come from the config cache today,
 and a stale cached capacity persists on an entity bucket (no TTL) until the next sync — an
-accepted, bounded staleness. A stale **soft** stamp is unbounded over-admission, so a create or
+accepted, bounded staleness. A stale **soft** stamp over-admits until its deadline (§6.3), so a create or
 seed must take soft-ness from config read uncached that pass. The slow path already does an
 uncached `resolve_access` read of the three walk items whenever the cache served a level; it
 must also include the system config item when any limit on the bucket resolved from the system
 level (+0.5 RCU, creates and seeds only).
+
+### 6.3 Stamps expire (ADR-151 decision 8)
+
+A fan-out can miss a bucket: a create planned before the fan-out lands after it (the ADR-125
+two-pass race), an aggregator Path 2 clone copies an image older than the fan-out, a partial
+failure raises `FanoutIncomplete`. Each leaves a stamp config no longer backs, and the fast path,
+which admits on the stamp, would then admit without limit for as long as nothing else touches
+the item (review D1: 20 admitted against `rpm = 2`, forever). Both stamps therefore carry a
+**deadline** (`N`, epoch ms) and mean something only before it.
+
+**The rule.** Every stamp's deadline is at most T after the config read that justified it, and
+only a write built from a fresh config read may set or extend one. T is a writer-side setting
+(`stamp_ttl`, 60 s by default); fan-outs draw `T × U(0.8, 1.0)` so that renewals of one
+resource's buckets spread out (jitter only shortens). The aggregator never writes either stamp:
+its Path 2 clone copies the base item verbatim, deadline included, and never extends it.
+
+**Write shapes.**
+
+| Write | Stamp terms |
+|---|---|
+| Fast path, enforce shape | per declared limit `(#byp > :now OR (#o{i} > :now AND attribute_exists(#oc{i})) OR #t{i} >= :h{i})` and `(attribute_not_exists(#o{i}) OR #o{i} > :now)`; once `(attribute_not_exists(#byp) OR #byp > :now)` and `(#byp > :now OR attribute_not_exists(#vu) OR #vu > :now)` |
+| Fast path, bypass shape | `#byp > :now` |
+| Slow path, bypassed existing item (`build_bypass_consume`) | `ADD tc`, `SET bypass = :deadline`; condition `attribute_exists(#byp)` (any deadline: only a pass that read bypass config uncached builds it, so it is the renewal) |
+| Slow path, rf-locked normal write | `SET b_{n}_soft = :deadline` / `REMOVE`, `SET bypass = :deadline` / `REMOVE`, each pinned on the stamp as read; each balance floor `(#bo{i} > :now OR tk >= floor)` |
+| Consumption-only retry | floor `(#bo{i} > :now OR tk >= c)`, and a soft quota's #743 period guard waived the same way (none when trusted, `(#bo{i} > :now OR …)` otherwise, review D7); never renews or removes a stamp; a limit it seeds gets `b_{n}_soft = if_not_exists(…, :deadline)` from this pass's uncached read |
+| Stamp correction before a rejection (`build_stamp_fix`) | `SET bypass = :deadline` / `REMOVE`, `SET b_{n}_soft = :deadline` / `REMOVE`, and nothing else; condition `attribute_exists(PK)` and each stamp pinned on its value as read |
+| Create / seed | `bypass`, `b_{n}_soft` = the pass's deadline, from its uncached read |
+| Fan-outs (`_stamp_bucket_disabled`, `_stamp_bucket_soft`, the param sync, provisioner `fanout.py` / `bucket_sync.py`) | `SET … = :deadline`, deadline = resolution time + `T × U(0.8, 1.0)` |
+| Aggregator | parses both as numbers; never writes them |
+
+A stamp stored as `BOOL true` by a pre-release build reads as present and already expired:
+`BOOL > N` is false on DynamoDB (mismatched types compare false) and on moto, so the fast path
+sends it to the slow path, which replaces it with a deadline or removes it.
+
+**A rejected slow pass still corrects the stamps.** A rejection writes nothing, so without
+this the restamp above never lands on a bucket that stays exhausted: an expired stamp config no
+longer backs sent every request to the slow path (a failed fast-path write, the reads, the
+uncached walk) and back to a 429, until refill admitted one — up to a day for a calendar quota
+(review E1: 10 rejections, 10 slow passes, the stamp still there). So a pass about to raise
+`RateLimitExceeded` first sends one stamp-only write per existing item whose stamps disagree
+with what it decided from config read uncached (`RateLimiter._fix_rejected_stamps` →
+`Repository.fix_bucket_stamps`): it removes a stamp config no longer backs, sets a missing one
+config wants, renews an expired one config still backs, and leaves a live one config agrees with
+alone. It moves no `tk`, `tc`, `rf` or `vu`, so it admits nothing. A pass committing a rejected
+quota move skips it (that rf-locked write carries the stamps), and so does a multi-resource part
+that planned fine beside a rejected one — its own correction is sent instead. Best effort: a lost
+pin is a no-op, any other failure is logged and the 429 stands. Cost: +1 WCU on that one
+rejection; the next ones are fast rejections again (1 WCU, or 0 from the rejection cache).
+
+**Cost.** A bypassed or soft bucket pays one renewal per shard per T: the failed fast-path
+write plus one slow pass, about 2.5 RCU + 2 WCU. At T = 60 s that is about +$0.016 per million
+requests at 1 req/s on the bucket, and about +0.15% at 100-1,000 req/s. A bucket with neither
+stamp pays nothing: `attribute_not_exists` passes.
+
+**Residuals.**
+
+| | What | Bound |
+|---|---|---|
+| R1 | A stamp a fan-out missed keeps its old meaning | until its deadline: at most T after the read that justified it, plus clock skew between processes |
+| R2 | A stamp missing where config wants one (an old client's create, a clone of an older image) | under-admission until the next slow pass or fan-out, a rejected one included (it sets the stamp) |
+| R3 | The consumption-only retry omits the floor of a limit the pass read as soft (`soft_trusted`) though a fan-out has since made it hard | one request |
+| R4 | A cached pass's renewal read is eventually consistent | bounded by T: a stale read can extend a stamp once more |
 
 ## 7. Quotas, session windows, sharding (ADR-137/139/145)
 
@@ -330,6 +429,7 @@ $0.625/M WCU, $0.125/M RCU (on-demand, us-east-1).
 | Cascade, both succeed | 0 + 2 WCU = $1.25/M | same | same |
 | First request per process after bypass set | — | — | +1 WCU refund, once per (process, entity, resource) |
 | First request after bypass cleared | — | — | +1 failed WCU, once |
+| Stamp renewal (§6.3), per shard per T | — | +1 failed WCU + one slow pass ≈ 2.5 RCU + 2 WCU; ≈ +$0.016/M at 1 req/s, ≈ +0.15% at 100-1,000 req/s | same |
 | Slow-path create | 2.5 RCU + 2 WCU (ADR-133) | +0.5 RCU when a limit resolves from system | same as today |
 | Adjust / release / rollback | 1 WCU each | same | same (`tc` only) |
 | Overdraw signal | — | 0 client; 0 extra aggregator WCU | — |
@@ -338,7 +438,7 @@ $0.625/M WCU, $0.125/M RCU (on-demand, us-east-1).
 | Soft change, resource level | none | GSI2 discovery + per distinct entity ≤ 2 consistent config reads + 1 WCU per changed bucket. 10,000 entities ≈ 20,000 RCU + 10,000 WCU ≈ **$0.009** | — |
 | Soft change, system level | none | GSI4 discovery over the whole namespace, then as above | — |
 
-Item size: `b_{n}_soft` ≈ 15 B per soft limit; `bypass` ≈ 10 B. No WCU change unless an item
+Item size: `b_{n}_soft` ≈ 25 B per soft limit; `bypass` ≈ 20 B (a 13-digit deadline each). No WCU change unless an item
 crosses 1 KB (ADR-135 §4.2 headroom: 178 B in the worst shared case).
 
 ## 14. Writers (registry and token tests)
@@ -348,14 +448,16 @@ and checked in `tests/unit/test_expression_tokens.py`:
 
 | Writer | Writes `tk`? | Writes `gc`? |
 |---|---|---|
-| Speculative consume, enforce shape (+ `#o{i}`, `#byp` terms) | yes (unchanged) | no |
+| Speculative consume, enforce shape (+ `#o{i}`, `#byp` deadline terms) | yes (unchanged) | no |
 | Speculative consume, bypass shape | **no** | no |
 | Bypass adjust / rollback (`tc` only) | no | no |
 | Bypass-learned refund (existing adjust) | yes (credit) | no |
-| Slow path create / seed / normal (+ `b_{n}_soft`, `bypass`) | as today | as today |
-| Bypass fan-out (`SET`/`REMOVE bypass`) | no | no |
-| Soft fan-out, resource/system (`SET`/`REMOVE b_{n}_soft`) | no | no |
-| Param sync (+ `b_{n}_soft`) | no | no |
+| Bypassed slow path (`build_bypass_consume`: `tc`, renewed `bypass` deadline) | no | no |
+| Slow path create / seed / normal (+ `b_{n}_soft`, `bypass` deadlines, SET or REMOVE, pinned) | as today | as today |
+| Bypass fan-out (`SET bypass = :deadline` / `REMOVE`) | no | no |
+| Soft fan-out, resource/system (`SET b_{n}_soft = :deadline` / `REMOVE`) | no | no |
+| Param sync (+ `b_{n}_soft` deadline) | no | no |
+| Aggregator (refill, Path 1, Path 2 clone) | never writes either stamp; a clone copies them verbatim | — |
 
 ## 15. Test plan
 
@@ -390,7 +492,7 @@ and checked in `tests/unit/test_expression_tokens.py`:
 | Question | Answer |
 |---|---|
 | #467 Q1 Where the flag lives | `l_{n}_soft` on config, `b_{n}_soft` denormalised (§2.1) |
-| #467 Q2 Fast-path condition | Server-side `attribute_exists(soft) OR tk >= c`, `ADD` unchanged, `wcu` hard (§3.1) |
+| #467 Q2 Fast-path condition | Server-side `soft > :now OR tk >= c` (a stamp is a deadline, §6.3), `ADD` unchanged, `wcu` hard (§3.1) |
 | #467 Q3 Slow path / retry | Admission skips soft; retry condition only on hard limits (§4) |
 | #467 Q4 Reporting | `LimitStatus.soft`, derived `overdrawn`, in `passed` (§9) — Open decision D7 |
 | #467 Q5 Overdraw signal | `Lease.overdrawn` + snapshot counter; EMF deferred (§9) — D6 |

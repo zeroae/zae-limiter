@@ -44,6 +44,7 @@ from .lease import (
     QuotaMoveLostError,
     _contention_rejection,
     _is_transaction_conflict,
+    _stamp_deadline,
     credit_ceilings,
     credit_image,
     write_credit,
@@ -171,6 +172,24 @@ def _item_overrules_debited_parent(result: "SpeculativeResult") -> bool:
     if not (result.cascade and result.parent_id):
         return True
     return result.debited_parent_id is not None and result.debited_parent_id != result.parent_id
+
+
+def _waived_against_override(lease: "Lease", limits: "list[Limit] | None") -> bool:
+    """A fast-path admission a hard ``limits=`` override forbids (#467, review F1).
+
+    The fast path waives a limit's balance on the item's live soft stamp, which
+    config wrote; an override is not config, so it cannot take part in that
+    decision. Under the balance condition a successful debit always leaves
+    ``tk >= 0``, so a limit the override declares hard sitting below zero after
+    the write — on the child or a cascade parent, bypass aside — was admitted
+    only by the stamp. Free to tell: the lease's states are the write's
+    ``ALL_NEW`` image.
+    """
+    hard = {limit.name for limit in limits or () if not limit.soft}
+    return any(
+        entry.limit.name in hard and not entry._bypass and entry.state.tokens_milli < 0
+        for entry in lease.entries
+    )
 
 
 def _failed_only_on_its_stamp(result: "SpeculativeResult", consume: dict[str, int]) -> bool:
@@ -925,8 +944,15 @@ class RateLimiter:
             if len(parts) > 1:
                 lease = await self._acquire_resources(entity_id, parts)
 
-            # Try speculative fast path first (issue #315)
-            elif self._speculative_writes:
+            # Try speculative fast path first (issue #315). Not when a `limits=`
+            # override declares a soft limit this request consumes (#467,
+            # review D11): an override is not config, so no bucket carries its
+            # stamp, and the fast path — child and cascade parent — would read
+            # that limit hard and reject on it. The slow path trusts the
+            # override for every entity it plans.
+            elif self._speculative_writes and not any(
+                limit.soft and limit.name in consume for limit in limits or ()
+            ):
                 (
                     lease,
                     slow_path_shard,
@@ -938,6 +964,14 @@ class RateLimiter:
                     consume=consume,
                     use_rejection_cache=limits is None,
                 )
+                if lease is not None and _waived_against_override(lease, limits):
+                    # The other half of D11 (review F1): the write was admitted
+                    # on a config soft stamp for a limit this override declares
+                    # hard. Refund it and let the slow path, which trusts the
+                    # override, decide.
+                    await lease._rollback()
+                    lease, slow_path_shard, slow_path_shard_count = None, None, None
+                    slow_path_parent_shard = None
 
             # Fall back to slow path if speculative didn't succeed
             if lease is None:
@@ -2483,6 +2517,8 @@ class RateLimiter:
         Returns None if parent acquire fails (caller should compensate child).
         """
         now_ms = self._repository._now_ms()
+        # Before the config read a soft restamp comes from (ADR-151 decision 8).
+        parent_stamp_deadline = self._repository._stamp_deadline(now_ms)
 
         # Resolve parent limits. The fetch also records the parent's cascade
         # policy (ADR-146) when it actually read config; served from the config
@@ -2527,6 +2563,11 @@ class RateLimiter:
             if existing.bypass:
                 # A bypassed parent (#311) is written bypass-shaped, which only
                 # the full slow path decides, from config read uncached.
+                return None
+            if existing.soft_until_ms is not None and parent_soft_authority != _SOFT_FROM_CONFIG:
+                # A soft stamp is never the authority (ADR-151 decision 8): the
+                # full slow path reads the parent's soft-ness uncached and
+                # renews or removes it.
                 return None
 
             # See `_do_acquire`: the resolved config, not the item, is what
@@ -2618,6 +2659,7 @@ class RateLimiter:
                     _granted=parent_granted,
                     _soft_trusted=parent_soft_authority == _SOFT_FROM_CONFIG,
                     _soft_restamp=parent_soft_authority == _SOFT_FROM_CONFIG,
+                    _stamp_deadline_ms=parent_stamp_deadline,
                     _stored_top_up=parent_stored_top_up,
                 )
             )
@@ -2724,8 +2766,7 @@ class RateLimiter:
                     # The retry found a quota period nobody has applied (#743):
                     # redo the pass once from a fresh read, which applies it. A
                     # second loss stands as the rejection it was raised as.
-                    # TODO(D7): for a soft quota this second-loss rejection marks
-                    # the quota exceeded.
+                    # Never for a soft quota: its guard is waived (review D7).
                     if period_redone:
                         raise
                     period_redone = True
@@ -2945,7 +2986,11 @@ class RateLimiter:
         """
 
         async def _plan(
-            part: _SlowPart, disable_moves: bool, moves_contended: bool, reread: bool
+            part: _SlowPart,
+            disable_moves: bool,
+            moves_contended: bool,
+            reread: bool,
+            enforced: bool,
         ) -> Lease | Exception:
             resource, consume, shard, shard_count, parent_hint = part
             try:
@@ -2960,6 +3005,7 @@ class RateLimiter:
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
                     consistent_owner=reread,
+                    disable_bypass=enforced,
                 )
             except Exception as exc:
                 return exc
@@ -2969,10 +3015,14 @@ class RateLimiter:
             moves_contended: bool = False,
             redone: bool = False,
             reread: bool = False,
+            enforced: bool = False,
         ) -> tuple[Lease, dict[str, frozenset[str]]]:
             # One name per part keeps the sync twin's lambda on one line (#513).
             outcomes = await asyncio.gather(
-                *[_plan(part, disable_moves, moves_contended, reread) for part in slow_parts]
+                *[
+                    _plan(part, disable_moves, moves_contended, reread, enforced)
+                    for part in slow_parts
+                ]
             )
             planned = [outcome for outcome in outcomes if isinstance(outcome, Lease)]
             errors = [outcome for outcome in outcomes if not isinstance(outcome, Lease)]
@@ -2985,12 +3035,16 @@ class RateLimiter:
                 for plan in planned:
                     if any(entry._donor_debit is not None for entry in plan.entries):
                         await self._commit_rejected_moves(plan.entries, plan._carriers)
+                    else:
+                        # Never committed: its stamps are corrected alone, as
+                        # the rejected part's own pass corrected its (E1).
+                        await self._fix_rejected_stamps(plan.entries, self._repository._now_ms())
                 raise error
             # Without moves a plan is at most 2 bucket items per resource, plus
             # at most 2 META checks (the entity and its parent, ADR-150), so
             # MAX_ACQUIRE_RESOURCES keeps the re-plan under the limit.
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return await plan_and_commit(True, moves_contended, redone, reread)
+                return await plan_and_commit(True, moves_contended, redone, reread, enforced)
             marks = [plan._cache_mark for plan in planned]
             lease = Lease(
                 repository=self._repository,
@@ -2998,17 +3052,24 @@ class RateLimiter:
                 _carriers=[carrier for plan in planned for carrier in plan._carriers],
                 _cache_mark=None if None in marks else min(m for m in marks if m is not None),
             )
-            # TODO(D5): no `BypassLostError` handling here: a bypass cleared
-            # between a part's config read and this commit propagates.
             try:
                 await lease._commit_initial()
+            except BypassLostError:
+                # A part's bypass was cleared between its config read and this
+                # commit (#311, review D5). Nothing was written; re-plan every
+                # part enforced, as `_slow_acquire` re-plans its pass. Left to
+                # propagate, it reached `acquire()`'s generic handler, which
+                # under ALLOW admitted the request without any limit.
+                if enforced:  # pragma: no cover
+                    raise AssertionError("an enforced plan carries no bypass write") from None
+                return await plan_and_commit(disable_moves, moves_contended, redone, reread, True)
             except PeriodNotAppliedError:
                 # The retry found a quota period nobody has applied (#743):
                 # redo the pass once from a fresh read, which applies it. A
                 # second loss stands as the rejection it was raised as.
                 if redone:
                     raise
-                return await plan_and_commit(disable_moves, moves_contended, True, reread)
+                return await plan_and_commit(disable_moves, moves_contended, True, reread, enforced)
             except OwnerStampLostError:
                 # A bucket this commit created lost its META check: an owner
                 # moved since the read (ADR-150). Nothing was written; re-plan
@@ -3016,7 +3077,7 @@ class RateLimiter:
                 # loss stands as the contended 429 it was raised as.
                 if reread:
                     raise
-                return await plan_and_commit(disable_moves, moves_contended, redone, True)
+                return await plan_and_commit(disable_moves, moves_contended, redone, True, enforced)
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }
@@ -3214,6 +3275,10 @@ class RateLimiter:
         now_ms = self._repository._now_ms()
         # (entity, limit) slots `disable_moves` granted 0 instead of a move.
         zeroed: set[tuple[str, str]] = set()
+        # The deadline every stamp this pass writes carries (ADR-151 decision
+        # 8): taken before any config read, so it is at most T after the read
+        # that justifies the stamp.
+        stamp_deadline = self._repository._stamp_deadline(now_ms)
 
         # The shard is part of a bucket's identity (GHSA-76rv). Resolve it
         # once here and carry it through the read, the LeaseEntry and the
@@ -3394,14 +3459,29 @@ class RateLimiter:
             any_existing = bool(item_states)
             # Bypass (#311) needs both the uncached config and, for an existing
             # item, its stamp: a stamp alone may be stale (a clear whose fan-out
-            # has not reached it yet), and config alone may be ahead of a
-            # fan-out still stamping. Either missing means enforce, which only
-            # under-admits until the fan-out lands. A stamp config no longer
-            # backs is cleared from the states, so nothing below treats them
-            # as bypassed.
-            eid_bypass = bypass_mode.get(eid, False) and not disable_bypass
+            # has not reached it yet, or missed it), and config alone may be
+            # ahead of a fan-out still stamping. Either missing means enforce.
+            # This pass then makes the stamp agree with the config it read
+            # (ADR-151 decision 4): the enforced write SETs a missing stamp or
+            # REMOVEs one config no longer backs, pinned on the stamp as read,
+            # so a stale stamp cannot outlive the next slow pass. A stamp config
+            # no longer backs is cleared from the states, so nothing below
+            # treats them as bypassed.
+            # A stamp present on the item counts whatever its deadline: the
+            # bypassed write renews it (ADR-151 decision 8).
+            config_bypass = bypass_mode.get(eid, False)
+            stamp_read = next(
+                (s.bypass_until_ms for s in item_states if s.bypass_until_ms is not None), None
+            )
+            eid_bypass = config_bypass and not disable_bypass
             if any_existing:
-                eid_bypass = eid_bypass and any(state.bypass for state in item_states)
+                eid_bypass = eid_bypass and stamp_read is not None
+            wanted = stamp_deadline if config_bypass else None
+            bypass_restamp = (
+                (wanted, stamp_read)
+                if any_existing and not eid_bypass and (wanted, stamp_read) != (None, None)
+                else None
+            )
             if not eid_bypass:
                 for state in item_states:
                     state.bypass = False
@@ -3423,6 +3503,7 @@ class RateLimiter:
                             _shard_id=eid_shard,
                             _shard_count=eid_shard_count,
                             _bypass=True,
+                            _bypass_until_ms=stamp_deadline,
                         )
                     )
                 continue
@@ -3520,9 +3601,17 @@ class RateLimiter:
             seed_ws = await self._seed_window_starts(eid, resource, missing, seed_shard_count)
             # A create or seed is stamped soft from config read uncached this
             # pass (ADR-151 §6.2): when the cache served the limits, read the
-            # soft-ness again, uncached. Only here, never on a plain pass.
+            # soft-ness again, uncached. So is an item carrying a soft stamp:
+            # the stamp may be one a fan-out missed, so it is never the
+            # authority, and this pass renews or removes it from config read
+            # uncached (decisions 4 and 8). An item with no stamp and a cached
+            # pass pays nothing.
             fresh_soft: dict[str, bool] = {}
-            if soft_authority[eid] == _SOFT_FROM_ITEM and (missing or not any_existing):
+            soft_stamped = any(state.soft_until_ms is not None for state in item_states)
+            restamp_soft = soft_authority[eid] == _SOFT_FROM_ITEM and soft_stamped
+            if soft_authority[eid] == _SOFT_FROM_ITEM and (
+                missing or not any_existing or soft_stamped
+            ):
                 carried = uncached_soft.get(eid)
                 fresh_soft = (
                     carried
@@ -3682,13 +3771,24 @@ class RateLimiter:
                 # into the lease agrees with the state.
                 if soft_authority[eid] != _SOFT_FROM_ITEM:
                     soft = limit.soft
-                elif existing is None:
+                elif existing is None or restamp_soft:
                     soft = fresh_soft.get(limit.name, False)
                 else:
-                    soft = existing.soft
+                    soft = existing.soft  # no stamp on the item: hard
                 state.soft = soft
                 if limit.soft != soft:
                     limit = replace(limit, soft=soft)
+                if existing is None:
+                    # A created or seeded limit is stamped with this pass's
+                    # deadline (ADR-151 decision 8); an override is not config,
+                    # so its soft-ness is trusted for this write but stamped
+                    # on nothing. An existing state keeps the deadline it was
+                    # read with: the restamp is pinned on it.
+                    state.soft_until_ms = (
+                        stamp_deadline
+                        if soft and soft_authority[eid] != _SOFT_FROM_OVERRIDE
+                        else None
+                    )
 
                 # Capture original values before try_consume modifies them (ADR-115)
                 original_tk = state.tokens_milli
@@ -3803,9 +3903,12 @@ class RateLimiter:
                         # it carries `gc` at the count it was sized at.
                         _granted=granted or (is_new and limit.is_quota),
                         _donor_debit=donor,
-                        _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM,
-                        _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG,
+                        _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM or restamp_soft,
+                        _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG or restamp_soft,
+                        _stamp_deadline_ms=stamp_deadline,
                         _bypass=eid_bypass,
+                        _bypass_until_ms=stamp_deadline if eid_bypass else None,
+                        _bypass_restamp=bypass_restamp,
                         _stored_top_up=stored_top_up,
                     )
                 )
@@ -3826,7 +3929,10 @@ class RateLimiter:
         violations = [s for s in statuses if s.exceeded]
         if violations:
             if any(entry._donor_debit is not None for entry in entries):
+                # The move's rf-locked write carries this pass's stamps too.
                 await self._commit_rejected_moves(entries, carriers)
+            else:
+                await self._fix_rejected_stamps(entries, now_ms)
             if moves_contended and all((v.entity_id, v.limit_name) in zeroed for v in violations):
                 # Short only because a busy donor's move was given up (#724):
                 # nothing is debited, and the quota is not spent.
@@ -3974,7 +4080,11 @@ class RateLimiter:
         """
         for entry in entries:
             if entry.consumed:
-                entry.state.tokens_milli += entry.consumed * 1000
+                # A bypassed entry (#311) only counted its consumption: its
+                # balance was never debited, so crediting it back mints tokens
+                # beside the move (ADR-145 I1, review D2).
+                if not entry._bypass:
+                    entry.state.tokens_milli += entry.consumed * 1000
                 if entry.state.total_consumed_milli is not None:
                     entry.state.total_consumed_milli -= entry.consumed * 1000
                 entry.consumed = 0
@@ -3990,6 +4100,72 @@ class RateLimiter:
                 entries[0].resource,
                 exc,
             )
+
+    async def _fix_rejected_stamps(self, entries: list[LeaseEntry], now_ms: int) -> None:
+        """Correct the stamps a rejected pass would have written (ADR-151, review E1).
+
+        A rejection writes nothing, so the restamp an rf-locked write carries
+        (D16, decisions 4 and 8) never lands: an expired stamp config no
+        longer backs kept every later request on the slow path — a failed
+        fast-path write, the reads and the uncached walk per rejection — until
+        refill admitted one, up to a day for a calendar quota. Here each
+        existing item whose stamps disagree with what this pass decided from
+        config read uncached gets one stamp-only write: a stamp config no
+        longer backs is removed, a missing one config wants is set, an expired
+        one config still backs is renewed. A live stamp config agrees with is
+        left alone. Nothing a rejected request asked for is written, so it
+        admits nothing (write-on-enter invariant 1).
+
+        Best effort, like :meth:`_commit_rejected_moves`: the rejection stands
+        whatever happens here.
+        """
+        fix = getattr(self._repository, "fix_bucket_stamps", None)
+        if fix is None:
+            return
+        plans: dict[
+            tuple[str, str, int],
+            tuple[tuple[int | None, int | None] | None, dict[str, tuple[int | None, int | None]]],
+        ] = {}
+
+        def _stale(deadline: int | None, read: int | None) -> bool:
+            if deadline is None or read is None:
+                return deadline != read
+            return read <= now_ms  # config backs it; renew only once expired
+
+        for entry in entries:
+            if entry._is_new or entry._seed:
+                continue  # nothing on the item to correct
+            key = (entry.entity_id, entry.resource, entry._shard_id)
+            bypass, soft = plans.get(key, (None, {}))
+            if entry._bypass:
+                # Admitted bypassed while another level rejected: the bypassed
+                # write would have renewed the stamp.
+                plan = (entry._bypass_until_ms, entry.state.bypass_until_ms)
+                if plan[0] is not None and _stale(*plan):
+                    bypass = plan
+            elif entry._bypass_restamp is not None and _stale(*entry._bypass_restamp):
+                bypass = entry._bypass_restamp
+            if entry._soft_restamp:
+                wanted = _stamp_deadline(entry, now_ms, self._repository)
+                plan = (wanted if entry.state.soft else None, entry.state.soft_until_ms)
+                if _stale(*plan):
+                    soft[entry.limit.name] = plan
+            plans[key] = (bypass, soft)
+
+        for (entity_id, resource, shard_id), (bypass, soft) in plans.items():
+            if bypass is None and not soft:
+                continue
+            try:
+                if not await fix(entity_id, resource, shard_id, bypass=bypass, soft=soft or None):
+                    logger.debug("A stamp correction on resource %r lost its pin", resource)
+            except Exception as exc:
+                # Never the entity id: it is routinely an API key
+                # (py/clear-text-logging-sensitive-data).
+                logger.warning(
+                    "A rejected pass's stamp correction on resource %r was not written: %r",
+                    resource,
+                    exc,
+                )
 
     @staticmethod
     def _granted_tokens(
@@ -4371,7 +4547,11 @@ class RateLimiter:
         for bucket in await self._repository.get_buckets(entity_id):
             if bucket.resource != resource:
                 continue
-            bypassed = bypassed or bucket.bypass
+            # A live stamp only (ADR-151 decision 8): one past its deadline is
+            # renewed or removed on the next acquire, from config.
+            bypassed = bypassed or (
+                bucket.bypass_until_ms is not None and bucket.bypass_until_ms > now_ms
+            )
             name = bucket.limit_name
             limit_for_bucket = resolved_by_name.get(name)
             totals[name] = totals.get(name, 0) + self._readable_balance(
@@ -4418,8 +4598,10 @@ class RateLimiter:
                 available = ceiling
             requested = needed.get(limit.name, 0)
             # A soft limit is reported, never a reason to wait (#467): its
-            # `available` may be negative, and `overdrawn` says so.
-            exceeded = requested > 0 and available < requested and not limit.soft
+            # `available` may be negative, and `overdrawn` says so. Nor is
+            # anything under a live bypass stamp (#311, review D12): acquire()
+            # admits every request then, so `allowed` must not say otherwise.
+            exceeded = requested > 0 and available < requested and not limit.soft and not bypassed
 
             resets_at_ms = window_ends.get(limit.name)
             wait = 0.0

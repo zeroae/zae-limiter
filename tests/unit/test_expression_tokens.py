@@ -26,6 +26,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_GC,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_WA,
+    STAMP_EXPIRED,
     bucket_attr,
     pk_bucket,
 )
@@ -431,9 +432,10 @@ class TestCompositeBuilders:
         assert "ConditionExpression" not in update
 
     def test_normal_with_soft_stamps_and_floors(self) -> None:
-        """#467: soft floors OR the item's stamp, a trusted soft limit has no
-        floor, and the re-stamp reuses a floor's alias rather than declaring a
-        second one for the same attribute."""
+        """#467: soft floors OR the item's live stamp, a trusted soft limit has
+        no floor, and the re-stamp reuses a floor's alias rather than declaring
+        a second one for the same attribute. Each stamp is a deadline, pinned
+        on the one read (ADR-151 decisions 4 and 8)."""
         update = _repo().build_composite_normal(
             "user-1",
             "api",
@@ -441,15 +443,54 @@ class TestCompositeBuilders:
             refill_amounts={},
             now_ms=2_000,
             expected_rf=1_000,
-            soft_stamps={DOTTED: False, HYPHENATED: True, "rpm": True},
+            soft_stamps={DOTTED: None, HYPHENATED: 9_000, "rpm": 9_000},
+            soft_reads={DOTTED: 1_500, HYPHENATED: None, "rpm": STAMP_EXPIRED},
             soft_trusted=frozenset({HYPHENATED}),
         )["Update"]
         assert_expression_safe(update)
         names = update["ExpressionAttributeNames"]
+        values = update["ExpressionAttributeValues"]
+        condition = update["ConditionExpression"]
         soft_attrs = [v for v in names.values() if v.endswith("_soft")]
         assert len(soft_attrs) == len(set(soft_attrs)) == 3
-        assert "(attribute_exists(#bo0) OR #bt0 >= :bf0)" in update["ConditionExpression"]
-        assert "#bt1 >=" not in update["ConditionExpression"]
+        assert "(#bo0 > :bnow OR #bt0 >= :bf0)" in condition
+        assert values[":bnow"] == {"N": "2000"}
+        assert "#bt1 >=" not in condition
+        assert {"N": "9000"} in values.values()
+        # Restamps go in name order: req-min (#bs0), rpm (#bo2), then the dotted one (#bo0).
+        assert "attribute_not_exists(#bs0)" in condition
+        assert "#bo2 = :bsr1" in condition and values[":bsr1"] == {"BOOL": True}
+        assert "#bo0 = :bsr2" in condition and values[":bsr2"] == {"N": "1500"}
+
+    @pytest.mark.parametrize(
+        "deadline, read",
+        [(9_000, None), (None, 3_000), (9_000, 3_000), (None, STAMP_EXPIRED)],
+    )
+    def test_normal_setting_or_removing_the_bypass_stamp(self, deadline, read) -> None:
+        """#311, ADR-151 decisions 4 and 8: the stamp follows config, as a
+        deadline, pinned on the deadline read (a pre-release BOOL as itself)."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            bypass_stamp=(deadline, read),
+        )["Update"]
+        assert_expression_safe(update)
+        expression = update["UpdateExpression"]
+        values = update["ExpressionAttributeValues"]
+        assert ("#byp = :byp" in expression) is (deadline is not None)
+        assert ("REMOVE #byp" in expression) is (deadline is None)
+        if deadline is not None:
+            assert values[":byp"] == {"N": str(deadline)}
+        if read is None:
+            assert "attribute_not_exists(#byp)" in update["ConditionExpression"]
+        else:
+            assert "#byp = :bypr" in update["ConditionExpression"]
+            expected = {"BOOL": True} if read == STAMP_EXPIRED else {"N": str(read)}
+            assert values[":bypr"] == expected
 
     def test_normal_with_a_soft_seed(self) -> None:
         from zae_limiter.models import BucketState
@@ -457,6 +498,7 @@ class TestCompositeBuilders:
         seed = BucketState.from_limit(
             "user-1", "api", Limit.per_minute(HYPHENATED, 10, soft=True), 2_000
         )
+        seed.soft_until_ms = 9_000
         update = _repo().build_composite_normal(
             "user-1",
             "api",
@@ -467,7 +509,7 @@ class TestCompositeBuilders:
             seeds={HYPHENATED: seed},
         )["Update"]
         assert_expression_safe(update)
-        assert update["ExpressionAttributeValues"][":so0"] == {"BOOL": True}
+        assert update["ExpressionAttributeValues"][":so0"] == {"N": "9000"}
 
     def test_retry_with_soft_limits(self) -> None:
         from zae_limiter.models import BucketState
@@ -484,7 +526,7 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
         condition = update["ConditionExpression"]
-        assert condition == "(attribute_exists(#bo0) OR #bt0 >= :bf0)"
+        assert condition == "(#bo0 > :bnow OR #bt0 >= :bf0)"
 
     def test_adjust(self) -> None:
         update = _repo().build_composite_adjust(
@@ -504,14 +546,35 @@ class TestCompositeBuilders:
 
     def test_bypass_consume(self) -> None:
         update = _repo().build_bypass_consume(
-            "user-1", "api", {DOTTED: 1000, HYPHENATED: 2000}, shard_id=2
+            "user-1", "api", {DOTTED: 1000, HYPHENATED: 2000}, shard_id=2, bypass_until_ms=9_000
         )["Update"]
         assert_expression_safe(update)
+        # Any deadline: this is the renewal (ADR-151 decision 8).
         assert "attribute_exists(#byp)" in update["ConditionExpression"]
+        assert update["ExpressionAttributeValues"][":byp"] == {"N": "9000"}
 
     def test_bypass_consume_with_nothing_declared(self) -> None:
-        update = _repo().build_bypass_consume("user-1", "api", {})["Update"]
+        update = _repo().build_bypass_consume("user-1", "api", {}, bypass_until_ms=9_000)["Update"]
         assert_expression_safe(update)
+        assert update["UpdateExpression"] == "SET #byp = :byp"
+
+    @pytest.mark.parametrize(
+        "bypass, soft",
+        [
+            # Renew a pre-release stamp, set a missing one, remove a stale one.
+            ((9_000, STAMP_EXPIRED), {DOTTED: (9_000, None), HYPHENATED: (None, 5)}),
+            ((None, 5), None),  # remove only: no values but the pin
+            (None, {DOTTED: (None, None)}),  # nothing read, nothing set
+            (None, {HYPHENATED: (9_000, 5)}),
+        ],
+    )
+    def test_stamp_fix(self, bypass, soft) -> None:
+        """Review E1: a rejected pass's stamp-only correction, pinned as read."""
+        update = _repo().build_stamp_fix("user-1", "api", 2, bypass=bypass, soft=soft)["Update"]
+        assert_expression_safe(update)
+        assert update["ConditionExpression"].startswith("attribute_exists(PK)")
+        written = set(update["ExpressionAttributeNames"].values())
+        assert all(name == "bypass" or name.endswith("_soft") for name in written)
 
     @pytest.mark.parametrize(
         "exists, pgen, pinc",
@@ -879,6 +942,9 @@ class TestClientWritesThroughMoto:
         with patch.object(client, "update_item", spy.forward):
             await repo._speculative_consume_single("user-1", "api", {DOTTED: 1, HYPHENATED: 2})
         assert_expression_safe(spy.call_args.kwargs)
+        # An expired bypass stamp fails the enforce shape (ADR-151 decision 8).
+        condition = spy.call_args.kwargs["ConditionExpression"]
+        assert "(attribute_not_exists(#byp) OR #byp > :vu_now)" in condition
 
     async def test_fast_path_bypass_shape(self, limiter: RateLimiter) -> None:
         """#311: `tc` and `wcu` only, conditioned on the stamp, no `vu` guard."""
@@ -892,7 +958,8 @@ class TestClientWritesThroughMoto:
             )
         bypass_write = spy.call_args_list[0].kwargs
         assert_expression_safe(bypass_write)
-        assert "attribute_exists(#byp)" in bypass_write["ConditionExpression"]
+        # Only a live stamp admits (ADR-151 decision 8).
+        assert "#byp > :vu_now" in bypass_write["ConditionExpression"]
         assert "#vu" not in bypass_write["ConditionExpression"]
 
     async def test_fast_path_with_ttl(self, limiter: RateLimiter) -> None:
@@ -948,6 +1015,7 @@ class TestClientWritesThroughMoto:
         pk = pk_bucket(repo._namespace_id, "user-1", "api", 0)
         with patch.object(client, "update_item", spy.forward):
             await repo._stamp_bucket_disabled(pk, True)
+            await repo._stamp_bucket_disabled(pk, "bypass", 9_000)
             await repo._stamp_bucket_disabled(pk, False)
         for call in spy.call_args_list:
             assert_expression_safe(call.kwargs)

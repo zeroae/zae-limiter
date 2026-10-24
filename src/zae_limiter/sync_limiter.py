@@ -73,6 +73,7 @@ from .sync_lease import (
     SyncLease,
     _contention_rejection,
     _is_transaction_conflict,
+    _stamp_deadline,
     credit_ceilings,
     credit_image,
     write_credit,
@@ -146,6 +147,24 @@ def _item_overrules_debited_parent(result: "SpeculativeResult") -> bool:
     if not (result.cascade and result.parent_id):
         return True
     return result.debited_parent_id is not None and result.debited_parent_id != result.parent_id
+
+
+def _waived_against_override(lease: "SyncLease", limits: "list[Limit] | None") -> bool:
+    """A fast-path admission a hard ``limits=`` override forbids (#467, review F1).
+
+    The fast path waives a limit's balance on the item's live soft stamp, which
+    config wrote; an override is not config, so it cannot take part in that
+    decision. Under the balance condition a successful debit always leaves
+    ``tk >= 0``, so a limit the override declares hard sitting below zero after
+    the write — on the child or a cascade parent, bypass aside — was admitted
+    only by the stamp. Free to tell: the lease's states are the write's
+    ``ALL_NEW`` image.
+    """
+    hard = {limit.name for limit in limits or () if not limit.soft}
+    return any(
+        entry.limit.name in hard and (not entry._bypass) and (entry.state.tokens_milli < 0)
+        for entry in lease.entries
+    )
 
 
 def _failed_only_on_its_stamp(result: "SpeculativeResult", consume: dict[str, int]) -> bool:
@@ -789,7 +808,9 @@ class SyncRateLimiter:
             slow_path_parent_shard: _ParentHint | None = None
             if len(parts) > 1:
                 lease = self._acquire_resources(entity_id, parts)
-            elif self._speculative_writes:
+            elif self._speculative_writes and (
+                not any(limit.soft and limit.name in consume for limit in limits or ())
+            ):
                 lease, slow_path_shard, slow_path_shard_count, slow_path_parent_shard = (
                     self._try_speculative_acquire(
                         entity_id=entity_id,
@@ -798,6 +819,10 @@ class SyncRateLimiter:
                         use_rejection_cache=limits is None,
                     )
                 )
+                if lease is not None and _waived_against_override(lease, limits):
+                    lease._rollback()
+                    lease, slow_path_shard, slow_path_shard_count = (None, None, None)
+                    slow_path_parent_shard = None
             if lease is None:
                 lease = self._slow_acquire(
                     entity_id=entity_id,
@@ -2008,6 +2033,7 @@ class SyncRateLimiter:
         Returns None if parent acquire fails (caller should compensate child).
         """
         now_ms = self._repository._now_ms()
+        parent_stamp_deadline = self._repository._stamp_deadline(now_ms)
         fetched_cascade: dict[tuple[str, str], bool | str | None] = {}
         parent_limits, parent_config_source = self._resolve_limits(
             parent_id, resource, None, cascade_out=fetched_cascade
@@ -2030,6 +2056,8 @@ class SyncRateLimiter:
             if existing is None:
                 return None
             if existing.bypass:
+                return None
+            if existing.soft_until_ms is not None and parent_soft_authority != _SOFT_FROM_CONFIG:
                 return None
             existing.sched = limit.schedule
             existing.reset_sched = limit.reset_schedule
@@ -2083,6 +2111,7 @@ class SyncRateLimiter:
                     _granted=parent_granted,
                     _soft_trusted=parent_soft_authority == _SOFT_FROM_CONFIG,
                     _soft_restamp=parent_soft_authority == _SOFT_FROM_CONFIG,
+                    _stamp_deadline_ms=parent_stamp_deadline,
                     _stored_top_up=parent_stored_top_up,
                 )
             )
@@ -2357,7 +2386,11 @@ class SyncRateLimiter:
         """
 
         def _plan(
-            part: _SlowPart, disable_moves: bool, moves_contended: bool, reread: bool
+            part: _SlowPart,
+            disable_moves: bool,
+            moves_contended: bool,
+            reread: bool,
+            enforced: bool,
         ) -> SyncLease | Exception:
             resource, consume, shard, shard_count, parent_hint = part
             try:
@@ -2372,6 +2405,7 @@ class SyncRateLimiter:
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
                     consistent_owner=reread,
+                    disable_bypass=enforced,
                 )
             except Exception as exc:
                 return exc
@@ -2381,10 +2415,11 @@ class SyncRateLimiter:
             moves_contended: bool = False,
             redone: bool = False,
             reread: bool = False,
+            enforced: bool = False,
         ) -> tuple[SyncLease, dict[str, frozenset[str]]]:
             outcomes = self._run_in_executor(
                 *[
-                    lambda part=part: _plan(part, disable_moves, moves_contended, reread)
+                    lambda part=part: _plan(part, disable_moves, moves_contended, reread, enforced)
                     for part in slow_parts
                 ]
             )
@@ -2395,9 +2430,11 @@ class SyncRateLimiter:
                 for plan in planned:
                     if any(entry._donor_debit is not None for entry in plan.entries):
                         self._commit_rejected_moves(plan.entries, plan._carriers)
+                    else:
+                        self._fix_rejected_stamps(plan.entries, self._repository._now_ms())
                 raise error
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return plan_and_commit(True, moves_contended, redone, reread)
+                return plan_and_commit(True, moves_contended, redone, reread, enforced)
             marks = [plan._cache_mark for plan in planned]
             lease = SyncLease(
                 repository=self._repository,
@@ -2407,14 +2444,18 @@ class SyncRateLimiter:
             )
             try:
                 lease._commit_initial()
+            except BypassLostError:
+                if enforced:
+                    raise AssertionError("an enforced plan carries no bypass write") from None
+                return plan_and_commit(disable_moves, moves_contended, redone, reread, True)
             except PeriodNotAppliedError:
                 if redone:
                     raise
-                return plan_and_commit(disable_moves, moves_contended, True, reread)
+                return plan_and_commit(disable_moves, moves_contended, True, reread, enforced)
             except OwnerStampLostError:
                 if reread:
                     raise
-                return plan_and_commit(disable_moves, moves_contended, redone, True)
+                return plan_and_commit(disable_moves, moves_contended, redone, True, enforced)
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }
@@ -2595,6 +2636,7 @@ class SyncRateLimiter:
         cache_mark = rejection_cache.mark() if rejection_cache is not None else None
         now_ms = self._repository._now_ms()
         zeroed: set[tuple[str, str]] = set()
+        stamp_deadline = self._repository._stamp_deadline(now_ms)
         child_shard, child_shard_count = self._slow_path_shard(
             entity_id, resource, shard_id, shard_count
         )
@@ -2696,9 +2738,19 @@ class SyncRateLimiter:
                 state for (b_eid, _res, _name), state in existing_buckets.items() if b_eid == eid
             ]
             any_existing = bool(item_states)
-            eid_bypass = bypass_mode.get(eid, False) and (not disable_bypass)
+            config_bypass = bypass_mode.get(eid, False)
+            stamp_read = next(
+                (s.bypass_until_ms for s in item_states if s.bypass_until_ms is not None), None
+            )
+            eid_bypass = config_bypass and (not disable_bypass)
             if any_existing:
-                eid_bypass = eid_bypass and any(state.bypass for state in item_states)
+                eid_bypass = eid_bypass and stamp_read is not None
+            wanted = stamp_deadline if config_bypass else None
+            bypass_restamp = (
+                (wanted, stamp_read)
+                if any_existing and (not eid_bypass) and ((wanted, stamp_read) != (None, None))
+                else None
+            )
             if not eid_bypass:
                 for state in item_states:
                     state.bypass = False
@@ -2717,6 +2769,7 @@ class SyncRateLimiter:
                             _shard_id=eid_shard,
                             _shard_count=eid_shard_count,
                             _bypass=True,
+                            _bypass_until_ms=stamp_deadline,
                         )
                     )
                 continue
@@ -2783,7 +2836,11 @@ class SyncRateLimiter:
                 eid_shard_count = grant_count
             seed_ws = self._seed_window_starts(eid, resource, missing, seed_shard_count)
             fresh_soft: dict[str, bool] = {}
-            if soft_authority[eid] == _SOFT_FROM_ITEM and (missing or not any_existing):
+            soft_stamped = any(state.soft_until_ms is not None for state in item_states)
+            restamp_soft = soft_authority[eid] == _SOFT_FROM_ITEM and soft_stamped
+            if soft_authority[eid] == _SOFT_FROM_ITEM and (
+                missing or not any_existing or soft_stamped
+            ):
                 carried = uncached_soft.get(eid)
                 fresh_soft = (
                     carried
@@ -2860,13 +2917,19 @@ class SyncRateLimiter:
                     state.reset_after_seconds = limit.reset_after_seconds
                 if soft_authority[eid] != _SOFT_FROM_ITEM:
                     soft = limit.soft
-                elif existing is None:
+                elif existing is None or restamp_soft:
                     soft = fresh_soft.get(limit.name, False)
                 else:
                     soft = existing.soft
                 state.soft = soft
                 if limit.soft != soft:
                     limit = replace(limit, soft=soft)
+                if existing is None:
+                    state.soft_until_ms = (
+                        stamp_deadline
+                        if soft and soft_authority[eid] != _SOFT_FROM_OVERRIDE
+                        else None
+                    )
                 original_tk = state.tokens_milli
                 stored_top_up = state.topped_up_milli is not None
                 original_rf = item_rf if seed else state.last_refill_ms
@@ -2924,9 +2987,12 @@ class SyncRateLimiter:
                         _stored_reset_after_seconds=stored_rsa,
                         _granted=granted or (is_new and limit.is_quota),
                         _donor_debit=donor,
-                        _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM,
-                        _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG,
+                        _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM or restamp_soft,
+                        _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG or restamp_soft,
+                        _stamp_deadline_ms=stamp_deadline,
                         _bypass=eid_bypass,
+                        _bypass_until_ms=stamp_deadline if eid_bypass else None,
+                        _bypass_restamp=bypass_restamp,
                         _stored_top_up=stored_top_up,
                     )
                 )
@@ -2945,6 +3011,8 @@ class SyncRateLimiter:
         if violations:
             if any(entry._donor_debit is not None for entry in entries):
                 self._commit_rejected_moves(entries, carriers)
+            else:
+                self._fix_rejected_stamps(entries, now_ms)
             if moves_contended and all((v.entity_id, v.limit_name) in zeroed for v in violations):
                 raise _contention_rejection(entries, now_ms, consume)
             raise RateLimitExceeded(statuses)
@@ -3081,7 +3149,8 @@ class SyncRateLimiter:
         """
         for entry in entries:
             if entry.consumed:
-                entry.state.tokens_milli += entry.consumed * 1000
+                if not entry._bypass:
+                    entry.state.tokens_milli += entry.consumed * 1000
                 if entry.state.total_consumed_milli is not None:
                     entry.state.total_consumed_milli -= entry.consumed * 1000
                 entry.consumed = 0
@@ -3095,6 +3164,67 @@ class SyncRateLimiter:
                 entries[0].resource,
                 exc,
             )
+
+    def _fix_rejected_stamps(self, entries: list[LeaseEntry], now_ms: int) -> None:
+        """Correct the stamps a rejected pass would have written (ADR-151, review E1).
+
+        A rejection writes nothing, so the restamp an rf-locked write carries
+        (D16, decisions 4 and 8) never lands: an expired stamp config no
+        longer backs kept every later request on the slow path — a failed
+        fast-path write, the reads and the uncached walk per rejection — until
+        refill admitted one, up to a day for a calendar quota. Here each
+        existing item whose stamps disagree with what this pass decided from
+        config read uncached gets one stamp-only write: a stamp config no
+        longer backs is removed, a missing one config wants is set, an expired
+        one config still backs is renewed. A live stamp config agrees with is
+        left alone. Nothing a rejected request asked for is written, so it
+        admits nothing (write-on-enter invariant 1).
+
+        Best effort, like :meth:`_commit_rejected_moves`: the rejection stands
+        whatever happens here.
+        """
+        fix = getattr(self._repository, "fix_bucket_stamps", None)
+        if fix is None:
+            return
+        plans: dict[
+            tuple[str, str, int],
+            tuple[tuple[int | None, int | None] | None, dict[str, tuple[int | None, int | None]]],
+        ] = {}
+
+        def _stale(deadline: int | None, read: int | None) -> bool:
+            if deadline is None or read is None:
+                return deadline != read
+            return read <= now_ms
+
+        for entry in entries:
+            if entry._is_new or entry._seed:
+                continue
+            key = (entry.entity_id, entry.resource, entry._shard_id)
+            bypass, soft = plans.get(key, (None, {}))
+            if entry._bypass:
+                plan = (entry._bypass_until_ms, entry.state.bypass_until_ms)
+                if plan[0] is not None and _stale(*plan):
+                    bypass = plan
+            elif entry._bypass_restamp is not None and _stale(*entry._bypass_restamp):
+                bypass = entry._bypass_restamp
+            if entry._soft_restamp:
+                wanted = _stamp_deadline(entry, now_ms, self._repository)
+                plan = (wanted if entry.state.soft else None, entry.state.soft_until_ms)
+                if _stale(*plan):
+                    soft[entry.limit.name] = plan
+            plans[key] = (bypass, soft)
+        for (entity_id, resource, shard_id), (bypass, soft) in plans.items():
+            if bypass is None and (not soft):
+                continue
+            try:
+                if not fix(entity_id, resource, shard_id, bypass=bypass, soft=soft or None):
+                    logger.debug("A stamp correction on resource %r lost its pin", resource)
+            except Exception as exc:
+                logger.warning(
+                    "A rejected pass's stamp correction on resource %r was not written: %r",
+                    resource,
+                    exc,
+                )
 
     @staticmethod
     def _granted_tokens(
@@ -3403,7 +3533,9 @@ class SyncRateLimiter:
         for bucket in self._repository.get_buckets(entity_id):
             if bucket.resource != resource:
                 continue
-            bypassed = bypassed or bucket.bypass
+            bypassed = bypassed or (
+                bucket.bypass_until_ms is not None and bucket.bypass_until_ms > now_ms
+            )
             name = bucket.limit_name
             limit_for_bucket = resolved_by_name.get(name)
             totals[name] = totals.get(name, 0) + self._readable_balance(
@@ -3441,7 +3573,9 @@ class SyncRateLimiter:
             else:
                 available = ceiling
             requested = needed.get(limit.name, 0)
-            exceeded = requested > 0 and available < requested and (not limit.soft)
+            exceeded = (
+                requested > 0 and available < requested and (not limit.soft) and (not bypassed)
+            )
             resets_at_ms = window_ends.get(limit.name)
             wait = 0.0
             if exceeded and limit.reset_after is not None:

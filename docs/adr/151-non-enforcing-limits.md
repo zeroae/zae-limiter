@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Date:** 2026-10-09
 **Issue:** [#467](https://github.com/zeroae/zae-limiter/issues/467), [#311](https://github.com/zeroae/zae-limiter/issues/311)
-**Related:** [ADR-125](125-resource-disable.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-146](146-per-resource-cascade-policy.md), [ADR-147](147-client-side-rejection-cache.md), [#674](https://github.com/zeroae/zae-limiter/issues/674)
+**Related:** [ADR-100](100-centralized-config.md), [ADR-114](114-composite-bucket-items.md), [ADR-125](125-resource-disable.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-146](146-per-resource-cascade-policy.md), [ADR-147](147-client-side-rejection-cache.md), [#674](https://github.com/zeroae/zae-limiter/issues/674)
 **Design:** `docs/plans/2026-10-09-non-enforcing-limits-design.md`
 
 ## Context
@@ -40,13 +40,14 @@ bypass stamp after enforcement is restored admits without limit.
    limit's balance, must still add every declared limit's consumption to its counter, and must
    still debit and enforce the reserved `wcu` limit.
 3. The client must learn bypass from the stamp on the items its own writes return, and every
-   bypass-shaped write must be conditioned on the stamp being present, so a cleared bypass is
+   bypass-shaped write must be conditioned on a live stamp, so a cleared bypass is
    detected by the server and never admits without enforcement. A request whose write debited
    a bucket that turns out to be bypassed must be refunded.
 4. Every change of either flag must reach existing buckets eagerly: bypass by the ADR-125
    fan-out, soft-ness by the entity-level parameter sync and, for resource- and system-level
    changes, by a change-only fan-out. A bucket created or seeded by the slow path must take
-   its soft stamps from config read uncached in that pass, never from the config cache.
+   its stamps from config read uncached in that pass, never from the config cache, and a slow
+   pass must set or remove a stamp that config disagrees with.
 5. Each entity resolves both flags independently; a child's soft limit or bypass never
    extends to its cascade parent.
 6. A bypassed pass must not open, join or roll a session window, and must not reset a quota;
@@ -54,6 +55,11 @@ bypass stamp after enforcement is restored admits without limit.
    are unchanged: a bucket created under bypass is funded exactly as an enforced one.
 7. Storing a soft limit or a bypass value must pass the ADR-141 version gate at 0.17.0 and
    ratchet `client_min_version` to 0.17.0, as ADR-146 does.
+8. Every bypass and soft stamp must carry a deadline no later than T after the config read
+   that justified it, and the fast path must honour a stamp only before its deadline; past it
+   the request takes the slow path, which renews or removes it from config read uncached. Only
+   a write built from a fresh config read may set or extend a deadline; the aggregator may copy
+   a stamp, never extend it. T is a writer-side setting, 60 seconds by default.
 
 The write shapes, fan-out paths, reporting fields, overdraw signal, surfaces and costs are in
 the design document.
@@ -73,8 +79,10 @@ the design document.
   first request after bypass is cleared costs one failed write.
 - A soft-ness change at resource or system level is O(buckets) writes, and a system-level one
   discovers every bucket in the namespace.
-- A bucket an old client created carries no soft stamp, so the new fast path enforces that limit
-  until the next fan-out or fresh slow pass: under-admission, never over-admission.
+- A bypassed or soft bucket pays one slow pass per shard per T to renew its stamp, and a stamp
+  a fan-out missed keeps its old meaning for up to T plus clock skew between processes.
+- A bucket created without a stamp (an old client, a clone of an older image)
+  enforces until the next fan-out or slow pass: under-admission, never over-admission.
 - A soft limit's debt is per shard: one shard can be overdrawn while siblings hold tokens.
 - Clients older than v0.15 ignore `client_min_version` and enforce soft and bypassed limits.
 
@@ -88,3 +96,5 @@ the design document.
 - **Decide bypass by server condition only**: the update expression cannot omit the `tk` debit conditionally.
 - **Propagate resource-level soft changes by bucket TTL**: a soft-to-hard change would admit without limit for up to seven reset periods.
 - **AuditEvent per overdraw**: one extra write per overdrawn request, on the hot path.
+- **Bound the stamp with `vu`**: writers that clear or re-stamp `vu` for other reasons (the slow
+  path's `clear_vu`, the aggregator's boundary re-stamp) would drop or extend it without reading config.

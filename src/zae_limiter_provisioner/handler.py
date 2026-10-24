@@ -431,7 +431,6 @@ def _sync_bucket_param_changes(
     ``_apply_and_record``.
     """
     client = boto3.client("dynamodb")
-    now_ms = int(time.time() * 1000)
     errors: list[str] = []
 
     for change in changes:
@@ -439,6 +438,11 @@ def _sync_bucket_param_changes(
             continue
         entity_id, resource = change.target.split("/", 1)
         declared = (change.data or {}).get("limits", {})
+        # Per change, just before its resolution: a soft stamp's deadline
+        # counts from the read behind it, and one instant for a whole apply
+        # wrote stamps already expired on a long one (ADR-151 decision 8,
+        # review E4).
+        now_ms = int(time.time() * 1000)
 
         limits: dict[str, Any]
         stale_limit_names: set[str] | None

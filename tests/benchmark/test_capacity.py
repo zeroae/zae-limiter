@@ -735,10 +735,12 @@ class TestSpeculativeCapacity:
 
         The server decides soft-ness from the item's own stamp, so the client
         reads nothing to know it: 0 RCU + 1 WCU, exactly the hard success path.
+        The limit is stored config: only config stamps the bucket (ADR-151).
         """
         limits = [Limit.per_minute("rpm", 1_000_000), Limit.per_minute("tpm", 100, soft=True)]
+        sync_limiter._repository.set_resource_defaults("api", limits)
         with sync_limiter.acquire(
-            entity_id="spec-soft", resource="api", limits=limits, consume={"rpm": 1, "tpm": 100}
+            entity_id="spec-soft", resource="api", consume={"rpm": 1, "tpm": 100}
         ):
             pass
         sync_limiter._speculative_writes = True
@@ -746,10 +748,7 @@ class TestSpeculativeCapacity:
 
         with capacity_counter.counting():
             with sync_limiter.acquire(
-                entity_id="spec-soft",
-                resource="api",
-                limits=limits,
-                consume={"rpm": 1, "tpm": 500},
+                entity_id="spec-soft", resource="api", consume={"rpm": 1, "tpm": 500}
             ) as lease:
                 pass
 
@@ -758,6 +757,37 @@ class TestSpeculativeCapacity:
         assert capacity_counter.update_item == 1
         assert capacity_counter.put_item == 0
         assert len(capacity_counter.transact_write_items) == 0
+
+    def test_a_soft_override_takes_the_slow_path_and_is_admitted(
+        self, sync_limiter, capacity_counter
+    ):
+        """Review D11: an `acquire(limits=...)` override stamps nothing (it is
+        not config), so the fast path would read its soft limit hard and
+        reject on it. The request skips the fast path: one slow pass, admitted
+        into debt."""
+        limits = [Limit.per_minute("rpm", 1_000_000), Limit.per_minute("tpm", 100, soft=True)]
+        with sync_limiter.acquire(
+            entity_id="spec-soft-o", resource="api", limits=limits, consume={"rpm": 1, "tpm": 100}
+        ):
+            pass
+        sync_limiter._speculative_writes = True
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="spec-soft-o",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1, "tpm": 500},
+            ) as lease:
+                pass
+
+        assert lease.overdrawn == ["tpm"]
+        # One write: the slow pass's commit (a one-item transaction is sent as
+        # a plain UpdateItem), and no failed fast-path write before it.
+        assert capacity_counter.update_item == 1
+        assert len(capacity_counter.transact_write_items) == 0
+        assert len(capacity_counter.batch_get_item) >= 1  # the slow pass read
 
 
 class TestBypassCapacity:

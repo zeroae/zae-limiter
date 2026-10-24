@@ -336,11 +336,18 @@ class TestNamespaceScopedPolicies:
         assert shared_keys == ["_/*"]
 
     def test_namespace_full_access_leading_keys(self) -> None:
-        """ns-full: both namespace and shared prefix in one statement."""
+        """ns-full: namespace prefix, the namespace's own GSI4 partition key,
+        and the shared prefix, in one statement. The bare id is what a
+        system-level soft fan-out queries (review D4): without it the config
+        write landed and the fan-out was denied."""
         keys = _extract_leading_keys(
             self.template, "NamespaceFullAccessPolicy", "NamespaceFullAccess"
         )
-        assert keys == ["${aws:PrincipalTag/zael_namespace_id}/*", "_/*"]
+        assert keys == [
+            "${aws:PrincipalTag/zael_namespace_id}/*",
+            "${aws:PrincipalTag/zael_namespace_id}",
+            "_/*",
+        ]
 
     def test_namespace_readonly_leading_keys(self) -> None:
         """ns-read: both namespace and shared prefix in one statement."""

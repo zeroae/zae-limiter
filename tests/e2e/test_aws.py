@@ -2216,6 +2216,26 @@ class TestE2EAWSResetAndTopUp:
         finally:
             await repo.close()
 
+    async def _system_soft(self, stack: str, namespace: str) -> None:
+        """A system-level soft change reaches a bucket on system defaults.
+
+        Its fan-out discovers the namespace's buckets on GSI4, whose partition
+        key is the bare namespace id: a namespace-scoped grant matching only
+        ``{id}/*`` let the config write land and then denied the query
+        (review D4).
+        """
+        repo = await TestE2EAWSAcquirePolicies._connect(stack, namespace)
+        try:
+            await repo.set_system_defaults([Limit.per_minute("rpm", 5)])
+            limiter = RateLimiter(repository=repo)
+            async with limiter.acquire("solo", "other", consume={"rpm": 1}):
+                pass
+            await repo.set_system_defaults([Limit.per_minute("rpm", 5, soft=True)])
+            (state,) = await repo.get_buckets("solo", "other")
+            assert state.limit_name == "rpm" and state.soft
+        finally:
+            await repo.close()
+
     @pytest.mark.asyncio(loop_scope="class")
     async def test_admin_role_with_full_can_reset_and_top_up(
         self, reset_policy_stack, unique_name_class, monkeypatch
@@ -2280,6 +2300,7 @@ class TestE2EAWSResetAndTopUp:
                 monkeypatch, TestE2EAWSAcquirePolicies._assume(role_arn)
             )
             await self._exercise(unique_name_class, namespace)
+            await self._system_soft(unique_name_class, namespace)
         finally:
             try:
                 iam.detach_role_policy(RoleName=role_name, PolicyArn=policy_arn)

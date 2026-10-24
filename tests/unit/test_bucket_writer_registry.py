@@ -49,6 +49,7 @@ REPOSITORY = {
     "build_composite_retry": (True, False),  # ADD only; never seeds a quota
     "build_composite_adjust": (True, False),  # adjust / rollback ADD; vu = 0 on trim (#721)
     "build_bypass_consume": (False, False),  # bypassed slow path: tc only (#311)
+    "build_stamp_fix": (False, False),  # stamps only, before a rejection (ADR-151, E1)
     "build_bucket_operation": (True, True),  # reset / top-up (ADR-149): tk delta, gc, tu
     "build_operation_record": NOT_BUCKET,  # reset / top-up operation record (ADR-149)
     "build_quota_donor_debits": (True, False),  # the donor side of a move
@@ -65,6 +66,7 @@ REPOSITORY = {
     "_stamp_bucket_disabled": (False, False),  # disabled flag
     "_stamp_bucket_cascade": (False, False),  # cascade + owner parent_id + pgen (ADR-146/150)
     "_stamp_bucket_soft": (False, False),  # b_{name}_soft SET/REMOVE (#467, ADR-151)
+    "fix_bucket_stamps": (False, False),  # issues build_stamp_fix
     "_sync_one_bucket_shard": (False, False),  # issues _build_bucket_param_update
     "get_or_create_bucket": (True, True),  # legacy create via build_bucket_put_item
     "purge_namespace": (True, True),  # deletes whole items, buckets included
@@ -191,6 +193,19 @@ def test_only_grant_writers_write_gc():
         "_repair_quota_clones",
         "propagate_shard_count",
     }
+
+
+def test_the_aggregator_never_writes_a_bypass_or_soft_stamp():
+    """ADR-151 decision 8: only a write built from a fresh config read may set
+    or extend a stamp's deadline. The aggregator reads no config, so none of
+    its writers names either stamp; a Path 2 clone copies them verbatim from
+    shard 0's image (``dict(base_item)``), deadline included, and so can never
+    extend one."""
+    for name in AGGREGATOR:
+        source = inspect.getsource(getattr(processor, name))
+        for stamp in ("BUCKET_FIELD_BYPASS", "BUCKET_FIELD_SOFT", '"bypass"', "_soft"):
+            assert stamp not in source, f"aggregator writer {name} names {stamp}"
+    assert "dict(base_item)" in inspect.getsource(processor.propagate_shard_count)
 
 
 # --- Behavioural: what the pure builders actually write -----------------------

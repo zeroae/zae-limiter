@@ -1153,8 +1153,9 @@ class Availability:
     checked_at_ms: int
     # One entry per resolved limit, in resolution order
     statuses: list[LimitStatus]
-    # Whether the bucket read carries the bypass stamp (#311): every request
-    # is admitted and nothing is debited, whatever the statuses say.
+    # Whether the bucket read carries a live bypass stamp (#311): every request
+    # is admitted and nothing is debited, so no status is exceeded and
+    # `allowed` is True whatever the balances (review D12).
     bypassed: bool = False
 
     def status(self, limit_name: str) -> LimitStatus | None:
@@ -1283,15 +1284,30 @@ class BucketState:
     # True only for a state read off an item, where `stored_vu_ms` is known.
     stored_vu_read: bool = False
     # The item's `bypass` stamp (#311, ADR-151): item-level, copied onto each
-    # state read off it. `try_consume` admits a bypassed state, so no image of
-    # a bypassed bucket is ever read as a rejection; the slow path clears it on
-    # a state whose (uncached) config no longer says bypass.
+    # state read off it. True when the stamp is **present**, live or not; its
+    # deadline is `bypass_until_ms`. `try_consume` admits a bypassed state, so
+    # no image of a bypassed bucket is ever read as a rejection (an expired
+    # stamp is routed to the slow path before any image is judged); the slow
+    # path clears it on a state whose (uncached) config no longer says bypass.
     bypass: bool = False
+    # The `bypass` stamp's deadline as read, epoch ms (ADR-151 decision 8), or
+    # None when the item carries none. `schema.STAMP_EXPIRED` for a stamp a
+    # pre-release build wrote as `BOOL true`. The slow path pins its own stamp
+    # write on this value; for a state it creates, the deadline it stamps.
+    bypass_until_ms: int | None = None
     # `b_{name}_soft` (#467, ADR-151): the limit is metered but never rejects.
     # Read off the item on every image (speculative, rejection cache, slow
-    # path); the slow path overrides it from config only when that config was
-    # read fresh this pass. `try_consume` admits a soft state unconditionally.
+    # path) as "stamp present", live or not; its deadline is `soft_until_ms`.
+    # The slow path overrides it with the soft-ness it decides, from config
+    # read fresh or, when the item carries a stamp, read uncached — never from
+    # the stamp itself (decision 8). `try_consume` admits a soft state
+    # unconditionally.
     soft: bool = False
+    # The `b_{name}_soft` stamp's deadline as read, epoch ms (ADR-151 decision
+    # 8), or None when absent; `schema.STAMP_EXPIRED` for a pre-release `BOOL`.
+    # The slow path pins its own stamp write on it. On a state the slow path
+    # creates or seeds: the deadline it stamps (None stamps nothing).
+    soft_until_ms: int | None = None
     # The raw schedule strings on the item as this state was read (#721), or
     # `None` when the state was not read off an item. Item level: (`sched`,
     # `rsched`, `sched_tz`); this limit's own overrides: (`b_{name}_sched`,

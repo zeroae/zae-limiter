@@ -96,6 +96,16 @@ class TestBuilderConstruction:
         builder.region("us-east-1")
         assert builder._region == "us-east-1"
 
+    def test_builder_stamp_ttl(self):
+        """ADR-151 decision 8: T defaults to 60 s and is refused below 10."""
+        builder = RepositoryBuilder()
+        assert builder._stamp_ttl == 60
+        assert builder.stamp_ttl(30) is builder
+        assert builder._stamp_ttl == 30
+        with pytest.raises(ValueError, match="at least 10"):
+            builder.stamp_ttl(5)
+        assert builder._stamp_ttl == 30
+
 
 class TestBuilderInfraOptions:
     """Test infrastructure configuration methods."""
@@ -844,6 +854,30 @@ class TestOpen:
             await repo.close()
 
     @pytest.mark.asyncio
+    async def test_open_passes_stamp_ttl(self, mock_dynamodb):
+        """open() passes stamp_ttl to the Repository (ADR-151 decision 8)."""
+        await _create_table("test-connect-stamp")
+        repo = await Repository.open(stack="test-connect-stamp", stamp_ttl=30)
+        try:
+            assert repo._stamp_ttl_seconds == 30
+            # A namespace scope writes stamps with the same T.
+            scoped = await repo.namespace("default")
+            assert scoped._stamp_ttl_seconds == 30
+        finally:
+            await repo.close()
+        with pytest.raises(ValueError, match="stamp_ttl"):
+            await Repository.open(stack="test-connect-stamp", stamp_ttl=9)
+
+    @pytest.mark.asyncio
+    async def test_builder_passes_stamp_ttl(self, mock_dynamodb):
+        await _create_table("test-builder-stamp")
+        repo = await Repository.builder().stack("test-builder-stamp").stamp_ttl(45).build()
+        try:
+            assert repo._stamp_ttl_seconds == 45
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
     async def test_open_passes_auto_update(self, mock_dynamodb):
         """open() passes auto_update to the Repository."""
         await _create_table("test-connect-au")
@@ -1196,6 +1230,18 @@ class TestConnect:
         repo = await Repository.connect(stack="test-conn-ttl", config_cache_ttl=120)
         try:
             assert repo._config_cache_ttl == 120
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_connect_passes_stamp_ttl(self, mock_dynamodb):
+        """connect() passes stamp_ttl to the Repository (ADR-151 decision 8)."""
+        setup = await _create_deployed_table("test-conn-stamp")
+        await setup.close()
+
+        repo = await Repository.connect(stack="test-conn-stamp", stamp_ttl=20)
+        try:
+            assert repo._stamp_ttl_seconds == 20
         finally:
             await repo.close()
 

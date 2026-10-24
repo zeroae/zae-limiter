@@ -22,6 +22,7 @@ level is written before anything reads it back.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -49,19 +50,37 @@ from zae_limiter.schema import (
     sk_config,
     sk_meta,
     sk_state,
+    stamp_deadline,
 )
 
-from .bucket_sync import resolve_bucket_limits
+from .bucket_sync import STAMP_TTL_SECONDS, resolve_bucket_limits
 
 logger = logging.getLogger(__name__)
 
 
-def stamp_bucket(client: Any, table_name: str, pk: str, disabled: bool | str) -> None:
+def now_ms() -> int:
+    """Wall-clock epoch milliseconds, the instant a stamp's deadline counts from."""
+    return int(time.time() * 1000)
+
+
+def deadline_from(read_ms: int) -> int:
+    """A stamp's deadline for a resolution read no earlier than ``read_ms``."""
+    return stamp_deadline(read_ms, STAMP_TTL_SECONDS)
+
+
+def stamp_bucket(
+    client: Any,
+    table_name: str,
+    pk: str,
+    disabled: bool | str,
+    bypass_until_ms: int | None = None,
+) -> None:
     """Stamp one bucket item with its access mode (ADR-125, #311).
 
     Mirrors ``Repository._stamp_bucket_disabled``: True SETs ``disabled``,
-    ``"bypass"`` SETs ``bypass``, False clears both; each write removes the
-    stamp it does not set.
+    ``"bypass"`` SETs ``bypass`` to a deadline (ADR-151 decision 8;
+    ``bypass_until_ms``, or T from now), False clears both; each write removes
+    the stamp it does not set.
     """
     kwargs: dict[str, Any] = {
         "TableName": table_name,
@@ -73,8 +92,10 @@ def stamp_bucket(client: Any, table_name: str, pk: str, disabled: bool | str) ->
         "ConditionExpression": "attribute_exists(PK)",
     }
     if disabled == DISABLED_BYPASS:
-        kwargs["UpdateExpression"] = "SET #byp = :true REMOVE #disabled"
-        kwargs["ExpressionAttributeValues"] = {":true": {"BOOL": True}}
+        if bypass_until_ms is None:
+            bypass_until_ms = deadline_from(now_ms())
+        kwargs["UpdateExpression"] = "SET #byp = :until REMOVE #disabled"
+        kwargs["ExpressionAttributeValues"] = {":until": {"N": str(bypass_until_ms)}}
     elif disabled:
         kwargs["UpdateExpression"] = "SET #disabled = :true REMOVE #byp"
         kwargs["ExpressionAttributeValues"] = {":true": {"BOOL": True}}
@@ -143,18 +164,21 @@ def fanout_resource(
 
     Returns the number of buckets stamped.
     """
-    effective_by_entity: dict[str, bool | str] = {}
+    effective_by_entity: dict[str, tuple[bool | str, int]] = {}
 
-    def _decide(pk: str) -> bool | str | None:
+    def _decide(pk: str) -> tuple[bool | str, int] | None:
         _ns, entity_id, _res, _shard = parse_bucket_pk(pk)
         if entity_id not in effective_by_entity:
-            effective_by_entity[entity_id] = resolve_disabled(
-                client, table_name, namespace_id, entity_id, resource
+            read_ms = now_ms()
+            effective_by_entity[entity_id] = (
+                resolve_disabled(client, table_name, namespace_id, entity_id, resource),
+                read_ms,
             )
-        if effective_by_entity[entity_id] != disabled:
+        value, read_ms = effective_by_entity[entity_id]
+        if value != disabled:
             # This entity overrides the resource-level value; leave it alone.
             return None
-        return disabled
+        return disabled, read_ms
 
     return _fanout(
         client,
@@ -195,15 +219,15 @@ def fanout_entity(
     scoped to one resource, the caller's directive is unambiguous for every
     discovered bucket, so all buckets are stamped with `disabled` directly.
     """
-    effective_by_resource: dict[str, bool | str] = {}
+    effective_by_resource: dict[str, tuple[bool | str, int]] = {}
 
-    def _decide(pk: str) -> bool | str | None:
-        if resource is not None:
-            return disabled
+    def _decide(pk: str) -> tuple[bool | str, int] | None:
         _ns, _eid, bucket_resource, _shard = parse_bucket_pk(pk)
         if bucket_resource not in effective_by_resource:
-            effective_by_resource[bucket_resource] = resolve_disabled(
-                client, table_name, namespace_id, entity_id, bucket_resource
+            read_ms = now_ms()
+            effective_by_resource[bucket_resource] = (
+                resolve_disabled(client, table_name, namespace_id, entity_id, bucket_resource),
+                read_ms,
             )
         return effective_by_resource[bucket_resource]
 
@@ -216,7 +240,9 @@ def fanout_entity(
         pk_value=gsi3_pk_entity(namespace_id, entity_id),
         sk_prefix=f"BUCKET#{resource}#" if resource else "BUCKET#",
         disabled=disabled,
-        decide=_decide,
+        # Scoped to one resource, the caller's directive is unambiguous for
+        # every discovered bucket: stamp it directly, timed from the start.
+        decide=None if resource is not None else _decide,
     )
 
 
@@ -229,28 +255,37 @@ def _fanout(
     pk_value: str,
     sk_prefix: str,
     disabled: bool | str,
-    decide: Callable[[str], bool | str | None] | None = None,
+    decide: Callable[[str], tuple[bool | str, int] | None] | None = None,
 ) -> int:
     """Discover and stamp matching bucket items, across two passes.
 
     Runs the paginated discovery query twice (see module docstring), with
     `stamped` shared across both passes so a PK visited on pass one is never
     re-stamped on pass two. `decide`, when given, chooses the value to stamp
-    on each newly-discovered PK, or returns None to leave it alone; a PK it
-    declines is NOT added to `stamped`, so it is re-considered (cheaply,
-    since the caller's resolutions are memoized) on a later pass or page.
+    on each newly-discovered PK and the instant just before the resolution it
+    came from was read, or returns None to leave it alone; a PK it declines is
+    NOT added to `stamped`, so it is re-considered (cheaply, since the
+    caller's resolutions are memoized) on a later pass or page.
+
+    A deadline counts from the read behind its value (ADR-151 decision 8),
+    like ``Repository._stamp_bucket_disabled``: counted from the fan-out's
+    start, a long fan-out stamped late buckets with deadlines already near or
+    past, each paying an immediate renewal (review E4). The caller's own
+    directive (`decide` None) counts from the start.
     """
     stamped: set[str] = set()
+    started_ms = now_ms()
 
     for _pass in range(2):
         for pk in _query_bucket_pks(
             client, table_name, index, pk_name, sk_name, pk_value, sk_prefix
         ):
             if pk not in stamped:
-                value = disabled if decide is None else decide(pk)
-                if value is None:
+                decided = (disabled, started_ms) if decide is None else decide(pk)
+                if decided is None:
                     continue
-                stamp_bucket(client, table_name, pk, value)
+                value, read_ms = decided
+                stamp_bucket(client, table_name, pk, value, deadline_from(read_ms))
                 stamped.add(pk)
 
     return len(stamped)
@@ -466,10 +501,17 @@ def fanout_cascade(
     return written
 
 
-def stamp_bucket_soft(client: Any, table_name: str, pk: str, targets: dict[str, bool]) -> None:
+def stamp_bucket_soft(
+    client: Any,
+    table_name: str,
+    pk: str,
+    targets: dict[str, bool],
+    soft_until_ms: int | None = None,
+) -> None:
     """SET or REMOVE ``b_{name}_soft`` on one bucket item (#467).
 
-    Mirrors ``Repository._stamp_bucket_soft``, positional tokens included.
+    Mirrors ``Repository._stamp_bucket_soft``, positional tokens included. A
+    stamp SET carries ``soft_until_ms`` (ADR-151 decision 8), or T from now.
     """
     set_parts: list[str] = []
     remove_parts: list[str] = []
@@ -481,7 +523,9 @@ def stamp_bucket_soft(client: Any, table_name: str, pk: str, targets: dict[str, 
     kwargs: dict[str, Any] = {}
     if set_parts:
         expr.append(f"SET {', '.join(set_parts)}")
-        kwargs["ExpressionAttributeValues"] = {":t": {"BOOL": True}}
+        if soft_until_ms is None:
+            soft_until_ms = deadline_from(now_ms())
+        kwargs["ExpressionAttributeValues"] = {":t": {"N": str(soft_until_ms)}}
     if remove_parts:
         expr.append(f"REMOVE {', '.join(remove_parts)}")
     try:
@@ -518,6 +562,8 @@ def fanout_soft(
     else:
         query = (GSI4_NAME, "GSI4PK", "GSI4SK", namespace_id)
     resolved: dict[tuple[str, str], tuple[dict[str, dict[str, Any]], str | None]] = {}
+    # Per bucket key, taken before the resolution its stamps come from.
+    deadlines: dict[tuple[str, str], int] = {}
     stamped: set[str] = set()
     for _pass in range(2):
         for pk in _query_bucket_pks(client, table_name, *query, BUCKET_PREFIX):
@@ -526,6 +572,7 @@ def fanout_soft(
             _ns, eid, bucket_resource, _shard = parse_bucket_pk(pk)
             key = (eid, bucket_resource)
             if key not in resolved:
+                deadlines[key] = deadline_from(now_ms())
                 resolved[key] = resolve_bucket_limits(
                     client, table_name, namespace_id, eid, bucket_resource, consistent_read=True
                 )
@@ -536,6 +583,6 @@ def fanout_soft(
             if level in ("entity", "entity_default") or (resource is None and level == "resource"):
                 continue
             targets = {name: bool(limits.get(name, {}).get("soft")) for name in names | set(limits)}
-            stamp_bucket_soft(client, table_name, pk, targets)
+            stamp_bucket_soft(client, table_name, pk, targets, deadlines[key])
             stamped.add(pk)
     return len(stamped)

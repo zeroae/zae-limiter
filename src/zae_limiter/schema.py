@@ -1,5 +1,6 @@
 """DynamoDB schema definitions and key builders."""
 
+import random
 from typing import TYPE_CHECKING, Any
 
 from .schedule import cycle_seconds, encode, encode_reset, entry_params, parse_cron
@@ -236,6 +237,75 @@ BUCKET_FIELD_DISABLED = "disabled"
 # and enforces.
 DISABLED_BYPASS = "bypass"
 BUCKET_FIELD_BYPASS = "bypass"
+
+# Stamps expire (ADR-151 decision 8). A `bypass` or `b_{name}_soft` stamp holds
+# a deadline, `N` epoch milliseconds, at most T (the writer's `stamp_ttl`) after
+# the config read that justified it, and means something only before it. A
+# fan-out can miss a bucket (a create landing after it, an aggregator clone of
+# an older image, a partial failure), and a stamp the fast path honoured
+# forever would then admit without limit forever (review D1). Past the deadline
+# the fast path sends the request to the slow path, which renews the stamp or
+# removes it from config read uncached. Only a write built from a fresh config
+# read sets or extends one; the aggregator only ever copies them.
+DEFAULT_STAMP_TTL_SECONDS = 60
+# The smallest T a writer accepts: every stamped bucket pays one slow pass per
+# shard per T, so a T of a few seconds would demote it to the slow path.
+MIN_STAMP_TTL_SECONDS = 10
+# A stamp written as `BOOL true` by a pre-release build: present, and already
+# expired. `BOOL > N` is false on DynamoDB (mismatched types compare false), so
+# the fast path sends it to the slow path, which replaces or removes it.
+STAMP_EXPIRED = -1
+_STAMP_RNG = random.Random()
+
+
+def validate_stamp_ttl(seconds: float) -> float:
+    """Check a writer's ``stamp_ttl`` (ADR-151 decision 8) and return it.
+
+    Raises:
+        ValueError: Below :data:`MIN_STAMP_TTL_SECONDS`: every bypassed or soft
+            bucket renews its stamp through a slow pass once per shard per T,
+            so a T of a few seconds would demote it to the slow path.
+    """
+    if seconds < MIN_STAMP_TTL_SECONDS:
+        raise ValueError(
+            f"stamp_ttl must be at least {MIN_STAMP_TTL_SECONDS} seconds, got {seconds!r}: "
+            "every bypassed or soft bucket renews its stamp through a slow pass once per "
+            "shard per stamp_ttl"
+        )
+    return seconds
+
+
+def decode_stamp(attr: dict[str, Any] | None) -> int | None:
+    """A stamp's deadline (epoch ms) from its attribute, or None when absent.
+
+    Anything but a number (a pre-release ``BOOL true``) reads as present and
+    expired, :data:`STAMP_EXPIRED`.
+    """
+    if attr is None:
+        return None
+    raw = attr.get("N")
+    if raw is None:
+        return STAMP_EXPIRED
+    return int(raw)
+
+
+def stamp_value(deadline_ms: int) -> dict[str, Any]:
+    """The attribute a stamp read as ``deadline_ms`` holds, for a pin on it."""
+    if deadline_ms == STAMP_EXPIRED:
+        return {"BOOL": True}
+    return {"N": str(deadline_ms)}
+
+
+def stamp_deadline(now_ms: int, ttl_seconds: float, *, rng: random.Random | None = None) -> int:
+    """A stamp's deadline: ``now_ms + T × U(0.8, 1.0)`` (ADR-151 decision 8).
+
+    ``now_ms`` must be no later than the config read that justifies the stamp.
+    The jitter only shortens, so stamps written together are renewed spread
+    out rather than all at once.
+    """
+    draw = (rng or _STAMP_RNG).uniform(0.8, 1.0)
+    return now_ms + int(ttl_seconds * 1000 * draw)
+
 
 # Cascade policy (ADR-146). Tri-state on resource and entity config items:
 # absent = inherit, True/False = explicit; resolved by the ADR-125 walk and,

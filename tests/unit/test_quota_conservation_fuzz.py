@@ -80,6 +80,11 @@ OTHER_RPM = Limit.per_minute("rpm", 1_000)
 QUOTAS = {
     "calendar": (Limit.quota("q", C, cron="0 0 * * *"), DAY_MS),
     "session": (Limit.quota("q", C, reset_after=SESSION), SESSION_MS + 1),
+    # Soft quotas (ADR-151, review D14): admitted into debt, never rejected on
+    # the quota, so `held` may go negative — and I8 must still hold exactly,
+    # since a soft debit moves the same tokens a hard one does.
+    "calendar-soft": (Limit.quota("q", C, cron="0 0 * * *", soft=True), DAY_MS),
+    "session-soft": (Limit.quota("q", C, reset_after=SESSION, soft=True), SESSION_MS + 1),
 }
 
 
@@ -153,7 +158,7 @@ async def real_accounting(repo, entity_id: str, quota: Limit, now_ms: int) -> tu
             continue  # a pending reset: its slot is still grantable
         grant = _num(item, gc_attr)
         assert grant is not None, f"shard {shard}: a v0.15 writer always stamps gc"
-        assert tokens >= 0, f"shard {shard} in debt {tokens}: nothing here adjusts"
+        assert quota.soft or tokens >= 0, f"shard {shard} in debt {tokens}: nothing here adjusts"
         topped_up = _num(item, tu_attr) or 0
         assert tokens <= C * 1000 // grant + topped_up, (
             f"shard {shard} above its ceiling C // {grant} + {topped_up}"
@@ -259,7 +264,7 @@ async def run_fuzz(limiter, seed: int, kind: str) -> None:
         if not quota_on:
             continue
         held, grantable, _count = await real_accounting(repo, eid, quota, now[0])
-        assert admitted <= C + topped_up, (seed, trace)
+        assert quota.soft or admitted <= C + topped_up, (seed, trace)
         assert admitted * 1000 + held + grantable == (C + topped_up) * 1000, (
             f"seed {seed}: admitted {admitted} + held {held / 1000} + grantable "
             f"{grantable / 1000} != {C} + {topped_up} after {trace}"
@@ -295,3 +300,13 @@ class TestSessionSeeds0(_Fuzz):
 class TestSessionSeeds5(_Fuzz):
     KIND = "session"
     SEEDS = range(5, 10)
+
+
+class TestCalendarSoftSeeds(_Fuzz):
+    KIND = "calendar-soft"
+    SEEDS = range(0, 5)
+
+
+class TestSessionSoftSeeds(_Fuzz):
+    KIND = "session-soft"
+    SEEDS = range(0, 5)

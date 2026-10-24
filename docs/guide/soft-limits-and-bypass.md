@@ -11,6 +11,7 @@ snapshots stay exact. See [ADR-151](../adr/151-non-enforcing-limits.md) for the 
 | Consumption (`tc`, usage snapshots) | Counted | Counted |
 | Set with | `Limit.per_minute("tpm", …, soft=True)`, `--soft tpm`, `soft: true` | `bypass_resource()` / `bypass_entity()`, `resource bypass`, `disabled: bypass` |
 | Fast-path cost | 0 RCU + 1 WCU, unchanged | 0 RCU + 1 WCU once the process has seen the bypass |
+| Extra cost | One renewal per bucket shard per `stamp_ttl` ([below](#stamps-expire)) | Same |
 
 ## Soft limits
 
@@ -53,7 +54,9 @@ whatever the resource level says.
   carries `"soft": true|false`.
 - `LimitStatus.soft` and the derived `LimitStatus.overdrawn` (`soft` and `available < 0`).
 - `Lease.overdrawn` — the declared soft limits whose balance is below zero after the admission
-  write, on the shard written. Free: it is read off the write's own result.
+  write, on the shard written. Free: it is read off the write's own result. On a lease that
+  covers several resources (`acquire(..., also=...)`) it describes the primary resource, like
+  `lease.bypassed`; `lease.resource(name).overdrawn` and `.bypassed` describe another.
 - `check_availability()` reports a soft limit's real (possibly negative) balance; it never makes
   `allowed` false.
 - Usage snapshots carry `UsageSnapshot.overdrawn`: per soft limit, the number of requests in the
@@ -69,7 +72,10 @@ admission anchors a [session window](session-quotas.md) like a hard one.
 ### How a change takes effect
 
 Bucket items carry a per-limit `soft` stamp, and the conditional write that admits a request
-reads it on the server, so a change takes effect on the next request:
+reads it on the server, so a change takes effect on the next request. The stamp is a deadline
+that the next request past it renews or removes from config (see
+[Stamps expire](#stamps-expire)), so even a change the restamping below misses takes effect
+within `stamp_ttl`:
 
 - **Entity level** (`set_limits`, `delete_limits`): every bucket of the entity is restamped by the
   existing parameter sync.
@@ -77,6 +83,12 @@ reads it on the server, so a change takes effect on the next request:
   deletes): only when some limit's soft-ness actually changed, the buckets that level decides are
   restamped (an entity's own override is left alone). A system-level change reaches every bucket
   in the namespace.
+
+A soft limit passed to one call, `acquire(..., limits=[...])`, is soft for that call only: it is
+not config, so it stamps no bucket and other callers keep the stored definition. Such a call takes
+the slow path (a read before the write) whenever it consumes a limit it declares soft. The reverse
+holds too: a call whose override declares a limit hard is enforced on it even where stored config
+made that limit soft.
 
 ## Bypass
 
@@ -95,6 +107,10 @@ async with limiter.acquire("vip-1", "gpt-4", consume={"rpm": 1}) as lease:
     assert lease.bypassed
 ```
 
+`check_availability()` reports `bypassed=True` once the entity's bucket carries the stamp, and
+then never marks a limit exceeded: `allowed` is True and the wait is 0, matching `acquire()`. The
+balances are still reported as they stand.
+
 Bypass is the fourth value of the [`disabled`](basic-usage.md#disabling-resources-and-entities)
 setting, so it follows the same walk — entity (resource-specific) → entity (`_default_`) →
 resource, first explicit value wins:
@@ -111,11 +127,45 @@ too; `get_resource_disabled()` and `get_entity_disabled()` return `"bypass"`.
 
 Lifting a bypass needs no reset: nothing was debited while it stood, so the entity resumes with
 the balance it had. A calendar reset or session window that fell due while bypassed is applied by
-the first enforced request.
+the first enforced request. Lifting it reaches existing buckets at once through the same eager
+restamping `disabled` uses, and at the latest within `stamp_ttl` for any bucket that restamping
+missed (see [Stamps expire](#stamps-expire)).
 
 **Cascade.** Each entity resolves its own mode. A bypassed child still debits, and can be
 rejected by, its cascade parent; bypass the parent, or turn cascade off for that resource, when
 the child must also skip the organisation's cap.
+
+## Stamps expire
+
+Both settings reach existing buckets as a stamp on each bucket item, which the admitting write
+checks on the server. A change of setting restamps every existing bucket at once, but that
+restamping can miss one: a bucket created by a request already in flight, a copy the aggregator
+made of an older bucket, or a restamping that failed part-way. So every stamp carries a
+**deadline**, at most `stamp_ttl` seconds (default 60) after the configuration read that
+justified it:
+
+- Before the deadline the stamp is honoured, with no configuration read: the request costs what
+  any request costs.
+- The first request after the deadline takes the slow path, which reads the configuration
+  (bypassing the configuration cache) and renews the stamp — or removes it, when the setting has
+  changed. That costs about one extra failed write, 2.5 read units and one more write, once per
+  bucket shard per `stamp_ttl`: roughly +$0.016 per million requests at 1 request a second on
+  the bucket, and about +0.15% at 100–1,000 requests a second.
+- A bucket the restamping missed therefore keeps its old setting for at most `stamp_ttl` (plus
+  clock skew between your processes). A bucket missing a stamp it should carry enforces, which
+  only ever under-admits, until its next slow-path request or restamping.
+
+`stamp_ttl` is set by the process that writes the stamps — the one running `acquire()` and the
+one making the change:
+
+```{.python .lint-only}
+repo = await Repository.open("my-app", stamp_ttl=30)          # also Repository.connect()
+repo = await Repository.builder().stamp_ttl(30).build()
+```
+
+It must be at least 10 seconds. A shorter `stamp_ttl` bounds how long a missed change lasts; a
+longer one renews less often. The provisioner Lambda (`zae-limiter limits apply`) uses 60
+seconds.
 
 ## Version requirements
 

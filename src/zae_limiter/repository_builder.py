@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from .exceptions import NamespaceNotFoundError
 from .naming import resolve_stack_name
 from .rejection_cache import DEFAULT_REJECTION_CACHE_SIZE, DEFAULT_REJECTION_CACHE_TTL
+from .schema import DEFAULT_STAMP_TTL_SECONDS, validate_stamp_ttl
 
 if TYPE_CHECKING:
     from .models import OnUnavailableAction, StackOptions
@@ -51,6 +52,7 @@ class RepositoryBuilder:
         self._config_cache_ttl = 60
         self._rejection_cache_ttl: float = DEFAULT_REJECTION_CACHE_TTL
         self._rejection_cache_size = DEFAULT_REJECTION_CACHE_SIZE
+        self._stamp_ttl: float = DEFAULT_STAMP_TTL_SECONDS
         self._auto_update = True
         self._bucket_ttl_multiplier = 7
         self._on_unavailable: OnUnavailableAction | None = None
@@ -106,6 +108,20 @@ class RepositoryBuilder:
     def rejection_cache_size(self, entries: int) -> "RepositoryBuilder":
         """Set the maximum number of cached bucket states (default: 10,000)."""
         self._rejection_cache_size = entries
+        return self
+
+    def stamp_ttl(self, seconds: float) -> "RepositoryBuilder":
+        """Set how long a ``bypass`` or soft stamp this repository writes stands.
+
+        Default 60 seconds, at least 10 (ADR-151 decision 8). A stamp a
+        fan-out missed keeps its old meaning for at most this long after the
+        config read that justified it; the price is one slow pass per
+        bypassed or soft bucket shard per ``stamp_ttl`` to renew it.
+
+        Raises:
+            ValueError: ``seconds`` is below 10.
+        """
+        self._stamp_ttl = validate_stamp_ttl(seconds)
         return self
 
     def auto_update(self, enabled: bool) -> "RepositoryBuilder":
@@ -306,6 +322,7 @@ class RepositoryBuilder:
             config_cache_ttl=self._config_cache_ttl,
             rejection_cache_ttl=self._rejection_cache_ttl,
             rejection_cache_size=self._rejection_cache_size,
+            stamp_ttl=self._stamp_ttl,
             _skip_deprecation_warning=True,
         )
         repo._bucket_ttl_refill_multiplier = self._bucket_ttl_multiplier
