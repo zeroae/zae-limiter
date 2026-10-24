@@ -926,6 +926,35 @@ class TestRejectedMoves:
         assert _n(created, "b_rpd_tc") == 0
 
 
+class TestMultiResourceLease:
+    async def test_bypassed_and_overdrawn_are_scoped_per_resource(self, repo, limiter):
+        """Review D10: `lease.bypassed` read the first entry and `overdrawn`
+        every entry, so on a multi-resource lease they described whichever
+        resource came first, and `LeaseResource` had neither. Both are now
+        scoped to the primary resource like `consumed`, and each resource's
+        handle reports its own (ADR-148)."""
+        soft = Limit.per_minute("tpm", 1, soft=True)
+        await repo.set_resource_defaults("api", [RPM, soft])
+        await repo.bypass_resource("api")
+        for acquiring in (limiter, RateLimiter(repository=repo, speculative_writes=False)):
+            async with acquiring.acquire(
+                "u", "llm", {"rpm": 1}, also={"api": {"rpm": 1, "tpm": 5}}
+            ) as lease:
+                assert lease.bypassed is False
+                assert lease.resource("llm").bypassed is False
+                assert lease.resource("api").bypassed is True
+                assert lease.overdrawn == []
+                assert lease.resource("llm").overdrawn == []
+            await repo.clear_resource_disabled("api")
+            async with acquiring.acquire(
+                "u", "llm", {"rpm": 0}, also={"api": {"rpm": 0, "tpm": 5}}
+            ) as lease:
+                assert lease.resource("api").bypassed is False
+                assert lease.resource("api").overdrawn == ["tpm"]
+                assert lease.overdrawn == []  # the primary has no soft limit
+            await repo.bypass_resource("api")
+
+
 class TestTopUpCreate:
     async def test_a_top_up_create_stamps_bypass_and_soft(self, repo):
         """Review D9: a top-up that creates the bucket stamped neither, so a

@@ -1327,10 +1327,11 @@ recommended options **provisionally** (see `docs/plans/2026-10-09-multi-resource
   the request can be reported as a 429 instead of `ResourceDisabled`. It never admits; the 403
   appears once the cached state expires.
 - **Refunds** (`_refund`): the landed fast-path leases merged into one and rolled back.
-- **Lease** (D2): `lease.adjust/consume/release/consumed` are scoped to the primary resource
-  (`Lease._bind_resources`, `_primary`); a lease never bound keeps the old all-entries meaning.
+- **Lease** (D2): `lease.adjust/consume/release/consumed`, and `lease.bypassed` / `overdrawn`
+  (ADR-151, review D10), are scoped to the primary resource (`Lease._bind_resources`,
+  `_primary`); a lease never bound keeps the old all-entries meaning.
   `lease.resource(name)` → `LeaseResource` (`SyncLeaseResource`, not exported) with the same
-  methods per resource; `ValidationError` for a name not in the lease, a no-op handle on the
+  methods and properties per resource; `ValidationError` for a name not in the lease, a no-op handle on the
   degraded lease. `lease.resources` lists them, primary first. The #455 warning names the
   handle's resource (`_unknown_keys_by_resource`).
 - **Independent writes are concurrent** (D7, applies to every lease): `_commit_adjustments`

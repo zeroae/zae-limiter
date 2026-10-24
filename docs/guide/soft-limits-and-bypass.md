@@ -54,7 +54,9 @@ whatever the resource level says.
   carries `"soft": true|false`.
 - `LimitStatus.soft` and the derived `LimitStatus.overdrawn` (`soft` and `available < 0`).
 - `Lease.overdrawn` — the declared soft limits whose balance is below zero after the admission
-  write, on the shard written. Free: it is read off the write's own result.
+  write, on the shard written. Free: it is read off the write's own result. On a lease that
+  covers several resources (`acquire(..., also=...)`) it describes the primary resource, like
+  `lease.bypassed`; `lease.resource(name).overdrawn` and `.bypassed` describe another.
 - `check_availability()` reports a soft limit's real (possibly negative) balance; it never makes
   `allowed` false.
 - Usage snapshots carry `UsageSnapshot.overdrawn`: per soft limit, the number of requests in the

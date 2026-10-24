@@ -597,6 +597,30 @@ class SyncLease:
             result[name] = result.get(name, 0) + entry.consumed
         return result
 
+    def _bypassed_in(self, resource: str | None) -> bool:
+        """Whether the acquiring entity was admitted under bypass on ``resource``.
+
+        The acquiring entity is the first entry's (a cascade parent's entries
+        follow it); ``None`` is the first entry's own resource.
+        """
+        if not self.entries:
+            return False
+        entity_id = self.entries[0].entity_id
+        for entry in self.entries:
+            if entry.entity_id == entity_id and (resource is None or entry.resource == resource):
+                return entry._bypass
+        return False
+
+    def _overdrawn_in(self, resource: str | None) -> list[str]:
+        """The declared soft limits of ``resource`` in debt (every resource for None)."""
+        return sorted(
+            {
+                entry.limit.name
+                for entry in self._scoped(resource)
+                if entry.limit.soft and entry.state.tokens_milli < 0
+            }
+        )
+
     @property
     def bypassed(self) -> bool:
         """Whether the acquiring entity was admitted under bypass (#311).
@@ -604,8 +628,11 @@ class SyncLease:
         Nothing was debited from its limits' balances; consumption is still
         counted. A cascade parent resolves its own mode, so a bypassed child
         can still have been gated by its parent. False for the degraded lease.
+        Scoped to the primary resource, like ``consumed``: each resource of a
+        multi-resource lease resolves its own mode, so use
+        ``lease.resource(name).bypassed`` for another one (ADR-148, review D10).
         """
-        return bool(self.entries) and self.entries[0]._bypass
+        return self._bypassed_in(self._primary)
 
     @property
     def overdrawn(self) -> list[str]:
@@ -618,15 +645,10 @@ class SyncLease:
         one shard while its siblings still hold tokens. Reflects the state
         after any ``adjust()`` / ``consume()`` / ``release()`` made since.
         Empty for a hard limit, which is never admitted into debt, and for
-        the degraded lease.
+        the degraded lease. Scoped to the primary resource, like ``consumed``;
+        ``lease.resource(name).overdrawn`` for another one (ADR-148, review D10).
         """
-        return sorted(
-            {
-                entry.limit.name
-                for entry in self.entries
-                if entry._declared and entry.limit.soft and (entry.state.tokens_milli < 0)
-            }
-        )
+        return self._overdrawn_in(self._primary)
 
     @property
     def consumed(self) -> dict[str, int]:
@@ -1853,6 +1875,16 @@ class SyncLeaseResource:
     def consumed(self) -> dict[str, int]:
         """Total consumed amounts by limit name, for this resource."""
         return self._lease._consumed_in(self.name)
+
+    @property
+    def bypassed(self) -> bool:
+        """Whether the acquiring entity was admitted under bypass on this resource (#311)."""
+        return self._lease._bypassed_in(self.name)
+
+    @property
+    def overdrawn(self) -> list[str]:
+        """This resource's declared soft limits in debt on the shard written (#467)."""
+        return self._lease._overdrawn_in(self.name)
 
     def consume(self, **amounts: int) -> None:
         """Consume more of this resource; see :meth:`SyncLease.consume`.
