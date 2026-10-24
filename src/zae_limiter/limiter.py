@@ -3220,6 +3220,10 @@ class RateLimiter:
         anything else. Every rejection's statuses are combined with the
         passed statuses of the resources admitted meanwhile, so
         ``retry_after_seconds`` is the wait until every resource can admit.
+        Among the rest, an IAM denial outranks any other error (review M4):
+        returned behind, say, a throttle on another resource, it would reach
+        ``on_unavailable=ALLOW`` as an outage and admit the call unlimited,
+        where #751 raises ``PermissionDenied`` under every mode.
         """
         for error in errors:
             if isinstance(error, ResourceDisabled):
@@ -3233,7 +3237,8 @@ class RateLimiter:
                 statuses + self._admitted_statuses(admitted),
                 contended=all(error.contended for error in rejections),
             )
-        return errors[0]
+        denied = next((error for error in errors if _access_denied_in(error) is not None), None)
+        return denied if denied is not None else errors[0]
 
     async def _do_acquire(
         self,

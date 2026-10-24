@@ -569,6 +569,21 @@ class TestRejectionCache:
         await repo.close()
 
 
+class TestCombinedError:
+    def test_an_iam_denial_outranks_another_error(self, repo):
+        """Review M4: with no 429 or 403, the first error won, so a throttle on
+        one resource could hide another's `AccessDeniedException`, and under
+        ALLOW the call was admitted unlimited instead of `PermissionDenied`
+        (#751)."""
+        throttled = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+        )
+        denied = ClientError({"Error": {"Code": "AccessDeniedException"}}, "UpdateItem")
+        limiter = RateLimiter(repository=repo)
+        assert limiter._combined_error([throttled, denied], []) is denied
+        assert limiter._combined_error([throttled], []) is throttled
+
+
 class TestValidation:
     @pytest.fixture
     def multi_limiter(self, repo):
