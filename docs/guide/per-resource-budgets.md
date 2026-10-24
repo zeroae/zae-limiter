@@ -113,12 +113,11 @@ PLANS = {
 
 await limiter.create_entity(entity_id="user-2")
 
-# Upgrade: the plan's limits on every resource it changes, then the quota difference
+# Upgrade: the plan's limits on every resource it changes. A quota's new
+# allowance starts at its next reset; resetting it starts the plan today.
 for resource, limits in PLANS["pro"].items():
     await limiter.set_limits("user-2", limits, resource=resource)
-await repo.top_up(
-    "user-2", "budget", {"weekly": 50_000_000 - 5_000_000, "session": 10_000_000 - 1_000_000}
-)
+await repo.reset_bucket("user-2", "budget")
 
 # A purchase: $20 more this week; the order id makes a retry safe
 await repo.top_up("user-2", "budget", {"weekly": 20_000_000}, idempotency_key="order-1001")
@@ -130,16 +129,23 @@ await repo.reset_bucket("user-2", "budget", limits=["session"])
 for resource in PLANS["pro"]:
     await limiter.delete_limits("user-2", resource=resource)
 availability = await limiter.check_availability("user-2", "budget")
-print(availability.available["weekly"])  # 70000000: this week's top-ups last until Monday
+print(availability.available["weekly"])  # 25000000: the free $5 plus the $20 purchase
 ```
 
 Every change takes effect on the user's **next call**:
 
 | Event | Calls | What the user sees |
 |-------|-------|--------------------|
-| Upgrade | `set_limits()` per resource, then `top_up()` the quota difference | New ceilings at once. A dripping limit refills toward its new ceiling at the new rate; a quota never drips, so without the top-up it would keep the old remaining balance until its next reset |
-| Downgrade | `delete_limits()` per resource (back to free), or `set_limits()` to a smaller plan | Every balance is cut to the new ceiling on the next call. What was spent this period is not recounted: a user with $40 left on pro keeps $5, the free ceiling. **A top-up lasts until the quota's next reset, whatever the plan**, including the upgrade's own: the user in the example, upgraded and downgraded within one week, keeps $70 until Monday |
+| Upgrade | `set_limits()` per resource; `reset_bucket()` on the quota resource to start the new allowance today | New ceilings at once. A dripping limit refills toward its new ceiling at the new rate. A quota never drips: it keeps this period's remaining balance and gets the new allowance at its next reset, or at once with `reset_bucket()`, which also forgets this period's spend |
+| Downgrade | `delete_limits()` per resource (back to free), or `set_limits()` to a smaller plan | Every balance is cut to the new ceiling on the next call. What was spent this period is not recounted: a user with $40 left on pro keeps $5, the free ceiling. Purchases stay on top, until the quota's next reset |
 | Purchase | `top_up(..., idempotency_key=...)` | Exactly that much more, above the plan, until the quota's next reset |
+
+!!! warning "Do not upgrade a plan with `top_up()`"
+    A top-up is a purchase: it lasts until the quota's next reset **whatever the plan**, and
+    nothing takes it back. Topping up the difference between two plans therefore survives a
+    downgrade in the same period — upgraded and downgraded within one week, a user would keep
+    the whole pro allowance until Monday. Change the plan with `set_limits()`, and use
+    `reset_bucket()` when the new allowance should start at once.
 | Session reset | `reset_bucket(..., limits=["session"])` | The session ends; the next call opens a fresh one at its full allowance |
 
 `top_up()` and `reset_bucket()` change the balance on every shard in one transaction and record
@@ -388,7 +394,7 @@ simpler to call `set_limits()` from your application when the plan changes.
 | Paid plan (entity config) | `limiter.set_limits()` / `delete_limits()` | `zae-limiter entity set-limits` / `delete-limits` |
 | Debit a resource and the budget | `limiter.acquire(..., also=...)`, `lease.resource()` | — (runtime only) |
 | Purchase | `repo.top_up()` | [`zae-limiter entity top-up`](../cli.md#reset-and-top-up) |
-| Reset a session | `repo.reset_bucket()` | [`zae-limiter entity reset`](../cli.md#reset-and-top-up) |
+| Reset a session, or start a new plan's quotas today | `repo.reset_bucket()` | [`zae-limiter entity reset`](../cli.md#reset-and-top-up) |
 | Organisation | `limiter.create_entity(parent_id=...)` | `zae-limiter entity create --parent` |
 | Cascade per resource | `repo.set_resource_cascade()`, `repo.set_entity_cascade()` | [`zae-limiter resource set-cascade`](../cli.md#cascade-policy-per-resource) |
 | Move a user | `limiter.set_parent()` | [`zae-limiter entity set-parent`](../cli.md#moving-an-entity-to-a-new-parent) |
