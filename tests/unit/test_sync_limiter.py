@@ -9359,6 +9359,43 @@ class TestOverrideMaterialisesItemLimits:
             pass
         assert _stored_tk(repo, "o", "r", "q") == 6000
 
+    @pytest.mark.parametrize("stripped", [False, True], ids=["ended", "never-opened"])
+    def test_a_rejected_move_commit_does_not_anchor_a_carried_window(self, sync_limiter, stripped):
+        """A rejected override pass that seeds a quota by an ADR-145 move still
+        commits the move, carriers included. A request that never named the
+        session quota, and was rejected, must not open its window, and must
+        leave `vu` at or before now so the next pass does. `never-opened`: an
+        item carrying no `ws` yet, which votes no window end of its own."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        q2 = Limit.quota("q2", 10, cron="0 0 * * *")
+        repo.set_limits("o", [_RPM_1000, SESSION_10], resource="r")
+        repo._now_ms = lambda: T0
+        with slow.acquire("o", "r", consume={"session": 1, "rpm": 1}):
+            pass
+        with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000, q2]):
+            pass
+        repo.bump_shard_count("o", "r", 1)
+        with patch.object(repo, "select_shard", lambda *a, **k: (1, 2)):
+            repo._now_ms = lambda: T0 + 1000
+            with slow.acquire("o", "r", consume={"rpm": 1}):
+                pass
+            if stripped:
+                _strip_window(repo, "o", "r", "session", shard=1)
+            ws = _stored_ws(repo, "o", "r", "session", shard=1)
+            now = T0 + FIVE_HOURS_MS + 10000
+            repo._now_ms = lambda: now
+            with pytest.raises(RateLimitExceeded):
+                with slow.acquire("o", "r", consume={"q2": 9}, limits=[_RPM_1000, q2]):
+                    pass
+            assert _stored_tk(repo, "o", "r", "q2", shard=1) == 5000, "the move landed"
+            assert _stored_ws(repo, "o", "r", "session", shard=1) == ws
+            item = _raw_bucket(repo, "o", "r", shard=1)
+            assert int(item[BUCKET_FIELD_VU]["N"]) <= now
+            with slow.acquire("o", "r", consume={"rpm": 1}):
+                pass
+            assert _stored_ws(repo, "o", "r", "session", shard=1) == now
+
     def test_the_carried_reset_is_pinned_on_the_shard_count(self, sync_limiter):
         """ADR-145 I4: the grant the carrier stamps rides the `shard_count` pin."""
         repo = sync_limiter._repository

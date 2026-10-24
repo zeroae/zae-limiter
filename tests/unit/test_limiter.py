@@ -11557,6 +11557,48 @@ class TestOverrideMaterialisesItemLimits:
             pass
         assert await _stored_tk(repo, "o", "r", "q") == 6_000
 
+    @pytest.mark.parametrize("stripped", [False, True], ids=["ended", "never-opened"])
+    async def test_a_rejected_move_commit_does_not_anchor_a_carried_window(self, limiter, stripped):
+        """A rejected override pass that seeds a quota by an ADR-145 move still
+        commits the move, carriers included. A request that never named the
+        session quota, and was rejected, must not open its window, and must
+        leave `vu` at or before now so the next pass does. `never-opened`: an
+        item carrying no `ws` yet, which votes no window end of its own."""
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        q2 = Limit.quota("q2", 10, cron="0 0 * * *")
+        await repo.set_limits("o", [_RPM_1000, SESSION_10], resource="r")
+        repo._now_ms = lambda: T0
+        async with slow.acquire("o", "r", consume={"session": 1, "rpm": 1}):
+            pass
+        # `q2` seeded on shard 0 at one shard (gc = 1), so it covers slot 1.
+        async with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000, q2]):
+            pass
+        await repo.bump_shard_count("o", "r", 1)
+        with patch.object(repo, "select_shard", lambda *a, **k: (1, 2)):
+            repo._now_ms = lambda: T0 + 1_000
+            async with slow.acquire("o", "r", consume={"rpm": 1}):
+                pass
+            if stripped:
+                await _strip_window(repo, "o", "r", "session", shard=1)
+            ws = await _stored_ws(repo, "o", "r", "session", shard=1)
+
+            now = T0 + FIVE_HOURS_MS + 10_000
+            repo._now_ms = lambda: now
+            # Seeding `q2` on shard 1 moves 5 off shard 0; 9 does not fit.
+            with pytest.raises(RateLimitExceeded):
+                async with slow.acquire("o", "r", consume={"q2": 9}, limits=[_RPM_1000, q2]):
+                    pass
+            assert await _stored_tk(repo, "o", "r", "q2", shard=1) == 5_000, "the move landed"
+            assert await _stored_ws(repo, "o", "r", "session", shard=1) == ws
+            item = await _raw_bucket(repo, "o", "r", shard=1)
+            assert int(item[BUCKET_FIELD_VU]["N"]) <= now
+
+            # The next admitted pass opens it.
+            async with slow.acquire("o", "r", consume={"rpm": 1}):
+                pass
+            assert await _stored_ws(repo, "o", "r", "session", shard=1) == now
+
     async def test_the_carried_reset_is_pinned_on_the_shard_count(self, limiter):
         """ADR-145 I4: the grant the carrier stamps rides the `shard_count` pin."""
         repo = limiter._repository

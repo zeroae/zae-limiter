@@ -2023,6 +2023,7 @@ class SyncRateLimiter:
         shard_id: int,
         shard_count: int,
         has_custom_config: bool,
+        anchor: bool = True,
     ) -> list[LeaseEntry]:
         """Carry the configured limits an ``acquire(limits=...)`` override does not name (#744).
 
@@ -2050,6 +2051,14 @@ class SyncRateLimiter:
         the item's count, ADR-145 I3; the commit stamps ``gc`` under the
         ``shard_count`` pin, I4), refill, and vote the next boundary into
         ``vu``. Never declared, never gated, never a status, consumption 0.
+
+        ``anchor=False`` on a rejected pass, whose only write is a quota move
+        committed with nothing consumed (:meth:`_commit_rejected_moves`): an
+        ended window is then left for the next admitted pass to open, rather
+        than anchored by a request that never named the limit and was
+        rejected. Nothing is lost by waiting — whether a window has ended is
+        read off ``ws + rsa``, not ``rf`` — and its stale end votes ``vu <=
+        now``, so the next acquire takes the slow path that opens it.
         """
         config = {limit.name: limit for limit in configured}
         carriers: list[LeaseEntry] = []
@@ -2063,11 +2072,20 @@ class SyncRateLimiter:
             state.reset_after_seconds = limit.reset_after_seconds
             original_tk, original_rf = (state.tokens_milli, state.last_refill_ms)
             stored_top_up = state.topped_up_milli is not None
-            new_ws = cls._open_window_if_elapsed(limit, state, now_ms)
+            window_end = state.window_end_ms
+            left_unopened = (
+                not anchor
+                and limit.reset_after is not None
+                and (state.reset_after_seconds is not None)
+                and (window_end is None or now_ms >= window_end)
+            )
+            new_ws = cls._open_window_if_elapsed(limit, state, now_ms) if anchor else None
             reset_applied = cls._apply_reset_edge(limit, state, now_ms)
             roll_applied = cls._apply_window_roll(limit, state, now_ms, opened=new_ws is not None)
             state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
             boundary_ms, reset_edge_ms = cls._materialisation_stamps(limit, state, now_ms)
+            if left_unopened:
+                boundary_ms = now_ms if boundary_ms is None else min(boundary_ms, now_ms)
             carriers.append(
                 LeaseEntry(
                     entity_id=entity_id,
@@ -2828,6 +2846,7 @@ class SyncRateLimiter:
         )
         entries: list[LeaseEntry] = []
         carriers: list[LeaseEntry] = []
+        to_carry: list[tuple[str, list[BucketState], set[str], int, int, bool]] = []
         statuses: list[LimitStatus] = []
         for eid in entity_ids:
             eid_shard, eid_shard_count = entity_shards[eid]
@@ -3110,19 +3129,32 @@ class SyncRateLimiter:
                 s.limit_name not in override_names and s.limit_name != WCU_LIMIT_NAME
                 for s in item_states
             ):
-                configured, _, _ = self._repository.resolve_limits(eid, resource)
-                carriers += self._item_limit_carriers(
-                    eid,
-                    resource,
-                    item_states,
-                    override_names,
-                    configured or [],
-                    now_ms,
-                    eid_shard,
-                    eid_shard_count,
-                    _is_custom_config(entity_config_sources.get(eid)),
+                to_carry.append(
+                    (
+                        eid,
+                        item_states,
+                        override_names,
+                        eid_shard,
+                        eid_shard_count,
+                        _is_custom_config(entity_config_sources.get(eid)),
+                    )
                 )
         violations = [s for s in statuses if s.exceeded]
+        writes = not violations or any(entry._donor_debit is not None for entry in entries)
+        for eid, item_states, override_names, shard, count, custom in to_carry if writes else ():
+            configured, _, _ = self._repository.resolve_limits(eid, resource)
+            carriers += self._item_limit_carriers(
+                eid,
+                resource,
+                item_states,
+                override_names,
+                configured or [],
+                now_ms,
+                shard,
+                count,
+                custom,
+                anchor=not violations,
+            )
         if violations:
             if any(entry._donor_debit is not None for entry in entries):
                 self._commit_rejected_moves(entries, carriers)
