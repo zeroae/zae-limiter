@@ -2018,12 +2018,13 @@ class SyncRateLimiter:
         resource: str,
         item_states: list[BucketState],
         resolved: set[str],
+        configured: list[Limit],
         now_ms: int,
         shard_id: int,
         shard_count: int,
         has_custom_config: bool,
     ) -> list[LeaseEntry]:
-        """Carry the item's limits an ``acquire(limits=...)`` override does not name (#744).
+        """Carry the configured limits an ``acquire(limits=...)`` override does not name (#744).
 
         The override replaces the configured limits for this request only, so
         the pass resolves none of the item's other limits, yet its rf-locked
@@ -2034,25 +2035,34 @@ class SyncRateLimiter:
         dripping limit's refill. Its next boundary is also missing from the
         item's ``vu``, so the fast path spends its stale balance past the edge.
 
-        Each such limit is materialised here from the item alone — the same
-        source the aggregator refills from, since the item carries every
-        limit's base parameters, both schedule tuples, ``rsa`` / ``ws`` /
-        ``wa``, ``gc`` and ``tu``. There is no config to prefer: the override
-        is what this request enforces, and these limits are not enforced by
-        it. The steps are the slow path's for an undeclared limit: open an
+        Each such limit is materialised exactly as a pass without the override
+        would materialise it as an undeclared limit: the **configured**
+        ``Limit`` (``configured``, the entity's resolved config) supplies the
+        schedule, the reset schedule and the window length, and the item
+        supplies the state. Reading those off the item instead let a
+        resource- or system-level change that never fans out to buckets
+        (daily to monthly) go on resetting daily on every override pass — 31
+        admitted in a month configured for 10. A limit on the item that config
+        no longer has is skipped, as such a pass skips it.
+
+        The steps are the slow path's for an undeclared limit: open an
         elapsed window, apply a pending reset or roll (a quota re-granted at
         the item's count, ADR-145 I3; the commit stamps ``gc`` under the
         ``shard_count`` pin, I4), refill, and vote the next boundary into
         ``vu``. Never declared, never gated, never a status, consumption 0.
         """
+        config = {limit.name: limit for limit in configured}
         carriers: list[LeaseEntry] = []
         for state in item_states:
-            if state.limit_name in resolved or state.limit_name == WCU_LIMIT_NAME:
+            if state.limit_name in resolved or state.limit_name not in config:
                 continue
-            limit = Limit.from_bucket_state(state)
+            limit = replace(config[state.limit_name], soft=state.soft)
+            state.sched = limit.schedule
+            state.reset_sched = limit.reset_schedule
+            stored_rsa = state.reset_after_seconds
+            state.reset_after_seconds = limit.reset_after_seconds
             original_tk, original_rf = (state.tokens_milli, state.last_refill_ms)
             stored_top_up = state.topped_up_milli is not None
-            stored_rsa = state.reset_after_seconds
             new_ws = cls._open_window_if_elapsed(limit, state, now_ms)
             reset_applied = cls._apply_reset_edge(limit, state, now_ms)
             roll_applied = cls._apply_window_roll(limit, state, now_ms, opened=new_ws is not None)
@@ -3095,12 +3105,18 @@ class SyncRateLimiter:
             )
             if carrier is not None:
                 carriers.append(carrier)
-            if limits_override is not None:
+            override_names = {limit.name for limit in entity_limits[eid]}
+            if limits_override is not None and any(
+                s.limit_name not in override_names and s.limit_name != WCU_LIMIT_NAME
+                for s in item_states
+            ):
+                configured, _, _ = self._repository.resolve_limits(eid, resource)
                 carriers += self._item_limit_carriers(
                     eid,
                     resource,
                     item_states,
-                    {limit.name for limit in entity_limits[eid]},
+                    override_names,
+                    configured or [],
                     now_ms,
                     eid_shard,
                     eid_shard_count,

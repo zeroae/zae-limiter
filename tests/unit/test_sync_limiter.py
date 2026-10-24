@@ -9320,6 +9320,45 @@ class TestOverrideMaterialisesItemLimits:
         assert int(item[BUCKET_FIELD_VU]["N"]) == _UTC_MIDNIGHT + 86400000
         assert self._drain(sync_limiter, "o", "r", "q") == 10
 
+    def test_a_carried_quota_resets_on_the_configured_schedule(self, sync_limiter):
+        """A resource-level change never reaches the bucket (#271/#296), so the
+        item still says daily after config moved to monthly. The carrier takes
+        the reset schedule from config, as a pass without the override does:
+        reading it off the item admitted 31 in three days against 10."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        monthly = Limit.quota("q", 10, cron="0 0 1 * *")
+        repo.set_resource_defaults("r", [_RPM_1000, _DAILY_10])
+        repo._now_ms = lambda: _UTC_MIDNIGHT - 60000
+        with sync_limiter.acquire("o", "r", consume={"q": 1, "rpm": 1}):
+            pass
+        repo.set_resource_defaults("r", [_RPM_1000, monthly])
+        repo.invalidate_config_cache()
+        admitted = 1
+        for day in range(3):
+            t = _UTC_MIDNIGHT + day * 86400000 + 1000
+            repo._now_ms = lambda t=t: t
+            with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+                pass
+            repo._now_ms = lambda t=t: t + 1000
+            admitted += self._drain(sync_limiter, "o", "r", "q")
+        assert admitted == 10
+
+    def test_a_limit_config_no_longer_has_is_not_carried(self, sync_limiter):
+        """A pass without the override leaves such a limit alone; so does this."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_resource_defaults("r", [_RPM_1000, _DAILY_10])
+        repo._now_ms = lambda: _UTC_MIDNIGHT - 60000
+        with sync_limiter.acquire("o", "r", consume={"q": 4, "rpm": 1}):
+            pass
+        repo.set_resource_defaults("r", [_RPM_1000])
+        repo.invalidate_config_cache()
+        repo._now_ms = lambda: _UTC_MIDNIGHT + 1000
+        with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+            pass
+        assert _stored_tk(repo, "o", "r", "q") == 6000
+
     def test_the_carried_reset_is_pinned_on_the_shard_count(self, sync_limiter):
         """ADR-145 I4: the grant the carrier stamps rides the `shard_count` pin."""
         repo = sync_limiter._repository
