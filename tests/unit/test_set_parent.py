@@ -476,7 +476,10 @@ class TestStaleWriters:
 
         with patch.object(repo, "batch_get_entity_and_buckets", read_then_move):
             async with slow.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
-                assert {e.entity_id for e in lease.entries} == {"user", "org-a"}
+                # Its owner pin is lost to the move's newer generation, so it
+                # re-plans from a strongly consistent read and debits the new
+                # parent (review P1), where it used to debit the old one.
+                assert {e.entity_id for e in lease.entries} == {"user", "org-b"}
 
         assert moved == [2]
         assert _stamp(await _item(repo, "user", "gpt-4")) == (True, "org-b", 1)
@@ -1771,6 +1774,35 @@ class TestTheDisabledLookAcrossResources:
                 ):
                     pytest.fail("a disabled parent must not admit")
         assert (raised.value.entity_id, raised.value.resource) == ("org-b", "code")
+
+
+class TestAStaleSlowPassAfterAMove:
+    """Review P1 (#677 review): a slow pass whose eventually consistent META
+    read predates a move lost its rf-locked owner pin — the bucket already
+    carries the move's newer generation — and the consumption-only retry then
+    debited the old parent, never the new one, in every process while META
+    reads lagged. It now re-plans once from a strongly consistent read."""
+
+    async def test_the_new_parent_is_debited(self, limiter, other):
+        await _hierarchy(limiter)
+        repo = limiter._repository
+        stale = await repo.get_entity("user", consistent_read=True)
+        await repo.set_parent("user", "org-b")
+        other_repo = other._repository
+        real = other_repo.batch_get_entity_and_buckets
+
+        async def stale_meta(entity_id, bucket_keys):
+            entity, buckets = await real(entity_id, bucket_keys)
+            return (stale if entity_id == "user" else entity), buckets
+
+        before = {org: await _consumed(repo, org) for org in ("org-a", "org-b")}
+        slow = RateLimiter(repository=other_repo, speculative_writes=False)
+        with patch.object(other_repo, "batch_get_entity_and_buckets", stale_meta):
+            async with slow.acquire("user", "gpt-4", consume={"rpm": 5}):
+                pass
+        assert await _consumed(repo, "org-b") - before["org-b"] == 5
+        assert await _consumed(repo, "org-a") == before["org-a"]
+        assert _stamp(await _item(repo, "user", "gpt-4"))[1] == "org-b"
 
 
 class TestAnOlderStampNeverMovesTheCacheBack:

@@ -32,6 +32,7 @@ from .schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
     BUCKET_FIELD_GC,
+    BUCKET_FIELD_PGEN,
     BUCKET_FIELD_PINC,
     BUCKET_FIELD_RF,
     BUCKET_FIELD_RN,
@@ -1526,6 +1527,19 @@ class Lease:
                     raise _owner_stamp_lost(self.entries, now_ms) from resent_exc
                 condition_exc = resent_exc
 
+        if (
+            condition_failed
+            and condition_exc is not None
+            and _owner_moved_since_read(groups, condition_exc)
+        ):
+            # The owner of this incarnation moved since this pass read its
+            # META (ADR-150): the item already carries a newer generation. The
+            # consumption-only retry would debit the parent planned from the
+            # stale read and never the new one (review P1), so the acquire
+            # re-plans once from a strongly consistent read instead, as a
+            # cancelled create does. Nothing was written.
+            raise _owner_stamp_lost(self.entries, now_ms) from condition_exc
+
         if condition_failed and donor_items:
             # The whole transaction rolled back — donor untouched — and the
             # plan it carried may be stale: no consumption-only retry, which
@@ -2809,6 +2823,30 @@ def _meta_check_failed(exc: Exception | None, first: int, count: int) -> bool:
         return False
     codes = _get_cancellation_reason_codes(exc) or []
     return any(code == "ConditionalCheckFailed" for code in codes[first : first + count])
+
+
+def _owner_moved_since_read(
+    groups: dict[tuple[str, str, int], list[LeaseEntry]], exc: Exception
+) -> bool:
+    """Whether a failed item shows its owner moved after this pass read META (ADR-150).
+
+    The item's stamp is of the incarnation this pass read, at a higher parent
+    generation: a move landed (and its fan-out reached this bucket) after an
+    eventually consistent META read. A stamp of another incarnation is
+    `_claim_owner_stamps`' case, and an item with no stamp proves nothing.
+    """
+    images = _retry_failure_images(exc, list(groups))
+    for key, group_entries in groups.items():
+        owner = next((e for e in group_entries if e._stamp_owner), None)
+        image = images.get(key)
+        if owner is None or image is None or owner._parent_generation is None:
+            continue
+        if image.get(BUCKET_FIELD_PINC, {}).get("S") != owner._parent_incarnation:
+            continue
+        stored = image.get(BUCKET_FIELD_PGEN, {}).get("N")
+        if stored is not None and int(stored) > owner._parent_generation:
+            return True
+    return False
 
 
 def _owner_stamp_lost(entries: list[LeaseEntry], now_ms: int) -> "OwnerStampLostError":
