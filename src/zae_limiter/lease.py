@@ -1544,7 +1544,15 @@ class Lease:
             # The whole transaction rolled back — donor untouched — and the
             # plan it carried may be stale: no consumption-only retry, which
             # could not carry the move. The acquire re-plans (design §6 step 6).
-            raise QuotaMoveLostError from condition_exc
+            # When neither a donor nor a bucket receiving a move failed — only
+            # another item's lock, in a cascade or a multi-resource commit —
+            # the move was lost to contention, not to a spent donor (review
+            # M2): a second such loss zeroes the slot as a contended 429 that
+            # says "retry shortly", not one pointing at the next reset.
+            raise QuotaMoveLostError(
+                contended=condition_exc is not None
+                and not _move_items_failed(condition_exc, list(groups.values()), first_check)
+            ) from condition_exc
 
         if condition_failed and _bypass_write_failed(
             list(groups.values()),
@@ -2415,6 +2423,27 @@ class LeaseResource:
 
     def __repr__(self) -> str:
         return f"LeaseResource({self.name!r})"
+
+
+def _move_items_failed(exc: Exception, groups: list[list[LeaseEntry]], first_check: int) -> bool:
+    """Whether a cancelled commit failed on a quota move's own items (ADR-145).
+
+    The commit's items are one per group (bucket items, in order), then the
+    donor debits, then the META checks (from ``first_check``). The move is in
+    play when a donor debit failed, or the bucket receiving a move did. With
+    no per-item reasons nothing can be told, and the move counts as lost.
+    """
+    codes = _get_cancellation_reason_codes(exc)
+    if codes is None:
+        return True
+    for index, code in enumerate(codes[:first_check]):
+        if code == "None":
+            continue
+        if index >= len(groups):
+            return True  # a donor debit
+        if any(entry._donor_debit is not None for entry in groups[index]):
+            return True  # the recipient
+    return False
 
 
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:

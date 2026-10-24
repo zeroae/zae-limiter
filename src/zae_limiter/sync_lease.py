@@ -1173,7 +1173,10 @@ class SyncLease:
         ):
             raise _owner_stamp_lost(self.entries, now_ms) from condition_exc
         if condition_failed and donor_items:
-            raise QuotaMoveLostError from condition_exc
+            raise QuotaMoveLostError(
+                contended=condition_exc is not None
+                and (not _move_items_failed(condition_exc, list(groups.values()), first_check))
+            ) from condition_exc
         if condition_failed and _bypass_write_failed(
             list(groups.values()),
             _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None,
@@ -1931,6 +1934,27 @@ class SyncLeaseResource:
 
     def __repr__(self) -> str:
         return f"SyncLeaseResource({self.name!r})"
+
+
+def _move_items_failed(exc: Exception, groups: list[list[LeaseEntry]], first_check: int) -> bool:
+    """Whether a cancelled commit failed on a quota move's own items (ADR-145).
+
+    The commit's items are one per group (bucket items, in order), then the
+    donor debits, then the META checks (from ``first_check``). The move is in
+    play when a donor debit failed, or the bucket receiving a move did. With
+    no per-item reasons nothing can be told, and the move counts as lost.
+    """
+    codes = _get_cancellation_reason_codes(exc)
+    if codes is None:
+        return True
+    for index, code in enumerate(codes[:first_check]):
+        if code == "None":
+            continue
+        if index >= len(groups):
+            return True
+        if any(entry._donor_debit is not None for entry in groups[index]):
+            return True
+    return False
 
 
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:

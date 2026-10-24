@@ -26,6 +26,7 @@ from zae_limiter import (
     ResourceDisabled,
     ValidationError,
     __version__,
+    schema,
 )
 from zae_limiter.lease import Lease, LeaseEntry, PeriodNotAppliedError, QuotaMoveLostError
 from zae_limiter.models import BucketState, Limit, LimitStatus, QuotaDonorDebit
@@ -893,6 +894,57 @@ class TestContendedQuotaMoveAcrossResources:
         assert exc_info.value.violations == []
         assert await _consumed(repo, "solo", "daily") == {"rpd": 0}
         assert await _consumed(repo, "solo", "budget") == {}
+
+    async def test_a_move_lost_to_another_parts_lock_is_a_contended_429(self, repo):
+        """Review M2: in the merged commit, another part's lost `rf` lock was
+        counted as a lost quota move. After two, the slot was granted 0 and
+        the caller got an ordinary 429 pointing at the next reset (~11 hours
+        here) while the donor still held the whole quota. Losing the move to
+        another item's lock is contention: the 429 says "retry shortly"."""
+        now_ms = repo._now_ms()
+        repo._now_ms = lambda: now_ms
+        await repo.set_resource_defaults("daily", [self.QUOTA])
+        await repo.set_resource_cascade("daily", False)
+        await repo.create_entity("solo", parent_id=None, name="solo")
+        state = BucketState.from_limit("solo", "daily", self.QUOTA, now_ms)
+        vu, _reset = RateLimiter._materialisation_stamps(self.QUOTA, state, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "solo", "daily", [state], now_ms, shard_id=0, shard_count=1, vu=vu
+                )
+            ]
+        )
+        assert await repo.bump_shard_count("solo", "daily", 1) == 2
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+        async with limiter.acquire("solo", "budget", {"weekly": 1}):
+            pass  # budget's bucket exists: the merged commit locks its `rf`
+        real = repo.transact_write
+        client = await repo._get_client()
+        budget_key = {
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, "solo", "budget", 0)},
+            "SK": {"S": schema.sk_state()},
+        }
+
+        async def another_writer_moves_budgets_rf(items):
+            if len(items) > 1:  # the merged commit carrying the move
+                await client.update_item(
+                    TableName=repo.table_name,
+                    Key=budget_key,
+                    UpdateExpression="ADD rf :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            return await real(items)
+
+        repo.transact_write = another_writer_moves_budgets_rf
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with limiter.acquire(
+                    "solo", "daily", {"rpd": 1}, also={"budget": {"weekly": 1}}
+                ):
+                    pytest.fail("a zeroed slot must not admit")
+        assert exc_info.value.contended is True
+        assert exc_info.value.retry_after_seconds < 1
 
 
 class TestDisabledCheckOnTheRejectionPath:
