@@ -794,7 +794,9 @@ Users provide a short identifier (e.g., `my-app`), and the system uses it direct
   has it as its PK
 - `ns-full` grants `BatchWriteItem` (#742): `delete_entity` deletes with it, and without it a
   principal holding only `ns-full` was refused. `LeadingKeys` is checked per item of a
-  `BatchWriteItem`, so it sits in the same namespace statement
+  `BatchWriteItem`, so in the same statement it reaches exactly the keys `PutItem` /
+  `DeleteItem` already reach: `{id}/*`, the bare id and the shared `_/*` prefix. No new reach,
+  but not "namespace only" either
 - **The acquire policies write bucket items only (#756, ADR-152):** `acq` grants `PutItem` /
   `UpdateItem` where `LeadingKeys` is `*/BUCKET#*`, `ns-acq` where it is `{id}/BUCKET#*`, each
   with `Null` false on the key; reads and `ConditionCheckItem` stay namespace-wide. Every
