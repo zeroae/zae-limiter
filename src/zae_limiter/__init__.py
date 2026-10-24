@@ -53,6 +53,7 @@ from .exceptions import (
     LeaseExpiredError,
     NamespaceNotFoundError,
     NamespaceStateError,
+    PermissionDenied,
     RateLimitError,
     RateLimiterUnavailable,
     RateLimitExceeded,
@@ -75,6 +76,7 @@ from .models import (
     AuditEvent,
     Availability,
     BackendCapabilities,
+    BucketOperationResult,
     BucketState,
     Entity,
     EntityCapacity,
@@ -127,6 +129,7 @@ __all__ = [
     "SyncStackManager",
     # Models
     "Availability",
+    "BucketOperationResult",
     "Limit",
     "LimiterInfo",
     "LimitName",
@@ -164,6 +167,7 @@ __all__ = [
     "EntityExistsError",
     # Exceptions - Infrastructure
     "RateLimiterUnavailable",
+    "PermissionDenied",
     "StackOperationError",
     "StackAlreadyExistsError",
     "InfrastructureNotFoundError",

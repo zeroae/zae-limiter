@@ -2204,3 +2204,368 @@ class TestSkipAbsent:
         was_pushed, probe = pushed_or_absent(result)
         assert was_pushed is pushed
         assert await probe() is exists
+
+
+_OLD_TEMPLATE = """
+Parameters:
+  Keep:
+    Type: String
+    Default: a
+  Dropped:
+    Type: String
+    Default: b
+Resources:
+  Queue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-q"
+  Setting:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Name: !Sub "${AWS::StackName}-p"
+      Value: !Ref Keep
+"""
+
+_NEW_TEMPLATE = """
+Parameters:
+  Keep:
+    Type: String
+    Default: a
+  Added:
+    Type: String
+    Default: c
+Resources:
+  Queue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-q"
+      VisibilityTimeout: 60
+  Setting:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Name: !Sub "${AWS::StackName}-p"
+      Value: !Sub "${Keep}-${Added}"
+"""
+
+# _NEW_TEMPLATE without the Setting resource.
+_REMOVING_TEMPLATE = _NEW_TEMPLATE.split("  Setting:")[0]
+
+
+class TestApplyTemplate:
+    """``apply_template`` brings an existing stack up to the packaged template
+    through a change set, and refuses one that would replace or remove a
+    resource (#752)."""
+
+    STACK = "tmpl-stack"
+
+    @staticmethod
+    def _cfn():
+        import boto3
+
+        return boto3.client("cloudformation", region_name="us-east-1")
+
+    def _create(self, template: str = _OLD_TEMPLATE) -> None:
+        self._cfn().create_stack(
+            StackName=self.STACK,
+            TemplateBody=template,
+            Parameters=[{"ParameterKey": "Keep", "ParameterValue": "kept"}],
+            Tags=[{"Key": "ManagedBy", "Value": "zae-limiter"}],
+        )
+
+    def _template(self) -> str:
+        return self._cfn().get_template(StackName=self.STACK)["TemplateBody"]
+
+    def _change_sets(self) -> list:
+        return self._cfn().list_change_sets(StackName=self.STACK)["Summaries"]
+
+    @staticmethod
+    def _stub_client() -> MagicMock:
+        client = MagicMock()
+        client.describe_stacks = AsyncMock(
+            return_value={
+                "Stacks": [
+                    {
+                        "StackStatus": "UPDATE_COMPLETE",
+                        "Parameters": [
+                            {"ParameterKey": "Keep", "ParameterValue": "kept"},
+                            {"ParameterKey": "Dropped", "ParameterValue": "b"},
+                        ],
+                        "Tags": [
+                            {"Key": "ManagedBy", "Value": "zae-limiter"},
+                            {"Key": "aws:cloudformation:stack-name", "Value": "s"},
+                        ],
+                    }
+                ]
+            }
+        )
+        client.create_change_set = AsyncMock(return_value={"Id": "cs-arn"})
+        client.describe_change_set = AsyncMock(
+            return_value={"Status": "CREATE_COMPLETE", "Changes": []}
+        )
+        client.execute_change_set = AsyncMock()
+        client.delete_change_set = AsyncMock()
+        client.describe_stack_events = AsyncMock(return_value={"StackEvents": []})
+        waiter = MagicMock()
+        waiter.wait = AsyncMock()
+        client.get_waiter = MagicMock(return_value=waiter)
+        return client
+
+    @staticmethod
+    def _client_error(code: str, message: str, operation: str) -> ClientError:
+        return ClientError({"Error": {"Code": code, "Message": message}}, operation)
+
+    async def _apply(self, client: MagicMock) -> dict:
+        with (
+            patch.object(StackManager, "_get_client", new_callable=AsyncMock) as get_client,
+            patch.object(StackManager, "_load_template", return_value=_NEW_TEMPLATE),
+        ):
+            get_client.return_value = client
+            manager = StackManager(stack_name="s", region="us-east-1")
+            return await manager.apply_template()
+
+    async def test_applies_a_changed_template(self, mock_dynamodb) -> None:
+        self._create()
+        async with StackManager(self.STACK, "us-east-1") as manager:
+            with patch.object(StackManager, "_load_template", return_value=_NEW_TEMPLATE):
+                result = await manager.apply_template()
+
+        assert result["status"] == "applied"
+        assert {(c["logical_id"], c["action"]) for c in result["changes"]} == {
+            ("Queue", "Modify"),
+            ("Setting", "Modify"),
+        }
+        stack = self._cfn().describe_stacks(StackName=self.STACK)["Stacks"][0]
+        assert stack["StackStatus"] == "UPDATE_COMPLETE"
+        assert self._template() == _NEW_TEMPLATE
+        params = {p["ParameterKey"]: p["ParameterValue"] for p in stack["Parameters"]}
+        assert params["Keep"] == "kept"
+        assert stack["Tags"] == [{"Key": "ManagedBy", "Value": "zae-limiter"}]
+
+    async def test_an_unchanged_template_is_a_no_op(self, mock_dynamodb) -> None:
+        self._create(_NEW_TEMPLATE)
+        async with StackManager(self.STACK, "us-east-1") as manager:
+            with patch.object(StackManager, "_load_template", return_value=_NEW_TEMPLATE):
+                result = await manager.apply_template()
+
+        assert result == {"status": "no_changes", "changes": []}
+        assert self._change_sets() == []
+
+    async def test_refuses_to_remove_a_resource(self, mock_dynamodb) -> None:
+        self._create()
+        async with StackManager(self.STACK, "us-east-1") as manager:
+            with patch.object(StackManager, "_load_template", return_value=_REMOVING_TEMPLATE):
+                with pytest.raises(StackOperationError) as excinfo:
+                    await manager.apply_template()
+
+        assert "nothing was applied" in str(excinfo.value)
+        assert "Setting (AWS::SSM::Parameter): would be removed" in str(excinfo.value)
+        assert self._change_sets() == []
+        assert self._template() == _OLD_TEMPLATE
+
+    @pytest.mark.parametrize("replacement", ["True", "Conditional"])
+    async def test_refuses_to_replace_a_resource(self, mock_dynamodb, replacement) -> None:
+        """moto does not compute replacements, so the description is stubbed;
+        the change set itself is real, and is deleted unexecuted."""
+        self._create()
+        async with StackManager(self.STACK, "us-east-1") as manager:
+            client = await manager._get_client()
+            client.describe_change_set = AsyncMock(
+                return_value={
+                    "Status": "CREATE_COMPLETE",
+                    "Changes": [
+                        {
+                            "Type": "Resource",
+                            "ResourceChange": {
+                                "Action": "Modify",
+                                "LogicalResourceId": "Queue",
+                                "ResourceType": "AWS::SQS::Queue",
+                                "Replacement": "False",
+                            },
+                        },
+                        {
+                            "Type": "Resource",
+                            "ResourceChange": {
+                                "Action": "Modify",
+                                "LogicalResourceId": "RateLimitsTable",
+                                "ResourceType": "AWS::DynamoDB::Table",
+                                "Replacement": replacement,
+                            },
+                        },
+                    ],
+                }
+            )
+            with patch.object(StackManager, "_load_template", return_value=_NEW_TEMPLATE):
+                with pytest.raises(StackOperationError) as excinfo:
+                    await manager.apply_template()
+
+        message = str(excinfo.value)
+        assert (
+            f"RateLimitsTable (AWS::DynamoDB::Table): would be replaced (Replacement {replacement})"
+            in message
+        )
+        assert "Queue" not in message
+        assert self._change_sets() == []
+        assert self._template() == _OLD_TEMPLATE
+
+    async def test_no_stack_is_absent(self, mock_dynamodb) -> None:
+        async with StackManager(self.STACK, "us-east-1") as manager:
+            result = await manager.apply_template()
+        assert result == {"status": "absent", "changes": []}
+
+    async def test_an_empty_description_is_absent(self) -> None:
+        client = self._stub_client()
+        client.describe_stacks = AsyncMock(return_value={"Stacks": []})
+        assert await self._apply(client) == {"status": "absent", "changes": []}
+        client.create_change_set.assert_not_called()
+
+    async def test_any_other_describe_error_raises(self) -> None:
+        client = self._stub_client()
+        client.describe_stacks = AsyncMock(
+            side_effect=self._client_error("AccessDenied", "denied", "DescribeStacks")
+        )
+        with pytest.raises(ClientError):
+            await self._apply(client)
+
+    async def test_parameters_and_tags(self) -> None:
+        """Kept parameters reuse their value, a dropped one is not passed and a
+        new one is left to its default; the stack's own tags ride along."""
+        client = self._stub_client()
+        result = await self._apply(client)
+
+        assert result == {"status": "applied", "changes": []}
+        request = client.create_change_set.call_args.kwargs
+        assert request["ChangeSetType"] == "UPDATE"
+        assert request["TemplateBody"] == _NEW_TEMPLATE
+        assert request["Capabilities"] == ["CAPABILITY_NAMED_IAM"]
+        assert request["Parameters"] == [{"ParameterKey": "Keep", "UsePreviousValue": True}]
+        assert request["Tags"] == [{"Key": "ManagedBy", "Value": "zae-limiter"}]
+        client.execute_change_set.assert_called_once_with(ChangeSetName="cs-arn", StackName="s")
+
+    async def test_an_untagged_stack_passes_no_tags(self) -> None:
+        client = self._stub_client()
+        client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Parameters": []}]})
+        await self._apply(client)
+        assert "Tags" not in client.create_change_set.call_args.kwargs
+
+    async def test_a_failed_empty_change_set_is_no_changes(self) -> None:
+        """Real CloudFormation creates the change set and fails it."""
+        client = self._stub_client()
+        client.get_waiter.return_value.wait = AsyncMock(side_effect=Exception("Waiter failed"))
+        client.describe_change_set = AsyncMock(
+            return_value={
+                "Status": "FAILED",
+                "StatusReason": "The submitted information didn't contain changes. "
+                "Submit different information to create a change set.",
+            }
+        )
+        client.delete_change_set = AsyncMock(side_effect=Exception("cleanup failed"))
+
+        assert await self._apply(client) == {"status": "no_changes", "changes": []}
+        client.delete_change_set.assert_called_once()
+        client.execute_change_set.assert_not_called()
+
+    async def test_a_change_set_that_fails_otherwise_raises(self) -> None:
+        client = self._stub_client()
+        client.get_waiter.return_value.wait = AsyncMock(side_effect=Exception("Waiter failed"))
+        client.describe_change_set = AsyncMock(
+            return_value={"Status": "FAILED", "StatusReason": "Template format error"}
+        )
+        with pytest.raises(StackOperationError, match="Template format error"):
+            await self._apply(client)
+        client.delete_change_set.assert_called_once()
+        client.execute_change_set.assert_not_called()
+
+    async def test_an_unreadable_failed_change_set_reports_the_waiter(self) -> None:
+        client = self._stub_client()
+        client.get_waiter.return_value.wait = AsyncMock(side_effect=Exception("Waiter failed"))
+        client.describe_change_set = AsyncMock(side_effect=Exception("throttled"))
+        with pytest.raises(StackOperationError, match="Waiter failed"):
+            await self._apply(client)
+        client.execute_change_set.assert_not_called()
+
+    async def test_a_change_set_that_cannot_be_created_raises(self) -> None:
+        client = self._stub_client()
+        client.create_change_set = AsyncMock(
+            side_effect=self._client_error(
+                "ValidationError", "Stack is in UPDATE_IN_PROGRESS state", "CreateChangeSet"
+            )
+        )
+        with pytest.raises(StackOperationError, match="UPDATE_IN_PROGRESS"):
+            await self._apply(client)
+
+    async def test_every_page_of_changes_is_checked(self) -> None:
+        client = self._stub_client()
+        client.describe_change_set = AsyncMock(
+            side_effect=[
+                {
+                    "Status": "CREATE_COMPLETE",
+                    "Changes": [
+                        {
+                            "Type": "Resource",
+                            "ResourceChange": {
+                                "Action": "Modify",
+                                "LogicalResourceId": "Policy",
+                                "ResourceType": "AWS::IAM::ManagedPolicy",
+                                "Replacement": "False",
+                            },
+                        }
+                    ],
+                    "NextToken": "page-2",
+                },
+                {
+                    "Status": "CREATE_COMPLETE",
+                    "Changes": [
+                        {
+                            "Type": "Resource",
+                            "ResourceChange": {
+                                "Action": "Remove",
+                                "LogicalResourceId": "Alarm",
+                                "ResourceType": "AWS::CloudWatch::Alarm",
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+        with pytest.raises(StackOperationError, match=r"Alarm \(AWS::CloudWatch::Alarm\)"):
+            await self._apply(client)
+        assert client.describe_change_set.call_args.kwargs["NextToken"] == "page-2"
+        client.execute_change_set.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("stack", "expected"),
+        [
+            (
+                {"StackStatus": "UPDATE_ROLLBACK_COMPLETE", "StackStatusReason": "denied"},
+                "UPDATE_ROLLBACK_COMPLETE: denied",
+            ),
+            ({"StackStatus": "UPDATE_ROLLBACK_COMPLETE"}, "UPDATE_ROLLBACK_COMPLETE"),
+            (None, "Waiter failed"),
+        ],
+    )
+    async def test_a_failed_update_raises_with_the_stack_reason(self, stack, expected) -> None:
+        client = self._stub_client()
+        before = client.describe_stacks.return_value
+        after: object = (
+            {"Stacks": [stack]} if stack else self._client_error("Throttling", "x", "Describe")
+        )
+        client.describe_stacks = AsyncMock(side_effect=[before, after])
+        client.get_waiter.return_value.wait = AsyncMock(
+            side_effect=[None, Exception("Waiter failed")]
+        )
+        client.describe_stack_events = AsyncMock(
+            return_value={"StackEvents": [{"LogicalResourceId": "Policy"}]}
+        )
+        with pytest.raises(StackOperationError, match=expected) as excinfo:
+            await self._apply(client)
+        assert excinfo.value.events[0]["logical_id"] == "Policy"
+
+    def test_template_parameter_names(self) -> None:
+        from zae_limiter.infra.stack_manager import template_parameter_names
+
+        packaged = template_parameter_names(StackManager(stack_name="s")._load_template())
+        assert {"SchemaVersion", "EnableIAM", "PermissionBoundary"} <= packaged
+        assert template_parameter_names(_NEW_TEMPLATE) == {"Keep", "Added"}
+        assert template_parameter_names("Resources: {}") == set()

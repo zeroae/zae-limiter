@@ -21,6 +21,7 @@ The `on_unavailable` mode **only applies to infrastructure errors**. These excep
 - `RateLimitExceeded` — Rate limit violated (business logic)
 - `ValidationError` — Invalid configuration (user error)
 - `ResourceDisabled` — Resource or entity explicitly disabled (ADR-125; not a retryable condition, so it is never suppressed by `ALLOW` mode)
+- `PermissionDenied` — DynamoDB refused a call for lack of an IAM permission (see [ALLOW never covers permission errors](#allow-never-covers-permission-errors))
 
 Infrastructure errors that trigger on_unavailable:
 
@@ -37,6 +38,45 @@ Infrastructure errors that trigger on_unavailable:
     exactly as it does for a timeout. The whole config item is rejected together, so a level
     with one unreadable limit supplies none of its limits rather than silently dropping the
     one.
+
+## ALLOW never covers permission errors
+
+An `AccessDeniedException` from DynamoDB — a principal missing an IAM action that `acquire()`
+needs — raises `PermissionDenied` under **both** modes, never a degraded lease.
+
+| Error | Lasts | `BLOCK` | `ALLOW` |
+|-------|-------|---------|---------|
+| Outage, throttling, timeout | Until the backend recovers | `RateLimiterUnavailable` | Request proceeds unlimited |
+| `AccessDeniedException` | Until someone fixes IAM | `PermissionDenied` | `PermissionDenied` |
+
+An outage heals on its own, so letting requests through while it lasts is a bounded risk. A
+missing permission does not heal, and the write it blocks is the one that would create the
+entity's bucket: no bucket ever exists, so `ALLOW` would admit every request from then on with
+no limit at all, and nothing would report it. DynamoDB reports a denied write the same way
+whether it is a single `UpdateItem` or one item inside a `TransactWriteItems`.
+
+`PermissionDenied` is a subclass of `RateLimiterUnavailable`, so a handler written for `BLOCK`
+already catches it. Its message carries AWS's own text, which names the missing action, and a
+link to the [policies `acquire()` needs](../infra/deployment.md#application-iam-policies).
+
+```python
+from zae_limiter import PermissionDenied
+
+try:
+    async with limiter.acquire("user-123", "gpt-4", consume={"rpm": 1}):
+        ...
+except PermissionDenied as e:
+    # A deployment problem, not load: alert someone, do not retry.
+    logger.error("rate limiter IAM misconfigured: %s", e)
+    raise
+```
+
+!!! warning "Breaking change in v0.17.0"
+    Before v0.17.0 an IAM denial under `ALLOW` produced a degraded lease, like an outage.
+    v0.17.0 clients also need IAM actions the v0.16.0 policies lack, so run
+    `zae-limiter upgrade` on each stack before rolling out v0.17.0 clients: it applies the
+    new template, policies included (see the
+    [v0.17.0 IAM changes](../infra/deployment.md#application-iam-policies)).
 
 ## BLOCK (Default)
 

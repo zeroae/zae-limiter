@@ -884,7 +884,7 @@ class Limit:
             soft=state.soft,
         )
 
-    def per_shard(self, shard_count: int, now_ms: int) -> "Limit":
+    def per_shard(self, shard_count: int, now_ms: int, topped_up_milli: int = 0) -> "Limit":
         """This limit as a single shard of ``shard_count`` sees it at ``now_ms``.
 
         Two narrowings happen here, and the order matters (#222 §2.1): the
@@ -938,8 +938,12 @@ class Limit:
         predicate would be the wrong one here — it is also true of a dripping
         limit whose share has floored away, and zeroing *that* limit's rate
         would report a recovering limit as one that never recovers.
+
+        ``topped_up_milli`` is the drawn shard's ``b_{name}_tu`` (ADR-149): a
+        quota shard topped up above its grant reports ``C // gc + tu``, the
+        ceiling it really holds, so a purchase is not hidden from a 429.
         """
-        if shard_count <= 1 and not self.schedule:
+        if shard_count <= 1 and not self.schedule and not topped_up_milli:
             return self
         # Milli-units, so this floors exactly where `BucketState` does: a
         # status built from a config `Limit` and one built from the bucket
@@ -954,7 +958,7 @@ class Limit:
         divisor = max(1, shard_count)
         return replace(
             self,
-            capacity=max(1, (cp_milli // divisor) // 1000),
+            capacity=max(1, (cp_milli // divisor + topped_up_milli) // 1000),
             refill_amount=(0 if self.is_quota else max(1, (ra_milli // divisor) // 1000)),
             refill_period_seconds=max(1, rp_ms // 1000),
             schedule=(),
@@ -1005,6 +1009,23 @@ class Entity:
     cascade: bool = False
     metadata: dict[str, str] = field(default_factory=dict)
     created_at: str | None = None
+    parent_generation: int = field(default=0, compare=False)
+    """The entity's parent generation (ADR-150): raised by every move to a new parent.
+
+    Starts at the creation instant in epoch ms, so a recreated entity is never
+    below a bucket its predecessor left behind; 0 for an entity created before
+    v0.17. Every bucket write of the entity's ``parent_id`` carries it, so a
+    writer that read an older generation can never put a previous parent back.
+    Not part of equality: two reads of one entity are equal across a move's
+    generation only through ``parent_id``.
+    """
+    incarnation: str = field(default="-", compare=False)
+    """A random token naming this creation of the entity (ADR-150).
+
+    A generation is comparable only within one incarnation, so a bucket left
+    behind by a deleted predecessor never outranks the recreated entity. ``"-"``
+    for an entity created before v0.17, which had none.
+    """
 
     @property
     def is_parent(self) -> bool:
@@ -1247,6 +1268,13 @@ class BucketState:
     # grant was sized at. `None` for a rate limit and for a quota item written
     # before ADR-145 (read as `shard_count`, see `grant_shard_count`).
     grant_count: int | None = None
+    # `b_{name}_tu` (ADR-149): allowance topped up above this quota shard's
+    # grant this period, millitokens. `None` when the item carries none. Raises
+    # the ceiling (`ceiling_milli`) until the next reset or roll clears it.
+    topped_up_milli: int | None = None
+    # `b_{name}_rn` (ADR-149): operator resets this calendar quota shard has
+    # taken; `None` before the first. A refund pins it to stay in its period.
+    reset_number: int | None = None
     # The item's `vu` as this state was read, epoch ms; `None` when the item
     # carries none (or the state was not read off an item). The slow path's
     # rf-locked write pins it whenever it sets or removes `vu`, so a `vu = 0` a
@@ -1264,6 +1292,14 @@ class BucketState:
     # path); the slow path overrides it from config only when that config was
     # read fresh this pass. `try_consume` admits a soft state unconditionally.
     soft: bool = False
+    # The raw schedule strings on the item as this state was read (#721), or
+    # `None` when the state was not read off an item. Item level: (`sched`,
+    # `rsched`, `sched_tz`); this limit's own overrides: (`b_{name}_sched`,
+    # `b_{name}_rsched`); each `None` when absent. A refund pins them: a
+    # schedule-only change moves the ceiling without moving `cp`, `gc`,
+    # `shard_count` or (when the next boundary is unchanged) `vu`.
+    stored_item_sched_raw: tuple[str | None, str | None, str | None] | None = None
+    stored_sched_raw: tuple[str | None, str | None] | None = None
 
     @property
     def tokens(self) -> int:
@@ -1312,6 +1348,14 @@ class BucketState:
         """
         return self.grant_shard_count if self.is_quota_state else self.shard_count
 
+    @property
+    def report_top_up_milli(self) -> int:
+        """The ``tu`` a reported per-shard limit adds to its capacity (ADR-149).
+
+        Only a quota carries one; a stray one on anything else is ignored.
+        """
+        return (self.topped_up_milli or 0) if self.is_quota_state else 0
+
     def reset_target_milli(self, now_ms: int) -> int:
         """The balance a reset or window roll sets: this shard's share at ``now_ms``.
 
@@ -1329,10 +1373,15 @@ class BucketState:
         covers, so its ceiling is ``C // gc``; trimming it to ``C // S`` would
         discard allowance no other shard holds (#637). A dripping limit keeps
         ``C // S``: its shards' ceilings must sum to the capacity.
+
+        A quota shard an operator topped up above its grant this period
+        (ADR-149) holds that allowance too: ``C // gc + tu``. A dripping limit
+        never carries ``tu``.
         """
         cp, _ra, _rp = self._scheduled_params(now_ms)
-        divisor = self.grant_shard_count if self.is_quota_state else self.shard_count
-        return cp // divisor
+        if self.is_quota_state:
+            return cp // self.grant_shard_count + (self.topped_up_milli or 0)
+        return cp // self.shard_count
 
     def effective_refill_amount_milli(self, now_ms: int) -> int:
         """This shard's share of the refill in force at ``now_ms``.
@@ -2145,6 +2194,30 @@ class AuditAction:
     ENTITY_DELETED = "entity_deleted"
     LIMITS_SET = "limits_set"
     LIMITS_DELETED = "limits_deleted"
+    ENTITY_PARENT_CHANGED = "entity_parent_changed"
+    BUCKET_RESET = "bucket_reset"
+    BUCKET_TOPPED_UP = "bucket_topped_up"
+
+
+@dataclass(frozen=True)
+class BucketOperationResult:
+    """What ``Repository.reset_bucket`` or ``Repository.top_up`` did (ADR-149).
+
+    Attributes:
+        entity_id: The entity operated on.
+        resource: The resource operated on.
+        shards: Bucket items written (0 when there was nothing to write, such as
+            a reset of an entity that has never acquired).
+        amounts: Per named limit, in whole tokens. For a top-up, what was
+            granted: exactly what was asked for a quota, at most the free room
+            below the ceiling for a dripping limit. For a reset, what was
+            restored across every shard.
+    """
+
+    entity_id: str
+    resource: str
+    shards: int
+    amounts: dict[str, int]
 
 
 @dataclass
@@ -2257,6 +2330,115 @@ class QuotaGrant:
     donor_shard: int | None
     tokens_milli: int
     donor_grant_count: int | None = None
+
+
+@dataclass(frozen=True)
+class CreditCeiling:
+    """What a self-trimming credit (#721) checks one credited limit against.
+
+    ``ceiling_milli`` is ``BucketState.ceiling_milli`` from the caller's state.
+    That state can be stale, so the write also pins what the ceiling was
+    computed from and can be lowered by: the stored base capacity
+    (``b_{name}_cp``, moved by a limit change), the quota grant count
+    (``b_{name}_gc``, moved by a re-grant; ``None`` = absent) and the limit's
+    own schedule overrides (``b_{name}_sched``, ``b_{name}_rsched``, each
+    ``None`` = absent; a schedule-only change). ``sched_raw`` is ``None`` when
+    the state was not read off the item: then nothing can be pinned and the
+    credit is trimmed outright. A quota also pins its top-up
+    (``b_{name}_tu``, ADR-149; ``None`` = absent), part of its ceiling: an
+    operator reset removes it and moves nothing else a credit pins.
+    """
+
+    ceiling_milli: int
+    capacity_milli: int
+    grant_count: int | None
+    sched_raw: tuple[str | None, str | None] | None = None
+    # A quota's credit belongs to the period its debit was made in (#721):
+    # `quota` marks one, and `quota_period` says how to tell the period has
+    # not moved since -- `None` on a quota means it cannot be told, and the
+    # credit is dropped rather than land in a period that did not spend it.
+    quota: bool = False
+    quota_period: "QuotaPeriodPin | None" = None
+    topped_up_milli: int | None = None
+
+
+@dataclass(frozen=True)
+class QuotaPeriodPin:
+    """How a quota credit checks it still lands in its debit's period (#721).
+
+    A calendar quota: the item's ``rf`` is still before ``reset_edge_ms``, the
+    first reset edge after the ``rf`` the lease saw (a reset pass stamps ``rf``
+    at or past the edge; ``None`` when no edge is in reach). A session quota:
+    the window start and applied marker (``b_{name}_ws`` / ``b_{name}_wa``)
+    are still the ones the lease saw, each ``None`` when absent.
+
+    A calendar quota's edge is computed from the reset cron the lease held, so
+    ``reset_sched_raw`` pins the stored strings that cron came from — the
+    item's ``rsched`` and ``sched_tz`` and the limit's ``b_{name}_rsched`` —
+    each ``None`` when absent. A reset-schedule change under an open lease can
+    fire a reset before the old edge; it moves one of these, and the credit is
+    dropped. An operator reset (ADR-149) starts a period with no edge at all,
+    so a calendar quota also pins ``reset_number`` (``b_{name}_rn``, ``None``
+    when absent), which every such reset increments.
+    """
+
+    reset_edge_ms: int | None = None
+    window: tuple[int | None, int | None] | None = None
+    reset_sched_raw: tuple[str | None, str | None, str | None] | None = None
+    reset_number: int | None = None
+
+
+#: (``shard_count``, ``vu``, (``sched``, ``rsched``, ``sched_tz``)) of a bucket
+#: item as a lease last wrote or read it, each ``None`` = absent: what a
+#: self-trimming credit (#721) pins beside its ``CreditCeiling``s.
+CreditPin = tuple[int, int | None, tuple[str | None, str | None, str | None]]
+
+
+@dataclass(frozen=True)
+class CreditLimitImage:
+    """One limit on a bucket item as a lease last wrote or read it (#721).
+
+    What a self-trimming credit pins for that limit: the stored base capacity
+    (``b_{name}_cp``), the quota grant count (``b_{name}_gc``), the schedule
+    overrides (``b_{name}_sched``, ``b_{name}_rsched``), the session window
+    (``b_{name}_ws``, ``b_{name}_wa``), and the quota top-up and reset count
+    (``b_{name}_tu``, ``b_{name}_rn``, ADR-149), each ``None`` when absent.
+    """
+
+    capacity_milli: int
+    grant_count: int | None
+    sched_raw: tuple[str | None, str | None]
+    window_start_ms: int | None = None
+    window_applied_ms: int | None = None
+    topped_up_milli: int | None = None
+    reset_number: int | None = None
+
+
+@dataclass(frozen=True)
+class CreditImage:
+    """A bucket item as a lease last wrote or read it (#721).
+
+    Built from the item the lease read (or a speculative write returned), the
+    ``Put`` it created, the values its rf-locked write stamped, or the
+    ``ALL_NEW`` image of its consumption-only retry. A refund pins it: every
+    write that can lower the ceiling the refund is checked against moves one
+    of these attributes. ``None`` in place of an image means nothing is known.
+    """
+
+    shard_count: int
+    vu: int | None
+    item_sched: tuple[str | None, str | None, str | None]
+    rf: int
+    limits: tuple[tuple[str, CreditLimitImage], ...]
+
+    @property
+    def pin(self) -> CreditPin:
+        """The item-level part, as ``build_composite_adjust`` takes it."""
+        return (self.shard_count, self.vu, self.item_sched)
+
+    def limit(self, name: str) -> CreditLimitImage | None:
+        """The named limit's image, or ``None`` when the item does not carry it."""
+        return next((image for limit_name, image in self.limits if limit_name == name), None)
 
 
 @dataclass(frozen=True)
