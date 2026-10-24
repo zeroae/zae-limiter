@@ -194,6 +194,10 @@ async def run_fuzz(limiter, seed: int, kind: str, quota_in_also: bool = False) -
     eid = f"fuzz-{kind}-{seed}"
 
     mix = random.Random(seed + 1_000_000)  # the mixed-lease draws, apart from `rng`
+    # The override passes (#744), from a third RNG so the sequences above are
+    # unchanged: an `acquire(limits=[...])` slow pass that does not name the
+    # quota, yet advances the item's `rf` and so carries the quota through.
+    over = random.Random(seed + 2_000_000)
 
     quota_on = rng.random() < 0.5
     await limiter.set_limits(eid, [RPM, quota] if quota_on else [RPM], resource=RESOURCE)
@@ -264,6 +268,12 @@ async def run_fuzz(limiter, seed: int, kind: str, quota_in_also: bool = False) -
                 model.spend(shard, amount)
             path = "fast" if lim is fast else "slow"
             trace.append(f"spend({shard},{amount},{path},also={also})={ok}")
+        if over.random() < 0.2:
+            shard = over.randrange(_cached_count(repo, eid))
+            with drawn(shard, over):
+                async with slow.acquire(eid, RESOURCE, {"rpm": 1}, limits=[RPM]):
+                    pass
+            trace.append(f"override({shard})")
         now[0] += 1  # every op at its own instant; never across a boundary
 
         assert model.accounted() == C, (seed, trace)

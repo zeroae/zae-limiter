@@ -11468,6 +11468,109 @@ class TestWindowRollThroughAcquire:
         assert await _stored_tk(repo, "parent", "gpt-4", "session") == 6_000
 
 
+_UTC_MIDNIGHT = int(datetime(2026, 9, 16, tzinfo=UTC).timestamp() * 1000)
+_RPM_1000 = Limit.per_minute("rpm", 1000)
+_DAILY_10 = Limit.quota("q", 10, cron="0 0 * * *")
+
+
+class TestOverrideMaterialisesItemLimits:
+    """An `acquire(limits=[...])` pass advances the shared `rf` (#744).
+
+    The override replaces the configured limits for this request only, so the
+    pass resolves none of the item's other limits — yet its rf-locked write
+    stamps the item-level `rf`. Each limit on the item that the override does
+    not name is carried through the write and materialised from the item
+    itself, as the aggregator does: a pending reset or window roll is applied,
+    refill is credited, and its next boundary votes into `vu`. Without that,
+    the reset the pass stepped over was lost for a whole period.
+    """
+
+    @staticmethod
+    async def _drain(limiter, entity_id, resource, name):
+        """Acquire one `name` at a time until rejected; return the count."""
+        admitted = 0
+        for _ in range(50):
+            try:
+                async with limiter.acquire(entity_id, resource, consume={name: 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                return admitted
+        return admitted
+
+    async def test_an_override_pass_applies_a_pending_calendar_reset(self, limiter):
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("o", [_RPM_1000, _DAILY_10], resource="r")
+
+        repo._now_ms = lambda: _UTC_MIDNIGHT - 60_000
+        async with limiter.acquire("o", "r", consume={"q": 4, "rpm": 1}):
+            pass
+
+        repo._now_ms = lambda: _UTC_MIDNIGHT + 1_000
+        async with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+            pass
+
+        item = await _raw_bucket(repo, "o", "r")
+        assert int(item[bucket_attr("q", BUCKET_FIELD_TK)]["N"]) == 10_000
+        assert int(item[bucket_attr("q", BUCKET_FIELD_GC)]["N"]) == 1, "ADR-145 I3"
+        assert int(item[BUCKET_FIELD_VU]["N"]) == _UTC_MIDNIGHT + 86_400_000
+        assert await self._drain(limiter, "o", "r", "q") == 10
+
+    async def test_the_carried_reset_is_pinned_on_the_shard_count(self, limiter):
+        """ADR-145 I4: the grant the carrier stamps rides the `shard_count` pin."""
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("o", [_RPM_1000, _DAILY_10], resource="r")
+
+        repo._now_ms = lambda: _UTC_MIDNIGHT - 60_000
+        async with limiter.acquire("o", "r", consume={"q": 4, "rpm": 1}):
+            pass
+
+        repo._now_ms = lambda: _UTC_MIDNIGHT + 1_000
+        with patch.object(repo, "build_composite_normal", wraps=repo.build_composite_normal) as spy:
+            async with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+                pass
+        assert spy.call_args.kwargs["grant_counts"] == {"q": 1}
+        assert spy.call_args.kwargs["pin_shard_count"] == 1
+        assert spy.call_args.kwargs["clear_vu"] is False
+
+    async def test_an_override_pass_applies_a_pending_window_roll(self, limiter):
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("o", [_RPM_1000, SESSION_10], resource="r")
+
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("o", "r", consume={"session": 4, "rpm": 1}):
+            pass
+
+        now = T0 + FIVE_HOURS_MS + 1_000
+        repo._now_ms = lambda: now
+        async with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+            pass
+
+        assert await _stored_ws(repo, "o", "r", "session") == now
+        assert await _stored_tk(repo, "o", "r", "session") == 10_000
+        assert await self._drain(limiter, "o", "r", "session") == 10
+
+    async def test_an_override_pass_keeps_another_limits_refill(self, limiter):
+        """The same seam for a dripping limit: the refill accrued since `rf`
+        is credited, not skipped by the `rf` the override's write stamps."""
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        tpm = Limit.per_minute("tpm", 60)
+        await repo.set_limits("o", [_RPM_1000, tpm], resource="r")
+
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("o", "r", consume={"tpm": 60, "rpm": 1}):
+            pass
+
+        repo._now_ms = lambda: T0 + 30_000
+        async with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+            pass
+
+        assert await _stored_tk(repo, "o", "r", "tpm") == 30_000
+
+
 class TestWindowRolloverFansOut:
     """A rollover on one shard reaches the entity's other shards (ADR-140, #624).
 

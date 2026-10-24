@@ -2495,6 +2495,77 @@ class RateLimiter:
             _shard_count=shard_count,
         )
 
+    @classmethod
+    def _item_limit_carriers(
+        cls,
+        entity_id: str,
+        resource: str,
+        item_states: list[BucketState],
+        resolved: set[str],
+        now_ms: int,
+        shard_id: int,
+        shard_count: int,
+        has_custom_config: bool,
+    ) -> list[LeaseEntry]:
+        """Carry the item's limits an ``acquire(limits=...)`` override does not name (#744).
+
+        The override replaces the configured limits for this request only, so
+        the pass resolves none of the item's other limits, yet its rf-locked
+        write stamps the item-level ``rf``. A limit left out of that write
+        loses whatever was owed to it between the stored ``rf`` and now: a
+        calendar quota's reset edge (the next pass reads ``prev_reset_edge(now)
+        <= rf`` and never applies it), a session quota's elapsed window, a
+        dripping limit's refill. Its next boundary is also missing from the
+        item's ``vu``, so the fast path spends its stale balance past the edge.
+
+        Each such limit is materialised here from the item alone — the same
+        source the aggregator refills from, since the item carries every
+        limit's base parameters, both schedule tuples, ``rsa`` / ``ws`` /
+        ``wa``, ``gc`` and ``tu``. There is no config to prefer: the override
+        is what this request enforces, and these limits are not enforced by
+        it. The steps are the slow path's for an undeclared limit: open an
+        elapsed window, apply a pending reset or roll (a quota re-granted at
+        the item's count, ADR-145 I3; the commit stamps ``gc`` under the
+        ``shard_count`` pin, I4), refill, and vote the next boundary into
+        ``vu``. Never declared, never gated, never a status, consumption 0.
+        """
+        carriers: list[LeaseEntry] = []
+        for state in item_states:
+            if state.limit_name in resolved or state.limit_name == WCU_LIMIT_NAME:
+                continue
+            limit = Limit.from_bucket_state(state)
+            original_tk, original_rf = state.tokens_milli, state.last_refill_ms
+            stored_top_up = state.topped_up_milli is not None
+            stored_rsa = state.reset_after_seconds
+            new_ws = cls._open_window_if_elapsed(limit, state, now_ms)
+            reset_applied = cls._apply_reset_edge(limit, state, now_ms)
+            roll_applied = cls._apply_window_roll(limit, state, now_ms, opened=new_ws is not None)
+            state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
+            boundary_ms, reset_edge_ms = cls._materialisation_stamps(limit, state, now_ms)
+            carriers.append(
+                LeaseEntry(
+                    entity_id=entity_id,
+                    resource=resource,
+                    limit=limit,
+                    state=state,
+                    consumed=0,
+                    _original_tokens_milli=original_tk,
+                    _original_rf_ms=original_rf,
+                    _has_custom_config=has_custom_config,
+                    _declared=False,
+                    _shard_id=shard_id,
+                    _shard_count=shard_count,
+                    _boundary_ms=boundary_ms,
+                    _reset_edge_ms=reset_edge_ms,
+                    _window_start_ms=new_ws,
+                    _window_end_ms=window_end_in_force(limit, state, now_ms),
+                    _stored_reset_after_seconds=stored_rsa,
+                    _granted=limit.is_quota and (reset_applied or roll_applied),
+                    _stored_top_up=stored_top_up,
+                )
+            )
+        return carriers
+
     async def _try_parent_only_acquire(
         self,
         parent_id: str,
@@ -3949,6 +4020,19 @@ class RateLimiter:
             )
             if carrier is not None:
                 carriers.append(carrier)
+            if limits_override is not None:
+                # The override resolved none of the item's other limits, but
+                # this pass advances the item's `rf` all the same (#744).
+                carriers += self._item_limit_carriers(
+                    eid,
+                    resource,
+                    item_states,
+                    {limit.name for limit in entity_limits[eid]},
+                    now_ms,
+                    eid_shard,
+                    eid_shard_count,
+                    _is_custom_config(entity_config_sources.get(eid)),
+                )
 
         # Check for any violations
         violations = [s for s in statuses if s.exceeded]
