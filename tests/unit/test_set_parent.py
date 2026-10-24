@@ -1820,6 +1820,29 @@ class TestMetaWritesRetryAConflict:
         assert len(calls) == 2
         assert await repo.get_entity("fresh", consistent_read=True) is not None
 
+    async def test_a_conflict_past_the_retries_propagates(self, repo):
+        from botocore.exceptions import ClientError
+
+        from zae_limiter.repository import _ITEM_CONFLICT_MAX_RETRIES
+
+        conflict = ClientError(
+            {"Error": {"Code": "TransactionConflictException", "Message": "busy"}}, "PutItem"
+        )
+        client = await repo._get_client()
+        with (
+            patch.object(client, "put_item", side_effect=conflict) as put,
+            pytest.raises(ClientError),
+        ):
+            await repo._put_item_retrying_conflict(client, TableName=TABLE, Item={})
+        assert put.call_count == _ITEM_CONFLICT_MAX_RETRIES + 1
+
+
+def test_a_move_counts_as_lost_without_cancellation_reasons():
+    """Review M2: with no per-item reasons, nothing says the move survived."""
+    from zae_limiter.lease import _move_items_failed
+
+    assert _move_items_failed(RuntimeError("no reasons"), [], 0) is True
+
 
 class TestAStaleSlowPassAfterAMove:
     """Review P1 (#677 review): a slow pass whose eventually consistent META
