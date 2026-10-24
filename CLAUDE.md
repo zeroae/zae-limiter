@@ -1309,8 +1309,8 @@ recommended options **provisionally** (see `docs/plans/2026-10-09-multi-resource
   hints, go to the slow path.
 - **Slow path** (`_slow_acquire_resources`): every part planned by `_do_acquire` concurrently,
   then **one** merged `Lease._commit_initial()` — one `TransactWriteItems` with every part's
-  ADR-145 donor debits. `QuotaMoveLostError` re-plans every part twice, then with
-  `disable_moves=True`; a plan over `_MAX_TRANSACT_ITEMS` (bucket items + one per donor shard,
+  ADR-145 donor debits. `QuotaMoveLostError` re-plans every part once, then once more with
+  `disable_moves=True` (as `_slow_acquire`); a plan over `_MAX_TRANSACT_ITEMS` (bucket items + one per donor shard,
   `_transaction_items`) is re-planned without moves (D6). When a part is rejected, the other
   parts' planned moves are committed with nothing consumed (`_commit_rejected_moves`, ADR-145
   I5) — the combined error is built **before** that, since the commit zeroes `consumed`.

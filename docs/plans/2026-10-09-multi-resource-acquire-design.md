@@ -186,8 +186,10 @@ passing, and no new bucket writer is introduced.
   admit, which is the right answer for an all-or-none request.
 - Message: `primary_violation`'s `entity/resource`, as today.
 - **`ResourceDisabled`** from any resource outranks `RateLimitExceeded` from another.
-- `ValidationError` (bad name, duplicate, over the cap, no limits configured for any
-  resource) is raised before any write.
+- `ValidationError` (bad name, duplicate, over the cap, a negative amount) is raised before any
+  write. "No limits configured" for a resource is found when that resource is planned, so a
+  fast-path win for another resource has been written by then; it is refunded before the
+  error propagates, like any other failed part.
 - `VersionMismatchError` (#638) only via `limits=` overrides; see D8.
 
 ## 7. Sync parity and other surfaces
