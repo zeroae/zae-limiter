@@ -4690,11 +4690,12 @@ class Repository:
             result = await self._speculative_consume_once(
                 entity_id, resource, consume, ttl_seconds, shard_id, now_ms, bypass_shape=True
             )
-            # TODO(D8): a #724 CONTENTION on the bypass-shaped write falls through
-            # here and is treated as "bypass cleared" (re-written enforce-shaped).
             # An expired stamp (SCHEDULE_BOUNDARY) goes straight to the slow
             # path, which renews or removes it (ADR-151 decision 8): an
-            # enforce-shaped write would fail on the same deadline.
+            # enforce-shaped write would fail on the same deadline. So does a
+            # #724 CONTENTION: nothing was written and there is no image, so
+            # nothing says the bypass was cleared, and a second write on the
+            # same busy item would only collide again (review D8).
             if (
                 result.success
                 or result.bypassed
@@ -4702,6 +4703,7 @@ class Repository:
                 in (
                     SpeculativeFailureReason.BUCKET_MISSING,
                     SpeculativeFailureReason.SCHEDULE_BOUNDARY,
+                    SpeculativeFailureReason.CONTENTION,
                 )
             ):
                 return result

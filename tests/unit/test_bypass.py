@@ -197,6 +197,25 @@ class TestWarmPathLearning:
         with pytest.raises(RateLimitExceeded):
             await _use(limiter)
 
+    async def test_a_contended_bypass_shaped_write_goes_to_the_slow_path(self, repo, limiter):
+        """Review D8: a #724 CONTENTION on the bypass-shaped write wrote
+        nothing and returned no image, yet was read as "bypass cleared": the
+        request was written again enforce-shaped on the same busy item. It
+        now goes to the slow path, and the pair stays learned."""
+        from botocore.exceptions import ClientError
+
+        await repo.bypass_resource("llm")
+        await _use(limiter)
+        await _use(limiter)  # learns the stamp
+        key = (repo._namespace_id, "u", "llm")
+        assert key in repo._bypass_cache
+        conflict = ClientError({"Error": {"Code": "TransactionConflictException"}}, "UpdateItem")
+        with patch.object(repo, "_update_item_retrying_conflict", side_effect=conflict) as writes:
+            result = await repo._speculative_consume_single("u", "llm", {"rpm": 1})
+        assert result.failure_reason is SpeculativeFailureReason.CONTENTION
+        assert writes.await_count == 1  # no enforce-shaped second write
+        assert key in repo._bypass_cache
+
     async def test_a_refund_after_a_refill_to_capacity_trims_itself(self, repo, limiter):
         """Review D6: the bypass refund was a bare `ADD tk`, outside the #721
         self-trimming credit. A refill to capacity landing between the debit

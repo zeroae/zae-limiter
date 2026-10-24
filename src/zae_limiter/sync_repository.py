@@ -3973,6 +3973,7 @@ class SyncRepository:
                 in (
                     SpeculativeFailureReason.BUCKET_MISSING,
                     SpeculativeFailureReason.SCHEDULE_BOUNDARY,
+                    SpeculativeFailureReason.CONTENTION,
                 )
             ):
                 return result
