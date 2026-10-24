@@ -926,13 +926,18 @@ class SyncRateLimiter:
             SyncLease when the speculative write succeeded, or None when the slow
             path is needed (refill would help, bucket missing, or config
             changed). ``shard_id`` is the child shard the slow path must then
-            target: the shard that reported ``BUCKET_MISSING``, or a brand-new
-            shard after wcu-driven doubling; ``shard_count`` is the count
+            target: the shard that reported ``BUCKET_MISSING``, one whose
+            ``vu`` closed its fast path (``SCHEDULE_BOUNDARY``, or a write that
+            failed only on a trimming ``vu = 0``, #741) — the drawn shard or a
+            probed one — or a brand-new shard after wcu-driven doubling;
+            ``shard_count`` is the count
             observed on the failure image (or after the bump), which the slow
             path must use to size and stamp a shard it creates — a failed
             speculative write never updates the entity cache (issue #439).
             The fourth element is the parent shard the slow path should target
-            (:data:`_ParentHint`), or None. All three are meaningless when
+            (:data:`_ParentHint`), or None; see
+            :func:`_slow_path_needs_this_parent_shard` for which parent shards
+            are pinned. All three are meaningless when
             ``lease`` is not None.
 
         ``use_rejection_cache`` is False when the caller passed ``limits=``:
@@ -1187,9 +1192,11 @@ class SyncRateLimiter:
             slow path succeeded, None when the full slow path is needed.
             ``parent_hint`` is the parent shard the slow path must target, with
             the parent it belongs to (:data:`_ParentHint`) — one the
-            speculative write found MISSING, or the brand-new shard a
-            wcu-driven doubling added — and None when the slow path is free to
-            draw its own, which it must be for an exhausted shard (issue #474).
+            speculative write found MISSING, one whose ``vu`` closed its fast
+            path (``SCHEDULE_BOUNDARY``, or a failure only on a trimming
+            ``vu = 0``, #741), or the brand-new shard a wcu-driven doubling
+            added — and None when the slow path is free to draw its own, which
+            it must be for an exhausted shard (issue #474).
 
         Raises:
             RateLimitExceeded: If parent is truly exhausted.
@@ -2683,8 +2690,10 @@ class SyncRateLimiter:
                 image, used to size and stamp a shard created here. None
                 falls back to the entity cache.
             parent_hint: Parent shard the fast path found missing (or a wcu
-                doubling added), with the parent it belongs to, so it is
-                created where the fast path looked rather than re-drawn. Used
+                doubling added), or whose ``vu`` closed its fast path (a
+                closed window, or a trimming ``vu = 0``, #741), with the
+                parent it belongs to, so it is created or re-materialised
+                where the fast path looked rather than re-drawn. Used
                 only when that parent is the one this pass reads from META: a
                 move (ADR-150) makes the fast path's parent a stale guess.
         """
