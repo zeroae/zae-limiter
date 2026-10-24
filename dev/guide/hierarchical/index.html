@@ -4306,6 +4306,9 @@ organisation, or pass <code>None</code> to make it a root entity:</p>
 <li><strong>Other processes learn it from the next call.</strong> A process that still has the old parent
   cached debits it once, sees the new parent on the entity's bucket, refunds the old parent and
   debits the new one in the same call.</li>
+<li><strong>A read of the entity from before the move is caught.</strong> When a call's read of the entity is
+  older than its bucket's stamp, the call reads the entity again, strongly consistent, and
+  debits the new parent.</li>
 <li><strong>A bucket created while the move lands cannot keep the old parent.</strong> Creating a bucket is
   one transaction that also checks the entity's record still names the parent it read; if a
   move landed in between, the acquire re-reads the entity and retries once. This needs

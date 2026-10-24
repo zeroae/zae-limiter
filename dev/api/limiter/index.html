@@ -8189,7 +8189,8 @@ covers every resource: its own <code>adjust()</code>, <code>consume()</code>,
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Amounts to consume by limit name</p>
+                <p>Amounts to consume by limit name, each &gt;= 0 (return
+capacity with <code>lease.release()</code>)</p>
               </div>
             </td>
             <td>
@@ -8350,9 +8351,10 @@ resources — is disabled. Outranks <code>RateLimitExceeded</code>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If no limits configured at any level, or <code>also</code>
-is invalid (a bad or repeated resource name, too many
-resources, or combined with <code>limits</code>)</p>
+                <p>If no limits configured at any level, an amount
+in <code>consume</code> or <code>also</code> is negative, or <code>also</code> is invalid
+(a bad or repeated resource name, too many resources, or
+combined with <code>limits</code>)</p>
               </div>
             </td>
           </tr>
@@ -11686,7 +11688,8 @@ covers every resource: its own <code>adjust()</code>, <code>consume()</code>,
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Amounts to consume by limit name</p>
+                <p>Amounts to consume by limit name, each &gt;= 0 (return
+capacity with <code>lease.release()</code>)</p>
               </div>
             </td>
             <td>
@@ -11847,9 +11850,10 @@ resources — is disabled. Outranks <code>RateLimitExceeded</code>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If no limits configured at any level, or <code>also</code>
-is invalid (a bad or repeated resource name, too many
-resources, or combined with <code>limits</code>)</p>
+                <p>If no limits configured at any level, an amount
+in <code>consume</code> or <code>also</code> is negative, or <code>also</code> is invalid
+(a bad or repeated resource name, too many resources, or
+combined with <code>limits</code>)</p>
               </div>
             </td>
           </tr>
