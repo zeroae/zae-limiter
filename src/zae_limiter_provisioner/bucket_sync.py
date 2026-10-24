@@ -324,9 +324,8 @@ def build_bucket_param_update(
     # fan-out, scheduled or not, forcing exactly one materialising pass that
     # clamps a surplus over a lowered ceiling before the fast path (a pure ADD
     # with no cap maths) can spend it. A manifest apply that shrinks a
-    # capacity has precisely #469's exposure, and `differ.py` re-asserts every
-    # manifest resource on every apply, so the mirror needs this as much as
-    # the async path does. `#vu` is SET, so it must never join `remove_parts`
+    # capacity has precisely #469's exposure, so the mirror needs this as
+    # much as the async path does. `#vu` is SET, so it must never join `remove_parts`
     # (#488).
     set_parts.append("#vu = :vu_zero")
     expr_names["#vu"] = BUCKET_FIELD_VU

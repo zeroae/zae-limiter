@@ -364,6 +364,7 @@ never reconcile.
 - Handles CLI invocations (action + manifest payload) and CloudFormation custom resource events (`Custom::ZaeLimiterLimits`)
 - Tracks managed items in `PK={ns}/SYSTEM#, SK=#PROVISIONER` with `managed_system`, `managed_resources`, `managed_entities` fields
 - Computes diff between manifest and previous state, then applies create/update/delete via PutItem/DeleteItem
+- **An apply costs what changed, not what the manifest declares.** `compute_diff` still lists every declared level (the record holds only *which* levels are managed), so `applier.drop_unchanged` reads each one's live config item first — strongly consistent `GetItem`s on a small thread pool, not `BatchGetItem`, which the provisioner role does not grant (a code-only upgrade must not need a stack update) — and drops any whose stored item is byte-identical to the one it would write. Comparing against the live item, not the last manifest, keeps drift reconciliation: a level edited out of band differs and is rewritten. Every fan-out is then change-only, off each write's `ALL_OLD` image (`ApplyResult.disabled_changed` / `limits_changed` / `cascade_changed`): the disable fan-out only when the level's stored tri-state `disabled` changed, the bucket param sync only when an entity level's stored limits changed. Every level about to change is written into the record's `fanout_pending` (disable / sync) and `cascade_pending` **before** the first config write (`handler._write_pending_ahead`, one `UpdateItem`), and the final record write replaces them with only what failed — so a Lambda killed between the config writes and the fan-outs leaves work the next apply retries, rather than a config that already matches and is never fanned out (#739 review: a disabled entity admitted forever). Above `_MAX_PENDING_AHEAD` (100) levels — a first apply, or `--full` — it records a single `full_pending` flag instead of listing them (the record must stay under DynamoDB's 400 KB item limit), and the next apply runs in full. Every declared level with an explicit `disabled` is **re-asserted** on each apply (`handler._reasserted_disabled`), which keeps repairing a bucket an earlier fan-out's discovery query missed (the ADR-125 race); a resource-level re-assert passes `fanout_resource(skip_matching=True)`, skipping buckets whose GSI2-projected stamp already matches, so it costs the discovery query when nothing was missed. The version gates read the **declared** set, not only the changed one. Numbers compare as numbers (`applier._normalized`: `1000.0` is stored as `1000`). **Residual:** the bucket param sync has the same discovery race and is not re-asserted, so a bucket created mid-sync from stale config keeps its old params until that level changes again; `limits apply --full` (event `full: true`) rewrites and fans out every declared level, as every apply did before. Responses carry an `unchanged` count; `limits plan|apply|diff --quiet` prints only the summary
 - On delete (CFN Delete), uses an empty manifest to remove all managed items
 
 **CloudFormation integration:** The `cfn-template` subcommand generates a CFN template with a `Custom::ZaeLimiterLimits` resource that uses `Fn::ImportValue` to reference the provisioner Lambda ARN from the main stack.
@@ -1857,15 +1858,16 @@ zae-limiter entity disable|enable|clear-disabled ENTITY_ID [--resource R]
 and carried through the CloudFormation `Custom::ZaeLimiterLimits` round trip in both directions
 via a `Disabled` property. The Lambda-side provisioner fan-out (`src/zae_limiter_provisioner/fanout.py`) mirrors
 the async `Repository` fan-out and consults per-entity overrides the same way, so a manifest
-apply that merely re-asserts an unchanged resource-level `disabled` (as every apply does —
-`differ.py` emits a change for every manifest resource regardless of whether anything changed)
-never clobbers a carve-out made out of band directly against the table.
+apply that changes a resource-level `disabled` never clobbers a carve-out made out of band
+directly against the table. An apply that leaves a level's `disabled` unchanged does not fan it
+out at all (`applier.drop_unchanged`, `ApplyResult.disabled_changed`).
 
 **Known limitations:**
 - Disabling is O(buckets for the resource) writes, not O(1).
 - A narrow race exists between the config write and the fan-out query: an in-flight
   `acquire()` can create a bucket the fan-out's GSI query misses. Mitigated by a two-pass
-  discovery pass, not eliminated.
+  discovery pass, not eliminated. Through the provisioner, every declared `disabled` level is
+  re-asserted on each apply, which repairs such a bucket on the next apply.
 
 See [ADR-125](docs/adr/125-resource-disable.md) for the full design and alternatives considered.
 

@@ -1420,3 +1420,114 @@ class TestCfnTemplateFromYamlAnchors:
         premium = props["Entities"]["user-premium"]["Resources"]["gpt-4"]["Limits"]
         assert premium["rpm"]["Capacity"] == 1000
         assert premium["tpm"]["Capacity"] == 10000
+
+
+class TestLimitsQuietAndUnchanged:
+    """`--quiet` prints only the summary; the summary counts unchanged entries."""
+
+    _APPLIED = {
+        "status": "applied",
+        "changes": [
+            {"action": "create", "level": "entity", "target": "user-new/gpt-4"},
+            {"action": "update", "level": "resource", "target": "gpt-4"},
+        ],
+        "created": 1,
+        "updated": 1,
+        "deleted": 0,
+        "unchanged": 1177,
+        "errors": [],
+    }
+
+    def _run(self, command, response, *flags):
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+            with patch("zae_limiter.limits_cli._invoke_provisioner", return_value=response):
+                return CliRunner().invoke(
+                    cli, ["limits", command, "--name", "test-app", "-f", f.name, *flags]
+                )
+
+    def test_apply_lists_each_change_and_the_unchanged_count(self):
+        result = self._run("apply", self._APPLIED)
+        assert result.exit_code == 0
+        assert "+ create entity: user-new/gpt-4" in result.output
+        assert "~ update resource: gpt-4" in result.output
+        assert "Applied: 1 created, 1 updated, 0 deleted (1177 unchanged)." in result.output
+
+    @pytest.mark.parametrize("flag", ["--quiet", "-q"])
+    def test_apply_quiet_prints_only_the_summary(self, flag):
+        result = self._run("apply", self._APPLIED, flag)
+        assert result.exit_code == 0
+        assert result.output == "Applied: 1 created, 1 updated, 0 deleted (1177 unchanged).\n"
+
+    def test_apply_quiet_still_reports_errors(self):
+        response = {**self._APPLIED, "errors": ["disable fan-out resource gpt-4: boom"]}
+        result = self._run("apply", response, "-q")
+        assert result.exit_code == 1
+        assert "user-new/gpt-4" not in result.output
+        assert "disable fan-out resource gpt-4: boom" in result.output
+
+    def test_apply_with_no_changes_still_reports_a_failed_retry(self):
+        """A retried fan-out can fail on an apply that changes nothing."""
+        response = {"status": "applied", "changes": [], "errors": ["bucket param sync: boom"]}
+        result = self._run("apply", response)
+        assert result.exit_code == 1
+        assert "up-to-date" in result.output
+        assert "bucket param sync: boom" in result.output
+
+    def test_plan_quiet_prints_only_the_summary(self):
+        response = {**self._APPLIED, "status": "planned"}
+        result = self._run("plan", response, "--quiet")
+        assert result.exit_code == 0
+        assert result.output == "Plan: 2 change(s) (1177 unchanged)\n"
+
+    def test_diff_quiet_prints_only_the_summary(self):
+        response = {**self._APPLIED, "status": "planned"}
+        result = self._run("diff", response, "-q")
+        assert result.exit_code == 0
+        assert result.output == "Drift detected: 2 difference(s) (1177 unchanged)\n"
+
+    def test_a_response_without_an_unchanged_count_prints_no_suffix(self):
+        """A provisioner predating the count still renders cleanly."""
+        response = {k: v for k, v in self._APPLIED.items() if k != "unchanged"}
+        result = self._run("apply", response, "-q")
+        assert result.output == "Applied: 1 created, 1 updated, 0 deleted.\n"
+
+
+class TestLimitsApplyFull:
+    """`--full` asks the provisioner to fan out every declared entry."""
+
+    def _invoke(self, *flags):
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+            with patch(
+                "zae_limiter.limits_cli._invoke_provisioner",
+                return_value={"status": "applied", "changes": []},
+            ) as invoke:
+                result = CliRunner().invoke(
+                    cli, ["limits", "apply", "--name", "test-app", "-f", f.name, *flags]
+                )
+        assert result.exit_code == 0
+        return invoke
+
+    def test_full_is_forwarded(self):
+        assert self._invoke("--full").call_args.kwargs["full"] is True
+
+    def test_change_only_by_default(self):
+        assert self._invoke().call_args.kwargs["full"] is False
+
+    @pytest.mark.parametrize("full", [True, False])
+    def test_full_reaches_the_payload_only_when_set(self, full):
+        from zae_limiter.limits_cli import _invoke_provisioner
+
+        with (
+            patch("asyncio.run", return_value="test-ns-id"),
+            patch("zae_limiter.limits_cli.boto3.client") as client,
+        ):
+            client.return_value.invoke.return_value = {
+                "Payload": io.BytesIO(json.dumps({"status": "applied"}).encode())
+            }
+            _invoke_provisioner("test-app", "us-east-1", None, "apply", {}, full=full)
+        payload = json.loads(client.return_value.invoke.call_args.kwargs["Payload"])
+        assert ("full" in payload) is full
