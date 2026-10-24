@@ -175,19 +175,53 @@ def _failed_only_on_its_stamp(result: "SpeculativeResult", consume: dict[str, in
     which the repository classifies as exhausted so a rejection stays one
     write. The bucket needs a slow pass on **this** shard to clear the stamp;
     another shard cannot do it.
+
+    A declared limit's balance is judged exactly as the repository's failure
+    classification judges it (:meth:`BucketState.fast_path_short`): a soft
+    limit or a bypassed bucket is admitted on its stamp, so a soft limit in
+    debt cannot have failed the write (#741 review).
     """
     if not result.old_buckets:
         return False
     for bucket in result.old_buckets:
-        needed = (
-            1000
-            if bucket.limit_name == WCU_LIMIT_NAME
-            else consume.get(bucket.limit_name, 0) * 1000
-        )
-        if bucket.tokens_milli < needed:
+        if bucket.limit_name == WCU_LIMIT_NAME:
+            if bucket.tokens_milli < 1000:
+                return False
+        elif bucket.fast_path_short(consume.get(bucket.limit_name, 0)):
             return False
     names = {b.limit_name for b in result.old_buckets}
     return all(name in names for name in consume)
+
+
+def _slow_path_needs_this_parent_shard(
+    parent_result: "SpeculativeResult", consume: dict[str, int]
+) -> bool:
+    """Whether the slow path must use the parent shard the fast path wrote to.
+
+    A shard the fast path found **missing** is created where it looked
+    (issue #474). A shard whose ``vu`` closed its fast path — a closed window
+    (``SCHEDULE_BOUNDARY``) or a trimming ``vu = 0`` read as exhausted — is
+    re-materialised there (#741): the stamp is per shard (#680's credit clamp,
+    a session-window fan-out), and only a slow pass on that shard clears it.
+    For a cron boundary every shard crossed at once, so pinning the drawn
+    shard, itself a uniform draw, costs nothing either.
+
+    An **exhausted** shard is never pinned: every shard holds its own share
+    and ADR-134 re-picks on every call, so a re-draw can admit where the drawn
+    shard could not — and pinning a wcu-exhausted one would send the slow
+    path's writes straight back onto the hot partition.
+    """
+    reason = parent_result.failure_reason
+    if reason in (
+        SpeculativeFailureReason.BUCKET_MISSING,
+        SpeculativeFailureReason.SCHEDULE_BOUNDARY,
+    ):
+        return True
+    return (
+        parent_result.shard_count > 1
+        and reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
+        and _failed_only_on_its_stamp(parent_result, consume)
+    )
 
 
 def _reader_window_end(limit: Limit, bucket: BucketState) -> int | None:
@@ -892,13 +926,18 @@ class SyncRateLimiter:
             SyncLease when the speculative write succeeded, or None when the slow
             path is needed (refill would help, bucket missing, or config
             changed). ``shard_id`` is the child shard the slow path must then
-            target: the shard that reported ``BUCKET_MISSING``, or a brand-new
-            shard after wcu-driven doubling; ``shard_count`` is the count
+            target: the shard that reported ``BUCKET_MISSING``, one whose
+            ``vu`` closed its fast path (``SCHEDULE_BOUNDARY``, or a write that
+            failed only on a trimming ``vu = 0``, #741) — the drawn shard or a
+            probed one — or a brand-new shard after wcu-driven doubling;
+            ``shard_count`` is the count
             observed on the failure image (or after the bump), which the slow
             path must use to size and stamp a shard it creates — a failed
             speculative write never updates the entity cache (issue #439).
             The fourth element is the parent shard the slow path should target
-            (:data:`_ParentHint`), or None. All three are meaningless when
+            (:data:`_ParentHint`), or None; see
+            :func:`_slow_path_needs_this_parent_shard` for which parent shards
+            are pinned. All three are meaningless when
             ``lease`` is not None.
 
         ``use_rejection_cache`` is False when the caller passed ``limits=``:
@@ -946,7 +985,7 @@ class SyncRateLimiter:
                 (written_parent, result.parent_result.shard_id)
                 if result.parent_result is not None
                 and written_parent is not None
-                and (result.parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING)
+                and _slow_path_needs_this_parent_shard(result.parent_result, consume)
                 else None
             )
             if result.parent_result is not None and result.parent_result.success:
@@ -1153,9 +1192,11 @@ class SyncRateLimiter:
             slow path succeeded, None when the full slow path is needed.
             ``parent_hint`` is the parent shard the slow path must target, with
             the parent it belongs to (:data:`_ParentHint`) — one the
-            speculative write found MISSING, or the brand-new shard a
-            wcu-driven doubling added — and None when the slow path is free to
-            draw its own, which it must be for an exhausted shard (issue #474).
+            speculative write found MISSING, one whose ``vu`` closed its fast
+            path (``SCHEDULE_BOUNDARY``, or a failure only on a trimming
+            ``vu = 0``, #741), or the brand-new shard a wcu-driven doubling
+            added — and None when the slow path is free to draw its own, which
+            it must be for an exhausted shard (issue #474).
 
         Raises:
             RateLimitExceeded: If parent is truly exhausted.
@@ -1168,7 +1209,7 @@ class SyncRateLimiter:
         parent_shard_count = parent_result.shard_count
         parent_hint: _ParentHint | None = (
             (parent_id, parent_shard)
-            if parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+            if _slow_path_needs_this_parent_shard(parent_result, consume)
             else None
         )
         if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
@@ -1576,8 +1617,9 @@ class SyncRateLimiter:
             ``(lease, slow_path_shard)``. ``lease`` is set if a retry on
             another shard succeeded. Otherwise ``slow_path_shard`` is the
             first shard a retry found the fast path cannot settle — one that
-            does not exist yet (``BUCKET_MISSING``, issue #439) or one whose
-            schedule window has closed (``SCHEDULE_BOUNDARY``, #222 §2.1) —
+            does not exist yet (``BUCKET_MISSING``, issue #439), one whose
+            schedule window has closed (``SCHEDULE_BOUNDARY``, #222 §2.1), or
+            one that would have fit but for a trimming ``vu = 0`` (#741) —
             so the slow path creates or re-materialises it there instead of
             fast-rejecting on the drained shard that sent us here. Probing
             stops at the first such shard. None if every retried shard was
@@ -1612,6 +1654,12 @@ class SyncRateLimiter:
                 SpeculativeFailureReason.BUCKET_MISSING,
                 SpeculativeFailureReason.SCHEDULE_BOUNDARY,
                 SpeculativeFailureReason.CONTENTION,
+            ):
+                slow_path_shard = new_shard
+                break
+            if (
+                retry.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
+                and _failed_only_on_its_stamp(retry, consume)
             ):
                 slow_path_shard = new_shard
                 break
@@ -2741,8 +2789,10 @@ class SyncRateLimiter:
                 image, used to size and stamp a shard created here. None
                 falls back to the entity cache.
             parent_hint: Parent shard the fast path found missing (or a wcu
-                doubling added), with the parent it belongs to, so it is
-                created where the fast path looked rather than re-drawn. Used
+                doubling added), or whose ``vu`` closed its fast path (a
+                closed window, or a trimming ``vu = 0``, #741), with the
+                parent it belongs to, so it is created or re-materialised
+                where the fast path looked rather than re-drawn. Used
                 only when that parent is the one this pass reads from META: a
                 move (ADR-150) makes the fast path's parent a stale guess.
         """

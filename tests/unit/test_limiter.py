@@ -10263,6 +10263,259 @@ class TestFanOutVuSelfClears:
         assert (await self._raw(repo, "vu-shards", shard=1))[BUCKET_FIELD_VU]["N"] == "0"
 
 
+class TestAStampedShardIsTrimmedWhereItIs:
+    """A `vu = 0` on one shard of a sharded bucket is cleared on that shard (#741).
+
+    The #680 clamp re-issues an above-ceiling credit with `vu = 0` on the one
+    shard it landed on, and a session-window fan-out stamps siblings one by
+    one: the stamp is per shard. Only a slow pass on that shard clamps it and
+    clears `vu`. When the fast path draws the stamped shard, the slow pass it
+    leads to must run there, or the stamp stays and every later draw of that
+    shard fails its write first (1 WCU and a round trip each time).
+    """
+
+    NOW = int(datetime(2026, 9, 15, 10, 5, tzinfo=UTC).timestamp() * 1000)
+    RPM = Limit.per_minute("rpm", 100)  # 50 per shard at shard_count = 2
+    # Active only in the first minute of a year: far from NOW, but it makes the
+    # item scheduled, so a `vu = 0` on it reads as a closed window
+    # (SCHEDULE_BOUNDARY), not as a trim (`rejection_cache.vu_only_trims`).
+    SCHEDULED = Limit.per_minute("rpm", 100).with_schedule(
+        (ScheduleEntry(cron="0 0 1 1 *", scale=0.5),)
+    )
+    CEILING_MILLI = 50_000
+
+    @staticmethod
+    async def _raw(repo, entity_id, shard):
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response.get("Item")
+
+    @staticmethod
+    def _tk(item) -> int:
+        return int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"])
+
+    @staticmethod
+    async def _set_tk(repo, entity_id, shard, tk_milli, *, stamp, limit_name="rpm"):
+        """Set shard ``shard``'s balance of a limit; with ``stamp``, also `vu = 0`.
+
+        With ``stamp`` this is what the #680 clamp leaves: a balance above the
+        shard's ceiling and the `vu = 0` its trimmed credit writes beside it.
+        """
+        client = await repo._get_client()
+        names = {"#tk": bucket_attr(limit_name, BUCKET_FIELD_TK)}
+        values = {":tk": {"N": str(tk_milli)}}
+        expression = "SET #tk = :tk"
+        if stamp:
+            names["#vu"] = BUCKET_FIELD_VU
+            values[":zero"] = {"N": "0"}
+            expression += ", #vu = :zero"
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression=expression,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+
+    async def _two_shards(self, limiter, entity_id, limit=None, *, also=(), **create):
+        """`entity_id` with both of its two shards created, at a frozen clock.
+
+        ``also`` adds limits beside rpm; each acquire consumes 1 of every one.
+        """
+        repo = limiter._repository
+        repo._now_ms = lambda: self.NOW
+        await repo.create_entity(entity_id, **create)
+        limits = [limit or self.RPM, *also]
+        await repo.set_limits(entity_id, limits, resource="gpt-4")
+        consume = {each.name: 1 for each in limits}
+        async with limiter.acquire(entity_id, "gpt-4", consume=consume):
+            pass
+        await repo.bump_shard_count(entity_id, "gpt-4", 1)
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire(entity_id, "gpt-4", consume=consume):
+                pass
+        assert await self._raw(repo, entity_id, 1) is not None
+
+    async def test_a_released_credit_is_trimmed_on_the_shard_it_landed_on(self, limiter):
+        """Non-cascade: the draw that hits the stamped shard runs the slow pass there."""
+        repo = limiter._repository
+        await self._two_shards(limiter, "solo")
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire("solo", "gpt-4", consume={"rpm": 1}) as lease:
+                await lease.release(rpm=50)  # more than consumed: lands above 50
+        stamped = await self._raw(repo, "solo", 1)
+        assert stamped[BUCKET_FIELD_VU]["N"] == "0"
+        assert self._tk(stamped) > self.CEILING_MILLI
+
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire("solo", "gpt-4", consume={"rpm": 1}):
+                pass
+
+        shard1 = await self._raw(repo, "solo", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) <= self.CEILING_MILLI
+
+    async def test_a_soft_limit_in_debt_does_not_hide_the_stamp(self, limiter):
+        """A soft limit in debt beside the stamped hard one is still a stamp failure.
+
+        A live soft stamp admits the soft limit whatever its balance, so the
+        write failed only on `vu`. Judging the soft limit's debt as a short
+        balance (#741 review) sent the slow pass elsewhere and kept the stamp.
+        """
+        repo = limiter._repository
+        soft_tpm = Limit.per_minute("tpm", 1000, soft=True)
+        await self._two_shards(limiter, "metered", also=(soft_tpm,))
+        await self._set_tk(repo, "metered", 1, 98_000, stamp=True)
+        await self._set_tk(repo, "metered", 1, -5_000, stamp=False, limit_name="tpm")
+        # The fast path draws shard 1; any re-draw after it gets 0.
+        draws = iter([1, 0, 0, 0])
+        with patch("zae_limiter.repository.random.randrange", lambda n: next(draws)):
+            async with limiter.acquire("metered", "gpt-4", consume={"rpm": 1, "tpm": 1}):
+                pass
+
+        shard1 = await self._raw(repo, "metered", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) <= self.CEILING_MILLI
+
+    async def test_a_probe_that_hits_the_stamped_shard_runs_the_slow_pass_there(self, limiter):
+        """Non-cascade: shard 0 is drained, so the shard retry probes the stamped shard.
+
+        Before #741 the probe's stamp failure read as exhausted: with two
+        shards nothing was left to probe, so the acquire was rejected on shard
+        0's balance while shard 1 held room, and the stamp stayed.
+        """
+        repo = limiter._repository
+        await self._two_shards(limiter, "probe")
+        await self._set_tk(repo, "probe", 1, 98_000, stamp=True)
+        await self._set_tk(repo, "probe", 0, 0, stamp=False)
+
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            async with limiter.acquire("probe", "gpt-4", consume={"rpm": 1}):
+                pass
+
+        shard1 = await self._raw(repo, "probe", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) == self.CEILING_MILLI - 1000
+        assert self._tk(await self._raw(repo, "probe", 0)) == 0
+
+    async def test_a_cascading_child_is_trimmed_on_its_stamped_shard(self, limiter):
+        repo = limiter._repository
+        repo._now_ms = lambda: self.NOW
+        await repo.create_entity("org")
+        await repo.set_limits("org", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        await self._two_shards(limiter, "child", parent_id="org", cascade=True)
+        await self._set_tk(repo, "child", 1, 98_000, stamp=True)
+        # The fast path draws child shard 1; any re-draw after it gets 0.
+        draws = iter([1, 0, 0, 0])
+        with patch("zae_limiter.repository.random.randrange", lambda n: next(draws)):
+            async with limiter.acquire("child", "gpt-4", consume={"rpm": 1}):
+                pass
+
+        shard1 = await self._raw(repo, "child", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) <= self.CEILING_MILLI
+
+    async def _sharded_parent(self, limiter, limit):
+        """`kid` (one shard, cascading) under `boss` (two shards, 1 stamped)."""
+        repo = limiter._repository
+        await self._two_shards(limiter, "boss", limit=limit)
+        await repo.create_entity("kid", parent_id="boss", cascade=True)
+        await repo.set_limits("kid", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            async with limiter.acquire("kid", "gpt-4", consume={"rpm": 1}):
+                pass
+        await self._set_tk(repo, "boss", 1, 98_000, stamp=True)
+
+    async def _acquire_drawing_parent_shard_1_first(self, limiter):
+        # Every fast-path draw of the parent is shard 1; once the slow path
+        # starts, every draw is 0, so only a pinned shard lands on 1.
+        slow = []
+        real_slow_acquire = limiter._slow_acquire
+
+        async def slow_acquire(*args, **kwargs):
+            slow.append(True)
+            return await real_slow_acquire(*args, **kwargs)
+
+        with (
+            patch("zae_limiter.repository.random.randrange", lambda n: 0 if slow else 1),
+            patch.object(limiter, "_slow_acquire", slow_acquire),
+        ):
+            async with limiter.acquire("kid", "gpt-4", consume={"rpm": 1}):
+                pass
+
+    async def test_a_cascade_parent_is_trimmed_on_its_stamped_shard(self, limiter):
+        """A trim-only `vu = 0` on the parent's drawn shard."""
+        repo = limiter._repository
+        await self._sharded_parent(limiter, self.RPM)
+        await self._acquire_drawing_parent_shard_1_first(limiter)
+
+        shard1 = await self._raw(repo, "boss", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) <= self.CEILING_MILLI
+
+    async def test_a_stamped_parent_shard_is_pinned_when_the_child_goes_slow(self, limiter):
+        """The warm parallel path: the child must take the slow path as well.
+
+        Child and parent are written at once; the child's write fails on a
+        drained balance a refill will restore, and the parent's on its stamp
+        only. No parent-only attempt runs, so the full slow path must be
+        pinned to the stamped parent shard, not re-draw it.
+        """
+        repo = limiter._repository
+        await self._sharded_parent(limiter, self.RPM)
+        # Warm the child's cache so the next acquire takes the parallel path.
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            async with limiter.acquire("kid", "gpt-4", consume={"rpm": 1}):
+                pass
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "kid", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #tk = :zero, #rf = :rf",
+            ExpressionAttributeNames={
+                "#tk": bucket_attr("rpm", BUCKET_FIELD_TK),
+                "#rf": BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={
+                ":zero": {"N": "0"},
+                ":rf": {"N": str(self.NOW - 60_000)},  # a full minute of refill due
+            },
+        )
+        await self._acquire_drawing_parent_shard_1_first(limiter)
+
+        shard1 = await self._raw(repo, "boss", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) == self.CEILING_MILLI - 1000
+
+    async def test_a_scheduled_cascade_parent_is_materialised_on_its_stamped_shard(self, limiter):
+        """A `vu = 0` on a scheduled parent shard reads as a closed window.
+
+        Before #741 the parent's SCHEDULE_BOUNDARY left its shard unpinned
+        ("every shard crosses the boundary at once"): true for a cron boundary,
+        not for a per-shard stamp. The slow path re-drew shard 0, and shard 1
+        kept `vu = 0` and its balance above the ceiling.
+        """
+        repo = limiter._repository
+        await self._sharded_parent(limiter, self.SCHEDULED)
+        await self._acquire_drawing_parent_shard_1_first(limiter)
+
+        shard1 = await self._raw(repo, "boss", 1)
+        assert int(shard1[BUCKET_FIELD_VU]["N"]) > self.NOW
+        assert self._tk(shard1) <= self.CEILING_MILLI
+
+
 # ---------------------------------------------------------------------------
 # Calendar resets (#222 §3.6) — a crossed reset edge sets the balance back to
 # the effective capacity, before admission, without ever touching `tc`.
