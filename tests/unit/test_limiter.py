@@ -11599,6 +11599,33 @@ class TestOverrideMaterialisesItemLimits:
                 pass
             assert await _stored_ws(repo, "o", "r", "session", shard=1) == now
 
+    async def test_an_override_pass_keeps_vu_for_a_limit_waiting_to_be_seeded(self, limiter):
+        """A limit configured after the item existed is seeded by the next pass
+        without the override (#633); the param sync's `vu = 0` routes the fast
+        path there. Clearing it let a soft quota's stamp admit fast-path debits
+        onto a balance that was never granted (no `tk`, no `gc`)."""
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        soft_daily = Limit.quota("q", 10, cron="0 0 * * *", soft=True)
+        await repo.set_limits("o", [_RPM_1000], resource="r")
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("o", "r", consume={"rpm": 1}):
+            pass
+        await repo.set_limits("o", [_RPM_1000, soft_daily], resource="r")
+
+        repo._now_ms = lambda: T0 + 1_000
+        async with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+            pass
+        item = await _raw_bucket(repo, "o", "r")
+        assert int(item[BUCKET_FIELD_VU]["N"]) <= T0 + 1_000
+
+        repo._now_ms = lambda: T0 + 2_000
+        async with limiter.acquire("o", "r", consume={"q": 3}):
+            pass
+        assert await _stored_tk(repo, "o", "r", "q") == 7_000
+        item = await _raw_bucket(repo, "o", "r")
+        assert int(item[bucket_attr("q", BUCKET_FIELD_GC)]["N"]) == 1
+
     async def test_the_carried_reset_is_pinned_on_the_shard_count(self, limiter):
         """ADR-145 I4: the grant the carrier stamps rides the `shard_count` pin."""
         repo = limiter._repository
