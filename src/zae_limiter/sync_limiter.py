@@ -535,7 +535,8 @@ class SyncRateLimiter:
 
         Raises:
             RateLimiterUnavailable: DynamoDB kept some deletes unprocessed
-                after the retries; re-run the same call to finish.
+                after the retries. What was deleted is audited, and calling
+                ``delete_entity`` again finishes the rest.
         """
         self._ensure_initialized()
         self._repository.delete_entity(entity_id, principal=principal)

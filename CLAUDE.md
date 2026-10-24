@@ -2108,7 +2108,16 @@ shard. Both return `BucketOperationResult(entity_id, resource, shards, amounts)`
   recreated *during* one call can see a key retry applied once more (closing it needs a META
   `ConditionCheck` in every reset and top-up, +2 WCU a call; the permission ships in v0.17.0,
   but ADR-150's check also pins `pgen`, so it is left open). `delete_entity` deletes the entity's
-  records too (one Query per shard-0 partition, all issued at once), best effort only. The principal and key are validated before any I/O.
+  records too (one Query per shard-0 partition, all issued at once), best effort only. It
+  deletes them **before** any bucket (#742): a record is found only through its shard-0
+  bucket, so a delete that stops part-way must leave the bucket for the next call to find. The principal and key are validated before any I/O.
+- **`delete_entity` completes or raises (#742):** every query page is read; deletes go out in
+  the order operation records → buckets → entity-PK items with `#META` last, each phase only
+  after the previous one fully landed, so what a stopped delete leaves is still found by the
+  next call. Unprocessed deletes are resent with full jitter (`_BATCH_WRITE_MAX_RETRIES = 5`);
+  past that it raises `RateLimiterUnavailable`. Every call that deleted anything audits
+  `entity_deleted` with `records_deleted` (this call's count) and `complete`, so the events of
+  a stopped delete and the call that finishes it sum to the whole.
 - **Top-up:** a quota gains exactly N, split by coverage `S // gc` (`split_weighted`, remainder
   to the lowest shard, D1), and **`tu += portion`** — the whole portion, not only what lands
   above the ceiling, or a refund of spent room is clamped away (design-validator). A dripping

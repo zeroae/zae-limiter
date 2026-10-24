@@ -387,6 +387,11 @@ class SyncRepositoryProtocol(Protocol):
         Args:
             entity_id: Entity to delete
             principal: Caller identity for audit logging
+
+        Raises:
+            RateLimiterUnavailable: The backend could not delete every record.
+                What was deleted is audited, and calling ``delete_entity``
+                again finishes the rest.
         """
         ...
 

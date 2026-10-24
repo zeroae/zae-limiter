@@ -1382,10 +1382,14 @@ class SyncRepository:
             response = client.query(**query_params)
             items = response.get("Items", [])
             if items:
-                self._batch_delete_all(
-                    [{"PK": i["PK"], "SK": i["SK"]} for i in items],
-                    context=f"namespace '{namespace_id}'",
+                deleted, left = self._batch_delete_all(
+                    [{"PK": i["PK"], "SK": i["SK"]} for i in items]
                 )
+                if left:
+                    raise RateLimiterUnavailable(
+                        f"Could not purge namespace '{namespace_id}': DynamoDB left {left} delete(s) unprocessed after {_BATCH_WRITE_MAX_RETRIES} retries ({deleted} of {len(items)} on this page deleted); run the purge again to finish",
+                        stack_name=self.stack_name,
+                    )
             if "LastEvaluatedKey" not in response:
                 break
             exclusive_start_key = response["LastEvaluatedKey"]
@@ -1902,9 +1906,11 @@ class SyncRepository:
         """
         Delete an entity and all its related records.
 
-        Deletes every item under the entity's PK (metadata, configs, usage
-        snapshots), every bucket item GSI3 indexes under it, and its reset and
-        top-up operation records, then audits how many were deleted.
+        Deletes the entity's reset and top-up operation records, then every
+        bucket item GSI3 indexes under it, then every item under the entity's
+        PK (configs, usage snapshots, and ``#META`` last). The audit event
+        records how many items this call deleted (``records_deleted``) and
+        whether the entity is now gone (``complete``).
 
         Args:
             entity_id: ID of the entity to delete
@@ -1912,8 +1918,10 @@ class SyncRepository:
 
         Raises:
             RateLimiterUnavailable: DynamoDB kept some deletes unprocessed
-                after the retries (#742). Part of the entity may be gone and
-                no deletion is audited; re-run the same call to finish.
+                after the retries (#742). What this call deleted is audited
+                with ``complete: False``, and what is left can still be found,
+                so calling ``delete_entity`` again finishes it and audits the
+                rest.
         """
         items = self._query_all(
             {
@@ -1953,21 +1961,49 @@ class SyncRepository:
             ]
         )
         record_items = [record for page in pages for record in page]
-        keys = list(
-            {
-                (item["PK"]["S"], item["SK"]["S"]): {"PK": item["PK"], "SK": item["SK"]}
-                for item in items + bucket_items + record_items
-            }.values()
-        )
-        if not keys:
+        meta_sk = schema.sk_meta()
+        phases = [
+            record_items,
+            bucket_items,
+            sorted(items, key=lambda item: item["SK"]["S"] == meta_sk),
+        ]
+        seen: set[tuple[str, str]] = set()
+        phase_keys: list[list[dict[str, Any]]] = []
+        for phase in phases:
+            keys: list[dict[str, Any]] = []
+            for item in phase:
+                key_id = (item["PK"]["S"], item["SK"]["S"])
+                if key_id not in seen:
+                    seen.add(key_id)
+                    keys.append({"PK": item["PK"], "SK": item["SK"]})
+            phase_keys.append(keys)
+        if not seen:
             return
-        deleted = self._batch_delete_all(keys, context=f"entity '{entity_id}'", entity_id=entity_id)
-        self._log_audit_event(
-            action=AuditAction.ENTITY_DELETED,
-            entity_id=entity_id,
-            principal=principal,
-            details={"records_deleted": deleted},
-        )
+        deleted = 0
+        left = 0
+        for keys in phase_keys:
+            landed, left = self._batch_delete_all(keys)
+            deleted += landed
+            if left:
+                break
+        if deleted:
+            try:
+                self._log_audit_event(
+                    action=AuditAction.ENTITY_DELETED,
+                    entity_id=entity_id,
+                    principal=principal,
+                    details={"records_deleted": deleted, "complete": not left},
+                )
+            except Exception:
+                if not left:
+                    raise
+                logger.warning("Could not audit an incomplete entity delete", exc_info=True)
+        if left:
+            raise RateLimiterUnavailable(
+                f"Could not delete the entity: DynamoDB left {left} delete(s) unprocessed after {_BATCH_WRITE_MAX_RETRIES} retries ({deleted} of {len(seen)} item(s) deleted); call delete_entity again to finish",
+                stack_name=self.stack_name,
+                entity_id=entity_id,
+            )
 
     def _query_all(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         """Every item a Query matches, following ``LastEvaluatedKey`` (#742)."""
@@ -1984,31 +2020,25 @@ class SyncRepository:
             if not start_key:
                 return found
 
-    def _batch_delete_all(
-        self, keys: list[dict[str, Any]], *, context: str, entity_id: str | None = None
-    ) -> int:
+    def _batch_delete_all(self, keys: list[dict[str, Any]]) -> tuple[int, int]:
         """Delete every key with BatchWriteItem, resending ``UnprocessedItems``.
 
         DynamoDB may apply part of a BatchWriteItem and return the rest in
         ``UnprocessedItems`` -- documented behaviour under throttling, not an
         error, and boto3 does not resend it (#742). Sends ``keys`` in requests
-        of 25, resends each request's remainder with full-jitter backoff, and
-        raises rather than return once a remainder outlasts
-        ``_BATCH_WRITE_MAX_RETRIES`` retries. Deletes are idempotent, so the
-        caller can re-run the whole operation to finish it.
+        of 25, in order, and resends each request's remainder with full-jitter
+        backoff. A remainder that outlasts ``_BATCH_WRITE_MAX_RETRIES``
+        retries stops it: no later request is sent, so every key after it is
+        untouched. Deletes are idempotent, so the caller can run the whole
+        operation again to finish it.
 
         Args:
             keys: DynamoDB key dicts, each naming a distinct item.
-            context: What is being deleted, used in the error message.
-            entity_id: Attached to the raised exception when applicable.
 
         Returns:
-            How many keys were deleted: ``len(keys)``, since it returns only
-            when none is left.
-
-        Raises:
-            RateLimiterUnavailable: Deletes remained unprocessed after the
-                retries; the message says how many landed before that.
+            ``(deleted, left)``: how many deletes DynamoDB processed, and how
+            many it still held unprocessed when the retries ran out (0 when
+            every key was deleted). The caller raises on ``left``.
         """
         client = self._get_client()
         deleted = 0
@@ -2027,13 +2057,9 @@ class SyncRepository:
                     break
                 attempts += 1
                 if attempts > _BATCH_WRITE_MAX_RETRIES:
-                    raise RateLimiterUnavailable(
-                        f"Could not delete {context}: DynamoDB left {len(pending)} delete(s) unprocessed after {_BATCH_WRITE_MAX_RETRIES} retries ({deleted} of {len(keys)} deleted); re-run to finish",
-                        stack_name=self.stack_name,
-                        entity_id=entity_id,
-                    )
+                    return (deleted, len(pending))
                 time.sleep(random.uniform(0, _BATCH_WRITE_RETRY_BASE_DELAY * 2 ** (attempts - 1)))
-        return deleted
+        return (deleted, 0)
 
     def get_children(self, parent_id: str) -> list[Entity]:
         """Get all children of a parent entity."""
