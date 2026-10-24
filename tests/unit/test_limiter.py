@@ -22,13 +22,15 @@ from zae_limiter import (
 )
 from zae_limiter.bucket import calculate_available
 from zae_limiter.exceptions import (
+    IAM_DOCS_URL,
     InvalidIdentifierError,
     InvalidNameError,
     LeaseExpiredError,
+    PermissionDenied,
     VersionMismatchError,
 )
 from zae_limiter.infra.discovery import InfrastructureDiscovery
-from zae_limiter.models import BucketState
+from zae_limiter.models import BucketState, CreditCeiling
 from zae_limiter.repository_protocol import SpeculativeResult
 from zae_limiter.schedule import ScheduleEntry, retry_after_with_schedule
 from zae_limiter.schema import (
@@ -815,6 +817,7 @@ class TestLeaseRetryPath:
         state.reset_sched = ()
         state.shard_count = 1
         state.report_shard_count = 1
+        state.report_top_up_milli = 0
         # No duration window (ADR-139): the wait is the schedule walk's, not
         # the time to a window's end.
         state.window_end_ms = None
@@ -830,6 +833,7 @@ class TestLeaseRetryPath:
         undeclared_state.tokens_milli = 0
         undeclared_state.shard_count = 1
         undeclared_state.report_shard_count = 1
+        undeclared_state.report_top_up_milli = 0
         undeclared = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -864,6 +868,7 @@ class TestLeaseRetryPath:
         state.refill_period_ms = 60_000
         state.shard_count = 1
         state.report_shard_count = 1
+        state.report_top_up_milli = 0
         entry = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -902,6 +907,7 @@ class TestLeaseRetryPath:
         state.refill_period_ms = 60_000
         state.shard_count = 1
         state.report_shard_count = 1
+        state.report_top_up_milli = 0
 
         entry = LeaseEntry(
             entity_id="e1",
@@ -955,6 +961,14 @@ class TestWriteOnEnter:
         state.refill_period_ms = 60_000
         state.shard_count = 1
         state.report_shard_count = 1
+        state.report_top_up_milli = 0
+        state.capacity_milli = 100_000
+        state.grant_count = None
+        state.stored_vu_read = True
+        state.stored_vu_ms = None
+        state.stored_item_sched_raw = (None, None, None)
+        state.stored_sched_raw = (None, None)
+        state.limit_name = "rpm"
         return LeaseEntry(
             entity_id=entity_id,
             resource="gpt-4",
@@ -1354,38 +1368,204 @@ class TestWriteOnEnter:
         assert lease._rolled_back is False
         mock_repo.write_each.assert_not_called()
 
-    OVER = [{bucket_attr("rpm", "tk"): {"N": "999999"}}]  # above any ceiling below
+    @staticmethod
+    def _condition_failed():
+        return ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "over"}},
+            "UpdateItem",
+        )
 
-    @pytest.mark.parametrize(
-        ("returns", "clamps"),
-        [
-            ([OVER, OVER], 2),  # control: per-item results reach the ceiling check
-            ([None, None], 0),
-            ([OVER, None], 0),
-            ([None, OVER], 0),
-        ],
-    )
-    async def test_commit_adjustments_without_per_item_results_skips_the_ceiling(
-        self, returns, clamps
-    ):
-        """A backend whose write_each reports nothing skips the #679 ceiling check."""
+    async def test_a_credit_within_the_ceiling_is_one_conditional_write(self):
+        """#721: the usual credit lands in one write, conditioned on its ceiling."""
         from zae_limiter.lease import Lease
 
-        entries = [
-            self._make_entry(consumed=5, initial_consumed=10, entity_id="e1"),  # a credit
-            self._make_entry(consumed=5, initial_consumed=10, entity_id="e2"),
-        ]
-        for entry in entries:
-            entry.state.ceiling_milli.return_value = 100_000
+        entry = self._make_entry(consumed=5, initial_consumed=10)  # a credit of 5
+        entry.state.ceiling_milli.return_value = 100_000
         mock_repo = self._make_mock_repo()
-        mock_repo.write_each.side_effect = [*returns, None, None]
-        mock_repo.build_vu_reset = MagicMock(return_value={"Update": {}})
 
-        lease = Lease(repository=mock_repo, entries=entries)
+        lease = Lease(repository=mock_repo, entries=[entry])
         await lease._commit_adjustments()
 
+        mock_repo.build_composite_adjust.assert_called_once_with(
+            entity_id="e1",
+            resource="gpt-4",
+            deltas={"rpm": -5000},
+            shard_id=0,
+            ceilings={"rpm": CreditCeiling(100_000, 100_000, None, (None, None))},
+            # the item's shard count, (absent) vu and schedule strings, as read
+            pin=(1, None, (None, None, None)),
+        )
+        mock_repo.write_each.assert_called_once()
+
+    async def test_a_credit_over_the_ceiling_is_re_issued_with_vu_zero(self):
+        """#721: a failed ceiling condition re-issues the same credit with trim=True."""
+        from zae_limiter.lease import Lease
+
+        entry = self._make_entry(consumed=5, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100_000
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = [self._condition_failed(), []]
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        await lease._commit_adjustments()
+
+        assert mock_repo.write_each.call_count == 2
+        assert mock_repo.build_composite_adjust.call_args.kwargs == {
+            "entity_id": "e1",
+            "resource": "gpt-4",
+            "deltas": {"rpm": -5000},
+            "shard_id": 0,
+            "ceilings": {"rpm": CreditCeiling(100_000, 100_000, None, (None, None))},
+            "trim": True,
+        }
+
+    async def test_a_failure_other_than_the_ceiling_is_not_re_issued(self):
+        """Only the ceiling condition triggers the fallback; anything else propagates."""
+        from zae_limiter.lease import Lease
+
+        entry = self._make_entry(consumed=5, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100_000
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = RuntimeError("throttled")
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        with pytest.raises(RuntimeError, match="throttled"):
+            await lease._commit_adjustments()
+        mock_repo.write_each.assert_called_once()
+
+    async def test_a_debit_onto_a_gone_item_is_skipped(self):
+        """A debit's only condition is that the item exists: failing it means the
+        bucket is gone, so there is nothing to adjust (#721) -- not an error."""
+        from zae_limiter.lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = self._condition_failed()
+
+        await write_credit(mock_repo, "e1", "gpt-4", {"rpm": 5000}, 0, {}, None)
+        mock_repo.write_each.assert_called_once()
+
+    async def test_a_trimmed_credit_onto_a_gone_item_is_skipped(self):
+        """Step 1 and then the trimmed write both fail: the item is gone."""
+        from zae_limiter.lease import Lease
+
+        entry = self._make_entry(consumed=5, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100_000
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = [self._condition_failed(), self._condition_failed()]
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        await lease._commit_adjustments()
+
+        assert mock_repo.write_each.call_count == 2
         assert lease._committed is True
-        assert mock_repo.build_vu_reset.call_count == clamps
+
+    async def test_a_bucket_item_with_nothing_to_refund_gets_no_write(self):
+        """Rollback writes only the bucket items the initial commit debited."""
+        from zae_limiter.lease import Lease
+
+        debited = self._make_entry(consumed=10, initial_consumed=10, entity_id="e1")
+        untouched = self._make_entry(consumed=0, initial_consumed=0, entity_id="e2")
+        debited.state.ceiling_milli.return_value = 100_000
+        mock_repo = self._make_mock_repo()
+
+        lease = Lease(repository=mock_repo, entries=[debited, untouched])
+        lease._initial_committed = True
+        await lease._rollback()
+
+        mock_repo.build_composite_adjust.assert_called_once()
+        assert mock_repo.build_composite_adjust.call_args.kwargs["entity_id"] == "e1"
+
+    async def test_a_credit_with_no_known_pin_is_trimmed_outright(self):
+        """#721: with the item's rf unknown the ceiling cannot be trusted: one trimmed write."""
+        from zae_limiter.lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+
+        await write_credit(
+            mock_repo,
+            "e1",
+            "gpt-4",
+            {"rpm": -5000},
+            0,
+            {"rpm": CreditCeiling(100_000, 100_000, None, (None, None))},
+            None,
+        )
+
+        mock_repo.build_composite_adjust.assert_called_once_with(
+            entity_id="e1",
+            resource="gpt-4",
+            deltas={"rpm": -5000},
+            shard_id=0,
+            ceilings={"rpm": CreditCeiling(100_000, 100_000, None, (None, None))},
+            trim=True,
+        )
+        mock_repo.write_each.assert_called_once()
+
+    async def test_a_trimmed_credit_with_nothing_to_write_writes_nothing(self):
+        from zae_limiter.lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(return_value={})
+
+        await write_credit(
+            mock_repo, "e1", "gpt-4", {"rpm": 0}, 0, {"rpm": CreditCeiling(1, 1, None)}, None
+        )
+        mock_repo.write_each.assert_not_called()
+
+    async def test_a_quota_credit_with_no_known_period_is_dropped(self):
+        """#721: a quota credit whose period cannot be told is dropped, not landed."""
+        from zae_limiter.lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(
+            side_effect=lambda **k: {"Update": {}} if any(k["deltas"].values()) else {}
+        )
+        ceiling = CreditCeiling(10_000, 10_000, None, (None, None), quota=True)
+
+        await write_credit(
+            mock_repo, "e1", "gpt-4", {"q": -5000}, 0, {"q": ceiling}, (1, None, (None,) * 3)
+        )
+        mock_repo.write_each.assert_not_called()
+
+    async def test_a_guarded_trimmed_write_propagates_other_errors(self):
+        """Only a failed condition drops a quota credit; anything else propagates."""
+        from zae_limiter.lease import write_credit
+        from zae_limiter.models import QuotaPeriodPin
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(return_value={"Update": {}})
+        mock_repo.write_each.side_effect = RuntimeError("throttled")
+        ceiling = CreditCeiling(10_000, 10_000, None, (None, None), True, QuotaPeriodPin(9))
+
+        with pytest.raises(RuntimeError, match="throttled"):
+            await write_credit(mock_repo, "e1", "gpt-4", {"q": -5000}, 0, {"q": ceiling}, None)
+        mock_repo.write_each.assert_called_once()
+
+    async def test_a_single_quota_retry_propagates_other_errors(self):
+        """After the guarded trimmed write fails, each quota credit is retried on
+        its own guard; only a failed condition drops it (#721)."""
+        from zae_limiter.lease import write_credit
+        from zae_limiter.models import QuotaPeriodPin
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(
+            side_effect=lambda **k: {"Update": {}} if any(k["deltas"].values()) else {}
+        )
+        mock_repo.write_each.side_effect = [self._condition_failed(), RuntimeError("throttled")]
+        ceiling = CreditCeiling(10_000, 10_000, None, (None, None), True, QuotaPeriodPin(9))
+
+        with pytest.raises(RuntimeError, match="throttled"):
+            await write_credit(mock_repo, "e1", "gpt-4", {"q": -5000}, 0, {"q": ceiling}, None)
+        assert mock_repo.write_each.call_count == 2
+
+    async def test_nothing_to_adjust_writes_nothing(self):
+        from zae_limiter.lease import write_credit
+
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_adjust = MagicMock(return_value={})
+
+        await write_credit(mock_repo, "e1", "gpt-4", {"rpm": 0}, 0, {}, None)
+        mock_repo.write_each.assert_not_called()
 
     async def test_rollback_skips_when_committed(self):
         """_rollback is no-op when already committed (line 358)."""
@@ -1420,6 +1600,7 @@ class TestWriteOnEnter:
         from zae_limiter.lease import Lease
 
         entry = self._make_entry(consumed=10, initial_consumed=10)
+        entry.state.ceiling_milli.return_value = 100_000
         mock_repo = self._make_mock_repo()
 
         lease = Lease(repository=mock_repo, entries=[entry])
@@ -1433,6 +1614,8 @@ class TestWriteOnEnter:
             resource="gpt-4",
             deltas={"rpm": -10000},  # -10 * 1000
             shard_id=0,
+            ceilings={"rpm": CreditCeiling(100_000, 100_000, None, (None, None))},  # #721
+            pin=(1, None, (None, None, None)),
         )
         mock_repo.write_each.assert_called_once()
 
@@ -1453,7 +1636,7 @@ class TestWriteOnEnter:
             await lease._rollback()
 
         assert lease._rolled_back is True
-        assert "Failed to rollback consumed tokens" in caplog.text
+        assert "Failed to roll back consumed tokens" in caplog.text
 
     async def test_cascade_normal_fails_retry_succeeds(self):
         """Cascade: normal path fails (optimistic lock), retry path succeeds.
@@ -1553,10 +1736,12 @@ class TestWriteOnEnter:
         mock_repo.build_composite_retry.assert_not_called()
 
     async def test_commit_initial_transaction_conflict_exhausts_retries(self):
-        """TransactionConflict exhausts retries then propagates exception.
+        """TransactionConflict exhausts retries, then a contention 429 (#724).
 
-        After max retries on TransactionConflict, the exception should propagate
-        rather than entering the consumption-only retry path.
+        After max retries on TransactionConflict the commit raises a short
+        ``RateLimitExceeded`` (``contended``, nothing exceeded) rather than the
+        raw error, which would reach ``on_unavailable``, and does not enter the
+        consumption-only retry path.
         """
         from zae_limiter.lease import _CONFLICT_MAX_RETRIES, Lease
 
@@ -1575,13 +1760,40 @@ class TestWriteOnEnter:
         mock_repo.transact_write.side_effect = conflict_exc
 
         lease = Lease(repository=mock_repo, entries=[entry])
-        with pytest.raises(type(conflict_exc)):
+        with pytest.raises(RateLimitExceeded) as exc_info:
             await lease._commit_initial()
+        assert exc_info.value.contended is True
+        assert exc_info.value.violations == []
+        assert exc_info.value.retry_after_seconds == pytest.approx(0.1)
+        assert exc_info.value.__cause__ is conflict_exc
 
         # Should have retried _CONFLICT_MAX_RETRIES times + 1 initial attempt
         assert mock_repo.transact_write.call_count == _CONFLICT_MAX_RETRIES + 1
         # Should NOT have entered consumption-only path
         mock_repo.build_composite_retry.assert_not_called()
+
+    async def test_commit_initial_conflicted_consumption_only_retry_is_a_short_429(self):
+        """The rf lock was lost, then the consumption-only retry kept conflicting (#724)."""
+        from zae_limiter.lease import _CONFLICT_MAX_RETRIES, Lease
+
+        entry = self._make_entry()
+        mock_repo = self._make_mock_repo()
+        lock_lost = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"
+        )
+        conflict = ClientError({"Error": {"Code": "TransactionConflictException"}}, "UpdateItem")
+        mock_repo.transact_write.side_effect = [lock_lost] + [conflict] * (
+            _CONFLICT_MAX_RETRIES + 1
+        )
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            await lease._commit_initial()
+
+        assert exc_info.value.contended is True
+        assert exc_info.value.violations == []
+        assert exc_info.value.__cause__ is conflict
+        assert mock_repo.transact_write.call_count == _CONFLICT_MAX_RETRIES + 2
 
     async def test_commit_initial_condition_check_still_enters_retry_path(self):
         """ConditionalCheckFailed still enters consumption-only retry path.
@@ -7131,9 +7343,9 @@ class TestCascadeEntityCache:
         compensated_entity_ids: list[str] = []
         original_compensate = limiter._compensate_speculative
 
-        async def tracking_compensate(entity_id, resource, consume, shard_id):
+        async def tracking_compensate(entity_id, resource, consume, shard_id, buckets=None):
             compensated_entity_ids.append(entity_id)
-            return await original_compensate(entity_id, resource, consume, shard_id)
+            return await original_compensate(entity_id, resource, consume, shard_id, buckets)
 
         async def mock_single(
             entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
@@ -8287,7 +8499,8 @@ class TestClientShardCreation:
 
         async def parent_refilled_first(items):
             nonlocal bumped
-            if not bumped and len(items) == 2:
+            # Child Put, parent update, and the child's META check (ADR-150).
+            if not bumped and len(items) == 3:
                 bumped = True
                 # A concurrent refill moves the parent's rf; the transaction's
                 # rf lock on the parent fails while the child's Put is innocent
@@ -11676,6 +11889,120 @@ class TestSlowPathCommitErrorsHonourOnUnavailable:
                     pass
 
 
+class TestPermissionDeniedIsNeverAdmitted:
+    """An IAM denial raises `PermissionDenied` under every mode (#751).
+
+    ALLOW covers an outage, which heals. A missing permission does not, and the
+    denied write is the one that would create the bucket, so before #751 ALLOW
+    admitted every later call with no limit at all (50 of 50 against 2/day).
+    On real AWS both the fast path's `UpdateItem` and a `Put` inside the create's
+    `TransactWriteItems` fail as `AccessDeniedException` (the #750 red run).
+    """
+
+    MODES = [OnUnavailable.ALLOW, OnUnavailable.BLOCK]
+
+    @staticmethod
+    def _denied(operation: str) -> ClientError:
+        return ClientError(
+            {
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User: arn:aws:sts::123456789012:assumed-role/app/s is not "
+                        "authorized to perform: dynamodb:PutItem"
+                    ),
+                }
+            },
+            operation,
+        )
+
+    @staticmethod
+    async def _expect_denied(limiter, entity_id, mode):
+        admitted = False
+        with pytest.raises(PermissionDenied) as exc_info:
+            async with limiter.acquire(entity_id, "gpt-4", consume={"rpm": 1}, on_unavailable=mode):
+                admitted = True
+        assert admitted is False
+        return exc_info.value
+
+    @pytest.mark.parametrize("mode", MODES)
+    async def test_a_denied_fast_path_write_is_never_admitted(self, limiter, mode):
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [Limit.per_day("rpm", 2)])
+        async with limiter.acquire("deny-fast", "gpt-4", consume={"rpm": 1}):
+            pass  # the bucket exists, so the next call takes the fast path
+
+        with patch.object(repo, "speculative_consume", side_effect=self._denied("UpdateItem")):
+            exc = await self._expect_denied(limiter, "deny-fast", mode)
+
+        assert isinstance(exc, RateLimiterUnavailable)
+        assert "not authorized to perform: dynamodb:PutItem" in str(exc)
+        assert IAM_DOCS_URL in str(exc)
+        assert exc.entity_id == "deny-fast"
+        assert exc.resource == "gpt-4"
+        assert exc.stack_name == repo.stack_name
+        assert isinstance(exc.__cause__, ClientError)
+        assert exc.cause is exc.__cause__
+
+    @pytest.mark.parametrize("mode", MODES)
+    async def test_a_denied_create_transaction_is_never_admitted(self, limiter, mode):
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [Limit.per_day("rpm", 2)])
+
+        with patch.object(repo, "transact_write", side_effect=self._denied("TransactWriteItems")):
+            exc = await self._expect_denied(limiter, "deny-create", mode)
+
+        assert isinstance(exc, RateLimiterUnavailable)
+        assert await repo.get_buckets("deny-create") == []
+
+    async def test_a_denial_deeper_in_the_chain_is_still_detected(self, limiter):
+        """A denial wrapped as a `__cause__` of a `__context__` still counts."""
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [Limit.per_day("rpm", 2)])
+        middle = ValueError("while handling the denial")
+        middle.__context__ = self._denied("TransactWriteItems")
+        outer = RuntimeError("wrapped")
+        outer.__cause__ = middle
+
+        with patch.object(repo, "transact_write", side_effect=outer):
+            exc = await self._expect_denied(limiter, "deny-deep", OnUnavailable.ALLOW)
+
+        assert exc.cause is outer
+        assert "not authorized to perform" in str(exc)
+
+    async def test_an_outage_still_degrades_under_allow(self, limiter):
+        """Throughput exhaustion is an outage: ALLOW keeps admitting, as before."""
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [Limit.per_day("rpm", 2)])
+        throttled = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow"}},
+            "TransactWriteItems",
+        )
+
+        with patch.object(repo, "transact_write", side_effect=throttled):
+            async with limiter.acquire(
+                "outage", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.ALLOW
+            ) as lease:
+                assert lease.degraded is True
+
+    async def test_an_outage_is_not_reported_as_a_denial_under_block(self, limiter):
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [Limit.per_day("rpm", 2)])
+        throttled = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow"}},
+            "TransactWriteItems",
+        )
+
+        with patch.object(repo, "transact_write", side_effect=throttled):
+            with pytest.raises(RateLimiterUnavailable) as exc_info:
+                async with limiter.acquire(
+                    "outage-block", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.BLOCK
+                ):
+                    pass
+
+        assert not isinstance(exc_info.value, PermissionDenied)
+
+
 class TestRetryRejectionReportsTheRealWait:
     """A consumption-only retry that fails is reported from the item it failed
     against, not from the in-memory state that just proved stale (#633). From
@@ -12740,35 +13067,30 @@ class TestCreditAboveCapacity:
         assert item[tk]["N"] == "105000"  # 90 + 5 + 10 returned
         assert item[BUCKET_FIELD_VU]["N"] == "0"
 
-    async def test_a_backend_without_the_reset_builder_skips_the_check(self, limiter, monkeypatch):
-        """A third-party backend need not grow the new builder; it keeps the old behaviour."""
+    async def test_a_failed_trimmed_write_is_an_adjustment_failure(self, limiter, monkeypatch):
+        """The fallback write failing is re-raised like any adjustment write (#682).
+
+        Nothing landed — neither the credit nor the stamp — and the lease is
+        committed, so the initial consumption stays and nothing rolls it back.
+        """
         repo = limiter._repository
-        await repo.set_limits("no-builder", [self.SLOW], resource="r")
-        monkeypatch.delattr(type(repo), "build_vu_reset")
+        await repo.set_limits("ghost-trim", [self.SLOW], resource="r")
+        original = repo.write_each
 
-        async with limiter.acquire("no-builder", "r", consume={"q": 10}) as lease:
-            await lease.release(q=500)
+        async def fail_the_trim(items):
+            if any("#vu" in item["Update"].get("ExpressionAttributeNames", {}) for item in items):
+                raise RuntimeError("throttled")
+            return await original(items)
 
-        assert BUCKET_FIELD_VU not in await self._raw(repo, "no-builder")
+        monkeypatch.setattr(repo, "write_each", fail_the_trim)
 
-    async def test_a_failed_clamp_write_is_logged_not_raised(self, limiter, monkeypatch, caplog):
-        """The lease already committed; a failed follow-up must not fail the caller."""
-        import logging
-
-        repo = limiter._repository
-        await repo.set_limits("ghost-clamp", [self.SLOW], resource="r")
-        original = repo.build_vu_reset
-
-        def aim_at_a_missing_item(_entity, resource, shard):
-            return original("ghost", resource, shard)  # its condition fails
-
-        monkeypatch.setattr(repo, "build_vu_reset", aim_at_a_missing_item)
-
-        with caplog.at_level(logging.WARNING, logger="zae_limiter.lease"):
-            async with limiter.acquire("ghost-clamp", "r", consume={"q": 10}) as lease:
+        with pytest.raises(RuntimeError, match="throttled"):
+            async with limiter.acquire("ghost-trim", "r", consume={"q": 10}) as lease:
                 await lease.release(q=500)
 
-        assert "Failed to force a clamp after a credit above capacity" in caplog.text
+        item = await self._raw(repo, "ghost-trim")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "90000"
+        assert BUCKET_FIELD_VU not in item
 
     async def test_write_each_of_nothing_returns_nothing(self, limiter):
         assert await limiter._repository.write_each([]) == []
@@ -12800,6 +13122,829 @@ class TestCreditAboveCapacity:
         assert "Could not check a credit against its ceiling" in caplog.text
         item = await self._raw(repo, "broken-check")
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "590000"  # 100 - 10 + 500, once
+
+
+class TestCreditImage:
+    """The bucket item a refund pins, as the lease last wrote or read it (#721)."""
+
+    def test_an_empty_or_missing_item_is_unknown(self):
+        from zae_limiter.lease import credit_image_from_item
+
+        assert credit_image_from_item(None) is None
+        assert credit_image_from_item({}) is None
+
+    def test_a_raw_item_skips_wcu_and_a_stray_balance(self):
+        from zae_limiter.lease import credit_image_from_item
+
+        image = credit_image_from_item(
+            {
+                "rf": {"N": "5"},
+                "vu": {"N": "9"},
+                "sched": {"S": "1m0h0"},
+                "sched_tz": {"S": "UTC"},
+                bucket_attr("wcu", "tk"): {"N": "1000"},
+                bucket_attr("wcu", "cp"): {"N": "1000"},
+                bucket_attr("stray", "tk"): {"N": "0"},  # no `cp`: not a limit
+                bucket_attr("q", "tk"): {"N": "1000"},
+                bucket_attr("q", "cp"): {"N": "10000"},
+                bucket_attr("q", "gc"): {"N": "2"},
+                bucket_attr("q", "sched"): {"S": "-"},
+                bucket_attr("q", "ws"): {"N": "7"},
+                bucket_attr("q", "wa"): {"N": "7"},
+            }
+        )
+        assert image is not None
+        assert (image.shard_count, image.vu, image.rf) == (1, 9, 5)
+        assert image.item_sched == ("1m0h0", None, "UTC")
+        assert [name for name, _ in image.limits] == ["q"]
+        q = image.limit("q")
+        assert q is not None
+        assert (q.capacity_milli, q.grant_count, q.sched_raw) == (10_000, 2, ("-", None))
+        assert (q.window_start_ms, q.window_applied_ms) == (7, 7)
+        assert image.limit("missing") is None
+
+    def test_a_seeding_write_records_the_seed_in_full(self):
+        """A seed writes its own schedule overrides and, when it has a zone, the
+        item's `sched_tz` (#633): the image is what the write leaves."""
+        from zae_limiter.lease import LeaseEntry, _written_image
+
+        def state(name, **kwargs):
+            return BucketState(
+                entity_id="e",
+                resource="r",
+                limit_name=name,
+                tokens_milli=1000,
+                last_refill_ms=1,
+                capacity_milli=10_000,
+                refill_amount_milli=10_000,
+                refill_period_ms=60_000,
+                **kwargs,
+            )
+
+        read = state(
+            "a",
+            stored_vu_ms=None,
+            stored_vu_read=True,
+            stored_item_sched_raw=(None, None, None),
+            stored_sched_raw=(None, None),
+        )
+        sched = (ScheduleEntry(cron="* 9-17 * * *", tz="America/New_York", scale=0.5),)
+        seeded = state("b", sched=sched)
+        entries = [
+            LeaseEntry(entity_id="e", resource="r", limit=Limit.per_minute("a", 10), state=read),
+            LeaseEntry(
+                entity_id="e",
+                resource="r",
+                limit=Limit.per_minute("b", 10).with_schedule(sched),
+                state=seeded,
+                _seed=True,
+            ),
+        ]
+
+        image = _written_image(entries, rf=42, vu=99, windows={}, applied={})
+
+        assert image is not None
+        assert (image.rf, image.vu) == (42, 99)
+        assert image.item_sched == (None, None, "America/New_York")
+        b = image.limit("b")
+        assert b is not None
+        assert b.sched_raw[0] is not None and b.sched_raw[1] == "-"
+
+    def test_a_write_with_no_read_image_is_unknown(self):
+        from zae_limiter.lease import LeaseEntry, _written_image
+
+        state = BucketState(
+            entity_id="e",
+            resource="r",
+            limit_name="a",
+            tokens_milli=0,
+            last_refill_ms=0,
+            capacity_milli=1000,
+            refill_amount_milli=1000,
+            refill_period_ms=60_000,
+        )
+        entry = LeaseEntry(entity_id="e", resource="r", limit=Limit.per_minute("a", 1), state=state)
+        assert _written_image([entry], rf=1, vu=None, windows={}, applied={}) is None
+
+
+class TestSelfTrimmingRefunds:
+    """A refund cannot be spent above the ceiling before it is trimmed (#721).
+
+    A refund (rollback, release, speculative compensation) is an ``ADD``. A reset
+    edge or a refill to capacity can land between the debit and the refund, so
+    the refund lifts the balance above the ceiling. The #680 trim used to be a
+    separate ``vu = 0`` write one round trip later, and another process's fast
+    path spent the surplus in between: a daily quota of 10 admitted 15. The
+    credit is now conditioned on staying within the ceiling and, when it would
+    not, re-issued with ``vu = 0`` in the same write.
+    """
+
+    QUOTA = Limit.quota("q", 10, cron="0 0 * * *")
+    T0 = int(datetime(2026, 10, 9, 23, 59, 0, tzinfo=UTC).timestamp() * 1000)
+    MIDNIGHT = int(datetime(2026, 10, 10, 0, 0, 0, tzinfo=UTC).timestamp() * 1000)
+
+    @pytest.fixture
+    async def two(self, limiter):
+        """Two processes on one table, both on one clock, neither caching rejections."""
+        from zae_limiter.repository import Repository
+
+        now = [self.T0]
+        r1 = limiter._repository
+        r2 = await Repository.open(stack="test-rate-limits", rejection_cache_ttl=0)
+        for repo in (r1, r2):
+            repo._rejection_cache.ttl_seconds = 0
+            repo._now_ms = lambda: now[0]
+        await r1.set_resource_defaults("budget", [self.QUOTA])
+        l2 = RateLimiter(repository=r2)
+        yield limiter, l2, now
+        await r2.close()
+
+    @staticmethod
+    async def _raw(repo, entity_id, resource="budget", shard=0):
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response["Item"]
+
+    async def _admitted(self, limiter, amounts) -> list[int]:
+        admitted = []
+        for amount in amounts:
+            try:
+                async with limiter.acquire("solo", "budget", {"q": amount}):
+                    admitted.append(amount)
+            except RateLimitExceeded:
+                pass
+        return admitted
+
+    async def test_a_rollback_across_a_reset_is_not_spent_by_the_fast_path(self, two):
+        """The reviewer's reproduction: 15 of 10 admitted on main."""
+        l1, l2, now = two
+        r1 = l1._repository
+        async with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        async with l1.acquire("solo", "budget", {"q": 3}):
+            pass  # day 1: 5 spent, the bucket is warm
+        now[0] = self.T0 + 59_000  # 23:59:59
+
+        real_write_each = r1.write_each
+        seen = {"refund": False}
+        admitted_before_the_trim: list[int] = []
+
+        async def write_each(items):
+            text = repr(items)
+            if not seen["refund"] and "b_q_tk" in text and "ADD" in text:
+                seen["refund"] = True
+                # Midnight passes while the refund is in flight; another
+                # process's slow pass applies the reset (tk -> 10).
+                now[0] = self.MIDNIGHT + 1000
+                async with l2.acquire("solo", "budget", {"q": 0}):
+                    pass
+                return await real_write_each(items)
+            if seen["refund"] and "vu" in text and "ADD" not in text:
+                # A separate trim write: another process's fast path first.
+                admitted_before_the_trim.extend(await self._admitted(l2, [15]))
+            return await real_write_each(items)
+
+        r1.write_each = write_each
+        with pytest.raises(RuntimeError):
+            async with l1.acquire("solo", "budget", {"q": 5}):
+                raise RuntimeError("user code failed")
+        r1.write_each = real_write_each
+
+        assert admitted_before_the_trim == []
+        # The refund belonged to day 1: dropped, not landed in day 2 (#730 review).
+        item = await self._raw(r1, "solo")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "10000"
+        # Day 2's quota is 10, however the attempts are split.
+        assert await self._admitted(l2, [15, 10, 1]) == [10]
+
+    async def test_a_rollback_within_the_ceiling_is_one_write(self, two):
+        """The usual refund: one conditional write, no `vu` stamp."""
+        l1, _, _ = two
+        r1 = l1._repository
+        async with l1.acquire("solo", "budget", {"q": 2}):
+            pass  # warm
+
+        calls: list[dict] = []
+        client = await r1._get_client()
+        original = client.update_item
+
+        async def spy(**kwargs):
+            calls.append(kwargs)
+            return await original(**kwargs)
+
+        client.update_item = spy
+        try:
+            with pytest.raises(RuntimeError):
+                async with l1.acquire("solo", "budget", {"q": 5}):
+                    raise RuntimeError("user code failed")
+        finally:
+            client.update_item = original
+
+        assert len(calls) == 2  # the speculative debit and the refund
+        assert "ConditionExpression" in calls[1]
+        item = await self._raw(r1, "solo")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "8000"
+        assert item[BUCKET_FIELD_VU]["N"] != "0"  # the quota's own next edge, untouched
+
+    async def test_a_compensation_across_a_reset_is_not_spent_by_the_fast_path(self, two):
+        """Speculative compensation is the same credit, built from the debit's image."""
+        l1, l2, now = two
+        r1 = l1._repository
+        async with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        now[0] = self.T0 + 59_000
+        result = await r1.speculative_consume("solo", "budget", {"q": 5}, shard_id=0)
+        assert result.success  # 3 left on day 1
+
+        now[0] = self.MIDNIGHT + 1000
+        async with l2.acquire("solo", "budget", {"q": 0}):
+            pass  # another process resets the quota to 10
+
+        await l1._compensate_speculative("solo", "budget", {"q": 5}, 0, result.buckets)
+
+        item = await self._raw(r1, "solo")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "10000"  # day 1's: dropped
+        assert await self._admitted(l2, [15, 10, 1]) == [10]
+
+    async def test_a_compensation_within_the_ceiling_leaves_vu_alone(self, two):
+        l1, _, _ = two
+        r1 = l1._repository
+        async with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        result = await r1.speculative_consume("solo", "budget", {"q": 5}, shard_id=0)
+
+        await l1._compensate_speculative("solo", "budget", {"q": 5}, 0, result.buckets)
+
+        item = await self._raw(r1, "solo")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "8000"
+        assert item[BUCKET_FIELD_VU]["N"] != "0"  # the quota's own next edge, untouched
+
+    # ~no refill during a test, so refill cannot blur the arithmetic
+    SLOW = Limit.custom("q", capacity=100, refill_amount=1, refill_period_seconds=86400)
+
+    async def _bucket_rf_and_shard_moved(self, l1, entity_id, during):
+        """Debit 10 of 100, run `during` inside the body, then roll back."""
+        r1 = l1._repository
+        await r1.set_limits(entity_id, [self.SLOW], resource="r")
+        async with l1.acquire(entity_id, "r", {"q": 1}):
+            pass  # create; the next acquire is speculative
+
+        with pytest.raises(RuntimeError):
+            async with l1.acquire(entity_id, "r", {"q": 10}):
+                await during()
+                raise RuntimeError("user code failed")
+        return await self._raw(r1, entity_id, resource="r")
+
+    async def test_a_doubling_before_the_refund_lowers_the_ceiling(self, two):
+        """The #720 review: the in-memory ceiling (100) is stale once the count doubles
+        (the real share is 50); `tk + credit <= 100` would pass and leave 99 spendable."""
+        l1, _, _ = two
+        r1 = l1._repository
+        client = await r1._get_client()
+
+        async def double():
+            await client.update_item(
+                TableName=r1.table_name,
+                Key={
+                    "PK": {"S": pk_bucket(r1._namespace_id, "dbl", "r", 0)},
+                    "SK": {"S": sk_state()},
+                },
+                UpdateExpression="SET shard_count = :two",
+                ExpressionAttributeValues={":two": {"N": "2"}},
+            )
+
+        item = await self._bucket_rf_and_shard_moved(l1, "dbl", double)
+
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+        assert item[BUCKET_FIELD_VU]["N"] == "0"  # the fast path cannot spend it
+        spend = await r1.speculative_consume("dbl", "r", {"q": 60}, shard_id=0)
+        assert not spend.success
+
+    T10 = int(datetime(2026, 10, 9, 10, 0, 0, tzinfo=UTC).timestamp() * 1000)
+
+    @staticmethod
+    def _windowed(cap_in_window):
+        base = Limit.custom("q", capacity=100, refill_amount=1, refill_period_seconds=86400)
+        return base.with_schedule((ScheduleEntry(cron="* 0-11 * * *", capacity=cap_in_window),))
+
+    async def test_entity_schedule_scale_change_same_boundary(self, two):
+        """A window's capacity tuned 100 -> 50 under the same cron (#730 review): cp,
+        gc, shard_count and vu all come out identical, so only the stored schedule
+        strings show that the ceiling dropped. Spent 60 against 50 before."""
+        l1, l2, now = two
+        now[0] = self.T10
+        r1, r2 = l1._repository, l2._repository
+        await r1.set_limits("e", [self._windowed(100)], resource="r")
+        async with l1.acquire("e", "r", {"q": 1}):
+            pass  # create
+
+        with pytest.raises(RuntimeError):
+            async with l1.acquire("e", "r", {"q": 10}):  # speculative: 99 -> 89
+                await r2.set_limits("e", [self._windowed(50)], resource="r")
+                async with l2.acquire("e", "r", {"q": 0}):
+                    pass  # clamps to 50, re-stamps the same boundary
+                raise RuntimeError("body failed")
+
+        item = await self._raw(r1, "e", resource="r")
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
+        spend = await r2.speculative_consume("e", "r", {"q": 60}, shard_id=0)
+        assert not spend.success
+
+    async def test_sharded_compensation_within_ceiling_cost(self, two):
+        """On a sharded entity a compensation that fits is one write and leaves `vu`
+        alone (#730 review): the pin's count came from `wcu`, which always reads as
+        one shard, so every compensation used to fail it and stamp `vu = 0`."""
+        l1, _, _ = two
+        r1 = l1._repository
+        limit = Limit.custom("q", capacity=1000, refill_amount=1, refill_period_seconds=86400)
+        await r1.set_limits("s", [limit], resource="r")
+        async with l1.acquire("s", "r", {"q": 1}):
+            pass
+        client = await r1._get_client()
+        await client.update_item(
+            TableName=r1.table_name,
+            Key={
+                "PK": {"S": pk_bucket(r1._namespace_id, "s", "r", 0)},
+                "SK": {"S": sk_state()},
+            },
+            # Two shards, and this one within its share (500 of 1000).
+            UpdateExpression="SET shard_count = :c, #tk = :tk",
+            ExpressionAttributeNames={"#tk": bucket_attr("q", BUCKET_FIELD_TK)},
+            ExpressionAttributeValues={":c": {"N": "2"}, ":tk": {"N": "400000"}},
+        )
+        result = await r1.speculative_consume("s", "r", {"q": 5}, shard_id=0)
+        assert result.success
+
+        calls: list[dict] = []
+        original = client.update_item
+
+        async def spy(**kwargs):
+            calls.append(kwargs)
+            return await original(**kwargs)
+
+        client.update_item = spy
+        try:
+            await l1._compensate_speculative("s", "r", {"q": 5}, 0, result.buckets)
+        finally:
+            client.update_item = original
+
+        assert len(calls) == 1
+        assert "ConditionExpression" in calls[0]
+        assert BUCKET_FIELD_VU not in await self._raw(r1, "s", resource="r")
+
+    async def test_refund_after_item_deleted(self, two):
+        """The bucket is swept (TTL) or deleted between the debit and the refund
+        (#730 review): the refund used to `ADD` onto nothing, creating a stub with
+        no parameters that rejected the entity forever."""
+        l1, l2, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        await r1.set_resource_defaults("r", [Limit.per_minute("q", 100)])
+        async with l1.acquire("d", "r", {"q": 1}):
+            pass
+        client = await r1._get_client()
+        key = {"PK": {"S": pk_bucket(r1._namespace_id, "d", "r", 0)}, "SK": {"S": sk_state()}}
+
+        with pytest.raises(RuntimeError):
+            async with l1.acquire("d", "r", {"q": 10}):
+                await client.delete_item(TableName=r1.table_name, Key=key)
+                raise RuntimeError("body failed")
+
+        assert "Item" not in await client.get_item(TableName=r1.table_name, Key=key)
+        async with l2.acquire("d", "r", {"q": 1}):
+            pass  # recreates a normal bucket
+        item = await self._raw(r1, "d", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+        assert bucket_attr("q", BUCKET_FIELD_CP) in item
+
+    @staticmethod
+    async def _update_items(repo):
+        """Every `UpdateItem` the client sends from here, and a function to stop."""
+        client = await repo._get_client()
+        calls: list[dict] = []
+        original = client.update_item
+
+        async def spy(**kwargs):
+            calls.append(kwargs)
+            return await original(**kwargs)
+
+        client.update_item = spy
+        return calls, lambda: setattr(client, "update_item", original)
+
+    async def test_cost_rollback_after_create(self, two):
+        """A refund of the lease that created the bucket fits: one conditional write
+        and `vu` left alone (#730 review). Its pin is the create's own `Put`; before,
+        the lease knew nothing after a create and every such refund stamped `vu = 0`."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        await r1.set_limits("c", [Limit.per_minute("q", 1000)], resource="r")
+
+        calls, stop = await self._update_items(r1)
+        try:
+            with pytest.raises(RuntimeError):
+                async with l1.acquire("c", "r", {"q": 1}):
+                    raise RuntimeError("body failed")
+        finally:
+            stop()
+        # The failed speculative attempt (no bucket yet), then the refund alone.
+        refunds = [c for c in calls if "#bc0" in c["ExpressionAttributeNames"]]
+        assert len(refunds) == 1
+        assert refunds[0]["UpdateExpression"].startswith("ADD")
+        assert "#bt0 <= :bm0" in refunds[0]["ConditionExpression"]
+        assert BUCKET_FIELD_VU not in await self._raw(r1, "c", resource="r")
+
+        # The LLM pattern on a first lease: estimate high, give the rest back.
+        await r1.set_limits("c2", [Limit.per_minute("q", 1000)], resource="r")
+        async with l1.acquire("c2", "r", {"q": 100}) as lease:
+            await lease.adjust(q=-80)
+        assert BUCKET_FIELD_VU not in await self._raw(r1, "c2", resource="r")
+
+    async def test_cost_retry_lease_credit_trims(self, two):
+        """A lease committed by the consumption-only retry (it lost the `rf` lock)
+        pins the retry's `ALL_NEW` image, so a credit that fits is one write and
+        leaves `vu` alone (#730 review). Before, it had no pin and stamped `vu = 0`,
+        which under contention sent the next wave to the slow path again."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        slow = RateLimiter(repository=r1, speculative_writes=False)
+        await r1.set_limits("rt", [Limit.per_minute("q", 10_000_000)], resource="r")
+        async with slow.acquire("rt", "r", {"q": 1}):
+            pass  # create
+        client = await r1._get_client()
+        key = {"PK": {"S": pk_bucket(r1._namespace_id, "rt", "r", 0)}, "SK": {"S": sk_state()}}
+        original = r1.transact_write
+        raced: list[int] = []
+
+        async def racing(items):
+            if not raced:  # another writer moves `rf` first: the lock is lost
+                raced.append(1)
+                await client.update_item(
+                    TableName=r1.table_name,
+                    Key=key,
+                    UpdateExpression="ADD rf :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            return await original(items)
+
+        r1.transact_write = racing
+        try:
+            async with slow.acquire("rt", "r", {"q": 100}) as lease:
+                assert lease.entries[0]._image is not None
+                calls, stop = await self._update_items(r1)
+                await lease.adjust(q=-50)
+        finally:
+            r1.transact_write = original
+        stop()
+        assert raced
+        assert len(calls) == 1
+        assert BUCKET_FIELD_VU not in await self._raw(r1, "rt", resource="r")
+
+    async def _drain(self, limiter, entity_id) -> int:
+        """Admit one at a time until rejected; the total admitted."""
+        admitted = 0
+        while admitted <= 100:
+            try:
+                async with limiter.acquire(entity_id, "r", {"q": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                break
+        return admitted
+
+    async def test_quota_refund_across_reset_spent_first(self, two):
+        """A refund of yesterday's debit lands after another process reset the quota
+        and spent from it (#730 review): today's allowance took the refund too, 15
+        admitted against a daily quota of 10. The credit is now dropped."""
+        l1, l2, now = two
+        now[0] = self.T0 + 59_000  # 23:59:59
+        r1 = l1._repository
+        await r1.set_limits("e", [Limit.quota("q", 10, cron="0 0 * * *")], resource="r")
+        async with l1.acquire("e", "r", {"q": 1}):
+            pass  # create: 9 left
+        async with l1.acquire("e", "r", {"q": 4}):
+            pass  # 5 left yesterday
+
+        today = 0
+        with pytest.raises(RuntimeError):
+            async with l1.acquire("e", "r", {"q": 5}):  # 0 left
+                now[0] = self.MIDNIGHT + 1000
+                async with l2.acquire("e", "r", {"q": 6}):  # resets to 10, spends 6
+                    today += 6
+                raise RuntimeError("body failed")
+
+        today += await self._drain(l2, "e")
+        assert today == 10
+
+    async def test_session_window_refund_across_roll(self, two):
+        """The same across a session window: debit in window 1, another process opens
+        window 2 and spends, then the refund lands. Dropped: window 2 admits 10."""
+        l1, l2, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        await r1.set_limits(
+            "w", [Limit.quota("q", 10, reset_after=timedelta(hours=1))], resource="r"
+        )
+        async with l1.acquire("w", "r", {"q": 5}):
+            pass
+
+        second = 0
+        with pytest.raises(RuntimeError):
+            async with l1.acquire("w", "r", {"q": 5}):  # 0 left in window 1
+                now[0] = self.T10 + 3_601_000
+                async with l2.acquire("w", "r", {"q": 6}):  # opens window 2
+                    second += 6
+                raise RuntimeError("body failed")
+
+        second += await self._drain(l2, "w")
+        assert second == 10
+
+    async def test_a_quota_refund_within_its_period_lands(self, two):
+        """The guard costs nothing when the period has not moved: one write."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        await r1.set_limits("p", [Limit.quota("q", 10, cron="0 0 * * *")], resource="r")
+        async with l1.acquire("p", "r", {"q": 1}):
+            pass
+        calls, stop = await self._update_items(r1)
+        try:
+            with pytest.raises(RuntimeError):
+                async with l1.acquire("p", "r", {"q": 5}):
+                    raise RuntimeError("body failed")
+        finally:
+            stop()
+        refunds = [c for c in calls if "#bc0" in c["ExpressionAttributeNames"]]
+        assert len(refunds) == 1
+        assert "#bqrf < :bq0" in refunds[0]["ConditionExpression"]
+        item = await self._raw(r1, "p", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "9000"
+
+    async def test_a_dropped_quota_credit_keeps_the_rate_credit(self, two):
+        """Only the quota's credit is dropped; a rate limit on the same item is
+        refunded as before (#721)."""
+        l1, l2, now = two
+        now[0] = self.T0 + 59_000
+        r1 = l1._repository
+        rate = Limit.custom("rpm", capacity=100, refill_amount=1, refill_period_seconds=86400)
+        quota = Limit.quota("q", 10, cron="0 0 * * *")
+        await r1.set_limits("m", [quota, rate], resource="r")
+        async with l1.acquire("m", "r", {"q": 1, "rpm": 1}):
+            pass
+        with pytest.raises(RuntimeError):
+            async with l1.acquire("m", "r", {"q": 5, "rpm": 5}):
+                now[0] = self.MIDNIGHT + 1000
+                async with l2.acquire("m", "r", {"q": 0, "rpm": 0}):
+                    pass  # applies the reset
+                raise RuntimeError("body failed")
+        item = await self._raw(r1, "m", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "10000"  # not 15
+        assert int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) >= 99_000  # refunded
+
+    async def test_retry_image_vs_stale_ceiling(self, two):
+        """After the consumption-only retry, the refund's ceiling is the read's, so
+        its pins must be the read's too (#730 third review). Another client doubles
+        the entity and clamps shard 0 to its 50 before this lease commits; the retry's
+        `ALL_NEW` image shows `shard_count = 2` while the ceiling was computed at 1
+        (100). Pinned from that image, the refund lifted shard 0 to 60 with no `vu`,
+        and the fast path spent 60 against 50."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        slow = RateLimiter(repository=r1, speculative_writes=False)
+        await r1.set_limits("dbl", [Limit.per_minute("q", 100)], resource="r")
+        async with slow.acquire("dbl", "r", {"q": 1}):
+            pass  # create
+        client = await r1._get_client()
+        key = {"PK": {"S": pk_bucket(r1._namespace_id, "dbl", "r", 0)}, "SK": {"S": sk_state()}}
+        tk = bucket_attr("q", BUCKET_FIELD_TK)
+        original = r1.transact_write
+        raced: list[int] = []
+
+        async def racing(items):
+            if not raced:  # doubled and clamped to the new share; the rf lock is lost
+                raced.append(1)
+                await client.update_item(
+                    TableName=r1.table_name,
+                    Key=key,
+                    UpdateExpression="SET shard_count = :two, #tk = :half ADD rf :one",
+                    ExpressionAttributeNames={"#tk": tk},
+                    ExpressionAttributeValues={
+                        ":two": {"N": "2"},
+                        ":half": {"N": "50000"},
+                        ":one": {"N": "1"},
+                    },
+                )
+            return await original(items)
+
+        r1.transact_write = racing
+        try:
+            with pytest.raises(RuntimeError):
+                async with slow.acquire("dbl", "r", {"q": 10}):  # retry: 50 -> 40
+                    await client.update_item(  # a refill back to the share
+                        TableName=r1.table_name,
+                        Key=key,
+                        UpdateExpression="SET #tk = :half ADD rf :one",
+                        ExpressionAttributeNames={"#tk": tk},
+                        ExpressionAttributeValues={":half": {"N": "50000"}, ":one": {"N": "1"}},
+                    )
+                    raise RuntimeError("body failed")
+        finally:
+            r1.transact_write = original
+
+        assert raced
+        assert (await self._raw(r1, "dbl", resource="r"))[BUCKET_FIELD_VU]["N"] == "0"
+        admitted = 0
+        while admitted <= 100:
+            result = await r1.speculative_consume("dbl", "r", {"q": 1}, shard_id=0)
+            if not result.success:
+                break
+            admitted += 1
+        assert admitted <= 50
+
+    async def _lose_the_rf_lock(self, repo, entity_id, *, image=True):
+        """Make the next commit lose its `rf` lock once, so it takes the retry.
+
+        ``image=False`` also hides the retry's `ALL_NEW`, as a backend whose
+        `transact_write` returns ``None`` would. Returns a function to undo.
+        """
+        client = await repo._get_client()
+        key = {
+            "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "r", 0)},
+            "SK": {"S": sk_state()},
+        }
+        original = repo.transact_write
+        raced: list[int] = []
+
+        async def racing(items):
+            if not raced:
+                raced.append(1)
+                await client.update_item(
+                    TableName=repo.table_name,
+                    Key=key,
+                    UpdateExpression="ADD rf :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            attrs = await original(items)
+            return attrs if image else None
+
+        repo.transact_write = racing
+        return lambda: setattr(repo, "transact_write", original)
+
+    async def test_cascade_retry_quota_credit(self, two):
+        """A cascade's consumption-only retry writes child and parent in one
+        transaction, which returns no image (#730 third review). Its quota credits
+        used to be dropped as having no known period: refunds lost in their own
+        period (child 94, parent 94). The read's period now stands."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        slow = RateLimiter(repository=r1, speculative_writes=False)
+        await r1.create_entity("p")
+        await r1.create_entity("c", parent_id="p", cascade=True)
+        quota = [Limit.quota("q", 100, cron="0 0 * * *")]
+        await r1.set_limits("p", quota, resource="r")
+        await r1.set_limits("c", quota, resource="r")
+        async with slow.acquire("c", "r", {"q": 1}):
+            pass  # 99 each
+
+        undo = await self._lose_the_rf_lock(r1, "c")
+        try:
+            with pytest.raises(RuntimeError):
+                async with slow.acquire("c", "r", {"q": 5}) as lease:
+                    assert {e.entity_id for e in lease.entries} == {"c", "p"}
+                    raise RuntimeError("body failed")
+        finally:
+            undo()
+
+        for entity_id in ("c", "p"):
+            item = await self._raw(r1, entity_id, resource="r")
+            assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+
+    async def test_retry_with_no_image_keeps_the_reads_period(self, two):
+        """A backend whose `transact_write` returns no image after the retry: the
+        quota credit is guarded on the read's period and lands in it."""
+        l1, _, now = two
+        now[0] = self.T10
+        r1 = l1._repository
+        slow = RateLimiter(repository=r1, speculative_writes=False)
+        await r1.set_limits("n", [Limit.quota("q", 100, cron="0 0 * * *")], resource="r")
+        async with slow.acquire("n", "r", {"q": 1}):
+            pass
+
+        undo = await self._lose_the_rf_lock(r1, "n", image=False)
+        try:
+            with pytest.raises(RuntimeError):
+                async with slow.acquire("n", "r", {"q": 5}):
+                    raise RuntimeError("body failed")
+        finally:
+            undo()
+
+        item = await self._raw(r1, "n", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+
+    async def test_two_quotas_one_reset_drops_the_other(self, two):
+        """A daily and a monthly quota on one item; a reset of the daily one races
+        the refund (#730 third review). Only the daily credit belongs to a period
+        that ended: the monthly one is in its own period and must land (98), where
+        dropping every quota credit on the item left it at 97."""
+        l1, l2, now = two
+        now[0] = self.T0 + 59_000
+        r1 = l1._repository
+        quotas = [Limit.quota("d", 10, cron="0 0 * * *"), Limit.quota("m", 100, cron="0 0 1 * *")]
+        await r1.set_limits("mm", quotas, resource="r")
+        async with l1.acquire("mm", "r", {"d": 1, "m": 1}):
+            pass  # d 9, m 99
+        with pytest.raises(RuntimeError):
+            async with l1.acquire("mm", "r", {"d": 1, "m": 1}):
+                now[0] = self.MIDNIGHT + 1000
+                async with l2.acquire("mm", "r", {"d": 1, "m": 1}):
+                    pass  # resets d to 10 and spends 1; m goes on: 97
+                raise RuntimeError("body failed")
+
+        item = await self._raw(r1, "mm", resource="r")
+        assert item[bucket_attr("d", BUCKET_FIELD_TK)]["N"] == "9000"  # day 1's: dropped
+        assert item[bucket_attr("m", BUCKET_FIELD_TK)]["N"] == "98000"  # refunded
+
+    async def test_cron_change_moves_reset_before_guard_edge(self, two):
+        """The calendar guard's edge comes from the cron the lease held (#730 fourth
+        review). An entity-level change moves the reset from 06:00 to 00:00 under an
+        open lease; another client resets at 00:00:01 and spends 6; `rf < 06:00`
+        still held, so the old period's refund landed in the new one: 15 against 10.
+        The guard now also pins the reset-schedule strings, and the credit drops."""
+        l1, l2, now = two
+        now[0] = self.T0 + 59_000
+        r1, r2 = l1._repository, l2._repository
+        await r1.set_limits("cc", [Limit.quota("q", 10, cron="0 6 * * *")], resource="r")
+        async with l1.acquire("cc", "r", {"q": 1}):
+            pass  # 9
+
+        today = 0
+        with pytest.raises(RuntimeError):
+            async with l1.acquire("cc", "r", {"q": 5}):  # 4, in the old period
+                await r2.set_limits("cc", [Limit.quota("q", 10, cron="0 0 * * *")], resource="r")
+                now[0] = self.MIDNIGHT + 1000
+                async with l2.acquire("cc", "r", {"q": 6}):  # resets under the new cron
+                    today += 6
+                raise RuntimeError("body failed")
+
+        today += await self._drain(l2, "cc")
+        assert today == 10
+
+    async def test_a_lowered_limit_clamped_before_the_refund(self, two):
+        """The limit drops to 50 and another process's slow pass clamps to it (moving
+        `rf`) before the refund: the in-memory ceiling is still 100."""
+        l1, l2, _ = two
+        r1 = l1._repository
+
+        async def lower_and_clamp():
+            await r1.set_limits(
+                "low",
+                [Limit.custom("q", capacity=50, refill_amount=1, refill_period_seconds=86400)],
+                resource="r",
+            )
+            async with l2.acquire("low", "r", {"q": 0}):
+                pass  # the slow pass: clamps to 50, clears `vu`, moves `rf`
+
+        item = await self._bucket_rf_and_shard_moved(l1, "low", lower_and_clamp)
+
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "60000"  # 50 + 10
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
+        spend = await r1.speculative_consume("low", "r", {"q": 55}, shard_id=0)
+        assert not spend.success
+
+    async def test_a_cascade_compensation_trims_the_child_too(self, two):
+        """`_compensate_child` hands the child's image through to the same credit."""
+        l1, _, now = two
+        r1 = l1._repository
+        async with l1.acquire("solo", "budget", {"q": 2}):
+            pass
+        result = await r1.speculative_consume("solo", "budget", {"q": 5}, shard_id=0)
+        await r1._get_client()
+        tk = bucket_attr("q", BUCKET_FIELD_TK)
+        client = await r1._get_client()
+        await client.update_item(  # a refill to capacity lands meanwhile
+            TableName=r1.table_name,
+            Key={
+                "PK": {"S": pk_bucket(r1._namespace_id, "solo", "budget", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #tk = :full",
+            ExpressionAttributeNames={"#tk": tk},
+            ExpressionAttributeValues={":full": {"N": "10000"}},
+        )
+
+        await l1._compensate_child("solo", "budget", {"q": 5}, 0, result.buckets)
+
+        item = await self._raw(r1, "solo")
+        assert item[tk]["N"] == "15000"
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
 
 
 class TestMiddleEntityKeepsCascading:
@@ -12957,17 +14102,20 @@ class TestAdjustmentCommitFailure:
         assert await self._consumed(repo, "user") == 15  # initial + adjustment, once
         assert await self._consumed(repo, "org") == 10  # initial stands, adjustment lost
 
-    async def test_a_failed_first_adjustment_refunds_nothing(self, limiter):
+    async def test_a_failed_child_adjustment_refunds_nothing(self, limiter):
         repo = limiter._repository
         await self._cascade(limiter)
 
         with pytest.raises(RuntimeError, match="throttled"):
             async with limiter.acquire("user", "gpt-4", consume={"rpm": 10}) as lease:
                 await lease.consume(rpm=5)
-                self._fail_writes_to(repo, "user", "org")
+                self._fail_writes_to(repo, "user")
 
+        # The adjustments are independent writes, issued together (ADR-148 D7):
+        # the child's fails and keeps its initial consumption, unrefunded; the
+        # parent's lands.
         assert await self._consumed(repo, "user") == 10
-        assert await self._consumed(repo, "org") == 10
+        assert await self._consumed(repo, "org") == 15
 
 
 class TestSoftLimits:
@@ -13002,3 +14150,1266 @@ class TestSoftLimits:
                 pass
         assert [s.limit_name for s in exc_info.value.violations] == ["rpm"]
         assert [s.limit_name for s in exc_info.value.passed] == ["tpm"]
+
+
+def _transaction_conflict() -> ClientError:
+    """What botocore raises when a single-item write meets an in-flight
+    transaction on the same item (#724). moto never raises it."""
+    return ClientError(
+        {
+            "Error": {
+                "Code": "TransactionConflictException",
+                "Message": "Transaction is ongoing for the item",
+            }
+        },
+        "UpdateItem",
+    )
+
+
+class TestTransactionConflictIsContention:
+    """A fast-path write that meets an in-flight transaction is contention (#724).
+
+    ``TransactionConflictException`` on the speculative ``UpdateItem`` used to
+    reach ``acquire()``'s generic handler: a degraded lease (no limiting) under
+    ALLOW, ``RateLimiterUnavailable`` under BLOCK. Every test here asserts the
+    request is admitted or rejected exactly as it would be without the
+    conflict, and that no lease is degraded.
+    """
+
+    LIMITS = [Limit.per_minute("rpm", 10)]
+
+    async def _inject(
+        self,
+        repo,
+        entity_id: str,
+        times: int,
+        *,
+        speculative_only: bool = True,
+        refunds_only: bool = False,
+    ):
+        """Make the next ``times`` writes to ``entity_id``'s bucket conflict.
+
+        ``speculative_only`` limits it to the fast path's conditional
+        ``UpdateItem`` (the only write carrying ``:thresh_wcu``);
+        ``refunds_only`` to every other ``UpdateItem`` (refunds, commits).
+        """
+        client = await repo._get_client()
+        original = client.update_item
+        state = {"left": times, "hits": 0}
+
+        async def conflicted(**kwargs):
+            pk = kwargs.get("Key", {}).get("PK", {}).get("S", "")
+            speculative = ":thresh_wcu" in kwargs.get("ExpressionAttributeValues", {})
+            if refunds_only:
+                targeted = not speculative
+            else:
+                targeted = speculative or not speculative_only
+            if f"/BUCKET#{entity_id}#" in pk and targeted and state["left"] > 0:
+                state["left"] -= 1
+                state["hits"] += 1
+                raise _transaction_conflict()
+            return await original(**kwargs)
+
+        client.update_item = conflicted
+        return state
+
+    def _allow(self, limiter, monkeypatch) -> None:
+        monkeypatch.setattr(
+            limiter._repository, "resolve_on_unavailable", AsyncMock(return_value="allow")
+        )
+
+    async def _acquire(self, limiter, entity_id: str, rpm: int = 1):
+        async with limiter.acquire(
+            entity_id, "gpt-4", limits=self.LIMITS, consume={"rpm": rpm}
+        ) as lease:
+            assert not lease.degraded
+            assert lease.entries
+
+    async def _available(self, limiter, entity_id: str) -> int:
+        result = await limiter.available(entity_id, "gpt-4", limits=self.LIMITS)
+        return result["rpm"]
+
+    async def _cascade(self, limiter) -> None:
+        await limiter.create_entity("org")
+        await limiter.create_entity("user", parent_id="org", cascade=True)
+        freeze_clock(limiter._repository)
+        # Creates both buckets and warms the entity cache for the parallel path.
+        await self._acquire(limiter, "user")
+
+    # -- child, fast path ---------------------------------------------------
+
+    async def test_one_conflict_is_retried_on_the_fast_path(self, limiter):
+        freeze_clock(limiter._repository)
+        await self._acquire(limiter, "solo")
+        state = await self._inject(limiter._repository, "solo", 1)
+
+        await self._acquire(limiter, "solo")
+
+        assert state["hits"] == 1
+        assert await self._available(limiter, "solo") == 8
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_persistent_conflict_falls_to_the_slow_path(self, limiter, monkeypatch, allow):
+        if allow:
+            self._allow(limiter, monkeypatch)
+        freeze_clock(limiter._repository)
+        await self._acquire(limiter, "solo")
+        state = await self._inject(limiter._repository, "solo", 1000)
+
+        await self._acquire(limiter, "solo")
+
+        assert state["hits"] == 4  # the first write and three retries
+        assert await self._available(limiter, "solo") == 8
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_conflicted_exhausted_bucket_is_still_rejected(
+        self, limiter, monkeypatch, allow
+    ):
+        if allow:
+            self._allow(limiter, monkeypatch)
+        freeze_clock(limiter._repository)
+        await self._acquire(limiter, "solo", rpm=10)
+        await self._inject(limiter._repository, "solo", 1000)
+
+        for _ in range(5):
+            with pytest.raises(RateLimitExceeded):
+                await self._acquire(limiter, "solo")
+
+        assert await self._available(limiter, "solo") == 0
+
+    # -- cascade parent, parallel path (#318) --------------------------------
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_conflicted_parent_falls_to_the_slow_path(self, limiter, monkeypatch, allow):
+        if allow:
+            self._allow(limiter, monkeypatch)
+        await self._cascade(limiter)
+        state = await self._inject(limiter._repository, "org", 1000)
+
+        await self._acquire(limiter, "user")
+
+        assert state["hits"] == 4
+        # Child debited once (its fast-path debit refunded, the slow path's
+        # landed), parent debited once by the slow path.
+        assert await self._available(limiter, "user") == 8
+        assert await self._available(limiter, "org") == 8
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_conflicted_exhausted_parent_rejects_and_refunds_the_child(
+        self, limiter, monkeypatch, allow
+    ):
+        if allow:
+            self._allow(limiter, monkeypatch)
+        await self._cascade(limiter)
+        await self._acquire(limiter, "org", rpm=9)  # parent now at 0
+        await self._inject(limiter._repository, "org", 1000)
+
+        for _ in range(3):
+            with pytest.raises(RateLimitExceeded):
+                await self._acquire(limiter, "user")
+
+        assert await self._available(limiter, "user") == 9  # every debit refunded
+        assert await self._available(limiter, "org") == 0
+
+    async def test_a_conflicted_child_refunds_the_parallel_parent(self, limiter):
+        await self._cascade(limiter)
+        state = await self._inject(limiter._repository, "user", 1000)
+
+        await self._acquire(limiter, "user")
+
+        assert state["hits"] == 4
+        assert await self._available(limiter, "user") == 8
+        assert await self._available(limiter, "org") == 8
+
+    # -- cascade parent, sequential path (cold cache) ------------------------
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_conflicted_parent_on_the_sequential_path(self, limiter, monkeypatch, allow):
+        if allow:
+            self._allow(limiter, monkeypatch)
+        await self._cascade(limiter)
+        repo = limiter._repository
+        repo._entity_cache.clear()
+        repo._cascade_cache.clear()
+        state = await self._inject(repo, "org", 1000)
+
+        await self._acquire(limiter, "user")
+
+        assert state["hits"] == 4
+        assert await self._available(limiter, "user") == 8
+        assert await self._available(limiter, "org") == 8
+
+    async def test_a_conflicted_exhausted_parent_on_the_sequential_path(self, limiter):
+        await self._cascade(limiter)
+        await self._acquire(limiter, "org", rpm=9)
+        repo = limiter._repository
+        repo._entity_cache.clear()
+        repo._cascade_cache.clear()
+        await self._inject(repo, "org", 1000)
+
+        with pytest.raises(RateLimitExceeded):
+            await self._acquire(limiter, "user")
+
+        assert await self._available(limiter, "user") == 9
+        assert await self._available(limiter, "org") == 0
+
+    # -- other single-item writes on the acquire path ------------------------
+
+    async def test_a_conflicted_compensation_is_retried(self, limiter):
+        """The refund of a child debit must land even under contention."""
+        await self._cascade(limiter)
+        await self._acquire(limiter, "org", rpm=9)
+        repo = limiter._repository
+        await self._inject(repo, "org", 1000)
+        # The first write to the child that is not a fast-path debit (the
+        # refund) conflicts once.
+        client = await repo._get_client()
+        inner = client.update_item
+        refunds = {"left": 1, "hits": 0}
+
+        async def conflicted_refund(**kwargs):
+            pk = kwargs.get("Key", {}).get("PK", {}).get("S", "")
+            values = kwargs.get("ExpressionAttributeValues", {})
+            if "/BUCKET#user#" in pk and ":thresh_wcu" not in values and refunds["left"] > 0:
+                refunds["left"] -= 1
+                refunds["hits"] += 1
+                raise _transaction_conflict()
+            return await inner(**kwargs)
+
+        client.update_item = conflicted_refund
+
+        with pytest.raises(RateLimitExceeded):
+            await self._acquire(limiter, "user")
+
+        assert refunds["hits"] == 1
+        assert await self._available(limiter, "user") == 9
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_lost_child_refund_still_rejects(self, limiter, monkeypatch, allow):
+        """A refund that stays conflicted must not turn a 429 into an admission.
+
+        The parent is exhausted and its fast-path write stays contended, so the
+        child's parallel debit is refunded — and that refund conflicts on every
+        attempt. The refund is best-effort: the request is still rejected, never
+        degraded under ALLOW nor ``RateLimiterUnavailable`` under BLOCK.
+        """
+        if allow:
+            self._allow(limiter, monkeypatch)
+        await self._cascade(limiter)
+        await self._acquire(limiter, "org", rpm=9)  # parent now at 0
+        repo = limiter._repository
+        await self._inject(repo, "org", 1000)
+        refunds = await self._inject(repo, "user", 1000, refunds_only=True)
+
+        for _ in range(3):
+            with pytest.raises(RateLimitExceeded):
+                await self._acquire(limiter, "user")
+
+        assert refunds["hits"] == 3 * 4  # every refund tried, every one lost
+        assert await self._available(limiter, "org") == 0
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_lost_parent_refund_still_falls_to_the_slow_path(
+        self, limiter, monkeypatch, allow
+    ):
+        """The child's write stays contended, the parent's parallel debit landed,
+        and its refund is lost: the acquire still takes the slow path."""
+        if allow:
+            self._allow(limiter, monkeypatch)
+        await self._cascade(limiter)
+        repo = limiter._repository
+        await self._inject(repo, "user", 1000)
+        refunds = await self._inject(repo, "org", 4, refunds_only=True)
+
+        await self._acquire(limiter, "user")
+
+        assert refunds["hits"] == 4
+        assert await self._available(limiter, "user") == 8
+        # The lost refund leaves the parallel debit standing on the parent.
+        assert await self._available(limiter, "org") == 7
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_sustained_contention_is_a_short_429_not_an_outage(
+        self, limiter, monkeypatch, allow
+    ):
+        """Every write to a bucket with room conflicts: a short 429, nothing debited.
+
+        Under ALLOW this used to admit without limit (a degraded lease), under
+        BLOCK raise ``RateLimiterUnavailable``. The slow path's commit ran out
+        of conflict retries and the raw error reached ``on_unavailable``.
+        """
+        if allow:
+            self._allow(limiter, monkeypatch)
+        freeze_clock(limiter._repository)
+        await self._acquire(limiter, "solo")
+        await self._inject(limiter._repository, "solo", 10_000, speculative_only=False)
+
+        for _ in range(3):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                await self._acquire(limiter, "solo")
+            rejection = exc_info.value
+            assert rejection.contended is True
+            assert rejection.violations == []
+            assert rejection.retry_after_seconds == pytest.approx(0.1)
+            assert [s.limit_name for s in rejection.statuses] == ["rpm"]
+            assert rejection.as_dict()["contended"] is True
+
+        assert await self._available(limiter, "solo") == 9  # nothing debited
+
+    @pytest.mark.parametrize(("stuck", "refunded"), [("user", "org"), ("org", "user")])
+    async def test_one_stuck_rollback_refund_does_not_drop_the_others(
+        self, limiter, caplog, stuck, refunded
+    ):
+        """A cascade rollback writes every refund on its own (#729 item 10).
+
+        One item's refund keeps conflicting past its retries; the other item's
+        refund is still written, the failure is logged without the entity id,
+        and the caller sees its own exception, not the rollback's.
+        """
+        import logging
+
+        await self._cascade(limiter)  # one admitted request each: both at 9
+        refunds = await self._inject(limiter._repository, stuck, 1000, refunds_only=True)
+
+        class WorkFailedError(Exception):
+            pass
+
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(WorkFailedError):
+                async with limiter.acquire("user", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+                    raise WorkFailedError
+
+        assert refunds["hits"] == 4  # the stuck refund and its three retries
+        assert await self._available(limiter, refunded) == 9  # refunded
+        assert await self._available(limiter, stuck) == 8  # its refund was lost
+        failures = [
+            r.getMessage()
+            for r in caplog.records
+            if r.getMessage().startswith("Failed to roll back consumed tokens")
+        ]
+        assert failures == [
+            "Failed to roll back consumed tokens for resource=gpt-4 shard=0 (ClientError)"
+        ]
+
+    async def test_a_contended_commit_reports_the_undebited_balance(self, limiter):
+        """The commit wrote nothing, so the 429 reports the 5 the bucket still
+        holds, not the 3 the in-memory debit of 2 left."""
+        freeze_clock(limiter._repository)
+        await self._acquire(limiter, "solo", rpm=5)  # 5 of 10 left
+        await self._inject(limiter._repository, "solo", 10_000, speculative_only=False)
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            await self._acquire(limiter, "solo", rpm=2)
+
+        assert exc_info.value.contended is True
+        assert [(s.available, s.requested) for s in exc_info.value.statuses] == [(5, 2)]
+
+    async def test_a_conflicted_slow_path_commit_is_retried(self, limiter):
+        """A one-item slow-path commit goes out as a plain UpdateItem."""
+        limiter._speculative_writes = False
+        freeze_clock(limiter._repository)
+        await self._acquire(limiter, "solo")
+        state = await self._inject(limiter._repository, "solo", 1, speculative_only=False)
+
+        await self._acquire(limiter, "solo")
+
+        assert state["hits"] == 1
+        assert await self._available(limiter, "solo") == 8
+
+    async def test_a_conflicted_consumption_only_retry_is_retried(self):
+        from zae_limiter.lease import _transact_retrying_conflict
+
+        repo = MagicMock()
+        repo.transact_write = AsyncMock(side_effect=[_transaction_conflict(), None])
+
+        await _transact_retrying_conflict(repo, [{"Update": {}}])
+
+        assert repo.transact_write.call_count == 2
+
+    async def test_a_persistent_conflict_on_the_retry_propagates(self):
+        from zae_limiter.lease import _transact_retrying_conflict
+
+        repo = MagicMock()
+        repo.transact_write = AsyncMock(side_effect=_transaction_conflict())
+
+        with pytest.raises(ClientError):
+            await _transact_retrying_conflict(repo, [{"Update": {}}])
+
+        assert repo.transact_write.call_count == 4
+
+    async def test_other_errors_on_the_retry_propagate_at_once(self):
+        from zae_limiter.lease import _transact_retrying_conflict
+
+        repo = MagicMock()
+        boom = ClientError({"Error": {"Code": "ValidationException"}}, "UpdateItem")
+        repo.transact_write = AsyncMock(side_effect=boom)
+
+        with pytest.raises(ClientError):
+            await _transact_retrying_conflict(repo, [{"Update": {}}])
+
+        assert repo.transact_write.call_count == 1
+
+    def test_the_single_item_code_is_a_transaction_conflict(self):
+        from zae_limiter.lease import _is_condition_check_failure, _is_transaction_conflict
+        from zae_limiter.repository import _is_item_transaction_conflict
+
+        assert _is_transaction_conflict(_transaction_conflict()) is True
+        assert _is_condition_check_failure(_transaction_conflict()) is False
+        other = ClientError({"Error": {"Code": "ThrottlingException"}}, "UpdateItem")
+        assert _is_transaction_conflict(other) is False
+        assert _is_transaction_conflict(RuntimeError("x")) is False
+        assert _is_item_transaction_conflict(_transaction_conflict()) is True
+        assert _is_item_transaction_conflict(other) is False
+        assert _is_item_transaction_conflict(RuntimeError("x")) is False
+
+    async def test_a_conflicted_doubling_is_skipped_not_raised(self, limiter):
+        repo = limiter._repository
+        freeze_clock(repo)
+        await self._acquire(limiter, "solo")
+        client = await repo._get_client()
+        original = client.update_item
+
+        async def conflicted(**kwargs):
+            if ":old" in kwargs.get("ExpressionAttributeValues", {}):
+                raise _transaction_conflict()
+            return await original(**kwargs)
+
+        client.update_item = conflicted
+
+        assert await repo.bump_shard_count("solo", "gpt-4", 1) == 1
+
+    async def test_a_doubling_that_conflicts_once_still_doubles(self, limiter):
+        repo = limiter._repository
+        freeze_clock(repo)
+        await self._acquire(limiter, "solo")
+        state = await self._inject(repo, "solo", 1, speculative_only=False)
+
+        assert await repo.bump_shard_count("solo", "gpt-4", 1) == 2
+        assert state["hits"] == 1
+
+    async def test_a_conflicted_probe_shard_goes_to_the_slow_path(self, limiter):
+        """A probed shard that stays contended is handed to the slow path."""
+        from zae_limiter.repository_protocol import SpeculativeFailureReason
+
+        repo = limiter._repository
+        exhausted = SpeculativeResult(
+            success=False,
+            shard_id=0,
+            shard_count=2,
+            failure_reason=SpeculativeFailureReason.APP_LIMIT_EXHAUSTED,
+        )
+        contended = SpeculativeResult(
+            success=False, shard_id=1, failure_reason=SpeculativeFailureReason.CONTENTION
+        )
+        repo.speculative_consume = AsyncMock(return_value=contended)
+
+        lease, shard = await limiter._retry_on_other_shard(
+            "solo", "gpt-4", {"rpm": 1}, None, exhausted, repo._now_ms()
+        )
+
+        assert lease is None
+        assert shard == 1
+
+
+class TestContendedZeroGrant:
+    """A quota slot granted 0 because its move kept conflicting (#724, #729).
+
+    After two lost ADR-145 moves the third pass grants the covered slot 0
+    (design §6 step 6). When the moves were lost to write conflicts the donor
+    was busy, not spent: a rejection caused by that zero grant is the
+    contended 429 (retry in ~0.1 s), not an exhausted one quoting the next
+    reset edge hours away. A donor that genuinely holds nothing still gets the
+    ordinary exhausted 429.
+    """
+
+    QUOTA = Limit.quota("rpd", 1000, cron="0 0 * * *")
+
+    async def _shard0_then_doubled(self, limiter, entity_id: str):
+        """Shard 0 granted the whole quota at count 1, then doubled to 2."""
+        repo = limiter._repository
+        now_ms = freeze_clock(repo)
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([self.QUOTA])
+        state = BucketState.from_limit(entity_id, "gpt-4", self.QUOTA, now_ms)
+        vu, _reset = RateLimiter._materialisation_stamps(self.QUOTA, state, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    entity_id, "gpt-4", [state], now_ms, shard_id=0, shard_count=1, vu=vu
+                )
+            ]
+        )
+        assert await repo.bump_shard_count(entity_id, "gpt-4", 1) == 2
+        return repo
+
+    async def _set_shard0_tokens(self, repo, entity_id: str, tokens_milli: int) -> None:
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #t = :v",
+            ExpressionAttributeNames={"#t": bucket_attr("rpd", BUCKET_FIELD_TK)},
+            ExpressionAttributeValues={":v": {"N": str(tokens_milli)}},
+        )
+
+    async def _shard_tokens(self, repo, entity_id: str, shard_id: int) -> int | None:
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        raw = (response.get("Item") or {}).get(bucket_attr("rpd", BUCKET_FIELD_TK))
+        return None if raw is None else int(raw["N"])
+
+    @staticmethod
+    def _move_conflict() -> ClientError:
+        return ClientError(
+            {
+                "Error": {"Code": "TransactionCanceledException", "Message": "conflict"},
+                "CancellationReasons": [{"Code": "None"}, {"Code": "TransactionConflict"}],
+            },
+            "TransactWriteItems",
+        )
+
+    @pytest.mark.parametrize("mode", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    async def test_a_zero_grant_after_contended_moves_is_a_contended_429(self, limiter, mode):
+        repo = await self._shard0_then_doubled(limiter, "busy")
+        real = repo.transact_write
+        moves = {"n": 0}
+
+        async def moves_conflict(items):
+            if len(items) > 1:  # only a transaction carrying a donor debit
+                moves["n"] += 1
+                raise self._move_conflict()
+            return await real(items)
+
+        repo.transact_write = moves_conflict
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with slow.acquire("busy", "gpt-4", {"rpd": 1}, on_unavailable=mode):
+                    pass
+
+        rejection = exc_info.value
+        assert moves["n"] == 2 * 4  # two planned moves, each with 3 retries
+        assert rejection.contended is True
+        assert rejection.violations == []
+        assert rejection.retry_after_seconds == pytest.approx(0.1)
+        assert [s.limit_name for s in rejection.statuses] == ["rpd"]
+        # Nothing debited, nothing created: the donor still holds the quota.
+        assert await self._shard_tokens(repo, "busy", 0) == 1_000_000
+        assert await self._shard_tokens(repo, "busy", 1) is None
+
+    async def test_a_contended_zero_grant_reports_the_requested_amount(self, limiter):
+        """The zeroed slot admitted nothing (``consumed == 0``); the 429 still
+        reports what the caller asked for."""
+        repo = await self._shard0_then_doubled(limiter, "asked")
+        real = repo.transact_write
+
+        async def moves_conflict(items):
+            if len(items) > 1:
+                raise self._move_conflict()
+            return await real(items)
+
+        repo.transact_write = moves_conflict
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with slow.acquire("asked", "gpt-4", {"rpd": 7}):
+                    pass
+
+        assert exc_info.value.contended is True
+        assert [(s.limit_name, s.requested) for s in exc_info.value.statuses] == [("rpd", 7)]
+
+    async def test_a_donor_holding_nothing_is_an_ordinary_429(self, limiter):
+        """No conflict involved: the quota is genuinely spent."""
+        repo = await self._shard0_then_doubled(limiter, "spent")
+        await self._set_shard0_tokens(repo, "spent", 0)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with slow.acquire("spent", "gpt-4", {"rpd": 1}):
+                    pass
+
+        rejection = exc_info.value
+        assert rejection.contended is False
+        assert [v.limit_name for v in rejection.violations] == ["rpd"]
+        assert rejection.retry_after_seconds > 60  # the next reset edge
+
+    async def test_a_donor_spent_after_a_contended_loss_is_an_ordinary_429(self, limiter):
+        """The first move loses to contention, the re-planned one finds the donor
+        spent: the slot's 0 is the donor's empty balance, not the table being busy."""
+        repo = await self._shard0_then_doubled(limiter, "drained")
+        real = repo.transact_write
+        moves = {"n": 0}
+
+        async def conflict_then_spent(items):
+            if len(items) > 1:
+                moves["n"] += 1
+                if moves["n"] <= 4:  # the first move and its 3 retries
+                    raise self._move_conflict()
+                await self._set_shard0_tokens(repo, "drained", 0)
+            return await real(items)
+
+        repo.transact_write = conflict_then_spent
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with slow.acquire("drained", "gpt-4", {"rpd": 1}):
+                    pass
+
+        assert moves["n"] == 5
+        assert exc_info.value.contended is False
+        assert [v.limit_name for v in exc_info.value.violations] == ["rpd"]
+
+
+class TestDoublingSurvivesASiblingStampConflict:
+    """A conflict on a sibling's ``shard_count`` stamp is not a skipped doubling (#729).
+
+    ``bump_shard_count`` read a ``TransactionConflictException`` from
+    ``_propagate_shard_count`` as "shard 0 stayed contended": it returned the old
+    count while shard 0 had already doubled, so the caller drew from the old
+    range, the conflicted sibling kept its stale count, and every shard created
+    from the stale count was born with it too. Each stale shard refills toward
+    ``capacity // 2`` instead of ``// 4``: 1496 admitted in one minute against
+    1000/min before the fix. Shard 0 doubled is the truth; each sibling stamp
+    retries its own conflict.
+    """
+
+    RPM = Limit.per_minute("rpm", 1000)
+
+    async def _two_shards(self, limiter, entity_id: str):
+        """A 1000/min limit on shards 0 and 1 at count 2, with a settable clock."""
+        repo = limiter._repository
+        clock = {"now": repo._now_ms()}
+        repo._now_ms = lambda: clock["now"]
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([self.RPM])
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 0}):
+            pass
+        assert await repo.bump_shard_count(entity_id, "gpt-4", 1) == 2
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire(entity_id, "gpt-4", {"rpm": 0}):
+                pass
+        return repo, clock
+
+    def _key(self, repo, entity_id: str, shard_id: int) -> dict:
+        return {
+            "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+            "SK": {"S": sk_state()},
+        }
+
+    async def _shard_count_of(self, repo, entity_id: str, shard_id: int) -> int:
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name, Key=self._key(repo, entity_id, shard_id)
+        )
+        return int(response["Item"]["shard_count"]["N"])
+
+    async def _conflict_sibling_stamp(self, repo, entity_id: str, shard_id: int, times: int):
+        client = await repo._get_client()
+        original = client.update_item
+        state = {"left": times, "hits": 0}
+        sibling_pk = pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)
+
+        async def conflicted(**kwargs):
+            if (
+                kwargs.get("Key", {}).get("PK", {}).get("S") == sibling_pk
+                and kwargs.get("ConditionExpression") == "shard_count < :new"
+                and state["left"] > 0
+            ):
+                state["left"] -= 1
+                state["hits"] += 1
+                raise ClientError(
+                    {"Error": {"Code": "TransactionConflictException", "Message": "busy"}},
+                    "UpdateItem",
+                )
+            return await original(**kwargs)
+
+        client.update_item = conflicted
+        return state
+
+    async def test_the_doubling_stands_and_every_sibling_is_stamped(self, limiter):
+        repo, clock = await self._two_shards(limiter, "hot")
+        stamps = await self._conflict_sibling_stamp(repo, "hot", 1, times=1)
+
+        assert await repo.bump_shard_count("hot", "gpt-4", 2) == 4
+        assert stamps["hits"] == 1  # the conflicted stamp was retried, not skipped
+
+        for shard in (2, 3):  # the new range, created by the real slow path
+            with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                async with limiter.acquire("hot", "gpt-4", {"rpm": 0}):
+                    pass
+        assert [await self._shard_count_of(repo, "hot", s) for s in range(4)] == [4, 4, 4, 4]
+
+        # Empty every shard, let one full minute pass, then spend it: each
+        # shard refills to its own share, and the shares must sum to the limit.
+        client = await repo._get_client()
+        for shard in range(4):
+            await client.update_item(
+                TableName=repo.table_name,
+                Key=self._key(repo, "hot", shard),
+                UpdateExpression="SET #t = :z, #rf = :rf",
+                ExpressionAttributeNames={
+                    "#t": bucket_attr("rpm", BUCKET_FIELD_TK),
+                    "#rf": BUCKET_FIELD_RF,
+                },
+                ExpressionAttributeValues={":z": {"N": "0"}, ":rf": {"N": str(clock["now"])}},
+            )
+        clock["now"] += 60_000
+        admitted = 0
+        for _ in range(1500):
+            try:
+                async with limiter.acquire("hot", "gpt-4", {"rpm": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                pass
+        assert admitted <= 1000
+
+    async def test_a_sibling_stamp_that_stays_contended_keeps_the_new_count(self, limiter):
+        """Even a stamp whose retries run out does not undo shard 0's doubling."""
+        repo, _clock = await self._two_shards(limiter, "stuck")
+        stamps = await self._conflict_sibling_stamp(repo, "stuck", 1, times=1000)
+
+        assert await repo.bump_shard_count("stuck", "gpt-4", 2) == 4
+
+        assert stamps["hits"] == 4  # the stamp and its three retries
+        assert await self._shard_count_of(repo, "stuck", 0) == 4
+
+
+class TestFreezeConflictIsContention:
+    """A conflict on the ADR-145 grant-size freeze is contention (#729).
+
+    Before a fresh grant, quota planning raises a lagging sibling's
+    ``shard_count`` with its grant size frozen. That write had no conflict
+    handling: a ``TransactionConflictException`` reached ``acquire()``'s generic
+    handler, a degraded lease (no limiting) under ALLOW, ``RateLimiterUnavailable``
+    under BLOCK. It is now retried, and a conflict that outlasts the retries is
+    the contended 429.
+    """
+
+    QUOTA = Limit.quota("rpd", 1000, cron="0 0 * * *")
+
+    async def _lagging_shard0(self, limiter, entity_id: str):
+        """Shard 0 granted half the quota at count 2 (covers slots 0 and 2);
+        the client believes the count is 4, so slot 3 is a fresh grant and
+        shard 0 lags the planned count."""
+        repo = limiter._repository
+        now_ms = freeze_clock(repo)
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([self.QUOTA])
+        state = BucketState.from_limit(entity_id, "gpt-4", self.QUOTA, now_ms, shard_count=2)
+        state.grant_count = 2
+        vu, _reset = RateLimiter._materialisation_stamps(self.QUOTA, state, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    entity_id, "gpt-4", [state], now_ms, shard_id=0, shard_count=2, vu=vu
+                )
+            ]
+        )
+        repo._entity_cache[(repo._namespace_id, entity_id)] = (False, None, {"gpt-4": 4})
+        return repo
+
+    async def _conflict_freeze(self, repo, times: int):
+        client = await repo._get_client()
+        original = client.update_item
+        state = {"left": times, "hits": 0}
+
+        async def conflicted(**kwargs):
+            if kwargs.get("ConditionExpression") == "#qsc < :qnew" and state["left"] > 0:
+                state["left"] -= 1
+                state["hits"] += 1
+                raise ClientError(
+                    {"Error": {"Code": "TransactionConflictException", "Message": "busy"}},
+                    "UpdateItem",
+                )
+            return await original(**kwargs)
+
+        client.update_item = conflicted
+        return state
+
+    async def _shard0_count(self, repo, entity_id: str) -> int:
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return int(response["Item"]["shard_count"]["N"])
+
+    @pytest.mark.parametrize("mode", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    async def test_a_freeze_that_keeps_conflicting_is_a_contended_429(self, limiter, mode):
+        repo = await self._lagging_shard0(limiter, "frozen")
+        freezes = await self._conflict_freeze(repo, 1000)
+
+        with patch("zae_limiter.repository.random.randrange", return_value=3):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with limiter.acquire("frozen", "gpt-4", {"rpd": 1}, on_unavailable=mode):
+                    pass
+
+        rejection = exc_info.value
+        assert freezes["hits"] == 4  # the freeze and its three retries
+        assert rejection.contended is True
+        assert rejection.violations == []
+        assert rejection.retry_after_seconds == pytest.approx(0.1)
+        assert [s.limit_name for s in rejection.statuses] == ["rpd"]
+        assert await self._shard0_count(repo, "frozen") == 2  # nothing written
+
+    async def test_a_freeze_that_conflicts_once_is_retried(self, limiter):
+        repo = await self._lagging_shard0(limiter, "thawed")
+        freezes = await self._conflict_freeze(repo, 1)
+
+        with patch("zae_limiter.repository.random.randrange", return_value=3):
+            async with limiter.acquire("thawed", "gpt-4", {"rpd": 1}) as lease:
+                assert not lease.degraded
+
+        assert freezes["hits"] == 1
+        assert await self._shard0_count(repo, "thawed") == 4
+
+    async def test_other_planning_errors_still_reach_on_unavailable(self, limiter):
+        repo = await self._lagging_shard0(limiter, "broken")
+        repo.plan_quota_shard = AsyncMock(side_effect=RuntimeError("backend down"))
+
+        with patch("zae_limiter.repository.random.randrange", return_value=3):
+            with pytest.raises(RateLimiterUnavailable):
+                async with limiter.acquire("broken", "gpt-4", {"rpd": 1}):
+                    pass
+
+
+class TestContendedZeroGrantNeedsTokensToMove:
+    """Only a slot whose donor still held tokens counts as zeroed by contention (#729).
+
+    Two moves are lost to contention, and by the third pass the donor has been
+    spent by other traffic. The planner then gives the slot nothing because the
+    donor holds nothing: the quota is genuinely exhausted, and the rejection
+    must be the ordinary 429 with real violations, not the contended one.
+    """
+
+    QUOTA = Limit.quota("rpd", 1000, cron="0 0 * * *")
+
+    async def test_a_donor_drained_before_the_third_pass_is_an_ordinary_429(self, limiter):
+        repo = limiter._repository
+        now_ms = freeze_clock(repo)
+        await limiter.create_entity("drained3")
+        await limiter.set_system_defaults([self.QUOTA])
+        state = BucketState.from_limit("drained3", "gpt-4", self.QUOTA, now_ms)
+        vu, _reset = RateLimiter._materialisation_stamps(self.QUOTA, state, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "drained3", "gpt-4", [state], now_ms, shard_id=0, shard_count=1, vu=vu
+                )
+            ]
+        )
+        assert await repo.bump_shard_count("drained3", "gpt-4", 1) == 2
+        client = await repo._get_client()
+        real = repo.transact_write
+        moves = {"n": 0}
+
+        async def moves_conflict_then_donor_spent(items):
+            if len(items) > 1:  # only a transaction carrying a donor debit
+                moves["n"] += 1
+                if moves["n"] == 2 * 4:
+                    # Other traffic spends the donor before the third pass reads it.
+                    await client.update_item(
+                        TableName=repo.table_name,
+                        Key={
+                            "PK": {"S": pk_bucket(repo._namespace_id, "drained3", "gpt-4", 0)},
+                            "SK": {"S": sk_state()},
+                        },
+                        UpdateExpression="SET #t = :z",
+                        ExpressionAttributeNames={"#t": bucket_attr("rpd", BUCKET_FIELD_TK)},
+                        ExpressionAttributeValues={":z": {"N": "0"}},
+                    )
+                raise ClientError(
+                    {
+                        "Error": {"Code": "TransactionCanceledException", "Message": "busy"},
+                        "CancellationReasons": [{"Code": "None"}, {"Code": "TransactionConflict"}],
+                    },
+                    "TransactWriteItems",
+                )
+            return await real(items)
+
+        repo.transact_write = moves_conflict_then_donor_spent
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with slow.acquire("drained3", "gpt-4", {"rpd": 1}):
+                    pass
+
+        rejection = exc_info.value
+        assert moves["n"] == 2 * 4  # two moves lost to contention
+        assert rejection.contended is False
+        assert [v.limit_name for v in rejection.violations] == ["rpd"]
+
+
+class TestPeriodRedoKeepsContention:
+    """The #743 period redo of the third pass keeps ``moves_contended`` (#729)."""
+
+    async def test_the_redo_passes_moves_contended_through(self, limiter):
+        from zae_limiter.lease import PeriodNotAppliedError, QuotaMoveLostError
+        from zae_limiter.models import LimitStatus
+
+        status = LimitStatus(
+            entity_id="e",
+            resource="gpt-4",
+            limit_name="rpd",
+            limit=Limit.quota("rpd", 1000, cron="0 0 * * *"),
+            available=0,
+            requested=1,
+            exceeded=True,
+            retry_after_seconds=1.0,
+        )
+        outcomes = [
+            QuotaMoveLostError(contended=True),
+            QuotaMoveLostError(contended=True),
+            PeriodNotAppliedError([status]),
+            None,
+        ]
+        calls: list[dict] = []
+
+        async def fake_do_acquire(**kwargs):
+            calls.append(kwargs)
+            lease = MagicMock()
+            lease._commit_initial = AsyncMock(side_effect=outcomes[len(calls) - 1])
+            return lease
+
+        limiter._do_acquire = fake_do_acquire
+        await limiter._slow_acquire("e", "gpt-4", None, {"rpd": 1})
+
+        assert [(c["disable_moves"], c["moves_contended"]) for c in calls] == [
+            (False, False),
+            (False, False),
+            (True, True),
+            (True, True),  # the redo, which dropped it before
+        ]
+
+
+class TestStampingContinuesPastAContendedSibling:
+    """A sibling stamp still contended after its retries skips only that sibling (#729).
+
+    ``_propagate_shard_count``'s ``stamp()`` re-raised such a conflict. The sync
+    twin in serial mode runs the stamps one by one (``tuple(fn() for fn in
+    funcs)``), so the first contended sibling stopped every later one, and in
+    async the raise left the other stamps un-awaited. Measured: doubling 4 -> 8
+    with shard 1 contended left counts [8, 4, 4, 4] and admitted 1375 in one
+    minute against 1000/min. The sync twin is forced to serial below; it is
+    what ``parallel_mode="auto"`` picks on a 1-vCPU host.
+    """
+
+    RPM = Limit.per_minute("rpm", 1000)
+
+    async def _sharded(self, limiter, entity_id: str, old_count: int):
+        """``old_count`` shards of a 1000/min limit, all stamped ``old_count``."""
+        repo = limiter._repository
+        if hasattr(repo, "_executor_fn"):  # the sync twin: one stamp after another
+            repo._executor_fn = lambda funcs: tuple(fn() for fn in funcs)
+        clock = {"now": repo._now_ms()}
+        repo._now_ms = lambda: clock["now"]
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([self.RPM])
+        for shard in range(old_count):
+            state = BucketState.from_limit(
+                entity_id, "gpt-4", self.RPM, clock["now"], shard_count=old_count
+            )
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id,
+                        "gpt-4",
+                        [state],
+                        clock["now"],
+                        shard_id=shard,
+                        shard_count=old_count,
+                    )
+                ]
+            )
+        repo._entity_cache[(repo._namespace_id, entity_id)] = (False, None, {"gpt-4": old_count})
+        return repo, clock
+
+    def _key(self, repo, entity_id: str, shard_id: int) -> dict:
+        return {
+            "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+            "SK": {"S": sk_state()},
+        }
+
+    async def _counts(self, repo, entity_id: str, shards: int) -> list[int]:
+        client = await repo._get_client()
+        counts = []
+        for shard in range(shards):
+            response = await client.get_item(
+                TableName=repo.table_name, Key=self._key(repo, entity_id, shard)
+            )
+            counts.append(int(response["Item"]["shard_count"]["N"]))
+        return counts
+
+    async def _contend(self, repo, entity_id: str, shards: set[int]) -> None:
+        client = await repo._get_client()
+        original = client.update_item
+        contended = {pk_bucket(repo._namespace_id, entity_id, "gpt-4", s) for s in shards}
+
+        async def conflicted(**kwargs):
+            if (
+                kwargs.get("Key", {}).get("PK", {}).get("S") in contended
+                and kwargs.get("ConditionExpression") == "shard_count < :new"
+            ):
+                raise ClientError(
+                    {"Error": {"Code": "TransactionConflictException", "Message": "busy"}},
+                    "UpdateItem",
+                )
+            return await original(**kwargs)
+
+        client.update_item = conflicted
+
+    @pytest.mark.parametrize("old_count", [4, 16])
+    @pytest.mark.parametrize("position", ["first", "middle", "last", "two"])
+    async def test_every_other_sibling_is_stamped(self, limiter, old_count, position):
+        repo, _clock = await self._sharded(limiter, "busy", old_count)
+        stuck = {
+            "first": {1},
+            "middle": {old_count // 2},
+            "last": {old_count - 1},
+            "two": {1, old_count - 1},
+        }[position]
+        await self._contend(repo, "busy", stuck)
+
+        assert await repo.bump_shard_count("busy", "gpt-4", old_count) == 2 * old_count
+
+        counts = await self._counts(repo, "busy", old_count)
+        assert counts == [old_count if s in stuck else 2 * old_count for s in range(old_count)]
+
+    async def test_one_contended_sibling_bounds_the_overshoot(self, limiter):
+        """4 -> 8 with shard 1 contended: only that shard stays on the old share.
+
+        It refills toward 1000 // 4 = 250 instead of 125, so a minute admits at
+        most 7 * 125 + 250 = 1125 (that stale sibling is a separate item); before
+        the fix shards 2 and 3 were skipped too and a minute admitted 1375.
+        """
+        repo, clock = await self._sharded(limiter, "hot", 4)
+        await self._contend(repo, "hot", {1})
+        assert await repo.bump_shard_count("hot", "gpt-4", 4) == 8
+        for shard in range(4, 8):  # the new range, created by the real slow path
+            with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                async with limiter.acquire("hot", "gpt-4", {"rpm": 0}):
+                    pass
+
+        client = await repo._get_client()
+        for shard in range(8):
+            await client.update_item(
+                TableName=repo.table_name,
+                Key=self._key(repo, "hot", shard),
+                UpdateExpression="SET #t = :z, #rf = :rf",
+                ExpressionAttributeNames={
+                    "#t": bucket_attr("rpm", BUCKET_FIELD_TK),
+                    "#rf": BUCKET_FIELD_RF,
+                },
+                ExpressionAttributeValues={":z": {"N": "0"}, ":rf": {"N": str(clock["now"])}},
+            )
+        clock["now"] += 60_000
+        admitted = 0
+        for _ in range(1600):
+            try:
+                async with limiter.acquire("hot", "gpt-4", {"rpm": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                pass
+        assert admitted <= 1125
+
+
+class TestPlanningContentionOnACascadeParent:
+    """A planning conflict on a cascade parent is a 429, never an outage (#729).
+
+    The parent is sharded and carries only a daily quota, which shares no name
+    with ``consume={"rpm": 1}``. Its quota planning keeps conflicting.
+    """
+
+    RPM = Limit.per_minute("rpm", 10)
+    DAILY = Limit.quota("daily", 1000, cron="0 0 * * *")
+
+    async def _setup(self, limiter, child_tokens: int):
+        repo = limiter._repository
+        now_ms = freeze_clock(repo)
+        await limiter.create_entity("org")
+        await limiter.create_entity("kid", parent_id="org", cascade=True)
+        await limiter.set_limits("kid", [self.RPM], resource="gpt-4")
+        await limiter.set_limits("org", [self.DAILY], resource="gpt-4")
+        state = BucketState.from_limit("kid", "gpt-4", self.RPM, now_ms)
+        state.tokens_milli = child_tokens
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "kid", "gpt-4", [state], now_ms, cascade=True, parent_id="org"
+                )
+            ]
+        )
+        # The parent has no bucket yet and is believed sharded, so its quota
+        # must be planned; the planning conflicts on every attempt.
+        repo._entity_cache[(repo._namespace_id, "org")] = (False, None, {"gpt-4": 4})
+        original = repo.plan_quota_shard
+
+        async def conflicting_for_parent(entity_id, *args, **kwargs):
+            if entity_id == "org":
+                raise ClientError(
+                    {"Error": {"Code": "TransactionConflictException", "Message": "busy"}},
+                    "UpdateItem",
+                )
+            return await original(entity_id, *args, **kwargs)
+
+        repo.plan_quota_shard = conflicting_for_parent
+        return RateLimiter(repository=repo, speculative_writes=False)
+
+    @pytest.mark.parametrize("mode", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    async def test_a_parent_sharing_no_limit_name_is_still_a_429(self, limiter, mode):
+        slow = await self._setup(limiter, child_tokens=0)  # the child is exhausted
+
+        with pytest.raises(RateLimitExceeded):
+            async with slow.acquire("kid", "gpt-4", {"rpm": 1}, on_unavailable=mode):
+                pass
+
+    async def test_the_childs_real_violation_outranks_a_busy_parent(self, limiter):
+        """The child is exhausted: its real wait is reported, not "retry in 0.1 s"."""
+        slow = await self._setup(limiter, child_tokens=0)
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with slow.acquire("kid", "gpt-4", {"rpm": 1}):
+                pass
+
+        rejection = exc_info.value
+        assert rejection.contended is False
+        assert [v.limit_name for v in rejection.violations] == ["rpm"]
+        assert rejection.retry_after_seconds > 0.1
+
+    async def test_a_fine_child_with_a_busy_parent_is_contended_with_both(self, limiter):
+        slow = await self._setup(limiter, child_tokens=10_000)
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with slow.acquire("kid", "gpt-4", {"rpm": 1}):
+                pass
+
+        rejection = exc_info.value
+        assert rejection.contended is True
+        assert rejection.violations == []
+        assert [(s.entity_id, s.limit_name) for s in rejection.statuses] == [
+            ("kid", "rpm"),
+            ("org", "daily"),
+        ]
+
+    async def test_a_contended_429_reports_the_per_shard_share(self, limiter):
+        """The parent is planned at 4 shards: its 1000/day quota is reported as
+        the 250 a shard holds, like every other 429 (#475), not the undivided 1000."""
+        slow = await self._setup(limiter, child_tokens=10_000)
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with slow.acquire("kid", "gpt-4", {"rpm": 1}):
+                pass
+
+        capacities = {s.entity_id: s.limit.capacity for s in exc_info.value.statuses}
+        assert capacities == {"kid": 10, "org": 250}
+
+
+class TestDoublingSurvivesAPropagationError:
+    """Once shard 0 has doubled, any propagation error leaves the new count (#729)."""
+
+    async def test_an_unexpected_propagation_error_still_returns_the_new_count(
+        self, limiter, caplog
+    ):
+        import logging
+
+        repo = limiter._repository
+        freeze_clock(repo)
+        await limiter.create_entity("odd")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        async with limiter.acquire("odd", "gpt-4", {"rpm": 0}):
+            pass
+        repo._propagate_shard_count = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with caplog.at_level(logging.WARNING):
+            assert await repo.bump_shard_count("odd", "gpt-4", 1) == 2
+
+        assert "shard_count propagation to 2 for resource=gpt-4 incomplete (RuntimeError)" in (
+            caplog.text
+        )
+        assert "odd" not in caplog.text
+
+
+class TestZeroGrantedChildUnderABusyParent:
+    """A child slot zeroed by contended moves stays contended under a busy parent (#729).
+
+    The child's quota moves are lost to conflicts twice, so the third pass
+    grants its slot 0; on that pass the parent's quota planning conflicts too.
+    The child's violation is itself contention, so the 429 is the contended
+    one (retry in 0.1 s), not the exhausted one quoting the reset edge.
+    """
+
+    CHILD = Limit.quota("rpd", 1000, cron="0 0 * * *")
+    PARENT = Limit.quota("daily", 1000, cron="0 0 * * *")
+
+    async def test_the_429_stays_contended(self, limiter):
+        repo = limiter._repository
+        now_ms = freeze_clock(repo)
+        await limiter.create_entity("org")
+        await limiter.create_entity("kid", parent_id="org", cascade=True)
+        await limiter.set_limits("kid", [self.CHILD], resource="gpt-4")
+        await limiter.set_limits("org", [self.PARENT], resource="gpt-4")
+        state = BucketState.from_limit("kid", "gpt-4", self.CHILD, now_ms)
+        vu, _reset = RateLimiter._materialisation_stamps(self.CHILD, state, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "kid", "gpt-4", [state], now_ms, cascade=True, parent_id="org", vu=vu
+                )
+            ]
+        )
+        assert await repo.bump_shard_count("kid", "gpt-4", 1) == 2
+        repo._entity_cache[(repo._namespace_id, "org")] = (False, None, {"gpt-4": 4})
+
+        real_write = repo.transact_write
+        moves = {"n": 0}
+
+        async def moves_conflict(items):
+            if len(items) > 1:  # the child's move rides in the commit
+                moves["n"] += 1
+                raise ClientError(
+                    {
+                        "Error": {"Code": "TransactionCanceledException", "Message": "busy"},
+                        "CancellationReasons": [{"Code": "TransactionConflict"}] * len(items),
+                    },
+                    "TransactWriteItems",
+                )
+            return await real_write(items)
+
+        real_plan = repo.plan_quota_shard
+        parent_plans = {"n": 0}
+
+        async def parent_busy_on_the_third_pass(entity_id, *args, **kwargs):
+            if entity_id == "org":
+                parent_plans["n"] += 1
+                if parent_plans["n"] == 3:
+                    raise ClientError(
+                        {"Error": {"Code": "TransactionConflictException", "Message": "busy"}},
+                        "UpdateItem",
+                    )
+            return await real_plan(entity_id, *args, **kwargs)
+
+        repo.transact_write = moves_conflict
+        repo.plan_quota_shard = parent_busy_on_the_third_pass
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with slow.acquire("kid", "gpt-4", {"rpd": 1}):
+                    pass
+
+        rejection = exc_info.value
+        assert moves["n"] == 2 * 4  # two passes' moves, each with 3 retries
+        assert parent_plans["n"] == 3
+        assert rejection.contended is True
+        assert rejection.retry_after_seconds == pytest.approx(0.1)

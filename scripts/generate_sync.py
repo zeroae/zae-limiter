@@ -49,6 +49,7 @@ TEST_TRANSFORMS = [
     ("test_discovery.py", "test_sync_discovery.py"),
     ("test_config_cache.py", "test_sync_config_cache.py"),
     ("test_zero_estimate_lease.py", "test_sync_zero_estimate_lease.py"),
+    ("test_multi_resource_acquire.py", "test_sync_multi_resource_acquire.py"),
 ]
 
 # Class renames
@@ -58,6 +59,7 @@ CLASS_RENAMES = {
     "Repository": "SyncRepository",
     "RepositoryBuilder": "SyncRepositoryBuilder",
     "Lease": "SyncLease",
+    "LeaseResource": "SyncLeaseResource",
     "ConfigCache": "SyncConfigCache",
     "StackManager": "SyncStackManager",
     "InfrastructureDiscovery": "SyncInfrastructureDiscovery",
@@ -103,6 +105,7 @@ IMPORT_NAME_REWRITES = {
     "Repository": "SyncRepository",
     "RepositoryBuilder": "SyncRepositoryBuilder",
     "Lease": "SyncLease",
+    "LeaseResource": "SyncLeaseResource",
     "ConfigCache": "SyncConfigCache",
     "StackManager": "SyncStackManager",
     "InfrastructureDiscovery": "SyncInfrastructureDiscovery",
@@ -218,6 +221,24 @@ def __del__(self) -> None:
     self._cleanup_thread_pool()
 """
 
+# Classes that gather but are not the repository (ADR-148): their
+# `asyncio.gather` becomes `self._run_in_executor(...)` like every other, and
+# the method injected here delegates to `zae_limiter._parallel.run_parallel`
+# with the repository the class holds, so it honours that repository's
+# `parallel_mode`. Maps class name -> attribute holding the repository.
+_ORCHESTRATOR_REPOSITORY_ATTR = {
+    "SyncRateLimiter": "_repository",
+    "SyncLease": "repository",
+}
+
+_ORCHESTRATOR_EXECUTOR_METHOD = '''\
+def _run_in_executor(self, *funcs: Any) -> Any:
+    """Run ``funcs`` concurrently per the repository's ``parallel_mode`` (ADR-148)."""
+    from ._parallel import run_parallel
+
+    return run_parallel(self.{attr}, funcs)
+'''
+
 # Statements injected into SyncRepository.__init__ for parallel_mode support.
 _INIT_PARALLEL_STMTS = """\
 self._parallel_mode = parallel_mode
@@ -266,6 +287,8 @@ TEST_SKIP_FUNCTIONS = {
     "test_close_cleans_up_client",
     # Uses asyncio.Barrier + asyncio.gather for concurrent leases - no sync equivalent
     "test_concurrent_adjust_no_lost_tokens",
+    # Cancels a task mid-gather; a sync call cannot be cancelled
+    "test_a_cancelled_acquire_refunds_the_fast_wins",
 }
 
 TEST_METHOD_NAME_REWRITES = {
@@ -796,6 +819,11 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             # 5. Inject executor methods
             executor_stmts = ast.parse(_EXECUTOR_METHODS).body
             node.body.extend(executor_stmts)
+
+        # Inject the delegating executor into the limiter and the lease (ADR-148)
+        if node.name in _ORCHESTRATOR_REPOSITORY_ATTR:
+            attr = _ORCHESTRATOR_REPOSITORY_ATTR[node.name]
+            node.body.extend(ast.parse(_ORCHESTRATOR_EXECUTOR_METHOD.format(attr=attr)).body)
 
         # Inject parallel_mode support into SyncRepositoryBuilder
         if node.name == "SyncRepositoryBuilder":

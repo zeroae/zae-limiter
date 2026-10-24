@@ -887,7 +887,8 @@ class TestAcceptance:
             with patch("zae_limiter.repository.random.randrange", return_value=1):
                 async with slow.acquire("conflict", RESOURCE, {"rpd": 1}):
                     pass
-        assert calls == [2, 2], "the same move retried as-is"
+        # The create, its donor debit and its META check (ADR-150).
+        assert calls == [3, 3], "the same move retried as-is"
         assert await shard_balances(repo, "conflict", "rpd", 2) == [500_000, 499_000]
 
     @pytest.mark.parametrize("mode", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
@@ -904,7 +905,7 @@ class TestAcceptance:
         moves: list[int] = []
 
         async def moves_conflict(items):
-            if len(items) > 1:  # only a transaction carrying a donor debit
+            if any("Update" in item for item in items):  # only one carrying a donor debit
                 moves.append(1)
                 raise _conflict()
             return await real(items)
@@ -951,7 +952,7 @@ class TestAcceptance:
             with patch("zae_limiter.repository.random.randrange", return_value=1):
                 async with slow.acquire("lost", RESOURCE, {"rpd": 100}):
                     pass
-        assert calls == [2, 2]
+        assert calls == [3, 3]  # the create, its donor debit, its META check (ADR-150)
         # The re-plan moved what shard 0 still held (300 < one share of 500).
         assert await shard_balances(repo, "lost", "rpd", 2) == [0, 200_000]
 
@@ -988,7 +989,8 @@ class TestAcceptance:
             with patch("zae_limiter.repository.random.randrange", return_value=1):
                 async with slow.acquire("child", RESOURCE, {"rpd": 1}):
                     pass
-        assert sent == [["Put", "Put", "Update", "Update"]]
+        # Then one META check per owner whose bucket is created (ADR-150).
+        assert sent == [["Put", "Put", "Update", "Update", "ConditionCheck", "ConditionCheck"]]
         for eid in ("child", "parent"):
             assert await shard_balances(repo, eid, "rpd", 2) == [500_000, 499_000]
 
@@ -996,7 +998,9 @@ class TestAcceptance:
         """R5, carried from Task 5: a reset pass sized at count 1 loses its
         `shard_count <= 1` pin to a doubling that lands between its read and
         its write. It falls to the consumption-only retry, which grants
-        nothing; the next pass resets at the doubled count."""
+        nothing — and, since #743, does not debit the previous period either:
+        its period guard fails, and the pass is redone from a fresh read, which
+        resets at the doubled count."""
         repo = limiter._repository
         day = 86_400_000
         midnight = (T0 // day + 1) * day
@@ -1014,20 +1018,18 @@ class TestAcceptance:
             return await real(items)
 
         slow = RateLimiter(repository=repo, speculative_writes=False)
-        with patch.object(repo, "transact_write", doubling_lands_first):
+        with (
+            patch.object(repo, "transact_write", doubling_lands_first),
+            patch("zae_limiter.repository.random.randrange", return_value=0),
+        ):
             async with slow.acquire("r5", RESOURCE, {"rpd": 1}):
                 pass
         item = await _item(repo, "r5", 0)
-        assert item["b_rpd_tk"]["N"] == "99000", "the stale reset was not written"
-        assert int(item["rf"]["N"]) < midnight, "nor was its rf"
-
-        repo._entity_cache[(repo._namespace_id, "r5")] = (False, None, {RESOURCE: 2})
-        with patch("zae_limiter.repository.random.randrange", return_value=0):
-            async with slow.acquire("r5", RESOURCE, {"rpd": 1}):
-                pass
-        item = await _item(repo, "r5", 0)
+        assert raced
+        # The stale reset at count 1 was not written; the redo reset at 2.
         assert item["b_rpd_tk"]["N"] == "499000"
         assert item["b_rpd_gc"]["N"] == "2"
+        assert int(item["rf"]["N"]) >= midnight
 
 
 class TestCreateOvertakenByADoubling:
@@ -1210,7 +1212,8 @@ class TestReissuedCreateOvertakenByADoubling:
                     pass
         # The first transaction was cancelled on the parent; the re-issued
         # Put and the parent's consumption-only debit landed on the retry.
-        assert sent == [["Put", "Update"], ["Put", "Update"]]
+        # The child's create keeps its META check on the retry too (ADR-150).
+        assert sent == [["Put", "Update", "ConditionCheck"], ["Put", "Update", "ConditionCheck"]]
         return repo
 
     async def test_the_reissued_create_is_raised_with_its_grant_frozen(self, limiter):

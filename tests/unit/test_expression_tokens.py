@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from zae_limiter import Limit, RateLimiter, Repository
-from zae_limiter.models import QuotaDonorDebit
+from zae_limiter.models import CreditCeiling, QuotaDonorDebit
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
     BUCKET_FIELD_GC,
@@ -135,6 +135,24 @@ class TestCompositeBuilders:
             bucket_attr(HYPHENATED, BUCKET_FIELD_TK),
         }
 
+    def test_normal_pinning_the_balance_it_raised(self) -> None:
+        """#730 R5: a limit whose refill delta is positive is pinned on `tk` as
+        read; a trim (delta <= 0) is not, so it still clamps."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000, HYPHENATED: 2000, "rpm": 0},
+            refill_amounts={DOTTED: -500, HYPHENATED: 500, "rpm": 300},
+            now_ms=2_000,
+            expected_rf=1_000,
+            read_tokens={DOTTED: 9_000, HYPHENATED: 4_000, "rpm": 7_000},
+        )["Update"]
+        assert_expression_safe(update)
+        condition = update["ConditionExpression"]
+        assert "#bt0 <= :bk0" not in condition  # the trim
+        assert "#bt1 <= :bk1" in condition and "#bt2 <= :bk2" in condition
+        assert update["ExpressionAttributeValues"][":bk1"] == {"N": "4000"}
+
     def test_normal_with_every_optional_clause(self) -> None:
         """Windows, window lengths, ttl and vu share the expression without
         colliding with the per-limit tokens."""
@@ -174,6 +192,40 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
         assert "#opid" in update["UpdateExpression"].split("REMOVE", 1)[1]
+
+    def test_normal_owner_stamp_with_its_parent_generation(self) -> None:
+        """ADR-150: the owner stamp carries `pgen` and is pinned on it."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            owner=(True, "org-1"),
+            owner_pgen=3,
+            owner_pinc="abc123",
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#opg <= :opg" in update["ConditionExpression"]
+        assert "#opi = :opi" in update["ConditionExpression"]  # same incarnation only
+
+    def test_normal_owner_stamp_with_a_generation_but_no_incarnation(self) -> None:
+        """A backend that tracks no incarnation keeps the generation-only pin."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            owner=(True, "org-1"),
+            owner_pgen=3,
+        )["Update"]
+        assert_expression_safe(update)
+        assert "(attribute_not_exists(#opg) OR #opg <= :opg)" in update["ConditionExpression"]
+        assert "#opi" not in update["ExpressionAttributeNames"]
+        assert update["ExpressionAttributeValues"][":opg"] == {"N": "3"}
 
     def test_normal_removing_ttl_and_vu(self) -> None:
         update = _repo().build_composite_normal(
@@ -291,6 +343,62 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "#pinsc <= :pinsc" in update["ConditionExpression"]
 
+    def test_normal_clearing_top_ups(self) -> None:
+        """ADR-149: a reset or roll removes `b_{name}_tu` on positional `#tu*`."""
+        update = _repo().build_composite_normal(
+            entity_id="e",
+            resource="r",
+            consumed={DOTTED: 0, HYPHENATED: 0},
+            refill_amounts={},
+            now_ms=2,
+            expected_rf=1,
+            grant_counts={DOTTED: 1, HYPHENATED: 1},
+            pin_shard_count=1,
+            cleared_top_ups=[DOTTED, HYPHENATED],
+        )["Update"]
+        assert_expression_safe(update)
+        assert update["UpdateExpression"].endswith("REMOVE #tu0, #tu1")
+
+    @pytest.mark.parametrize("stored", [True, False])
+    def test_bucket_operation(self, stored: bool) -> None:
+        """ADR-149: a reset or top-up's write, every clause at once."""
+        from zae_limiter.bucket_ops import ShardWrite
+
+        write = ShardWrite(
+            shard_id=1,
+            shard_count=2,
+            shard_count_stored=stored,
+            expected_rf=1,
+            written_rf=2,
+            deltas={DOTTED: 5, HYPHENATED: -5},
+            grant_counts={DOTTED: 2, HYPHENATED: 2},
+            windows={DOTTED: (1, 60)},
+            applied_windows={DOTTED: 1},
+            top_ups={HYPHENATED: 7},
+            cleared_top_ups={DOTTED},
+            cleared_window_marks={DOTTED},
+            reset_numbers={DOTTED, HYPHENATED},
+        )
+        update = _repo().build_bucket_operation("e", "r", write)["Update"]
+        assert_expression_safe(update)
+        assert "#on0 :on0" in update["UpdateExpression"]
+        update = _repo().build_bucket_operation("e", "r", write, ttl=123)["Update"]
+        assert_expression_safe(update)
+        assert "#ottl = :ottl" in update["UpdateExpression"]
+        update = _repo().build_bucket_operation("e", "r", write, remove_ttl=True)["Update"]
+        assert_expression_safe(update)
+        assert update["UpdateExpression"].endswith("#ottl")
+
+    def test_bucket_operation_with_nothing_but_the_lock(self) -> None:
+        from zae_limiter.bucket_ops import ShardWrite
+
+        write = ShardWrite(
+            shard_id=0, shard_count=1, shard_count_stored=True, expected_rf=1, written_rf=2
+        )
+        update = _repo().build_bucket_operation("e", "r", write)["Update"]
+        assert_expression_safe(update)
+        assert update["UpdateExpression"] == "SET #rf = :rf, #vu = :vu"
+
     def test_retry_with_seeds(self) -> None:
         seeds = self._seed_states()
         update = _repo().build_composite_retry(
@@ -301,6 +409,18 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
         assert update["ReturnValuesOnConditionCheckFailure"] == "ALL_OLD"
+
+    def test_retry_with_period_guards(self) -> None:
+        """#743: the retry requires the period the lost write applied."""
+        update = _repo().build_composite_retry(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000, HYPHENATED: 2000, "rpm": 500},
+            period_guards={DOTTED: (9_000, None), HYPHENATED: (None, 7_000)},
+        )["Update"]
+        assert_expression_safe(update)
+        condition = update["ConditionExpression"]
+        assert "#prf >= :pe0" in condition and "#pw1 = :pw1" in condition
 
     def test_retry_with_only_unconsumed_seeds(self) -> None:
         """A seed nothing consumes needs no condition at all."""
@@ -372,10 +492,104 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
 
-    def test_vu_reset(self) -> None:
-        """#679: forces a clamping pass after a credit above the ceiling."""
-        update = _repo().build_vu_reset("user-1", "api", shard_id=3)["Update"]
+    @pytest.mark.parametrize(
+        "exists, pgen, pinc",
+        [(False, None, None), (True, 0, "-"), (True, 0, "2026-01-01T00:00:00Z"), (True, 7, "a1")],
+    )
+    def test_owner_check(self, exists, pgen, pinc) -> None:
+        """ADR-150: the ConditionCheck pinning a bucket create to its owner's META."""
+        check = _repo().build_owner_check("user-1", exists=exists, pgen=pgen, pinc=pinc)
+        assert_expression_safe(check["ConditionCheck"])
+
+    def test_self_trimming_credit(self) -> None:
+        """#721: each credited limit with a ceiling is conditioned on staying under it."""
+        update = _repo().build_composite_adjust(
+            "user-1",
+            "api",
+            deltas={DOTTED: -1000, "rpm": 0, HYPHENATED: -2000},
+            ceilings={
+                DOTTED: CreditCeiling(5000, 10_000, None, ("1h9-17s500", None)),
+                HYPHENATED: CreditCeiling(9000, 9000, 1, (None, "1m0h0")),
+            },
+            pin=(4, 1_800_000_000_000, ("1h9-17s500", None, "America/New_York")),
+        )["Update"]
         assert_expression_safe(update)
+        assert "ConditionExpression" in update
+
+    def test_quota_period_guards(self) -> None:
+        """#721: a quota credit's period terms, in the conditional and trimmed writes."""
+        from zae_limiter.models import QuotaPeriodPin
+
+        ceilings = {
+            DOTTED: CreditCeiling(
+                5000, 10_000, 2, (None, None), True, QuotaPeriodPin(9, None, ("1m0h0", None, None))
+            ),
+            HYPHENATED: CreditCeiling(
+                9000, 9000, 1, (None, "1m0h0"), True, QuotaPeriodPin(window=(3, 3))
+            ),
+        }
+        for trim in (False, True):
+            update = _repo().build_composite_adjust(
+                "user-1",
+                "api",
+                deltas={DOTTED: -1000, HYPHENATED: -2000},
+                ceilings=ceilings,
+                trim=trim,
+                pin=(2, None, (None, None, None)),
+            )["Update"]
+            assert_expression_safe(update)
+
+    def test_quota_top_up_pin(self) -> None:
+        """ADR-149: a quota credit pins its top-up, present (`=`) or absent."""
+        from zae_limiter.models import QuotaPeriodPin
+
+        period = QuotaPeriodPin(9, None, ("1m0h0", None, None))
+        update = _repo().build_composite_adjust(
+            "user-1",
+            "api",
+            deltas={DOTTED: -1000, HYPHENATED: -2000},
+            ceilings={
+                DOTTED: CreditCeiling(
+                    5000, 10_000, 2, (None, None), True, period, topped_up_milli=3000
+                ),
+                HYPHENATED: CreditCeiling(9000, 9000, 1, (None, "1m0h0"), True, period),
+            },
+            pin=(2, None, (None, None, None)),
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#bu0 = :bu0" in update["ConditionExpression"]
+        assert "attribute_not_exists(#bu1)" in update["ConditionExpression"]
+
+    def test_quota_reset_number_pin(self) -> None:
+        """ADR-149 (F1): a calendar quota credit pins its operator reset count."""
+        from zae_limiter.models import QuotaPeriodPin
+
+        sched = ("1m0h0", None, None)
+        update = _repo().build_composite_adjust(
+            "user-1",
+            "api",
+            deltas={DOTTED: -1000, HYPHENATED: -2000},
+            ceilings={
+                DOTTED: CreditCeiling(
+                    5000, 10_000, 2, (None, None), True, QuotaPeriodPin(9, None, sched, 3)
+                ),
+                HYPHENATED: CreditCeiling(
+                    9000, 9000, 1, (None, "1m0h0"), True, QuotaPeriodPin(9, None, sched)
+                ),
+            },
+            pin=(2, None, (None, None, None)),
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#bqn0 = :bqn0" in update["ConditionExpression"]
+        assert "attribute_not_exists(#bqn1)" in update["ConditionExpression"]
+
+    def test_trimmed_credit(self) -> None:
+        """#721: the fallback re-issues the credit with ``vu = 0`` in the same write."""
+        update = _repo().build_composite_adjust(
+            "user-1", "api", deltas={DOTTED: -1000, HYPHENATED: 2000}, shard_id=3, trim=True
+        )["Update"]
+        assert_expression_safe(update)
+        assert update["ConditionExpression"] == "attribute_exists(PK)"
 
     def test_quota_donor_debits(self) -> None:
         for item in _repo().build_quota_donor_debits(
@@ -503,6 +717,11 @@ class TestAggregatorWrites:
             bucket_attr(DOTTED, BUCKET_FIELD_TK),
             bucket_attr(HYPHENATED, BUCKET_FIELD_TK),
         }
+        # #730 R5: each raise is pinned on the balance the image showed.
+        values = kwargs["ExpressionAttributeValues"]
+        for i in range(2):
+            if values[f":rd{i}"] > 0:
+                assert f"#rt{i} <= :rk{i}" in kwargs["ConditionExpression"]
 
     def test_window_roll_and_marker(self) -> None:
         """#640: a rolled window and a carried one each stamp `wa` through a
@@ -586,6 +805,9 @@ class TestAggregatorWrites:
         kwargs = table.update_item.call_args.kwargs
         assert_expression_safe(kwargs)
         assert kwargs["ExpressionAttributeNames"]["#gq0"] == bucket_attr(DOTTED, BUCKET_FIELD_GC)
+        # #730 R5: the roll raises the balance, so it is pinned on the image's.
+        assert "#wtk0 <= :wk0" in kwargs["ConditionExpression"]
+        assert kwargs["ExpressionAttributeValues"][":wk0"] == 0
 
     def test_clone_donor_update(self) -> None:
         """Path 2's donor debit (ADR-145): both guards, legacy branch, two
@@ -675,7 +897,8 @@ class TestClientWritesThroughMoto:
             with patch("zae_limiter.repository.random.randrange", return_value=1):
                 async with limiter.acquire("user-1", "api", consume={DOTTED: 1}):
                     pass
-        assert [next(iter(item)) for item in sent] == ["Put", "Update"]
+        # The create, its donor debit, and the owner's META check (ADR-150).
+        assert [next(iter(item)) for item in sent] == ["Put", "Update", "ConditionCheck"]
         for item in sent:
             assert_expression_safe(next(iter(item.values())))
 
@@ -719,6 +942,23 @@ class TestClientWritesThroughMoto:
         with patch.object(client, "update_item", spy.forward):
             await repo._stamp_bucket_cascade(pk, True, "org-1")
             await repo._stamp_bucket_cascade(pk, False, None)
+            await repo._stamp_bucket_cascade(pk, True, "org-1", 1)  # ADR-150
+            await repo._stamp_bucket_cascade(pk, False, None, 2)
+            await repo._stamp_bucket_cascade(pk, True, "org-1", 3, "abc123")  # incarnation
+        assert spy.call_count == 5
+        for call in spy.call_args_list:
+            assert_expression_safe(call.kwargs)
+
+    async def test_parent_move_meta_write(self, limiter: RateLimiter) -> None:
+        """ADR-150: the META write, to a parent and to no parent."""
+        repo = limiter._repository
+        await repo.create_entity("org-1")
+        await repo.create_entity("user-1", parent_id="org-1")
+        client = await repo._get_client()
+        spy = await self._spy(repo)
+        with patch.object(client, "update_item", spy.forward):
+            await repo._write_parent("user-1", None)
+            await repo._write_parent("user-1", "org-1")
         assert spy.call_count == 2
         for call in spy.call_args_list:
             assert_expression_safe(call.kwargs)

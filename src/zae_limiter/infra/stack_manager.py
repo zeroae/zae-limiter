@@ -3,10 +3,12 @@
 import asyncio
 import logging
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from importlib.resources import files
 from typing import Any, cast
 
+import yaml
 from aiobotocore.session import AioSession, get_session
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -37,6 +39,38 @@ MAX_STACK_TAGS = 50
 # default (30 s x 120) would hang ``upgrade`` for an hour on a stuck update.
 TAG_UPDATE_WAIT_SECONDS = 900
 _TAG_UPDATE_WAIT_DELAY = 10
+# CloudFormation computes a change set in seconds; the waiter's default
+# (30 s x 120) would add half a minute to every upgrade.
+_CHANGE_SET_WAIT_DELAY = 5
+_CHANGE_SET_WAIT_ATTEMPTS = 60
+# How CloudFormation reports a change set with nothing in it (#752). The
+# wording has changed over the years; both are matched.
+_NO_CHANGES_REASONS = ("didn't contain changes", "No updates are to be performed")
+# A change that replaces or removes a resource can lose data (replacing the
+# table empties it), so ``apply_template`` refuses it rather than execute it.
+_UNSAFE_REPLACEMENTS = ("True", "Conditional")
+
+
+class _CfnTemplateLoader(yaml.SafeLoader):
+    """A YAML loader that reads a CloudFormation template's structure.
+
+    Intrinsic functions (``!Sub``, ``!GetAtt``, …) are YAML tags the safe
+    loader rejects; they are read as None, which is enough to list the
+    template's parameters.
+    """
+
+
+def _ignore_cfn_tag(loader: yaml.SafeLoader, suffix: str, node: yaml.Node) -> None:
+    return None
+
+
+_CfnTemplateLoader.add_multi_constructor("!", _ignore_cfn_tag)
+
+
+def template_parameter_names(template_body: str) -> set[str]:
+    """The parameters a CloudFormation template declares (#752)."""
+    template = yaml.load(template_body, Loader=_CfnTemplateLoader)
+    return set((template or {}).get("Parameters") or {})
 
 
 async def lambda_function_exists(
@@ -469,6 +503,213 @@ class StackManager:
                 ) from e
 
         return True
+
+    async def apply_template(self) -> dict[str, Any]:
+        """
+        Bring an existing stack's resources up to this build's template (#752).
+
+        ``create_stack`` returns early on an existing stack and ``ensure_tags``
+        re-uses the previous template, so without this a stack keeps the IAM
+        policies of the release that created it, and a newer client is denied
+        the actions it needs (v0.17.0 added ``ConditionCheckItem``, and
+        ``PutItem`` / ``UpdateItem`` on the acquire policies).
+
+        The template is applied through a change set, so what would change is
+        known before anything does:
+
+        - every parameter the stack has and the template still declares keeps
+          its value (``UsePreviousValue``); a parameter the template added
+          takes its default, and one it dropped is not passed;
+        - the stack's tags are passed unchanged (``ensure_tags`` owns them);
+        - a change set with no changes is deleted and reported as such;
+        - a change that **removes** a resource, or **replaces** one (or may:
+          ``Replacement`` ``True`` or ``Conditional``), is refused: the change
+          set is deleted, nothing is applied, and the error names each
+          resource. Replacing the table would empty it.
+
+        Returns:
+            ``{"status": "applied" | "no_changes" | "absent", "changes": [...]}``,
+            each change a dict of ``logical_id``, ``resource_type``,
+            ``action`` and ``replacement``. ``absent`` means there is no
+            CloudFormation stack by this name (the table was deployed some
+            other way), so there was nothing to apply.
+
+        Raises:
+            StackOperationError: If the change would replace or remove a
+                resource, the change set cannot be created, or the stack
+                update fails, rolls back or does not finish in time
+        """
+        client = await self._get_client()
+        stack_name = self.stack_name
+
+        try:
+            response = await client.describe_stacks(StackName=stack_name)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ValidationError":
+                return {"status": "absent", "changes": []}
+            raise
+        stacks = response.get("Stacks", [])
+        if not stacks:
+            return {"status": "absent", "changes": []}
+        stack = stacks[0]
+
+        template_body = self._load_template()
+        declared = template_parameter_names(template_body)
+        parameters = [
+            {"ParameterKey": p["ParameterKey"], "UsePreviousValue": True}
+            for p in stack.get("Parameters", [])
+            if p["ParameterKey"] in declared
+        ]
+        # aws:* tags are CloudFormation's own and cannot be set.
+        tags = [t for t in stack.get("Tags", []) if not t["Key"].startswith("aws:")]
+
+        change_set_name = f"zae-limiter-upgrade-{uuid.uuid4().hex[:12]}"
+        request: dict[str, Any] = {
+            "StackName": stack_name,
+            "ChangeSetName": change_set_name,
+            "ChangeSetType": "UPDATE",
+            "TemplateBody": template_body,
+            "Parameters": parameters,
+            "Capabilities": ["CAPABILITY_NAMED_IAM"],
+            "Description": "zae-limiter upgrade: apply the packaged template",
+        }
+        if tags:
+            request["Tags"] = tags
+        try:
+            created = await client.create_change_set(**request)
+        except ClientError as e:
+            message = e.response["Error"]["Message"]
+            # Some endpoints refuse an empty change set outright instead of
+            # creating a FAILED one.
+            if any(text in message for text in _NO_CHANGES_REASONS):
+                return {"status": "no_changes", "changes": []}
+            raise StackOperationError(
+                stack_name=stack_name,
+                reason=f"Could not create a change set: {message}",
+            ) from e
+        change_set_id = created["Id"]
+
+        try:
+            waiter = client.get_waiter("change_set_create_complete")
+            await waiter.wait(
+                ChangeSetName=change_set_id,
+                StackName=stack_name,
+                WaiterConfig={
+                    "Delay": _CHANGE_SET_WAIT_DELAY,
+                    "MaxAttempts": _CHANGE_SET_WAIT_ATTEMPTS,
+                },
+            )
+        except Exception as e:
+            # A change set with nothing in it ends FAILED, which the waiter
+            # reports as a failure: read the reason before deciding.
+            try:
+                described = await self._describe_change_set(client, change_set_id, stack_name)
+            except Exception:
+                described = {}
+            await self._delete_change_set(client, change_set_id, stack_name)
+            reason = str(described.get("StatusReason") or "")
+            if described.get("Status") == "FAILED" and any(
+                text in reason for text in _NO_CHANGES_REASONS
+            ):
+                return {"status": "no_changes", "changes": []}
+            raise StackOperationError(
+                stack_name=stack_name,
+                reason=f"Change set {change_set_name} failed: {reason or e}",
+            ) from e
+
+        described = await self._describe_change_set(client, change_set_id, stack_name)
+        changes = [
+            {
+                "logical_id": rc.get("LogicalResourceId"),
+                "resource_type": rc.get("ResourceType"),
+                "action": rc.get("Action"),
+                "replacement": rc.get("Replacement"),
+            }
+            for rc in (
+                change.get("ResourceChange", {})
+                for change in described.get("Changes", [])
+                if change.get("Type", "Resource") == "Resource"
+            )
+        ]
+
+        unsafe = [
+            c
+            for c in changes
+            if c["action"] == "Remove" or c["replacement"] in _UNSAFE_REPLACEMENTS
+        ]
+        if unsafe:
+            await self._delete_change_set(client, change_set_id, stack_name)
+            named = "; ".join(
+                f"{c['logical_id']} ({c['resource_type']}): "
+                + (
+                    "would be removed"
+                    if c["action"] == "Remove"
+                    else f"would be replaced (Replacement {c['replacement']})"
+                )
+                for c in unsafe
+            )
+            raise StackOperationError(
+                stack_name=stack_name,
+                reason=(
+                    "Template update refused, nothing was applied: it would replace "
+                    f"or remove resources, which can lose data. {named}"
+                ),
+            )
+
+        try:
+            await client.execute_change_set(ChangeSetName=change_set_id, StackName=stack_name)
+            waiter = client.get_waiter("stack_update_complete")
+            await waiter.wait(
+                StackName=stack_name,
+                WaiterConfig={
+                    "Delay": _TAG_UPDATE_WAIT_DELAY,
+                    "MaxAttempts": TAG_UPDATE_WAIT_SECONDS // _TAG_UPDATE_WAIT_DELAY,
+                },
+            )
+        except Exception as e:
+            events = await self._get_stack_events(client, stack_name)
+            raise StackOperationError(
+                stack_name=stack_name,
+                reason=f"Stack template update failed: {await self._status_reason(client) or e}",
+                events=events,
+            ) from e
+
+        return {"status": "applied", "changes": changes}
+
+    async def _describe_change_set(
+        self, client: Any, change_set_id: str, stack_name: str
+    ) -> dict[str, Any]:
+        """A change set's description, every page of its changes merged."""
+        described: dict[str, Any] = {}
+        changes: list[dict[str, Any]] = []
+        kwargs: dict[str, Any] = {"ChangeSetName": change_set_id, "StackName": stack_name}
+        while True:
+            page = await client.describe_change_set(**kwargs)
+            described = page
+            changes.extend(page.get("Changes", []))
+            token = page.get("NextToken")
+            if not token:
+                break
+            kwargs["NextToken"] = token
+        return {**described, "Changes": changes}
+
+    async def _delete_change_set(self, client: Any, change_set_id: str, stack_name: str) -> None:
+        """Delete a change set that will not be executed (best effort)."""
+        try:
+            await client.delete_change_set(ChangeSetName=change_set_id, StackName=stack_name)
+        except Exception:
+            logger.debug("Best effort change set cleanup failed", exc_info=True)
+
+    async def _status_reason(self, client: Any) -> str | None:
+        """The stack's status and its reason, for an update that failed."""
+        try:
+            response = await client.describe_stacks(StackName=self.stack_name)
+            stack = response.get("Stacks", [{}])[0]
+        except Exception:
+            return None
+        status = stack.get("StackStatus")
+        reason = stack.get("StackStatusReason")
+        return f"{status}: {reason}" if reason else status
 
     async def stack_exists(self, stack_name: str) -> bool:
         """

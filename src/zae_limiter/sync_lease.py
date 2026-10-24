@@ -10,7 +10,8 @@ import logging
 import random
 import time
 import warnings
-from dataclasses import dataclass, field, replace
+from collections.abc import Callable, Iterable
+from dataclasses import InitVar, dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from .bucket import (
@@ -20,19 +21,45 @@ from .bucket import (
     try_consume,
     window_end_in_force,
 )
-from .exceptions import LeaseExpiredError, RateLimitExceeded
-from .models import BucketState, Limit, LimitStatus, QuotaDonorDebit
+from .exceptions import LeaseExpiredError, RateLimitExceeded, ValidationError
+from .models import (
+    BucketState,
+    CreditCeiling,
+    CreditImage,
+    CreditLimitImage,
+    CreditPin,
+    Limit,
+    LimitStatus,
+    QuotaDonorDebit,
+    QuotaPeriodPin,
+)
+from .schedule import next_reset_edge, prev_reset_edge
 from .schema import (
+    BUCKET_ATTR_PREFIX,
+    BUCKET_FIELD_CP,
+    BUCKET_FIELD_GC,
+    BUCKET_FIELD_PINC,
     BUCKET_FIELD_RF,
+    BUCKET_FIELD_RN,
+    BUCKET_FIELD_RSCHED,
+    BUCKET_FIELD_SCHED,
+    BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TK,
+    BUCKET_FIELD_TU,
+    BUCKET_FIELD_VU,
+    BUCKET_FIELD_WA,
+    BUCKET_FIELD_WS,
+    WCU_LIMIT_NAME,
     bucket_attr,
     calculate_bucket_ttl_seconds,
     calculate_ttl,
+    explicit_schedule_overrides,
 )
 
 _CONFLICT_MAX_RETRIES = 3
 _CONFLICT_BASE_DELAY_S = 0.025
 _MIN_RETRY_AFTER_S = 0.001
+_CONTENTION_RETRY_AFTER_S = 0.1
 if TYPE_CHECKING:
     from .sync_repository_protocol import SyncRepositoryProtocol
 logger = logging.getLogger(__name__)
@@ -54,9 +81,14 @@ class LeaseEntry:
     _initial_consumed: int = 0
     _shard_id: int = 0
     _shard_count: int = 1
+    _image: CreditImage | None = None
+    _period_image: CreditImage | None = None
     _cascade: bool = False
     _parent_id: str | None = None
     _stamp_owner: bool = False
+    _parent_generation: int | None = None
+    _parent_incarnation: str | None = None
+    _owner_read: bool = False
     _declared: bool = True
     _boundary_ms: int | None = None
     _reset_edge_ms: int | None = None
@@ -68,10 +100,291 @@ class LeaseEntry:
     _donor_debit: QuotaDonorDebit | None = None
     _soft_trusted: bool = False
     _soft_restamp: bool = False
+    _stored_top_up: bool = False
 
 
-_AdjustedItem = tuple[str, str, int, list[LeaseEntry], dict[str, int]]
-"(entity_id, resource, shard_id, entries, deltas) for one adjust write (#679)."
+def credit_ceilings(
+    states: Iterable[tuple[str, BucketState]],
+    deltas: dict[str, int],
+    now_ms: int,
+    image: CreditImage | None,
+    period_image: CreditImage | None,
+) -> dict[str, CreditCeiling]:
+    """The ceiling of every limit ``deltas`` credits, for a self-trimming credit (#721).
+
+    ``states`` pairs each limit name with its shard's state; ``image`` is the
+    item as of that state — what the ceiling was computed from, and so what
+    its pins must hold. ``period_image`` is the newest known view of the
+    item's quota periods, usually ``image`` itself; ``None`` when no view of
+    the periods is known. One :func:`credit_ceiling` per credited limit. A
+    state that cannot report a ceiling leaves its limit with no ceiling
+    condition (the pre-#679 behaviour) rather than fail the refund:
+    a credit is never blocked by a broken check.
+    """
+    ceilings: dict[str, CreditCeiling] = {}
+    for name, state in states:
+        if deltas.get(name, 0) >= 0 or name in ceilings:
+            continue
+        try:
+            ceilings[name] = credit_ceiling(
+                state,
+                image.limit(name) if image is not None else None,
+                now_ms,
+                period_image.rf if period_image is not None else None,
+                period_image.limit(name) if period_image is not None else None,
+                image.item_sched if image is not None else None,
+            )
+        except Exception:
+            logger.warning("Could not check a credit against its ceiling", exc_info=True)
+    return ceilings
+
+
+def credit_ceiling(
+    state: BucketState,
+    limit_image: CreditLimitImage | None,
+    now_ms: int,
+    rf_ms: int | None = None,
+    period_limit: CreditLimitImage | None = None,
+    item_sched: tuple[str | None, str | None, str | None] | None = None,
+) -> CreditCeiling:
+    """What one credited limit is checked against, and what that check pins (#721).
+
+    The ceiling is ``BucketState.ceiling_milli`` at ``now_ms`` — schedule, shard
+    share and quota grant (ADR-145), the refill clamp's own ceiling. The pins
+    are the stored attributes **that ceiling was computed from**
+    (``limit_image``, the image of the same state): a pin taken from a newer
+    view of the item would match while the ceiling is stale, and the refund
+    would land above the real ceiling. With no image there is nothing to pin,
+    and the credit is trimmed outright (``sched_raw=None``).
+
+    A quota's credit also carries its period (``QuotaPeriodPin``): a refund of
+    a debit made before a reset edge or a window roll must not land in the
+    period that followed, which has its own full allowance. ``rf_ms`` and
+    ``period_limit`` (``ws``/``wa``) are the newest known view of the item's
+    period, which may be newer than the ceiling's state; ``period_limit``
+    defaults to ``limit_image``. Without ``rf_ms`` the period cannot be told
+    and the credit is dropped. A calendar quota's edge comes from the reset
+    cron the lease held, so the period also pins the stored strings that cron
+    came from (``item_sched``'s ``rsched`` / ``sched_tz`` and the limit's own
+    ``b_{name}_rsched``, from the same image as the ceiling); without them the
+    credit is dropped too. An operator reset (ADR-149) crosses no edge, so it
+    also pins the reset count ``b_{name}_rn`` from the newest view.
+
+    The one place the ceiling and its pins are decided, with
+    ``SyncRepository._credit_limit_terms`` the one place they become condition
+    terms: a new input to the ceiling extends both, as a quota's top-up
+    (``b_{name}_tu``, ADR-149) does.
+    """
+    quota = state.is_quota_state is True
+    if period_limit is None:
+        period_limit = limit_image
+    period: QuotaPeriodPin | None = None
+    if quota and rf_ms is not None:
+        if state.reset_after_seconds is not None:
+            if period_limit is not None:
+                period = QuotaPeriodPin(
+                    window=(period_limit.window_start_ms, period_limit.window_applied_ms)
+                )
+        elif limit_image is not None and item_sched is not None:
+            period = QuotaPeriodPin(
+                reset_edge_ms=next_reset_edge(state.reset_sched, now_ms=rf_ms),
+                reset_sched_raw=(item_sched[1], item_sched[2], limit_image.sched_raw[1]),
+                reset_number=period_limit.reset_number if period_limit is not None else None,
+            )
+    if limit_image is None:
+        return CreditCeiling(
+            ceiling_milli=int(state.ceiling_milli(now_ms)),
+            capacity_milli=int(state.capacity_milli),
+            grant_count=None if state.grant_count is None else int(state.grant_count),
+            sched_raw=None,
+            quota=quota,
+            quota_period=period,
+        )
+    return CreditCeiling(
+        ceiling_milli=int(state.ceiling_milli(now_ms)),
+        capacity_milli=limit_image.capacity_milli,
+        grant_count=limit_image.grant_count,
+        sched_raw=limit_image.sched_raw,
+        topped_up_milli=limit_image.topped_up_milli,
+        quota=quota,
+        quota_period=period,
+    )
+
+
+def write_credit(
+    repository: "SyncRepositoryProtocol",
+    entity_id: str,
+    resource: str,
+    deltas: dict[str, int],
+    shard_id: int,
+    ceilings: dict[str, CreditCeiling],
+    pin: CreditPin | None,
+) -> None:
+    """Write one adjust item whose credits trim themselves (#721, refs #680).
+
+    A credit is an ``ADD``, and a reset edge or a refill to capacity can land
+    between the debit and the credit; the credit then lifts the balance above
+    the ceiling, and the speculative fast path (a pure ``ADD`` with no cap)
+    spends the surplus. So each credited limit with a known ceiling is
+    conditioned on staying at or below it. The usual credit lands in that one
+    write (1 WCU). One that would overflow fails the condition (1 WCU) and is
+    re-issued unconditionally **with** ``SET vu = 0`` in the same write, which
+    keeps the fast path off the item until the next slow pass clamps it. There
+    is no window between the credit and the stamp for another process to use.
+
+    The ceilings come from memory, and the real one can have dropped since (a
+    re-grant, a doubling, a lowered limit or schedule). So the condition also
+    pins what each ceiling was computed from — the limit's stored ``cp`` and
+    ``gc``, and the item's ``shard_count`` and ``vu`` as of ``pin`` — and any
+    write that could lower it moves one of them. A moved pin only costs the
+    fallback. With ``pin`` unknown (``None``), the credit
+    goes straight to the trimmed write — one write, nothing to trust.
+
+    A quota's credit is also conditioned, in both writes, on its debit's
+    period still being current (``QuotaPeriodPin``): after a reset edge or a
+    window roll the new period has its own full allowance, and a refund of
+    the old period's debit landing there is spent twice. When the trimmed
+    write fails, the quota credits are dropped (logged at debug) and the rest
+    of the adjustment is written alone. A quota credit whose period cannot be
+    told is dropped up front. Rate limits are unaffected.
+
+    A debit, or a credit with no known ceiling, is one write with no ceiling
+    condition. Every write is conditioned on the item existing: an adjustment
+    onto an item swept or deleted since the debit would otherwise create a
+    stub that rejects the entity forever. When the last write's condition
+    fails, the item is gone and there is nothing to adjust: logged at debug,
+    not an error. Errors other than a failed condition propagate.
+    """
+    unknown = {
+        name
+        for name, ceiling in ceilings.items()
+        if ceiling.quota and ceiling.quota_period is None and (deltas.get(name, 0) < 0)
+    }
+    if unknown:
+        logger.debug("quota credit dropped for resource=%s: its period cannot be told", resource)
+        deltas = {name: delta for name, delta in deltas.items() if name not in unknown}
+        ceilings = {name: c for name, c in ceilings.items() if name not in unknown}
+    if ceilings and (pin is None or any(c.sched_raw is None for c in ceilings.values())):
+        _write_trimmed(repository, entity_id, resource, deltas, shard_id, ceilings)
+        return
+    kwargs: dict[str, Any] = {"ceilings": ceilings, "pin": pin} if ceilings else {}
+    item = repository.build_composite_adjust(
+        entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, **kwargs
+    )
+    if not item:
+        return
+    if not ceilings:
+        _write_unless_gone(repository, item, resource)
+        return
+    try:
+        repository.write_each([item])
+    except Exception as exc:
+        if not _is_condition_check_failure(exc):
+            raise
+        _write_trimmed(repository, entity_id, resource, deltas, shard_id, ceilings)
+
+
+def _write_trimmed(
+    repository: "SyncRepositoryProtocol",
+    entity_id: str,
+    resource: str,
+    deltas: dict[str, int],
+    shard_id: int,
+    ceilings: dict[str, CreditCeiling],
+) -> None:
+    """Step 2 of a credit: the same ``ADD`` plus ``vu = 0``, quota credits period-guarded.
+
+    A failure with no quota guard means the item is gone. With one, some
+    quota's period moved (or the item is gone), but not necessarily every
+    quota's: the rest of the adjustment is written alone, then each quota
+    credit on its own guard, so only the ones whose period moved are dropped
+    (#721). That costs one write per quota credit on the item, on a path
+    taken only after a reset or roll raced a refund.
+    """
+    trimmed = repository.build_composite_adjust(
+        entity_id=entity_id,
+        resource=resource,
+        deltas=deltas,
+        shard_id=shard_id,
+        ceilings=ceilings,
+        trim=True,
+    )
+    if not trimmed:
+        return
+    guarded = {
+        name
+        for name, ceiling in ceilings.items()
+        if ceiling.quota_period is not None and deltas.get(name, 0) < 0
+    }
+    if not guarded:
+        _write_unless_gone(repository, trimmed, resource)
+        return
+    try:
+        repository.write_each([trimmed])
+    except Exception as exc:
+        if not _is_condition_check_failure(exc):
+            raise
+        rest = repository.build_composite_adjust(
+            entity_id=entity_id,
+            resource=resource,
+            deltas={name: delta for name, delta in deltas.items() if name not in guarded},
+            shard_id=shard_id,
+            trim=True,
+        )
+        if rest:
+            _write_unless_gone(repository, rest, resource)
+        for name in sorted(guarded):
+            single = repository.build_composite_adjust(
+                entity_id=entity_id,
+                resource=resource,
+                deltas={name: deltas[name]},
+                shard_id=shard_id,
+                ceilings={name: ceilings[name]},
+                trim=True,
+            )
+            try:
+                repository.write_each([single])
+            except Exception as single_exc:
+                if not _is_condition_check_failure(single_exc):
+                    raise
+                logger.debug(
+                    "quota credit dropped for resource=%s: a reset or window roll landed since the debit, or the bucket is gone",
+                    resource,
+                )
+
+
+def _write_unless_gone(
+    repository: "SyncRepositoryProtocol", item: dict[str, Any], resource: str
+) -> None:
+    """Write an adjust item whose only condition is that the item exists.
+
+    A failed condition means the bucket was swept or deleted since the lease
+    saw it: nothing to adjust, and a stub must not be created (#721). The
+    entity id is never logged (`py/clear-text-logging-sensitive-data`).
+    """
+    try:
+        repository.write_each([item])
+    except Exception as exc:
+        if not _is_condition_check_failure(exc):
+            raise
+        logger.debug("adjustment skipped: the bucket for resource=%s is gone", resource)
+
+
+_CreditWrite = tuple[str, str, int, dict[str, int], dict[str, CreditCeiling], CreditPin | None]
+"(entity_id, resource, shard_id, deltas, ceilings, pin) for one adjust write (#721)."
+
+
+class PeriodNotAppliedError(RateLimitExceeded):
+    """The consumption-only retry found a quota period not yet applied (#743).
+
+    The slow pass applied a reset, roll or window open in memory; its
+    rf-locked write lost, and the retry's period guard found that nobody has
+    applied that period on the item since. The retry must not debit the
+    previous period's balance, so the acquire re-plans once from a fresh read
+    (`SyncRateLimiter._slow_acquire`). A `RateLimitExceeded`, so any
+    other caller of `_commit_initial` reads it as a rejection: it can only
+    under-admit.
+    """
 
 
 class QuotaMoveLostError(Exception):
@@ -81,6 +394,27 @@ class QuotaMoveLostError(Exception):
     since it was read, or the recipient raced — or kept conflicting past its
     retries. It rolled back whole, donor untouched, so the plan is stale and
     the acquire re-plans from a fresh read (design §6 step 6). Not exported.
+
+    ``contended`` is True when the move was lost to write conflicts rather
+    than to a failed condition: the donor was busy, not spent (#724).
+    """
+
+    def __init__(self, *, contended: bool = False) -> None:
+        super().__init__("quota move lost" + (" to contention" if contended else ""))
+        self.contended = contended
+
+
+class OwnerStampLostError(RateLimitExceeded):
+    """A bucket create was cancelled by its owner's META check (ADR-150).
+
+    The commit created a bucket item stamped with an owner (``cascade`` /
+    ``parent_id``) read from META, and the transaction's ``ConditionCheck``
+    found that META changed since — a move, or a delete and recreate. Nothing
+    was written. The acquire re-plans once from a strongly consistent META
+    read (`SyncRateLimiter._slow_acquire`), which also sends the cascade to the
+    new parent. A contended `RateLimitExceeded`, so a caller that does not
+    re-plan (or a second loss) reads it as a short "busy, retry" rejection:
+    it can only under-admit, never reach `on_unavailable`.
     """
 
 
@@ -93,6 +427,7 @@ def _mark_granted(entry: LeaseEntry) -> None:
     """
     if entry.limit.is_quota:
         entry.state.grant_count = entry.state.shard_count
+        entry.state.topped_up_milli = None
         entry._granted = True
 
 
@@ -116,19 +451,109 @@ class SyncLease:
     _carriers: list[LeaseEntry] = field(default_factory=list)
     _cache_mark: int | None = None
     _declared_names: frozenset[str] = field(init=False, default=frozenset())
+    _resources: tuple[str, ...] = ()
+    _unknown_keys_by_resource: dict[str, frozenset[str]] = field(default_factory=dict)
+    _declared_by_resource: dict[str, frozenset[str]] = field(init=False, default_factory=dict)
+    compute_images: InitVar[bool] = True
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, compute_images: bool = True) -> None:
+        self._index_declared()
+        if not compute_images:
+            return
+        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
+        for entry in self.entries:
+            groups.setdefault((entry.entity_id, entry.resource, entry._shard_id), []).append(entry)
+        for group_entries in groups.values():
+            read_rf = next((e._original_rf_ms for e in group_entries if e._original_rf_ms), None)
+            image = credit_image([e.state for e in group_entries], rf=read_rf)
+            for entry in group_entries:
+                entry._image = entry._period_image = image
+
+    def _index_declared(self) -> None:
+        """Index declared limit names, lease-wide and per resource."""
+        by_resource: dict[str, set[str]] = {}
+        for entry in self.entries:
+            if entry._declared:
+                by_resource.setdefault(entry.resource, set()).add(entry.limit.name)
+        self._declared_by_resource = {r: frozenset(names) for r, names in by_resource.items()}
+        primary = self._primary
         self._declared_names = frozenset(
-            entry.limit.name for entry in self.entries if entry._declared
+            entry.limit.name
+            for entry in self.entries
+            if entry._declared and (primary is None or entry.resource == primary)
         )
 
+    def _bind_resources(self, resources: tuple[str, ...]) -> None:
+        """Record the resources this lease covers, primary first (ADR-148)."""
+        self._resources = resources
+        self._index_declared()
+
     @property
-    def consumed(self) -> dict[str, int]:
-        """Total consumed amounts by limit name (declared limits only)."""
+    def _primary(self) -> str | None:
+        """The primary resource, or None for a lease that never bound one."""
+        return self._resources[0] if self._resources else None
+
+    @property
+    def resources(self) -> tuple[str, ...]:
+        """The resources this lease covers, the primary one first (ADR-148).
+
+        A single-resource acquire covers one resource; ``acquire(...,
+        also={...})`` covers the primary resource and every resource in
+        ``also``, in that order. Empty on the degraded lease yielded under
+        ``on_unavailable=ALLOW``, which covers nothing.
+        """
+        if self._resources:
+            return self._resources
+        return tuple(dict.fromkeys(entry.resource for entry in self.entries))
+
+    def resource(self, name: str) -> "SyncLeaseResource":
+        """A handle on one resource of this lease (ADR-148).
+
+        ``lease.adjust()``, ``consume()``, ``release()`` and ``consumed`` act
+        on the primary resource only — the ``resource`` argument of
+        ``acquire()`` — so a single-resource lease behaves exactly as it
+        always has. Every other resource of a multi-resource lease is reached
+        through its handle::
+
+            async with limiter.acquire(
+                "user-1", "search", consume={"rpm": 1, "units": est},
+                also={"budget": {"weekly": est}},
+            ) as lease:
+                ...
+                lease.adjust(units=actual - est)
+                lease.resource("budget").adjust(weekly=actual - est)
+
+        Adjustments made through a handle are written with the rest of the
+        lease's adjustments when the context exits, one write per bucket.
+        Two resources may declare limits of the same name; each handle sees
+        only its own.
+
+        On the degraded lease yielded under ``on_unavailable=ALLOW`` every
+        name returns a no-op handle.
+
+        Raises:
+            ValidationError: If ``name`` is not a resource of this lease.
+        """
+        if not self.degraded and name not in self.resources:
+            raise ValidationError(
+                "resource",
+                name,
+                f"not a resource of this lease (resources: {list(self.resources)})",
+            )
+        return SyncLeaseResource(self, name)
+
+    def _scoped(self, resource: str | None) -> list[LeaseEntry]:
+        """The declared entries of ``resource`` (every resource for None)."""
+        return [
+            entry
+            for entry in self.entries
+            if entry._declared and (resource is None or entry.resource == resource)
+        ]
+
+    def _consumed_in(self, resource: str | None) -> dict[str, int]:
+        """Total consumed amounts by limit name, for one resource."""
         result: dict[str, int] = {}
-        for entry in self.entries:
-            if not entry._declared:
-                continue
+        for entry in self._scoped(resource):
             name = entry.limit.name
             result[name] = result.get(name, 0) + entry.consumed
         return result
@@ -154,7 +579,23 @@ class SyncLease:
             }
         )
 
-    def _check_declared(self, amounts: dict[str, int], method: str) -> None:
+    @property
+    def consumed(self) -> dict[str, int]:
+        """Total consumed amounts by limit name (declared limits only).
+
+        Scoped to the primary resource; use ``lease.resource(name).consumed``
+        for another resource of a multi-resource lease (ADR-148).
+        """
+        return self._consumed_in(self._primary)
+
+    def _require_open(self) -> None:
+        """Raise LeaseExpiredError once the lease has committed or rolled back."""
+        if self._committed or self._rolled_back:
+            raise LeaseExpiredError()
+
+    def _check_declared(
+        self, amounts: dict[str, int], method: str, resource: str | None = None
+    ) -> None:
         """Report keys that name no declared limit on this lease (Issue #455).
 
         A limit absent from ``consume`` was never checked at admission, so
@@ -175,14 +616,24 @@ class SyncLease:
         it has no entries by design, and warning on every call during an
         outage would turn graceful degradation into noise.
         """
-        if self.degraded or amounts.keys() <= self._declared_names:
+        if resource is None or resource == self._primary:
+            names = self._declared_names
+            unknown = self._unknown_keys
+            label = f"lease.{method}()"
+            where = "acquire(consume=...)"
+        else:
+            names = self._declared_by_resource.get(resource, frozenset())
+            unknown = self._unknown_keys_by_resource.get(resource, frozenset())
+            label = f"lease.resource({resource!r}).{method}()"
+            where = f"acquire(also={{{resource!r}: ...}})"
+        if self.degraded or amounts.keys() <= names:
             return
-        undeclared = sorted(amounts.keys() - self._declared_names - self._unknown_keys)
+        undeclared = sorted(amounts.keys() - names - unknown)
         if not undeclared:
             return
-        declared = sorted(self._declared_names)
+        declared = sorted(names)
         warnings.warn(
-            f"lease.{method}() names limit(s) {undeclared} that were not declared in acquire(consume=...); declared limits on this lease: {declared}. Undeclared keys are ignored. Name the limit in `consume` (an estimate of 0 is valid) to make it adjustable. This becomes a ValidationError in v1.0.0.",
+            f"{label} names limit(s) {undeclared} that were not declared in {where}; declared limits on this lease: {declared}. Undeclared keys are ignored. Name the limit in `consume` (an estimate of 0 is valid) to make it adjustable. This becomes a ValidationError in v1.0.0.",
             FutureWarning,
             stacklevel=3,
         )
@@ -200,19 +651,23 @@ class SyncLease:
 
         Only limits declared in ``acquire(consume=...)`` can be consumed;
         other keys are reported (Issue #455) and ignored.
+        On a multi-resource lease this acts on the primary resource only;
+        reach the others through :meth:`resource` (ADR-148).
 
         Args:
             **amounts: Mapping of limit_name -> amount to consume
         """
-        if self._committed or self._rolled_back:
-            raise LeaseExpiredError()
+        self._require_open()
         self._check_declared(amounts, "consume")
+        self._consume_in(self._primary, amounts)
+
+    def _consume_in(self, resource: str | None, amounts: dict[str, int]) -> None:
+        """Consume ``amounts`` from ``resource``'s declared limits, all or none."""
         now_ms = self.repository._now_ms()
         statuses: list[LimitStatus] = []
         updates: list[tuple[LeaseEntry, int, int]] = []
-        for entry in self.entries:
-            if not entry._declared:
-                continue
+        scoped = self._scoped(resource)
+        for entry in scoped:
             amount = amounts.get(entry.limit.name, 0)
             if amount <= 0:
                 continue
@@ -221,7 +676,9 @@ class SyncLease:
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                limit=entry.limit.per_shard(
+                    entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                ),
                 available=result.available,
                 requested=amount,
                 exceeded=not result.success,
@@ -231,15 +688,17 @@ class SyncLease:
             statuses.append(status)
             if result.success:
                 updates.append((entry, result.new_tokens_milli, result.new_last_refill_ms))
-        for entry in self.entries:
-            if entry._declared and entry.limit.name not in amounts:
+        for entry in scoped:
+            if entry.limit.name not in amounts:
                 available = calculate_available(entry.state, now_ms)
                 statuses.append(
                     LimitStatus(
                         entity_id=entry.entity_id,
                         resource=entry.resource,
                         limit_name=entry.limit.name,
-                        limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                        limit=entry.limit.per_shard(
+                            entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                        ),
                         available=available,
                         requested=0,
                         exceeded=False,
@@ -265,36 +724,32 @@ class SyncLease:
         Never raises - allows bucket to go negative.
         Use for post-hoc reconciliation (e.g., LLM token counts).
 
-        A negative delta is a credit, written as an unconditional ``ADD``, so
-        the stored balance can land above the shard's ceiling. The excess is
-        trimmed before the fast path can spend it: when the write reports a
-        balance over its ceiling, the item is marked (``vu = 0``) so the next
-        acquire takes the slow path, which clamps every limit, and the
-        aggregator does not reopen the fast path meanwhile (#679, #681).
-        Not covered: the one round trip between the credit and its ``vu = 0``
-        write (two separate writes); a backend whose ``write_each`` reports no balances; a
-        ``vu = 0`` write that itself fails (logged, the excess then waits for
-        the next materialising pass); an adjustment commit that fails partway
-        (#682); and the speculative compensation a rejected cascade writes,
-        which credits back a debit one round trip old.
+        A negative delta is a credit, an ``ADD``, and a reset edge or a refill
+        to capacity since the debit can make it land above the shard's
+        ceiling. So the credit is conditioned on staying within the ceiling
+        and, when it would not, re-issued with ``vu = 0`` in the same write
+        (#721): the next acquire takes the slow path, which clamps every limit,
+        and the aggregator does not reopen the fast path meanwhile (#679,
+        #681). No process can spend the excess in between. Not covered: a
+        limit whose ceiling the lease could not compute (logged, the credit is
+        then unconditional) and an adjustment commit that fails partway (#682).
 
         Only limits declared in ``acquire(consume=...)`` can be adjusted;
         other keys are reported (Issue #455) and ignored.
+        On a multi-resource lease this acts on the primary resource only;
+        reach the others through :meth:`resource` (ADR-148).
 
         Args:
             **amounts: Mapping of limit_name -> delta (positive = consume more)
         """
-        if self._committed or self._rolled_back:
-            raise LeaseExpiredError()
+        self._require_open()
         self._check_declared(amounts, "adjust")
-        self._apply_adjust(amounts)
+        self._apply_adjust(amounts, self._primary)
 
-    def _apply_adjust(self, amounts: dict[str, int]) -> None:
+    def _apply_adjust(self, amounts: dict[str, int], resource: str | None = None) -> None:
         """Apply adjust() deltas to declared entries (shared with release())."""
         now_ms = self.repository._now_ms()
-        for entry in self.entries:
-            if not entry._declared:
-                continue
+        for entry in self._scoped(resource):
             amount = amounts.get(entry.limit.name, 0)
             if amount == 0:
                 continue
@@ -317,15 +772,15 @@ class SyncLease:
 
         Only limits declared in ``acquire(consume=...)`` can be released;
         other keys are reported (Issue #455) and ignored.
+        On a multi-resource lease this acts on the primary resource only;
+        reach the others through :meth:`resource` (ADR-148).
 
         Args:
             **amounts: Mapping of limit_name -> amount to return
         """
-        if self._committed or self._rolled_back:
-            raise LeaseExpiredError()
+        self._require_open()
         self._check_declared(amounts, "release")
-        negated = {k: -v for k, v in amounts.items()}
-        self._apply_adjust(negated)
+        self._apply_adjust({k: -v for k, v in amounts.items()}, self._primary)
 
     def _commit_initial(self) -> None:
         """Write initial consumption to DynamoDB on context enter (Issue #309).
@@ -361,6 +816,8 @@ class SyncLease:
         written_images: list[
             tuple[tuple[str, str, int], list[BucketState], int, int | None, tuple[bool, str | None]]
         ] = []
+        credit_images: dict[tuple[str, str, int], CreditImage | None] = {}
+        period_images: dict[tuple[str, str, int], CreditImage | None] = {}
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
             has_custom_config = group_entries[0]._has_custom_config
@@ -390,7 +847,13 @@ class SyncLease:
                         shard_count=first_entry._shard_count,
                         vu=vu,
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
+                        pgen=owner_entry._parent_generation if owner_entry is not None else None,
+                        pinc=owner_entry._parent_incarnation if owner_entry is not None else None,
                     )
+                )
+                created = items[-1].get("Put") if isinstance(items[-1], dict) else None
+                credit_images[entity_id, resource, shard_id] = credit_image_from_item(
+                    created.get("Item") if isinstance(created, dict) else None
                 )
                 created = {
                     e.limit.name: (e._window_start_ms, e.state.reset_after_seconds)
@@ -476,9 +939,21 @@ class SyncLease:
                     for e in group_entries
                     if e._granted and (not e._seed) and (e.state.grant_count is not None)
                 }
+                cleared_top_ups = [
+                    e.limit.name
+                    for e in group_entries
+                    if e._granted and (not e._seed) and e._stored_top_up
+                ]
                 pin = [e.state.shard_count for e in group_entries if e._seed and e.limit.is_quota]
                 pin += list(grant_counts.values())
                 written_rf = _monotonic_rf(now_ms, expected_rf, group_entries)
+                credit_images[entity_id, resource, shard_id] = _written_image(
+                    group_entries,
+                    rf=written_rf,
+                    vu=vu,
+                    windows={**seed_windows, **windows},
+                    applied=_applied_windows(group_entries),
+                )
                 read_state = next(
                     (e.state for e in group_entries if not e._seed and e.state.stored_vu_read), None
                 )
@@ -519,6 +994,11 @@ class SyncLease:
                         resource=resource,
                         consumed=consumed,
                         refill_amounts=refill_amounts,
+                        read_tokens={
+                            e.limit.name: e._original_tokens_milli
+                            for e in group_entries
+                            if not e._seed and e.limit.name in consumed
+                        },
                         now_ms=now_ms,
                         expected_rf=expected_rf,
                         ttl_seconds=ttl_seconds,
@@ -529,12 +1009,19 @@ class SyncLease:
                         applied_windows=_applied_windows(group_entries),
                         seeds=seeds,
                         grant_counts=grant_counts,
+                        cleared_top_ups=cleared_top_ups,
                         pin_shard_count=min(pin, default=None),
                         rf_ms=written_rf,
                         clear_vu=not boundaries,
                         pin_vu=read_state is not None,
                         expected_vu=read_state.stored_vu_ms if read_state is not None else None,
                         owner=(owner_entry._cascade, owner_entry._parent_id)
+                        if owner_entry is not None
+                        else None,
+                        owner_pgen=owner_entry._parent_generation
+                        if owner_entry is not None
+                        else None,
+                        owner_pinc=owner_entry._parent_incarnation
                         if owner_entry is not None
                         else None,
                         soft_stamps=soft_stamps or None,
@@ -559,32 +1046,26 @@ class SyncLease:
         for (entity_id, resource), debits in by_bucket.items():
             donor_items += repo.build_quota_donor_debits(entity_id, resource, debits)
         items += donor_items
-        condition_failed = False
-        condition_exc: Exception | None = None
-        for attempt in range(_CONFLICT_MAX_RETRIES + 1):
-            try:
-                repo.transact_write(items)
-                break
-            except Exception as exc:
-                if _is_condition_check_failure(exc):
-                    condition_failed = True
-                    condition_exc = exc
-                    break
-                if _is_transaction_conflict(exc):
-                    if attempt < _CONFLICT_MAX_RETRIES:
-                        delay = random.uniform(0, _CONFLICT_BASE_DELAY_S * 2**attempt)
-                        logger.debug(
-                            "TransactionConflict (attempt %d/%d), retrying in %.3fs",
-                            attempt + 1,
-                            _CONFLICT_MAX_RETRIES,
-                            delay,
-                        )
-                        time.sleep(delay)
-                        continue
-                    if donor_items:
-                        raise QuotaMoveLostError from exc
-                    raise
-                raise
+        meta_checks = _meta_checks(repo, list(groups.items()), self.entries, now_ms)
+        first_check = len(items)
+        items += meta_checks
+        condition_exc = self._send_commit(items, bool(donor_items), now_ms)
+        condition_failed = condition_exc is not None
+        if condition_failed and _meta_check_failed(condition_exc, first_check, len(meta_checks)):
+            raise _owner_stamp_lost(self.entries, now_ms) from condition_exc
+        if (
+            condition_failed
+            and condition_exc is not None
+            and self._claim_owner_stamps(groups, condition_exc)
+        ):
+            resent_exc = self._send_commit(items, bool(donor_items), now_ms)
+            if resent_exc is None:
+                condition_failed = False
+                condition_exc = None
+            else:
+                if _meta_check_failed(resent_exc, first_check, len(meta_checks)):
+                    raise _owner_stamp_lost(self.entries, now_ms) from resent_exc
+                condition_exc = resent_exc
         if condition_failed and donor_items:
             raise QuotaMoveLostError from condition_exc
         reissued_creates: set[tuple[str, str, int]] = set()
@@ -593,6 +1074,7 @@ class SyncLease:
             reason_codes = (
                 _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None
             )
+            retry_guards: dict[tuple[str, str, int], dict[str, tuple[int | None, int | None]]] = {}
 
             def _consumption_only(
                 entity_id: str, resource: str, shard_id: int, group_entries: list[LeaseEntry]
@@ -611,6 +1093,18 @@ class SyncLease:
                 }
                 if not consumed:
                     return None
+                guards = _period_guards(group_entries, now_ms)
+                if guards:
+                    retry_guards[entity_id, resource, shard_id] = guards
+                    return repo.build_composite_retry(
+                        entity_id=entity_id,
+                        resource=resource,
+                        consumed=consumed,
+                        shard_id=shard_id,
+                        seeds=seeds or None,
+                        soft_trusted=_soft_trusted(group_entries),
+                        period_guards=guards,
+                    )
                 return repo.build_composite_retry(
                     entity_id=entity_id,
                     resource=resource,
@@ -639,11 +1133,25 @@ class SyncLease:
             for retry_attempt in range(2):
                 if not retry_items:
                     break
+                retry_checks = _meta_checks(
+                    repo,
+                    [
+                        group
+                        for item, group in zip(retry_items, retry_groups, strict=True)
+                        if isinstance(item, dict) and "Put" in item
+                    ],
+                    self.entries,
+                    now_ms,
+                )
                 try:
-                    repo.transact_write(retry_items)
+                    retry_attrs = _transact_retrying_conflict(repo, retry_items + retry_checks)
                     break
                 except Exception as retry_exc:
+                    if _meta_check_failed(retry_exc, len(retry_items), len(retry_checks)):
+                        raise _owner_stamp_lost(self.entries, now_ms) from retry_exc
                     if not _is_condition_check_failure(retry_exc):
+                        if _is_transaction_conflict(retry_exc):
+                            raise _contention_rejection(self.entries, now_ms) from retry_exc
                         raise
                     codes = _get_cancellation_reason_codes(retry_exc)
                     downgraded: list[dict[str, Any]] = []
@@ -670,6 +1178,11 @@ class SyncLease:
                         images = _retry_failure_images(
                             retry_exc, [key for key, _group in retry_groups]
                         )
+                        unapplied = _unapplied_periods(retry_guards, images)
+                        if unapplied:
+                            raise PeriodNotAppliedError(
+                                _period_statuses(self.entries, now_ms, unapplied)
+                            ) from retry_exc
                         statuses = _build_retry_failure_statuses(self.entries, now_ms, images)
                         raise RateLimitExceeded(statuses) from retry_exc
                     retry_items = downgraded
@@ -679,9 +1192,22 @@ class SyncLease:
                 for item, (key, _group) in zip(retry_items, retry_groups, strict=True)
                 if isinstance(item, dict) and "Put" in item
             }
+            credit_images = {}
+            for item, (key, _group) in zip(retry_items, retry_groups, strict=True):
+                if isinstance(item, dict) and "Put" in item:
+                    credit_images[key] = credit_image_from_item(item["Put"].get("Item"))
+                elif len(retry_items) == 1:
+                    newer = credit_image_from_item(retry_attrs)
+                    if newer is not None:
+                        period_images[key] = newer
         self._initial_committed = True
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
+            key = (entry.entity_id, entry.resource, entry._shard_id)
+            if key in credit_images:
+                entry._image = entry._period_image = credit_images[key]
+            elif key in period_images:
+                entry._period_image = period_images[key]
         self._record_written_states(
             groups, [] if condition_failed else written_images, condition_failed
         )
@@ -692,6 +1218,56 @@ class SyncLease:
             self._repair_created_quota_shards(
                 [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
             )
+
+    def _send_commit(
+        self, items: list[dict[str, Any]], carries_moves: bool, now_ms: int
+    ) -> Exception | None:
+        """Send the commit transaction once, retrying a write conflict (#332, #724).
+
+        A ``TransactionConflict`` rolls the whole transaction back, so it is
+        re-sent as-is with full jitter, up to ``_CONFLICT_MAX_RETRIES`` times.
+        Every send of the commit goes through here — the first, and the
+        re-send after a claimed predecessor's bucket (ADR-150) — so none of
+        them can let a conflict escape raw: under ``on_unavailable=ALLOW`` a
+        raw error is an unlimited degraded lease.
+
+        Returns:
+            None when the transaction landed, or the exception when it failed
+            a condition (checked first: a lost lock routes to the
+            consumption-only retry, a META check to a re-plan). The caller
+            decides which.
+
+        Raises:
+            QuotaMoveLostError: Sustained contention on a commit carrying an
+                ADR-145 move; nothing was written and the caller re-plans.
+            RateLimitExceeded: Sustained contention otherwise — the contended
+                429 (#724); nothing was debited.
+            Exception: Any other error, unchanged.
+        """
+        attempt = 0
+        while True:
+            try:
+                self.repository.transact_write(items)
+                return None
+            except Exception as exc:
+                if _is_condition_check_failure(exc):
+                    return exc
+                if not _is_transaction_conflict(exc):
+                    raise
+                if attempt < _CONFLICT_MAX_RETRIES:
+                    delay = random.uniform(0, _CONFLICT_BASE_DELAY_S * 2**attempt)
+                    logger.debug(
+                        "TransactionConflict (attempt %d/%d), retrying in %.3fs",
+                        attempt + 1,
+                        _CONFLICT_MAX_RETRIES,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    attempt += 1
+                    continue
+                if carries_moves:
+                    raise QuotaMoveLostError(contended=True) from exc
+                raise _contention_rejection(self.entries, now_ms) from exc
 
     def _record_written_states(
         self,
@@ -781,6 +1357,51 @@ class SyncLease:
                     exc_info=True,
                 )
 
+    def _claim_owner_stamps(
+        self, groups: dict[tuple[str, str, int], list[LeaseEntry]], exc: Exception
+    ) -> bool:
+        """Claim buckets whose owner pin was lost to another incarnation (ADR-150).
+
+        The rf-locked owner stamp only overwrites a stamp of its own
+        incarnation, since this pass's META read may be a deleted
+        predecessor's. A bucket a predecessor left behind then refuses every
+        slow pass. Each failed item whose image carries a different ``pinc``
+        is settled by one strongly consistent META read
+        (:meth:`SyncRepository.restamp_owner_if_current`): restamped when this
+        pass's incarnation is current, left alone when this pass read a stale
+        record. When a bucket was claimed the caller re-sends its write once;
+        otherwise this acquire proceeds on the consumption-only retry with the
+        parents it planned: a pass that read a predecessor's record debits
+        that predecessor's parent once, like any lease opened before a move
+        (§7). Failures are logged without the entity id and swallowed.
+
+        Returns:
+            Whether any bucket was claimed.
+        """
+        claimed = False
+        images = _retry_failure_images(exc, list(groups))
+        for key, group_entries in groups.items():
+            owner = next((e for e in group_entries if e._stamp_owner), None)
+            image = images.get(key)
+            if owner is None or owner._parent_incarnation is None or image is None:
+                continue
+            stored = image.get(BUCKET_FIELD_PINC, {}).get("S")
+            if stored is None or stored == owner._parent_incarnation:
+                continue
+            try:
+                claimed = (
+                    self.repository.restamp_owner_if_current(*key, owner._parent_incarnation)
+                    or claimed
+                )
+            except Exception:
+                logger.warning(
+                    "could not claim a predecessor's bucket for resource=%s shard=%d",
+                    key[1],
+                    key[2],
+                    exc_info=True,
+                )
+        return claimed
+
     def _fan_out_windows(
         self, window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]]
     ) -> None:
@@ -833,8 +1454,9 @@ class SyncLease:
         """Write post-enter adjustment deltas to DynamoDB on context exit (Issue #309).
 
         No-op if no adjust/consume/release calls were made during the context.
-        Uses build_composite_adjust() for unconditional ADD, dispatched via
-        write_each() (independent single-item writes, 1 WCU each).
+        Each bucket item gets one adjust write (``write_credit``): an ``ADD``,
+        whose credits are conditioned on staying within the ceiling and, when
+        they would not, re-issued with ``vu = 0`` in the same write (#721).
 
         The lease is marked committed before the first write, so a write that
         fails is re-raised but never rolled back (#682): items that landed keep
@@ -845,137 +1467,329 @@ class SyncLease:
         if not self._has_adjustments:
             self._committed = True
             return
-        repo = self.repository
-        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
-        for entry in self.entries:
-            key = (entry.entity_id, entry.resource, entry._shard_id)
-            groups.setdefault(key, []).append(entry)
-        items: list[dict[str, Any]] = []
-        written: list[_AdjustedItem] = []
-        for (entity_id, resource, shard_id), group_entries in groups.items():
-            deltas: dict[str, int] = {}
-            for entry in group_entries:
-                delta = entry.consumed - entry._initial_consumed
-                if delta != 0:
-                    deltas[entry.limit.name] = delta * 1000
-            if deltas:
-                item = repo.build_composite_adjust(
-                    entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id
-                )
-                if item:
-                    items.append(item)
-                    written.append((entity_id, resource, shard_id, group_entries, deltas))
+        writes = self._adjust_writes(
+            lambda entry: (entry.consumed - entry._initial_consumed) * 1000
+        )
         self._committed = True
-        landed: list[_AdjustedItem] = []
-        results: list[dict[str, Any]] | None = []
-        try:
-            for item, adjusted in zip(items, written, strict=True):
-                result = repo.write_each([item])
-                results = None if result is None or results is None else results + result
-                landed.append(adjusted)
-        finally:
-            if landed:
-                self._trim_credits_above_ceiling(landed, results)
+        failures = self._write_credits_independently(writes)
+        if failures:
+            raise failures[0][1]
 
     def _rollback(self) -> None:
         """Write compensating deltas to restore consumed tokens (Issue #309).
 
         On error, the initial consumption was already written to DynamoDB by
-        _commit_initial(). This method restores those tokens by writing
-        negative deltas using build_composite_adjust() via write_each()
-        (independent single-item writes, 1 WCU each).
+        _commit_initial(). This method restores those tokens with one
+        self-trimming credit per bucket item (``write_credit``, #721): a reset
+        edge or a refill to capacity that landed since the debit can no longer
+        lift the balance above the ceiling where the fast path would spend it.
+
+        Each refund is written on its own (#729): one that fails after its
+        retries — a transaction conflict or throttling on a busy item — is
+        logged and the rest are still attempted, so a stuck child refund
+        cannot leave the parent debited for work that never happened. Never
+        raises: a rollback failure must not mask the caller's exception.
         """
         if self._committed or self._rolled_back:
             return
         self._rolled_back = True
         if not self._initial_committed:
             return
-        repo = self.repository
+        writes = self._adjust_writes(lambda entry: -entry._initial_consumed * 1000)
+        for (_entity_id, resource, shard_id, *_rest), exc in self._write_credits_independently(
+            writes
+        ):
+            logger.warning(
+                "Failed to roll back consumed tokens for resource=%s shard=%d (%s)",
+                resource,
+                shard_id,
+                type(exc).__name__,
+            )
+
+    def _adjust_writes(self, delta_of: Callable[[LeaseEntry], int]) -> list[_CreditWrite]:
+        """One ``(entity, resource, shard, deltas, ceilings, pin)`` per bucket item touched.
+
+        Grouped by (entity_id, resource, shard) — the shard is part of a
+        bucket's identity. ``ceilings`` holds the ceiling the lease resolved
+        (``BucketState.ceiling_milli`` now) for every credited limit, and
+        ``pin`` the item's (``rf``, ``shard_count``) it was resolved against, or
+        None when any entry on the item does not know it (#721).
+        """
         groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in self.entries:
             key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
-        items: list[dict[str, Any]] = []
-        written: list[_AdjustedItem] = []
+        now_ms = self.repository._now_ms()
+        writes: list[_CreditWrite] = []
         for (entity_id, resource, shard_id), group_entries in groups.items():
             deltas: dict[str, int] = {}
             for entry in group_entries:
-                if entry._initial_consumed != 0:
-                    deltas[entry.limit.name] = -entry._initial_consumed * 1000
-            if deltas:
-                item = repo.build_composite_adjust(
-                    entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id
-                )
-                if item:
-                    items.append(item)
-                    written.append((entity_id, resource, shard_id, group_entries, deltas))
-        if items:
-            try:
-                results = repo.write_each(items)
-            except Exception:
-                logger.warning(
-                    "Failed to rollback consumed tokens for entities: %s",
-                    list(groups.keys()),
-                    exc_info=True,
-                )
-                return
-            self._trim_credits_above_ceiling(written, results)
+                delta = delta_of(entry)
+                if delta != 0:
+                    deltas[entry.limit.name] = delta
+            if not deltas:
+                continue
+            images = {e._image for e in group_entries}
+            image = images.pop() if len(images) == 1 else None
+            period_images = {e._period_image for e in group_entries}
+            period_image = period_images.pop() if len(period_images) == 1 else None
+            ceilings = credit_ceilings(
+                [(e.limit.name, e.state) for e in group_entries],
+                deltas,
+                now_ms,
+                image,
+                period_image,
+            )
+            pin = image.pin if image is not None else None
+            writes.append((entity_id, resource, shard_id, deltas, ceilings, pin))
+        return writes
 
-    def _trim_credits_above_ceiling(
-        self, written: list[_AdjustedItem], results: list[dict[str, Any]] | None
-    ) -> None:
-        """Force one clamping pass on any item a credit lifted above its ceiling (#679).
+    def _write_credits_independently(
+        self, writes: list[_CreditWrite]
+    ) -> list[tuple[_CreditWrite, Exception]]:
+        """Write each bucket item's credit on its own, concurrently (ADR-148 D7).
 
-        A credit (``release()``, a negative ``adjust()``, a rollback) is an
-        unconditional ``ADD``, so a balance can land above the shard's ceiling.
-        The slow path clamps it, but the speculative fast path is a pure ``ADD``
-        with no cap and would spend the excess first. The adjust write returns
-        the new balances for free; only when one is over its ceiling does this
-        stamp ``vu = 0`` (1 WCU), which sends the next acquire to the slow path.
-        A credit within the ceiling — the common reconcile — costs nothing more.
+        Adjustments and refunds are ``ADD``s with no cross-item atomicity, so
+        their order does not matter — only knowing which ones landed does
+        (#682). One round trip for every item instead of one each, and one
+        that fails after its retries (#729) never stops the others from being
+        attempted.
 
-        The ceiling is the one the lease resolved (``BucketState.ceiling_milli``:
-        schedule, shard share and quota grant, ADR-145). If a schedule boundary
-        moved it since, the item's own ``vu`` has already expired anyway.
-
-        Never raises: it runs after the credit landed, so an error here must not
-        fail the caller, mislabel a rollback, or roll back a committed lease.
+        Returns:
+            Each write that failed, with its exception, in order.
         """
-        try:
-            resets = self._clamps_for_credits_above_ceiling(written, results)
-        except Exception:
-            logger.warning("Could not check a credit against its ceiling", exc_info=True)
-            return
-        for reset in resets:
-            try:
-                self.repository.write_each([reset])
-            except Exception:
-                logger.warning(
-                    "Failed to force a clamp after a credit above capacity", exc_info=True
-                )
 
-    def _clamps_for_credits_above_ceiling(
-        self, written: list[_AdjustedItem], results: list[dict[str, Any]] | None
-    ) -> list[dict[str, Any]]:
-        """The ``vu = 0`` writes for every item a credit lifted above its ceiling."""
-        if not isinstance(results, list) or len(results) != len(written):
-            return []
-        build = getattr(self.repository, "build_vu_reset", None)
-        if build is None:
-            return []
-        now_ms = self.repository._now_ms()
-        resets: list[dict[str, Any]] = []
-        for (entity_id, resource, shard_id, group_entries, deltas), attrs in zip(
-            written, results, strict=True
-        ):
-            for entry in group_entries:
-                if deltas.get(entry.limit.name, 0) >= 0:
-                    continue
-                value = attrs.get(bucket_attr(entry.limit.name, BUCKET_FIELD_TK))
-                if value is not None and int(value["N"]) > entry.state.ceiling_milli(now_ms):
-                    resets.append(build(entity_id, resource, shard_id))
-                    break
-        return resets
+        def _write(write: _CreditWrite) -> Exception | None:
+            entity_id, resource, shard_id, deltas, ceilings, pin = write
+            try:
+                write_credit(self.repository, entity_id, resource, deltas, shard_id, ceilings, pin)
+            except Exception as exc:
+                return exc
+            return None
+
+        outcomes = self._run_in_executor(*[lambda write=write: _write(write) for write in writes])
+        return [
+            (write, outcome)
+            for write, outcome in zip(writes, outcomes, strict=True)
+            if outcome is not None
+        ]
+
+    def _run_in_executor(self, *funcs: Any) -> Any:
+        """Run ``funcs`` concurrently per the repository's ``parallel_mode`` (ADR-148)."""
+        from ._parallel import run_parallel
+
+        return run_parallel(self.repository, funcs)
+
+
+def _limit_image(
+    state: BucketState,
+    sched_raw: tuple[str | None, str | None] | None = None,
+    window_start_ms: int | None = None,
+    window_applied_ms: int | None = None,
+) -> CreditLimitImage:
+    return CreditLimitImage(
+        capacity_milli=state.capacity_milli,
+        grant_count=state.grant_count,
+        sched_raw=sched_raw if sched_raw is not None else state.stored_sched_raw or (None, None),
+        window_start_ms=window_start_ms,
+        window_applied_ms=window_applied_ms,
+        topped_up_milli=state.topped_up_milli if state.is_quota_state is True else None,
+        reset_number=state.reset_number if state.is_quota_state is True else None,
+    )
+
+
+def credit_image(states: Iterable[BucketState], rf: int | None = None) -> CreditImage | None:
+    """The image of the item a set of states was read off (#721).
+
+    The states must all have been read off the item (or returned by a write
+    to it); one that was not makes the image unknown (``None``). The reserved
+    ``wcu`` limit is skipped: it always deserializes with ``shard_count = 1``.
+    """
+    read = [s for s in states if s.limit_name != WCU_LIMIT_NAME]
+    if not read:
+        return None
+    first = read[0]
+    item_sched = first.stored_item_sched_raw
+    if not isinstance(item_sched, tuple) or any(
+        s.stored_vu_read is not True
+        or not isinstance(s.stored_item_sched_raw, tuple)
+        or (not isinstance(s.stored_sched_raw, tuple))
+        for s in read
+    ):
+        return None
+    return CreditImage(
+        shard_count=first.shard_count,
+        vu=first.stored_vu_ms,
+        item_sched=item_sched,
+        rf=rf if rf is not None else first.last_refill_ms,
+        limits=tuple(
+            (s.limit_name, _limit_image(s, None, s.window_start_ms, s.window_applied_ms))
+            for s in read
+        ),
+    )
+
+
+def credit_image_from_item(item: Any) -> CreditImage | None:
+    """The image of a raw bucket item: a ``Put``'s ``Item`` or an ``ALL_NEW`` (#721)."""
+    if not isinstance(item, dict) or not item:
+        return None
+
+    def num(attr: str) -> int | None:
+        value = item.get(attr, {}).get("N")
+        return int(value) if value is not None else None
+
+    def text(attr: str) -> str | None:
+        value = item.get(attr, {}).get("S")
+        return value if isinstance(value, str) else None
+
+    suffix = f"_{BUCKET_FIELD_TK}"
+    limits: list[tuple[str, CreditLimitImage]] = []
+    for attr in item:
+        if not (attr.startswith(BUCKET_ATTR_PREFIX) and attr.endswith(suffix)):
+            continue
+        name = attr[len(BUCKET_ATTR_PREFIX) : -len(suffix)]
+        capacity = num(bucket_attr(name, BUCKET_FIELD_CP))
+        if not name or name == WCU_LIMIT_NAME or capacity is None:
+            continue
+        limits.append(
+            (
+                name,
+                CreditLimitImage(
+                    capacity_milli=capacity,
+                    grant_count=num(bucket_attr(name, BUCKET_FIELD_GC)),
+                    sched_raw=(
+                        text(bucket_attr(name, BUCKET_FIELD_SCHED)),
+                        text(bucket_attr(name, BUCKET_FIELD_RSCHED)),
+                    ),
+                    window_start_ms=num(bucket_attr(name, BUCKET_FIELD_WS)),
+                    window_applied_ms=num(bucket_attr(name, BUCKET_FIELD_WA)),
+                    topped_up_milli=num(bucket_attr(name, BUCKET_FIELD_TU)),
+                    reset_number=num(bucket_attr(name, BUCKET_FIELD_RN)),
+                ),
+            )
+        )
+    return CreditImage(
+        shard_count=num("shard_count") or 1,
+        vu=num(BUCKET_FIELD_VU),
+        item_sched=(
+            text(BUCKET_FIELD_SCHED),
+            text(BUCKET_FIELD_RSCHED),
+            text(BUCKET_FIELD_SCHED_TZ),
+        ),
+        rf=num(BUCKET_FIELD_RF) or 0,
+        limits=tuple(limits),
+    )
+
+
+def _written_image(
+    group: list[LeaseEntry],
+    *,
+    rf: int,
+    vu: int | None,
+    windows: dict[str, tuple[int, int]],
+    applied: dict[str, int],
+) -> CreditImage | None:
+    """The item an rf-locked write leaves behind, from what it read and stamped (#721).
+
+    The read image with the write's own stamps: ``rf``, ``vu`` (set to the
+    earliest boundary, or removed), the windows it opened and applied, the
+    grant counts already on the states, and each seeded limit in full —
+    its explicit schedule overrides and, from the first that has one, the
+    item's ``sched_tz`` (exactly as ``build_composite_normal`` writes them).
+    """
+    base = credit_image([e.state for e in group if not e._seed])
+    if base is None:
+        return None
+    sched, rsched, tz = base.item_sched
+    seeded_tz: str | None = None
+    limits: list[tuple[str, CreditLimitImage]] = []
+    for entry in sorted(group, key=lambda e: e.limit.name):
+        state = entry.state
+        name = entry.limit.name
+        sched_raw: tuple[str | None, str | None] | None = None
+        if entry._seed:
+            entry_tz, overrides = explicit_schedule_overrides(state.sched, state.reset_sched)
+            seeded_tz = seeded_tz or entry_tz
+            sched_raw = (overrides[BUCKET_FIELD_SCHED], overrides[BUCKET_FIELD_RSCHED])
+        window = windows.get(name)
+        limits.append(
+            (
+                name,
+                _limit_image(
+                    state,
+                    sched_raw,
+                    window[0] if window is not None else state.window_start_ms,
+                    applied.get(name, state.window_applied_ms),
+                ),
+            )
+        )
+    return CreditImage(
+        shard_count=base.shard_count,
+        vu=vu,
+        item_sched=(sched, rsched, seeded_tz or tz),
+        rf=rf,
+        limits=tuple(limits),
+    )
+
+
+class SyncLeaseResource:
+    """One resource of a lease, reached through ``SyncLease.resource(name)`` (ADR-148).
+
+    ``adjust()``, ``consume()``, ``release()`` and ``consumed`` behave exactly
+    as the lease-level methods do, scoped to this resource's declared limits:
+    the ones named for it in ``acquire()``'s ``consume`` (the primary
+    resource) or ``also`` (every other one). Nothing is written until the
+    lease's context exits, where every resource is reconciled together.
+    """
+
+    def __init__(self, lease: "SyncLease", name: str) -> None:
+        self._lease = lease
+        self.name = name
+        "The resource this handle acts on."
+
+    @property
+    def consumed(self) -> dict[str, int]:
+        """Total consumed amounts by limit name, for this resource."""
+        return self._lease._consumed_in(self.name)
+
+    def consume(self, **amounts: int) -> None:
+        """Consume more of this resource; see :meth:`SyncLease.consume`.
+
+        Raises:
+            RateLimitExceeded: If any of this resource's limits cannot cover it.
+            LeaseExpiredError: If the lease has already exited.
+        """
+        lease = self._lease
+        lease._require_open()
+        lease._check_declared(amounts, "consume", self.name)
+        lease._consume_in(self.name, amounts)
+
+    def adjust(self, **amounts: int) -> None:
+        """Adjust this resource's consumption by delta; see :meth:`SyncLease.adjust`.
+
+        Never raises for capacity: the bucket may go negative.
+
+        Raises:
+            LeaseExpiredError: If the lease has already exited.
+        """
+        lease = self._lease
+        lease._require_open()
+        lease._check_declared(amounts, "adjust", self.name)
+        lease._apply_adjust(amounts, self.name)
+
+    def release(self, **amounts: int) -> None:
+        """Return unused capacity of this resource; see :meth:`SyncLease.release`.
+
+        Raises:
+            LeaseExpiredError: If the lease has already exited.
+        """
+        lease = self._lease
+        lease._require_open()
+        lease._check_declared(amounts, "release", self.name)
+        lease._apply_adjust({k: -v for k, v in amounts.items()}, self.name)
+
+    def __repr__(self) -> str:
+        return f"SyncLeaseResource({self.name!r})"
 
 
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:
@@ -1024,6 +1838,9 @@ def _is_transaction_conflict(exc: Exception) -> bool:
     reason_codes = _get_cancellation_reason_codes(exc)
     if reason_codes is not None:
         return "TransactionConflict" in reason_codes
+    if hasattr(exc, "response"):
+        error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        return bool(error_code == "TransactionConflictException")
     return False
 
 
@@ -1037,6 +1854,25 @@ def _soft_trusted(group: list[LeaseEntry]) -> frozenset[str]:
     return frozenset(
         e.limit.name for e in group if e._soft_trusted and e.state.soft and (not e._seed)
     )
+
+
+def _transact_retrying_conflict(
+    repo: "SyncRepositoryProtocol", items: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """``transact_write`` retried with full jitter on a transaction conflict (#724).
+
+    A conflict rolls the whole write back, so re-sending it is safe. Returns
+    what ``transact_write`` returns (a single update's ``ALL_NEW`` image). The
+    last attempt's error propagates unchanged.
+    """
+    for attempt in range(_CONFLICT_MAX_RETRIES):
+        try:
+            return repo.transact_write(items)
+        except Exception as exc:
+            if not _is_transaction_conflict(exc) or _is_condition_check_failure(exc):
+                raise
+            time.sleep(random.uniform(0, _CONFLICT_BASE_DELAY_S * 2**attempt))
+    return repo.transact_write(items)
 
 
 def _applied_windows(group: list[LeaseEntry]) -> dict[str, int]:
@@ -1107,6 +1943,82 @@ def _monotonic_rf(now_ms: int, stored_rf: int | None, group: list[LeaseEntry]) -
     return max(candidates)
 
 
+def _period_guards(
+    group: list[LeaseEntry], now_ms: int
+) -> dict[str, tuple[int | None, int | None]]:
+    """The period each quota this pass reset, rolled or opened (#743).
+
+    ``(reset_edge_ms, None)`` for a calendar quota — the edge the write would
+    have applied, the latest at or before ``now_ms`` — or ``(None,
+    window_start_ms)`` for a session quota, the window it opened or rolled to.
+    Only a quota the retry debits, and only one this pass granted: a period
+    nobody granted was already current.
+    """
+    guards: dict[str, tuple[int | None, int | None]] = {}
+    for entry in group:
+        if not (entry._granted and entry.limit.is_quota and (entry.consumed > 0)):
+            continue
+        state = entry.state
+        if state.reset_after_seconds is not None:
+            if state.window_start_ms is not None:
+                guards[entry.limit.name] = (None, state.window_start_ms)
+        else:
+            edge = prev_reset_edge(state.reset_sched, now_ms)
+            if edge is not None:
+                guards[entry.limit.name] = (edge, None)
+    return guards
+
+
+def _unapplied_periods(
+    guards: dict[tuple[str, str, int], dict[str, tuple[int | None, int | None]]],
+    images: dict[tuple[str, str, int], dict[str, Any]],
+) -> set[tuple[tuple[str, str, int], str]]:
+    """The (bucket, quota) pairs whose period guard the failed retry tripped (#743).
+
+    Read off each failed write's ``ALL_OLD`` image: a calendar quota whose
+    ``rf`` is still before the edge, or a session quota whose ``wa`` is not
+    the window. No image, nothing can be told: the rejection stands as before.
+    """
+    unapplied: set[tuple[tuple[str, str, int], str]] = set()
+    for key, per_limit in guards.items():
+        item = images.get(key)
+        if not item:
+            continue
+        rf = int(item.get(BUCKET_FIELD_RF, {}).get("N", "0"))
+        for name, (edge, window_start) in per_limit.items():
+            applied = item.get(bucket_attr(name, BUCKET_FIELD_WA), {}).get("N")
+            if (
+                edge is not None
+                and rf < edge
+                or (window_start is not None and applied != str(window_start))
+            ):
+                unapplied.add((key, name))
+    return unapplied
+
+
+def _period_statuses(
+    entries: list[LeaseEntry], now_ms: int, unapplied: set[tuple[tuple[str, str, int], str]]
+) -> list[LimitStatus]:
+    """Statuses for a rejection on a period nobody has applied yet (#743).
+
+    The in-memory statuses, with each such quota marked exceeded: the request
+    was not admitted against it. The wait is the floor, never ``0.0`` — the
+    next pass applies the period, so the answer is "shortly", not "now".
+    """
+    statuses = _retry_statuses(entries, now_ms, None)
+    names = {name for _key, name in unapplied}
+    return [
+        replace(
+            status,
+            exceeded=True,
+            retry_after_seconds=max(status.retry_after_seconds, _MIN_RETRY_AFTER_S),
+        )
+        if status.limit_name in names
+        else status
+        for status in statuses
+    ]
+
+
 def _retry_failure_images(
     exc: Exception, keys: list[tuple[str, str, int]]
 ) -> dict[tuple[str, str, int], dict[str, Any]]:
@@ -1161,6 +2073,93 @@ def _build_retry_failure_statuses(
     return _retry_statuses(entries, now_ms, None)
 
 
+def _meta_checks(
+    repo: "SyncRepositoryProtocol",
+    groups: list[tuple[tuple[str, str, int], list[LeaseEntry]]],
+    entries: list[LeaseEntry],
+    now_ms: int,
+) -> list[dict[str, Any]]:
+    """One ``ConditionCheck`` per distinct owner whose bucket these groups create (ADR-150).
+
+    Asserts the META each create's pass read: the parent generation and
+    incarnation it stamps, or no META at all when the read found none. A
+    group whose pass read no META (an entry built elsewhere) carries none.
+    One per owner: two actions on one item are not allowed in a transaction.
+
+    Raises:
+        OwnerStampLostError: Two creates of one owner read different META
+            (a multi-resource commit plans each resource with its own read),
+            so one of them is stale and no single check can pin both.
+    """
+    read: dict[str, tuple[bool, int | None, str | None]] = {}
+    for (entity_id, _resource, _shard), group_entries in groups:
+        if not group_entries[0]._is_new or not any(e._owner_read for e in group_entries):
+            continue
+        owner = next((e for e in group_entries if e._stamp_owner), None)
+        seen = (
+            (True, owner._parent_generation, owner._parent_incarnation)
+            if owner is not None
+            else (False, None, None)
+        )
+        if read.setdefault(entity_id, seen) != seen:
+            raise _owner_stamp_lost(entries, now_ms)
+    return [
+        repo.build_owner_check(entity_id, exists=exists, pgen=pgen, pinc=pinc)
+        for entity_id, (exists, pgen, pinc) in read.items()
+    ]
+
+
+def _meta_check_failed(exc: Exception | None, first: int, count: int) -> bool:
+    """Whether a cancelled transaction failed one of its META checks (ADR-150).
+
+    The checks sit at indices ``first .. first + count - 1``; the per-index
+    cancellation reasons say which items failed their condition.
+    """
+    if exc is None or count == 0:
+        return False
+    codes = _get_cancellation_reason_codes(exc) or []
+    return any(code == "ConditionalCheckFailed" for code in codes[first : first + count])
+
+
+def _owner_stamp_lost(entries: list[LeaseEntry], now_ms: int) -> "OwnerStampLostError":
+    """The rejection a META-check cancellation raises: nothing was written (ADR-150)."""
+    return OwnerStampLostError(_contention_rejection(entries, now_ms).statuses, contended=True)
+
+
+def _contention_rejection(
+    entries: list[LeaseEntry], now_ms: int, consume: dict[str, int] | None = None
+) -> RateLimitExceeded:
+    """A short 429 for a commit that kept conflicting (#724).
+
+    One status per declared entry, from the in-memory state, none marked
+    exceeded: the request was not short of capacity, it lost to concurrent
+    transactions on the same items. Nothing was debited.
+
+    ``requested`` is what the caller asked for (``consume``), not what the
+    entry was admitted for: a slot granted 0 after its moves were lost
+    admits nothing (``consumed == 0``) and must still report the request.
+    Without ``consume`` the admitted amount stands in, which on the commit
+    path is the same number.
+    """
+    statuses = [
+        LimitStatus(
+            entity_id=entry.entity_id,
+            resource=entry.resource,
+            limit_name=entry.limit.name,
+            limit=entry.limit.per_shard(
+                entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+            ),
+            available=(entry.state.tokens_milli + entry.consumed * 1000) // 1000,
+            requested=(consume or {}).get(entry.limit.name, entry.consumed),
+            exceeded=False,
+            retry_after_seconds=_CONTENTION_RETRY_AFTER_S,
+            resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
+        )
+        for entry in [e for e in entries if e._declared] or entries
+    ]
+    return RateLimitExceeded(statuses, contended=True)
+
+
 def _retry_statuses(
     entries: list[LeaseEntry],
     now_ms: int,
@@ -1189,7 +2188,9 @@ def _retry_statuses(
                     entity_id=entry.entity_id,
                     resource=entry.resource,
                     limit_name=entry.limit.name,
-                    limit=entry.limit.per_shard(real.report_shard_count, now_ms),
+                    limit=entry.limit.per_shard(
+                        real.report_shard_count, now_ms, real.report_top_up_milli
+                    ),
                     available=result.available,
                     requested=entry.consumed,
                     exceeded=exceeded,
@@ -1209,7 +2210,9 @@ def _retry_statuses(
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                limit=entry.limit.per_shard(
+                    entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                ),
                 available=entry.state.tokens_milli // 1000,
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,
