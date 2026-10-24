@@ -2146,6 +2146,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.fast_path_short" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;fast_path_short
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.BucketState.ceiling_milli" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5891,6 +5902,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.fast_path_short" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;fast_path_short
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.BucketState.ceiling_milli" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -9031,6 +9053,32 @@ spent since. <code>False</code> for a bucket with no window.</p>
 <p>Scale first, divide second (#222 §2.1): the schedule applies to the
 whole limit and the shards split the result. Dividing first floors
 against a smaller numerator and drifts below the intended share.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.models.BucketState.fast_path_short" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">fast_path_short</span>
+
+
+<a href="#zae_limiter.models.BucketState.fast_path_short" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">fast_path_short</span><span class="p">(</span><span class="n">amount</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Whether this image fails the fast path's balance term for <code>amount</code> tokens.</p>
+<p>The speculative condition's per-limit term, read off a failure image:
+<code>tk &gt;= amount</code>, waived for a soft limit (#467) or a bypassed bucket
+(#311), whose stamps admit it. A stamp seen here is live: an expired
+one is classified first, as a closed window. One predicate for the
+repository's failure classification and the limiter's "failed only
+on its stamp" test (#741), so the two cannot disagree.</p>
 
 
     </div>
