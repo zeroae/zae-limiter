@@ -2308,24 +2308,33 @@ class TestE2EAWSResetAndTopUp:
                 iam.delete_role(RoleName=role_name)
 
     @pytest.mark.asyncio(loop_scope="class")
-    async def test_app_role_with_acq_can_also_reset_and_top_up(
+    async def test_app_role_with_acq_cannot_reset_or_top_up(
         self, reset_policy_stack, unique_name_class, monkeypatch
     ):
-        """The stack's app role (AcquireOnlyPolicy only) is not refused either.
+        """The stack's app role (AcquireOnlyPolicy only) acquires, but cannot
+        reset or top up (#756): the acquire policies write bucket items only,
+        so the operation's audit ``Put`` and its record are refused, and the
+        whole transaction with them."""
+        from zae_limiter.limiter import _access_denied_in
 
-        DynamoDB IAM cannot tell a top-up's ``UpdateItem`` from an acquire's on
-        the same item, so a principal that may acquire may also reset and top
-        up (ADR-149: operator actions by contract). Pinned so a change is
-        noticed: a bucket-only write rule for the acquire policies would keep
-        an app role out of these calls (the audit ``Put`` would be refused), and
-        this test would then expect ``PermissionDenied``.
-        """
         namespace = "acq-policy"
         await self._seed(reset_policy_stack, namespace)
         role_arn = TestE2EAWSAcquirePolicies._outputs(unique_name_class)["AppRoleArn"]
 
         TestE2EAWSAcquirePolicies._become(monkeypatch, TestE2EAWSAcquirePolicies._assume(role_arn))
-        await self._exercise(unique_name_class, namespace)
+        repo = await TestE2EAWSAcquirePolicies._connect(unique_name_class, namespace)
+        try:
+            limiter = RateLimiter(repository=repo)
+            assert await self._admitted(limiter, "solo", self.RESOURCE) == 10
+            for operation in (
+                repo.reset_bucket("solo", self.RESOURCE),
+                repo.top_up("solo", self.RESOURCE, {"cal": 5}),
+            ):
+                with pytest.raises(Exception) as refused:
+                    await operation
+                assert _access_denied_in(refused.value) is not None, refused.value
+        finally:
+            await repo.close()
 
 
 class TestE2EAWSUpgradeAppliesTemplate:

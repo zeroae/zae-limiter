@@ -792,6 +792,12 @@ Users provide a short identifier (e.g., `my-app`), and the system uses it direct
   system-level soft change discovers its buckets there (`Repository._fanout_soft`), and with
   only `{id}/*` its config write landed and the fan-out was denied (review D4). No table item
   has it as its PK
+- **The acquire policies write bucket items only (#756, ADR-152):** `acq` grants `PutItem` /
+  `UpdateItem` where `LeadingKeys` is `*/BUCKET#*`, `ns-acq` where it is `{id}/BUCKET#*`, each
+  with `Null` false on the key; reads and `ConditionCheckItem` stay namespace-wide. Every
+  `acquire()` write is a bucket item, so an application role keeps working, but
+  `create_entity`, `set_limits`, `reset_bucket` / `top_up` and a first-time `Repository.open()`
+  need `full` / `ns-full`. `TestE2EAWSResetAndTopUp`'s `acq` case pins the refusal on real AWS
 - Attach the `zael_namespace_id` tag to IAM roles/users to scope their access
 
 ```bash
