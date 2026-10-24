@@ -926,8 +926,15 @@ class RateLimiter:
             if len(parts) > 1:
                 lease = await self._acquire_resources(entity_id, parts)
 
-            # Try speculative fast path first (issue #315)
-            elif self._speculative_writes:
+            # Try speculative fast path first (issue #315). Not when a `limits=`
+            # override declares a soft limit this request consumes (#467,
+            # review D11): an override is not config, so no bucket carries its
+            # stamp, and the fast path — child and cascade parent — would read
+            # that limit hard and reject on it. The slow path trusts the
+            # override for every entity it plans.
+            elif self._speculative_writes and not any(
+                limit.soft and limit.name in consume for limit in limits or ()
+            ):
                 (
                     lease,
                     slow_path_shard,

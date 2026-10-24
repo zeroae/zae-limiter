@@ -790,7 +790,9 @@ class SyncRateLimiter:
             slow_path_parent_shard: _ParentHint | None = None
             if len(parts) > 1:
                 lease = self._acquire_resources(entity_id, parts)
-            elif self._speculative_writes:
+            elif self._speculative_writes and (
+                not any(limit.soft and limit.name in consume for limit in limits or ())
+            ):
                 lease, slow_path_shard, slow_path_shard_count, slow_path_parent_shard = (
                     self._try_speculative_acquire(
                         entity_id=entity_id,

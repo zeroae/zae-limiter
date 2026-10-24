@@ -1956,7 +1956,10 @@ exact. User guide: `docs/guide/soft-limits-and-bypass.md`. Design:
   knowledge. The stamp admits only beside the limit's `cp` (`#oc{i}`): a soft fan-out stamps
   buckets created before the limit existed, and those must reach the #633 seed (review D3).
   `try_consume` admits a soft (or bypassed) state, which covers slow-path admission,
-  `Lease.consume`, failure classification and the rejection cache at once. Slow-path authority
+  `Lease.consume`, failure classification and the rejection cache at once. An `acquire(limits=
+  ...)` override is not config and stamps no bucket, so one that declares a soft limit the
+  request consumes skips the fast path (which would read that limit hard and reject on it,
+  child or cascade parent) and is decided by the slow path (review D11). Slow-path authority
   (`RateLimiter._soft_authority`): an override, config read fresh (`limits_read_fresh`), or —
   when the config cache served — config read uncached whenever the item carries a soft stamp
   (never the item's stamp itself); a create or seed takes soft-ness from

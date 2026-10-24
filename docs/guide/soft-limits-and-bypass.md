@@ -82,6 +82,10 @@ within `stamp_ttl`:
   restamped (an entity's own override is left alone). A system-level change reaches every bucket
   in the namespace.
 
+A soft limit passed to one call, `acquire(..., limits=[...])`, is soft for that call only: it is
+not config, so it stamps no bucket and other callers keep the stored definition. Such a call takes
+the slow path (a read before the write) whenever it consumes a limit it declares soft.
+
 ## Bypass
 
 Bypass waives every limit for one entity, one resource, or one entity on one resource. Requests
