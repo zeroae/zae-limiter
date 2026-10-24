@@ -48,13 +48,15 @@ REPOSITORY = {
     "build_composite_normal": (True, True),  # rf-locked: reset/roll/seed stamp gc, pinned
     "build_composite_retry": (True, False),  # ADD only; never seeds a quota
     "build_composite_adjust": (True, False),  # adjust / rollback ADD; vu = 0 on trim (#721)
+    "build_bypass_consume": (False, False),  # bypassed slow path: tc only (#311)
     "build_bucket_operation": (True, True),  # reset / top-up (ADR-149): tk delta, gc, tu
     "build_operation_record": NOT_BUCKET,  # reset / top-up operation record (ADR-149)
     "build_quota_donor_debits": (True, False),  # the donor side of a move
     "_build_quota_count_freeze": (False, True),  # gc = if_not_exists(gc, :g) on a raise
     "_build_bucket_param_update": (False, False),  # param sync: cp/ra/rp/sched, vu = 0
     # Direct bucket writes.
-    "_speculative_consume_single": (True, False),  # the fast path ADD; never gc
+    "_speculative_consume_once": (True, False),  # the fast path ADD; never gc
+    # (bypass shape: tc only, #311)
     "bump_shard_count": (False, False),  # shard_count on shard 0
     "_propagate_shard_count": (False, False),  # shard_count on siblings (R6 residual)
     "_freeze_and_raise_shard_counts": (False, True),  # the planner's raise, with the freeze
@@ -159,8 +161,8 @@ def test_every_aggregator_writer_is_registered():
 
 def test_the_fast_path_never_writes_gc():
     """I3: the speculative consume must stay 0 RCU + 1 WCU and blind to ``gc``."""
-    assert REPOSITORY["_speculative_consume_single"] == (True, False)
-    source = inspect.getsource(Repository._speculative_consume_single)
+    assert REPOSITORY["_speculative_consume_once"] == (True, False)
+    source = inspect.getsource(Repository._speculative_consume_once)
     assert "BUCKET_FIELD_GC" not in source
     assert "grant_count" not in source
 

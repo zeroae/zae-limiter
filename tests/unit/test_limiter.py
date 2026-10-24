@@ -7343,9 +7343,11 @@ class TestCascadeEntityCache:
         compensated_entity_ids: list[str] = []
         original_compensate = limiter._compensate_speculative
 
-        async def tracking_compensate(entity_id, resource, consume, shard_id, buckets=None):
+        async def tracking_compensate(entity_id, resource, consume, shard_id, *args, **kwargs):
             compensated_entity_ids.append(entity_id)
-            return await original_compensate(entity_id, resource, consume, shard_id, buckets)
+            return await original_compensate(
+                entity_id, resource, consume, shard_id, *args, **kwargs
+            )
 
         async def mock_single(
             entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
@@ -14116,6 +14118,27 @@ class TestAdjustmentCommitFailure:
         # parent's lands.
         assert await self._consumed(repo, "user") == 10
         assert await self._consumed(repo, "org") == 15
+
+
+class TestBypass:
+    """Bypass admits, debits nothing and keeps counting (#311); sync twin generated."""
+
+    async def test_bypass_admits_without_debiting(self, limiter):
+        repo = limiter._repository
+        await limiter.set_resource_defaults("llm", [Limit.per_minute("rpm", 1)])
+        await repo.bypass_resource("llm")
+        for _ in range(4):  # create, refund-and-learn, then bypass-shaped
+            async with limiter.acquire("user-1", "llm", {"rpm": 1}) as lease:
+                assert lease.bypassed
+        (bucket,) = [b for b in await repo.get_buckets("user-1", "llm") if b.limit_name == "rpm"]
+        assert bucket.tokens_milli == 1000
+        assert bucket.total_consumed_milli == 4000
+        await repo.clear_resource_disabled("llm")
+        async with limiter.acquire("user-1", "llm", {"rpm": 1}) as lease:
+            assert not lease.bypassed
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("user-1", "llm", {"rpm": 1}):
+                pass
 
 
 class TestSoftLimits:

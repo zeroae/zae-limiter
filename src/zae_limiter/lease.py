@@ -190,6 +190,11 @@ class LeaseEntry:
     # #467: config was read fresh this pass, so the rf-locked write re-stamps
     # `b_{name}_soft` from it (SET or REMOVE) and a stale stamp self-heals.
     _soft_restamp: bool = False
+    # #311: admitted under bypass. Fixed for the life of the lease: the initial
+    # write, adjustments, release and rollback touch `tc` only, so tokens a
+    # bypassed request never debited are never owed, even if the bypass is
+    # cleared mid-lease (ADR-151 §5).
+    _bypass: bool = False
     # ADR-149: the item as read carries `b_{name}_tu` for this limit, so a
     # reset or roll this commit applies must REMOVE it (the top-up belonged to
     # the period that just ended).
@@ -314,6 +319,8 @@ async def write_credit(
     shard_id: int,
     ceilings: dict[str, CreditCeiling],
     pin: CreditPin | None,
+    *,
+    tokens: bool = True,
 ) -> None:
     """Write one adjust item whose credits trim themselves (#721, refs #680).
 
@@ -349,7 +356,18 @@ async def write_credit(
     stub that rejects the entity forever. When the last write's condition
     fails, the item is gone and there is nothing to adjust: logged at debug,
     not an error. Errors other than a failed condition propagate.
+
+    ``tokens=False`` is a bypassed item's adjustment (#311): it writes ``tc``
+    only, so there is no balance to bound and no ceiling or period applies.
     """
+    if not tokens:
+        # TODO(D6): a bypassed `tc`-only credit skips the #721 ceilings and pins.
+        item = repository.build_composite_adjust(
+            entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, tokens=False
+        )
+        if item:
+            await _write_unless_gone(repository, item, resource)
+        return
     unknown = {
         name
         for name, ceiling in ceilings.items()
@@ -466,8 +484,12 @@ async def _write_unless_gone(
         logger.debug("adjustment skipped: the bucket for resource=%s is gone", resource)
 
 
-_CreditWrite = tuple[str, str, int, dict[str, int], dict[str, CreditCeiling], CreditPin | None]
-"""(entity_id, resource, shard_id, deltas, ceilings, pin) for one adjust write (#721)."""
+_CreditWrite = tuple[
+    str, str, int, dict[str, int], dict[str, CreditCeiling], CreditPin | None, dict[str, bool]
+]
+"""(entity_id, resource, shard_id, deltas, ceilings, pin, shape) for one adjust write (#721).
+
+``shape`` is ``_bypass_shape``'s keywords for ``write_credit`` (#311)."""
 
 
 class PeriodNotAppliedError(RateLimitExceeded):
@@ -480,6 +502,14 @@ class PeriodNotAppliedError(RateLimitExceeded):
     (`RateLimiter._slow_acquire`). A `RateLimitExceeded`, so any
     other caller of `_commit_initial` reads it as a rejection: it can only
     under-admit.
+    """
+
+
+class BypassLostError(Exception):
+    """A bypass-shaped slow-path write found the bucket's stamp gone (internal, #311).
+
+    The bypass was cleared between this pass's (uncached) config read and its
+    write. Nothing was written; the acquire is planned again, enforced.
     """
 
 
@@ -698,6 +728,18 @@ class Lease:
             name = entry.limit.name
             result[name] = result.get(name, 0) + entry.consumed
         return result
+
+    @property
+    def bypassed(self) -> bool:
+        # TODO(D10): not scoped to the primary resource, and absent from
+        # `LeaseResource` (ADR-148).
+        """Whether the acquiring entity was admitted under bypass (#311).
+
+        Nothing was debited from its limits' balances; consumption is still
+        counted. A cascade parent resolves its own mode, so a bypassed child
+        can still have been gated by its parent. False for the degraded lease.
+        """
+        return bool(self.entries) and self.entries[0]._bypass
 
     @property
     def overdrawn(self) -> list[str]:
@@ -1033,6 +1075,20 @@ class Lease:
             # them (#684): never a carrier or an entry built without them.
             owner_entry = next((e for e in group_entries if e._stamp_owner), None)
 
+            if group_entries[0]._bypass and not is_new:
+                # Bypass (#311): `tc` only, conditioned on the stamp. No refill,
+                # no `rf`, no reset or window roll — the first enforced pass
+                # after the bypass is lifted applies whatever is pending.
+                items.append(
+                    repo.build_bypass_consume(
+                        entity_id,
+                        resource,
+                        {e.limit.name: e.consumed * 1000 for e in group_entries if e._declared},
+                        shard_id,
+                    )
+                )
+                continue
+
             if is_new:
                 first_entry = owner_entry or group_entries[0]
                 items.append(
@@ -1048,6 +1104,7 @@ class Lease:
                         shard_count=first_entry._shard_count,
                         vu=vu,
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
+                        bypass=group_entries[0]._bypass,
                         pgen=(owner_entry._parent_generation if owner_entry is not None else None),
                         pinc=(owner_entry._parent_incarnation if owner_entry is not None else None),
                     )
@@ -1323,14 +1380,14 @@ class Lease:
                             if owner_entry is not None
                             else None
                         ),
+                        soft_stamps=soft_stamps or None,
+                        soft_trusted=_soft_trusted(group_entries),
                         owner_pgen=(
                             owner_entry._parent_generation if owner_entry is not None else None
                         ),
                         owner_pinc=(
                             owner_entry._parent_incarnation if owner_entry is not None else None
                         ),
-                        soft_stamps=soft_stamps or None,
-                        soft_trusted=_soft_trusted(group_entries),
                     )
                 )
                 # The rollover fan-out. A create fans out only in the one case
@@ -1405,6 +1462,16 @@ class Lease:
             # could not carry the move. The acquire re-plans (design §6 step 6).
             raise QuotaMoveLostError from condition_exc
 
+        if condition_failed and _bypass_write_failed(
+            list(groups.values()),
+            _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None,
+            creates_lose_races=True,
+        ):
+            # The bypass was cleared since this pass read config (#311). The
+            # whole transaction rolled back; the acquire is planned again,
+            # enforced, rather than retried bypass-shaped or debited here.
+            raise BypassLostError from condition_exc
+
         # Bucket items whose create `Put` was re-issued on the retry path and
         # landed there: a doubling can overtake them exactly as it can the
         # first transaction's, so they get the same repair (ADR-145 R7).
@@ -1433,6 +1500,15 @@ class Lease:
                 consumed = {
                     e.limit.name: e.consumed * 1000 for e in group_entries if e.consumed > 0
                 }
+                if group_entries[0]._bypass:
+                    # A bypassed create that lost its race to another creator:
+                    # count the consumption on the item that won, still only
+                    # while it carries the stamp (#311).
+                    return (
+                        repo.build_bypass_consume(entity_id, resource, consumed, shard_id)
+                        if consumed
+                        else None
+                    )
                 # A limit the lost write was to seed may still be missing —
                 # the lock can be lost to a writer that does not seed (#633).
                 # Only a limit this retry debits is seeded here, and only an
@@ -1551,6 +1627,8 @@ class Lease:
                             break
                         downgraded.append(item)
                         downgraded_groups.append(retry_groups[i])
+                    if _bypass_write_failed([group for _key, group in retry_groups], codes):
+                        raise BypassLostError from retry_exc
                     if not lost_put or retry_attempt == 1:
                         # Index-aligned with the items that were sent, so each
                         # failure image is attributed to its own bucket.
@@ -1985,7 +2063,10 @@ class Lease:
                 period_image,
             )
             pin = image.pin if image is not None else None
-            writes.append((entity_id, resource, shard_id, deltas, ceilings, pin))
+            # A bypassed item (#311) never had `tk` debited: its adjustments,
+            # releases and rollbacks write `tc` only.
+            shape = _bypass_shape(group_entries)
+            writes.append((entity_id, resource, shard_id, deltas, ceilings, pin, shape))
         return writes
 
     async def _write_credits_independently(
@@ -2004,10 +2085,10 @@ class Lease:
         """
 
         async def _write(write: _CreditWrite) -> Exception | None:
-            entity_id, resource, shard_id, deltas, ceilings, pin = write
+            entity_id, resource, shard_id, deltas, ceilings, pin, shape = write
             try:
                 await write_credit(
-                    self.repository, entity_id, resource, deltas, shard_id, ceilings, pin
+                    self.repository, entity_id, resource, deltas, shard_id, ceilings, pin, **shape
                 )
             except Exception as exc:
                 return exc
@@ -2289,6 +2370,39 @@ def _is_transaction_conflict(exc: Exception) -> bool:
         error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
         return bool(error_code == "TransactionConflictException")
     return False
+
+
+def _bypass_write_failed(
+    groups: list[list[LeaseEntry]],
+    reason_codes: list[str] | None,
+    *,
+    creates_lose_races: bool = False,
+) -> bool:
+    """Whether a failed transaction failed on a bypass-shaped write (#311).
+
+    ``groups`` is index-aligned with the transaction's items. Without reasons
+    (a single-item write) the one group is the one that failed. With
+    ``creates_lose_races``, a bypassed create is not counted: its ``Put``
+    fails only by losing the create race, which the retry path handles.
+    """
+    for idx, group in enumerate(groups):
+        if not group[0]._bypass or (creates_lose_races and group[0]._is_new):
+            continue
+        if reason_codes is None or idx >= len(reason_codes):
+            return True
+        if reason_codes[idx] == "ConditionalCheckFailed":
+            return True
+    return False
+
+
+def _bypass_shape(group: list[LeaseEntry]) -> dict[str, bool]:
+    """``build_composite_adjust`` keywords for one bucket item's adjustment.
+
+    A bypassed item (#311) never had ``tk`` debited, so its adjustments,
+    releases and rollbacks write ``tc`` only. Passed only when needed, so a
+    backend whose builder predates the keyword keeps working.
+    """
+    return {"tokens": False} if group and group[0]._bypass else {}
 
 
 def _soft_trusted(group: list[LeaseEntry]) -> frozenset[str]:
