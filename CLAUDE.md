@@ -1960,7 +1960,10 @@ exact. User guide: `docs/guide/soft-limits-and-bypass.md`. Design:
   `Lease.consume`, failure classification and the rejection cache at once. An `acquire(limits=
   ...)` override is not config and stamps no bucket, so one that declares a soft limit the
   request consumes skips the fast path (which would read that limit hard and reject on it,
-  child or cascade parent) and is decided by the slow path (review D11). Slow-path authority
+  child or cascade parent) and is decided by the slow path (review D11). The other way round —
+  the override declares a limit hard on a bucket config stamped soft — a fast-path write that
+  leaves that limit below zero (possible only through the stamp's waiver) is rolled back and the
+  slow path decides (`limiter._waived_against_override`, review F1). Slow-path authority
   (`RateLimiter._soft_authority`): an override, config read fresh (`limits_read_fresh`), or —
   when the config cache served — config read uncached whenever the item carries a soft stamp
   (never the item's stamp itself); a create or seed takes soft-ness from

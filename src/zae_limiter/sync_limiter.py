@@ -149,6 +149,24 @@ def _item_overrules_debited_parent(result: "SpeculativeResult") -> bool:
     return result.debited_parent_id is not None and result.debited_parent_id != result.parent_id
 
 
+def _waived_against_override(lease: "SyncLease", limits: "list[Limit] | None") -> bool:
+    """A fast-path admission a hard ``limits=`` override forbids (#467, review F1).
+
+    The fast path waives a limit's balance on the item's live soft stamp, which
+    config wrote; an override is not config, so it cannot take part in that
+    decision. Under the balance condition a successful debit always leaves
+    ``tk >= 0``, so a limit the override declares hard sitting below zero after
+    the write — on the child or a cascade parent, bypass aside — was admitted
+    only by the stamp. Free to tell: the lease's states are the write's
+    ``ALL_NEW`` image.
+    """
+    hard = {limit.name for limit in limits or () if not limit.soft}
+    return any(
+        entry.limit.name in hard and (not entry._bypass) and (entry.state.tokens_milli < 0)
+        for entry in lease.entries
+    )
+
+
 def _failed_only_on_its_stamp(result: "SpeculativeResult", consume: dict[str, int]) -> bool:
     """Whether a speculative failure image shows the request would have fit.
 
@@ -801,6 +819,10 @@ class SyncRateLimiter:
                         use_rejection_cache=limits is None,
                     )
                 )
+                if lease is not None and _waived_against_override(lease, limits):
+                    lease._rollback()
+                    lease, slow_path_shard, slow_path_shard_count = (None, None, None)
+                    slow_path_parent_shard = None
             if lease is None:
                 lease = self._slow_acquire(
                     entity_id=entity_id,

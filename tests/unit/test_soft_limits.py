@@ -1006,6 +1006,38 @@ class TestAggregatorOverdrawSignal:
         assert snapshot.overdrawn == {"tpm": 2}
 
 
+class TestOverrideAgainstAStamp:
+    @pytest.mark.parametrize("speculative", [True, False])
+    async def test_a_hard_override_is_enforced_on_a_soft_stamped_bucket(
+        self, soft_repo, speculative
+    ):
+        """Review F1: config makes `tpm` soft, so the bucket carries a live
+        stamp, and a call passes `limits=[...]` declaring it hard. The fast
+        path admitted on the stamp — 5 of 5 against 10/min, with the slow path
+        admitting 1 — ignoring the caller's hard limit. The write that went
+        into debt on a hard override limit is refunded and the slow path
+        decides."""
+        await soft_repo.set_resource_defaults("llm", [Limit.per_minute("tpm", 10, soft=True)])
+        async with RateLimiter(repository=soft_repo) as limiter:
+            async with limiter.acquire("u", "llm", {"tpm": 1}):
+                pass  # the bucket is created stamped soft
+        assert _soft_stamp(await _bucket_item(soft_repo, "u", "llm"), "tpm")
+        hard = [Limit.per_minute("tpm", 10)]
+        admitted = 0
+        async with RateLimiter(repository=soft_repo, speculative_writes=speculative) as limiter:
+            for _ in range(5):
+                try:
+                    async with limiter.acquire("u", "llm", {"tpm": 5}, limits=hard):
+                        admitted += 1
+                except RateLimitExceeded:
+                    pass
+        assert admitted == 1
+        item = await _bucket_item(soft_repo, "u", "llm")
+        assert int(item[schema.bucket_attr("tpm", schema.BUCKET_FIELD_TK)]["N"]) >= 0
+        # An override is not config: the stamp config wrote is left alone.
+        assert _soft_stamp(item, "tpm")
+
+
 class TestSoftLimitAddedLater:
     async def test_a_soft_limit_added_after_the_bucket_exists_is_seeded(self, soft_repo):
         """Review D3: the resource-level soft fan-out stamps `b_tpm_soft` on a

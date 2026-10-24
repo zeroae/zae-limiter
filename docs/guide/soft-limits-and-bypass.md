@@ -86,7 +86,9 @@ within `stamp_ttl`:
 
 A soft limit passed to one call, `acquire(..., limits=[...])`, is soft for that call only: it is
 not config, so it stamps no bucket and other callers keep the stored definition. Such a call takes
-the slow path (a read before the write) whenever it consumes a limit it declares soft.
+the slow path (a read before the write) whenever it consumes a limit it declares soft. The reverse
+holds too: a call whose override declares a limit hard is enforced on it even where stored config
+made that limit soft.
 
 ## Bypass
 
