@@ -2216,6 +2216,24 @@ class TestE2EAWSResetAndTopUp:
         finally:
             await repo.close()
 
+    async def _shard0_items(self, entity_id: str, repo: Repository) -> tuple[list, list]:
+        """The entity's shard-0 bucket on RESOURCE and the operation records
+        beside it, read strongly consistently from the base table."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        pk = schema.pk_bucket(repo._namespace_id, entity_id, self.RESOURCE, 0)
+        response = await client.query(
+            TableName=repo.table_name,
+            KeyConditionExpression="PK = :pk",
+            ExpressionAttributeValues={":pk": {"S": pk}},
+            ConsistentRead=True,
+        )
+        items = response["Items"]
+        buckets = [i for i in items if i["SK"]["S"] == schema.sk_state()]
+        records = [i for i in items if i["SK"]["S"].startswith(schema.SK_OPERATION_PREFIX)]
+        return buckets, records
+
     async def _system_soft(self, stack: str, namespace: str) -> None:
         """A system-level soft change reaches a bucket on system defaults.
 
@@ -2304,10 +2322,14 @@ class TestE2EAWSResetAndTopUp:
 
             # delete_entity deletes with BatchWriteItem, which ns-full lacked
             # before #742: the entity, its bucket and its operation records.
+            # "fresh" holds a bucket on RESOURCE and the keyed top-up's record.
             repo = await TestE2EAWSAcquirePolicies._connect(unique_name_class, namespace)
             try:
-                await repo.delete_entity("solo")
-                assert await repo.get_entity("solo", consistent_read=True) is None
+                buckets, records = await self._shard0_items("fresh", repo)
+                assert buckets and records, "nothing for the delete to prove"
+                await repo.delete_entity("fresh")
+                assert await repo.get_entity("fresh", consistent_read=True) is None
+                assert await self._shard0_items("fresh", repo) == ([], [])
             finally:
                 await repo.close()
         finally:
