@@ -28,6 +28,10 @@ MIN_READER_VERSION_FOR_RESET_AFTER = "0.15.0"
 # stamps that on the buckets it creates, undoing the policy there.
 MIN_READER_VERSION_FOR_CASCADE_POLICY = "0.16.0"
 
+# The first release whose readers keep soft limits and bypass (#467, #311,
+# ADR-151). Gated like the cascade policy: a provisioner predating it erases
+# the flags on its next full-replace apply.
+MIN_READER_VERSION_FOR_NON_ENFORCING = "0.17.0"
 # The first release whose writers carry the parent generation (`pgen`) on
 # every bucket write of an entity's `parent_id` (ADR-150), gated the same way.
 # A client predating it can owner-stamp the old parent onto a bucket after a
@@ -370,6 +374,35 @@ def cascade_policy_refusal(record_found: bool, lambda_version: str | None) -> tu
         )
     return (
         f"Refusing to store a cascade policy: the deployed Lambdas predate {minimum} "
+        "(the limits provisioner would erase it on its next apply). Run "
+        "'zae-limiter upgrade' first, or open the stack with Repository.open() "
+        "and auto_update=True.",
+        True,
+    )
+
+
+def non_enforcing_refusal(record_found: bool, lambda_version: str | None) -> tuple[str, bool]:
+    """The message and ``can_auto_update`` for a refused soft-limit or bypass write.
+
+    The ``reset_after_refusal`` contract, for ADR-151 (#467, #311).
+    """
+    minimum = MIN_READER_VERSION_FOR_NON_ENFORCING
+    if not record_found:
+        return (
+            "Refusing to store a soft limit or bypass: the stack has no version record, "
+            f"so nothing proves its limits provisioner keeps one (added in {minimum}). "
+            f"Re-run 'zae-limiter deploy' from {minimum} or later, which writes it.",
+            False,
+        )
+    if lambda_version is None:
+        return (
+            "Refusing to store a soft limit or bypass: the version record does not say "
+            "which Lambda code is deployed, so nothing proves the limits provisioner "
+            f"keeps one (added in {minimum}). Run 'zae-limiter upgrade' to deploy it.",
+            False,
+        )
+    return (
+        f"Refusing to store a soft limit or bypass: the deployed Lambdas predate {minimum} "
         "(the limits provisioner would erase it on its next apply). Run "
         "'zae-limiter upgrade' first, or open the stack with Repository.open() "
         "and auto_update=True.",

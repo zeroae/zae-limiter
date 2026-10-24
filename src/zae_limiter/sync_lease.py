@@ -98,6 +98,8 @@ class LeaseEntry:
     _seed: bool = False
     _granted: bool = False
     _donor_debit: QuotaDonorDebit | None = None
+    _soft_trusted: bool = False
+    _soft_restamp: bool = False
     _stored_top_up: bool = False
 
 
@@ -557,6 +559,27 @@ class SyncLease:
         return result
 
     @property
+    def overdrawn(self) -> list[str]:
+        """Declared soft limits whose balance is in debt on the shard written (#467).
+
+        A soft limit is admitted whatever its balance and may go below zero;
+        this says which ones did, read off the admission write's result
+        (``ALL_NEW`` on the fast path, the in-memory state on the slow path),
+        so it costs nothing. Per shard: a sharded entity can be overdrawn on
+        one shard while its siblings still hold tokens. Reflects the state
+        after any ``adjust()`` / ``consume()`` / ``release()`` made since.
+        Empty for a hard limit, which is never admitted into debt, and for
+        the degraded lease.
+        """
+        return sorted(
+            {
+                entry.limit.name
+                for entry in self.entries
+                if entry._declared and entry.limit.soft and (entry.state.tokens_milli < 0)
+            }
+        )
+
+    @property
     def consumed(self) -> dict[str, int]:
         """Total consumed amounts by limit name (declared limits only).
 
@@ -960,6 +983,11 @@ class SyncLease:
                             (owner_entry._cascade, owner_entry._parent_id),
                         )
                     )
+                soft_stamps = {
+                    e.limit.name: e.state.soft
+                    for e in group_entries
+                    if e._soft_restamp and (not e._seed)
+                }
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
@@ -996,6 +1024,8 @@ class SyncLease:
                         owner_pinc=owner_entry._parent_incarnation
                         if owner_entry is not None
                         else None,
+                        soft_stamps=soft_stamps or None,
+                        soft_trusted=_soft_trusted(group_entries),
                     )
                 )
                 if windows:
@@ -1072,6 +1102,7 @@ class SyncLease:
                         consumed=consumed,
                         shard_id=shard_id,
                         seeds=seeds or None,
+                        soft_trusted=_soft_trusted(group_entries),
                         period_guards=guards,
                     )
                 return repo.build_composite_retry(
@@ -1080,6 +1111,7 @@ class SyncLease:
                     consumed=consumed,
                     shard_id=shard_id,
                     seeds=seeds or None,
+                    soft_trusted=_soft_trusted(group_entries),
                 )
 
             retry_items: list[dict[str, Any]] = []
@@ -1810,6 +1842,18 @@ def _is_transaction_conflict(exc: Exception) -> bool:
         error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
         return bool(error_code == "TransactionConflictException")
     return False
+
+
+def _soft_trusted(group: list[LeaseEntry]) -> frozenset[str]:
+    """The soft limits whose balance condition a write may omit (#467).
+
+    Only limits admitted as soft on authority trusted over the item's own
+    stamp. Every other limit's condition admits on the item's stamp instead,
+    so a limit soft on the item is never rejected by a write either way.
+    """
+    return frozenset(
+        e.limit.name for e in group if e._soft_trusted and e.state.soft and (not e._seed)
+    )
 
 
 def _transact_retrying_conflict(

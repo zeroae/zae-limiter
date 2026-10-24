@@ -4505,7 +4505,7 @@ class TestStaleLimitAliasesAreExpressionSafe:
         assert removed == {
             bucket_attr(name, field)
             for name in ("req-min", "tok.sec")
-            for field in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched")
+            for field in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched", "soft")
         } | {
             "sched",
             "rsched",
@@ -4513,6 +4513,7 @@ class TestStaleLimitAliasesAreExpressionSafe:
             bucket_attr("rpm", "sched"),
             bucket_attr("rpm", "rsched"),
             bucket_attr("rpm", "rsa"),
+            bucket_attr("rpm", "soft"),
         }
 
     def test_scoped_reconcile_with_a_hyphenated_stale_name(self, repo):
