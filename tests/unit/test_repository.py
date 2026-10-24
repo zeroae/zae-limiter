@@ -3769,6 +3769,10 @@ class TestDeleteEntityIsComplete:
     raising, and a Query returns at most 1 MB per page. Ignoring either left
     an entity partly deleted with no error: a leftover ``#META`` keeps the
     entity looking alive, leftover buckets keep their balances.
+
+    The retry constants are patched with ``create=True`` so that, run against a
+    build without them, each test fails on the behaviour it pins rather than on
+    the patch.
     """
 
     @pytest.mark.asyncio
@@ -3789,7 +3793,7 @@ class TestDeleteEntityIsComplete:
             return {"UnprocessedItems": {repo.table_name: requests[half:]}}
 
         with (
-            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0),
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
             patch.object(client, "batch_write_item", side_effect=partly_applied),
         ):
             await repo.delete_entity("e")
@@ -3835,8 +3839,8 @@ class TestDeleteEntityIsComplete:
             return {"UnprocessedItems": {repo.table_name: requests}}
 
         with (
-            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0),
-            patch("zae_limiter.repository._BATCH_WRITE_MAX_RETRIES", 2),
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch("zae_limiter.repository._BATCH_WRITE_MAX_RETRIES", 2, create=True),
             patch.object(client, "batch_write_item", side_effect=throttled),
             pytest.raises(RateLimiterUnavailable, match="unprocessed") as exc_info,
         ):
@@ -7035,7 +7039,7 @@ class TestResetScheduleReachesStorage:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": pk_entity(repo._namespace_id, entity_id)},
+                "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
                 "SK": {"S": schema.sk_config(resource)},
             },
         )
@@ -7278,7 +7282,7 @@ class TestDurationWindowReachesConfigStorage:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": pk_entity(repo._namespace_id, entity_id)},
+                "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
                 "SK": {"S": schema.sk_config(resource)},
             },
         )
@@ -7654,7 +7658,7 @@ async def _corrupt_config_sched(repo, entity_id, resource, limit_name, value, fi
     await client.update_item(
         TableName=repo.table_name,
         Key={
-            "PK": {"S": pk_entity(repo._namespace_id, entity_id)},
+            "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
             "SK": {"S": schema.sk_config(resource)},
         },
         UpdateExpression="SET #a = :v",
@@ -7677,7 +7681,7 @@ async def _corrupt_config_rsa(repo, entity_id, resource, limit_name, value):
     await client.update_item(
         TableName=repo.table_name,
         Key={
-            "PK": {"S": pk_entity(repo._namespace_id, entity_id)},
+            "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
             "SK": {"S": schema.sk_config(resource)},
         },
         UpdateExpression="SET #a = :v",

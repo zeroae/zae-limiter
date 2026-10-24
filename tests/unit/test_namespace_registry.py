@@ -665,7 +665,13 @@ class TestPurgeNamespaceGSI4Pagination:
 
 
 class TestPurgeNamespaceUnprocessedItems:
-    """purge_namespace() resends UnprocessedItems with backoff, and stops (#742)."""
+    """purge_namespace() resends UnprocessedItems with backoff, and stops (#742).
+
+    The retry constants are patched with ``create=True`` so that, run against a
+    build without them, each test fails on the behaviour it pins rather than on
+    the patch. ``test_unprocessed_deletes_are_resent`` pins behaviour the
+    unbounded loop before #742 already had, so it passes there too.
+    """
 
     async def _deleted_namespace_with_data(self, repo, name):
         ns_id = await repo.register_namespace(name)
@@ -703,7 +709,7 @@ class TestPurgeNamespaceUnprocessedItems:
             return {"UnprocessedItems": {repo.table_name: requests[1:]}}
 
         with (
-            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0),
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
             patch.object(client, "batch_write_item", side_effect=partly_applied),
         ):
             await repo.purge_namespace(ns_id)
@@ -715,12 +721,21 @@ class TestPurgeNamespaceUnprocessedItems:
     async def test_raises_and_stays_purging_when_deletes_stay_unprocessed(self, repo):
         ns_id = await self._deleted_namespace_with_data(repo, "ns-purge-throttled")
         client = await repo._get_client()
+        real_batch_write = client.batch_write_item
+        calls = []
 
         async def throttled(**params):
+            # Throttled for far longer than the retry budget, then served: a
+            # loop with no bound finishes here instead of hanging the test,
+            # and so fails the raise below.
+            calls.append(1)
+            if len(calls) > 20:
+                return await real_batch_write(**params)
             return {"UnprocessedItems": params["RequestItems"]}
 
         with (
-            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0),
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch("zae_limiter.repository._BATCH_WRITE_MAX_RETRIES", 2, create=True),
             patch.object(client, "batch_write_item", side_effect=throttled),
             pytest.raises(RateLimiterUnavailable, match="unprocessed"),
         ):
@@ -733,5 +748,6 @@ class TestPurgeNamespaceUnprocessedItems:
                 "SK": {"S": schema.sk_nsid(ns_id)},
             },
         )
+        assert len(calls) == 3  # the first send and two retries
         assert reverse["Item"]["status"]["S"] == "purging"
         assert await self._gsi4_items(repo, ns_id) != []
