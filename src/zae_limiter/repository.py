@@ -3995,22 +3995,29 @@ class Repository:
 
             add_parts.append(f"{tk_alias} {tk_neg_val}")
             add_parts.append(f"{tc_alias} {tc_val}")
+            # A soft quota's period guard is waived like its balance floor
+            # (review D7): never a guard on a trusted soft limit, and a live
+            # stamp waives it otherwise. A soft limit is never a reason to
+            # reject (ADR-151 decision 1).
+            waiver = ""
             if name in soft_trusted:
                 del attr_values[tk_threshold]
+                edge, window_start = None, None
             else:
                 soft_alias = f"#bo{i}"
                 attr_names[soft_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
                 attr_values[":bnow"] = {"N": str(stamp_now)}
                 condition_parts.append(f"({soft_alias} > :bnow OR {tk_alias} >= {tk_threshold})")
-            edge, window_start = guards.get(name, (None, None))
+                waiver = f"{soft_alias} > :bnow OR "
+                edge, window_start = guards.get(name, (None, None))
             if edge is not None:
                 attr_names["#prf"] = schema.BUCKET_FIELD_RF
                 attr_values[f":pe{i}"] = {"N": str(edge)}
-                condition_parts.append(f"#prf >= :pe{i}")
+                condition_parts.append(f"({waiver}#prf >= :pe{i})")
             if window_start is not None:
                 attr_names[f"#pw{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_WA)
                 attr_values[f":pw{i}"] = {"N": str(window_start)}
-                condition_parts.append(f"#pw{i} = :pw{i}")
+                condition_parts.append(f"({waiver}#pw{i} = :pw{i})")
 
         seeded_tz: str | None = None
         for j, (name, state) in enumerate(sorted((seeds or {}).items())):

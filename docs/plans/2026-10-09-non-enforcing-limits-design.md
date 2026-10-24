@@ -273,7 +273,7 @@ its Path 2 clone copies the base item verbatim, deadline included, and never ext
 | Fast path, bypass shape | `#byp > :now` |
 | Slow path, bypassed existing item (`build_bypass_consume`) | `ADD tc`, `SET bypass = :deadline`; condition `attribute_exists(#byp)` (any deadline: only a pass that read bypass config uncached builds it, so it is the renewal) |
 | Slow path, rf-locked normal write | `SET b_{n}_soft = :deadline` / `REMOVE`, `SET bypass = :deadline` / `REMOVE`, each pinned on the stamp as read; each balance floor `(#bo{i} > :now OR tk >= floor)` |
-| Consumption-only retry | floor `(#bo{i} > :now OR tk >= c)`; never renews or removes a stamp; a limit it seeds gets `b_{n}_soft = if_not_exists(…, :deadline)` from this pass's uncached read |
+| Consumption-only retry | floor `(#bo{i} > :now OR tk >= c)`, and a soft quota's #743 period guard waived the same way (none when trusted, `(#bo{i} > :now OR …)` otherwise, review D7); never renews or removes a stamp; a limit it seeds gets `b_{n}_soft = if_not_exists(…, :deadline)` from this pass's uncached read |
 | Stamp correction before a rejection (`build_stamp_fix`) | `SET bypass = :deadline` / `REMOVE`, `SET b_{n}_soft = :deadline` / `REMOVE`, and nothing else; condition `attribute_exists(PK)` and each stamp pinned on its value as read |
 | Create / seed | `bypass`, `b_{n}_soft` = the pass's deadline, from its uncached read |
 | Fan-outs (`_stamp_bucket_disabled`, `_stamp_bucket_soft`, the param sync, provisioner `fanout.py` / `bucket_sync.py`) | `SET … = :deadline`, deadline = resolution time + `T × U(0.8, 1.0)` |

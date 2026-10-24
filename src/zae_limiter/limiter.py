@@ -2733,8 +2733,7 @@ class RateLimiter:
                     # The retry found a quota period nobody has applied (#743):
                     # redo the pass once from a fresh read, which applies it. A
                     # second loss stands as the rejection it was raised as.
-                    # TODO(D7): for a soft quota this second-loss rejection marks
-                    # the quota exceeded.
+                    # Never for a soft quota: its guard is waived (review D7).
                     if period_redone:
                         raise
                     period_redone = True

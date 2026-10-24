@@ -149,12 +149,65 @@ async def test_a_second_loss_is_a_rejection_never_a_hot_retry(two):
     assert await _drain(l1, "x") == 10  # nothing was spent from either period
 
 
+async def test_a_soft_quota_is_never_rejected_on_its_period(two):
+    """Review D7: the same double loss on a **soft** quota raised a 429 with
+    the soft quota marked exceeded. A soft limit is never a reason to reject
+    (ADR-151 decision 1): the retry carries no period guard for it, so it is
+    admitted, debited from the old period, and counted."""
+    l1, r2, now = two
+    r1 = l1._repository
+    limits = [Limit.quota("q", 10, cron="0 0 * * *", soft=True)]
+    await r1.set_limits("y", limits, resource="r")
+    async with l1.acquire("y", "r", {"q": 4}):
+        pass
+
+    now[0] = MIDNIGHT + 1_000
+    original = r2.transact_write
+    client = await r1._get_client()
+    key = {"PK": {"S": pk_bucket(r1._namespace_id, "y", "r", 0)}, "SK": {"S": sk_state()}}
+    stamps: list[int] = []
+
+    async def move_vu_every_time(items):
+        stamps.append(len(stamps) + 1)
+        await client.update_item(
+            TableName=r1.table_name,
+            Key=key,
+            UpdateExpression="SET vu = :v",
+            ExpressionAttributeValues={":v": {"N": str(stamps[-1])}},
+        )
+        return await original(items)
+
+    r2.transact_write = move_vu_every_time
+    try:
+        async with RateLimiter(repository=r2, speculative_writes=False).acquire(
+            "y", "r", {"q": 5}
+        ) as lease:
+            assert lease.consumed == {"q": 5}
+    finally:
+        r2.transact_write = original
+    item = (await client.get_item(TableName=r1.table_name, Key=key, ConsistentRead=True))["Item"]
+    assert int(item["b_q_tc"]["N"]) == 9_000  # counted
+
+
 def test_a_failure_with_no_image_cannot_be_told():
     """Without the failed write's image the rejection stands as before."""
     key: tuple[str, str, int] = ("e", "r", 0)
-    assert _unapplied_periods({key: {"q": (MIDNIGHT, None)}}, {}) == set()
+    assert _unapplied_periods({key: {"q": (MIDNIGHT, None)}}, {}, MIDNIGHT) == set()
     image = {"rf": {"N": str(MIDNIGHT - 1)}, "b_s_wa": {"N": "7"}}
     guards: dict[tuple[str, str, int], dict[str, tuple[int | None, int | None]]] = {
         key: {"q": (MIDNIGHT, None), "s": (None, 7)}
     }
-    assert _unapplied_periods(guards, {key: image}) == {(key, "q")}
+    assert _unapplied_periods(guards, {key: image}, MIDNIGHT) == {(key, "q")}
+
+
+def test_a_live_soft_stamp_waives_the_guard():
+    """Review D7: a soft quota's guard is waived by a live stamp, as its
+    balance floor is, so it is never reported exceeded."""
+    key: tuple[str, str, int] = ("e", "r", 0)
+    guards: dict[tuple[str, str, int], dict[str, tuple[int | None, int | None]]] = {
+        key: {"q": (MIDNIGHT, None)}
+    }
+    live = {"rf": {"N": str(MIDNIGHT - 1)}, "b_q_soft": {"N": str(MIDNIGHT + 60_000)}}
+    assert _unapplied_periods(guards, {key: live}, MIDNIGHT) == set()
+    expired = {"rf": {"N": str(MIDNIGHT - 1)}, "b_q_soft": {"N": str(MIDNIGHT - 1)}}
+    assert _unapplied_periods(guards, {key: expired}, MIDNIGHT) == {(key, "q")}

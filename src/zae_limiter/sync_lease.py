@@ -44,6 +44,7 @@ from .schema import (
     BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
+    BUCKET_FIELD_SOFT,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_TU,
     BUCKET_FIELD_VU,
@@ -53,6 +54,7 @@ from .schema import (
     bucket_attr,
     calculate_bucket_ttl_seconds,
     calculate_ttl,
+    decode_stamp,
     explicit_schedule_overrides,
 )
 
@@ -1275,7 +1277,7 @@ class SyncLease:
                         images = _retry_failure_images(
                             retry_exc, [key for key, _group in retry_groups]
                         )
-                        unapplied = _unapplied_periods(retry_guards, images)
+                        unapplied = _unapplied_periods(retry_guards, images, now_ms)
                         if unapplied:
                             raise PeriodNotAppliedError(
                                 _period_statuses(self.entries, now_ms, unapplied)
@@ -2108,11 +2110,20 @@ def _period_guards(
     have applied, the latest at or before ``now_ms`` — or ``(None,
     window_start_ms)`` for a session quota, the window it opened or rolled to.
     Only a quota the retry debits, and only one this pass granted: a period
-    nobody granted was already current.
+    nobody granted was already current. Never a trusted soft quota (review
+    D7): a soft limit is never a reason to reject (ADR-151 decision 1), and
+    its guard tripping raised a 429 marking it exceeded. Debiting the old
+    period instead is harmless for it — the reset that is still pending
+    forgives its debt — and the consumption stays counted in ``tc``. A soft
+    quota trusted only on the item's stamp keeps a guard, waived by a live
+    stamp exactly as its balance floor is (``build_composite_retry``).
     """
     guards: dict[str, tuple[int | None, int | None]] = {}
+    trusted_soft = _soft_trusted(group)
     for entry in group:
         if not (entry._granted and entry.limit.is_quota and (entry.consumed > 0)):
+            continue
+        if entry.limit.name in trusted_soft:
             continue
         state = entry.state
         if state.reset_after_seconds is not None:
@@ -2128,12 +2139,15 @@ def _period_guards(
 def _unapplied_periods(
     guards: dict[tuple[str, str, int], dict[str, tuple[int | None, int | None]]],
     images: dict[tuple[str, str, int], dict[str, Any]],
+    now_ms: int,
 ) -> set[tuple[tuple[str, str, int], str]]:
     """The (bucket, quota) pairs whose period guard the failed retry tripped (#743).
 
     Read off each failed write's ``ALL_OLD`` image: a calendar quota whose
     ``rf`` is still before the edge, or a session quota whose ``wa`` is not
     the window. No image, nothing can be told: the rejection stands as before.
+    A quota whose image carries a live soft stamp waived its guard (review
+    D7): it did not trip, and it is never reported exceeded.
     """
     unapplied: set[tuple[tuple[str, str, int], str]] = set()
     for key, per_limit in guards.items():
@@ -2142,6 +2156,9 @@ def _unapplied_periods(
             continue
         rf = int(item.get(BUCKET_FIELD_RF, {}).get("N", "0"))
         for name, (edge, window_start) in per_limit.items():
+            soft_until = decode_stamp(item.get(bucket_attr(name, BUCKET_FIELD_SOFT)))
+            if soft_until is not None and soft_until > now_ms:
+                continue
             applied = item.get(bucket_attr(name, BUCKET_FIELD_WA), {}).get("N")
             if (
                 edge is not None
