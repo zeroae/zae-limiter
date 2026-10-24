@@ -2024,6 +2024,11 @@ exact. User guide: `docs/guide/soft-limits-and-bypass.md`. Design:
 - **Version gate:** storing a soft limit or a bypass value needs `lambda_version >= 0.17.0`
   (`version.MIN_READER_VERSION_FOR_NON_ENFORCING`) or this build, and ratchets
   `client_min_version` (`_require_non_enforcing_readers`).
+- **`RepositoryProtocol` (breaking for a custom backend, v0.17.0):** new members
+  `build_bypass_consume`, `resolve_bypass_from_fetched`, `resolve_soft_limits`,
+  `limits_read_fresh`, `_stamp_deadline`, `bypass_resource`, `bypass_entity` (and the optional
+  `fix_bucket_stamps`), and new keywords on `build_composite_create` / `_normal` / `_retry` /
+  `_adjust` and `resolve_access`; the contract is in `docs/api/repository.md` (review D13).
 - **CLI:** repeatable `--soft NAME` on `system set-defaults`, `resource set-defaults`,
   `entity set-limits` (must name a `-l` limit; a set without it makes the limit hard again);
   `resource bypass NAME`, `entity bypass ID [--resource R]`; `get-*` print `(soft)` and

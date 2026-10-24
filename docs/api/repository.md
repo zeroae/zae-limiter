@@ -152,6 +152,41 @@ Implement this protocol to use a different storage backend (e.g., for testing).
     exists when the pass read none). The lease calls `restamp_owner_if_current`
     when the slow path's owner stamp lost its pin to another incarnation.
 
+!!! warning "Changed in v0.17.0: soft limits and bypass (ADR-151)"
+    A custom backend must implement `build_bypass_consume`,
+    `resolve_bypass_from_fetched`, `resolve_soft_limits`, `limits_read_fresh`,
+    `_stamp_deadline`, `bypass_resource` and `bypass_entity`, and accept the new
+    keywords below; the limiter and the lease pass them on every slow pass, so a
+    backend that does not raises `TypeError` there. `fix_bucket_stamps` is
+    optional: the limiter skips it on a backend without it.
+
+    - **Stamps are deadlines.** A bucket's `bypass` and `b_{name}_soft` hold an
+      epoch-ms deadline. `speculative_consume` must admit a declared limit
+      without testing its balance only while `b_{name}_soft` is live **and** the
+      item carries the limit, or while `bypass` is live; fail an expired stamp as
+      `SCHEDULE_BOUNDARY` (never a rejection); and report `bypassed` on its
+      result. A bypassed bucket is debited nothing but still counts `tc` and
+      `wcu`.
+    - **`build_composite_create(bypass_until_ms=...)`** stamps `bypass` with that
+      deadline; each state's `soft` / `soft_until_ms` stamps `b_{name}_soft`.
+    - **`build_composite_normal(soft_stamps=, soft_reads=, soft_trusted=,
+      bypass_stamp=)`**: SET each stamp to its deadline or REMOVE it, each pinned
+      on the value read (`soft_reads`, the second element of `bypass_stamp`);
+      waive a balance floor on a live soft stamp, and omit it for a
+      `soft_trusted` limit.
+    - **`build_composite_retry(soft_trusted=, now_ms=)`**: the same waivers on the
+      consumption-only retry, for its balance floors and its quota period guards;
+      it never writes a stamp except a seed's.
+    - **`build_composite_adjust(tokens=False)`** writes `tc` only (a bypassed
+      lease's adjustment); **`counter=False`** writes `tk` only (the bypass
+      refund), still subject to the ceilings and period guards above.
+    - **`resolve_access(include_limits=, include_system=)`** returns each limit's
+      soft-ness, read uncached, in `ConfigAccess.limit_soft`; `bypass` is set
+      when the deciding `disabled` value is `"bypass"`.
+    - `get_resource_disabled` / `get_entity_disabled` may return `"bypass"`, and
+      the setters accept `disabled="bypass"`: test `disabled is True`, never its
+      truthiness.
+
 ::: zae_limiter.repository_protocol.RepositoryProtocol
     options:
       show_root_heading: true
