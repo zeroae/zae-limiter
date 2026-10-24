@@ -46,6 +46,20 @@ async def test_a_soft_limit_is_debited_into_debt_on_the_fast_path(localstack_lim
     assert _n(item, "b_tpm_soft") > test_repo._now_ms()  # a live deadline
 
 
+async def test_a_soft_limit_lease_adjusts_into_debt(localstack_limiter, test_repo):
+    """#467 AC4: `consume()`, `adjust()` and `release()` on a soft limit are
+    persisted like any other — `tc` counts net consumption, `tk` may go below
+    zero — so usage snapshots, built from `tc`, stay exact."""
+    await test_repo.set_resource_defaults("meter", [Limit.per_minute("tpm", 10, soft=True)])
+    async with localstack_limiter.acquire("u", "meter", {"tpm": 5}) as lease:
+        await lease.consume(tpm=20)  # past the balance: soft, admitted
+        await lease.adjust(tpm=3)
+        await lease.release(tpm=1)
+    item = await _item(test_repo, "u", "meter")
+    assert _n(item, "b_tpm_tc") == (5 + 20 + 3 - 1) * 1000
+    assert _n(item, "b_tpm_tk") < 0
+
+
 async def test_a_bypassed_bucket_counts_and_debits_nothing(localstack_limiter, test_repo):
     await test_repo.set_resource_defaults("api", [Limit.per_minute("rpm", 2)])
     async with localstack_limiter.acquire("u", "api", {"rpm": 1}):

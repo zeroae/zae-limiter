@@ -568,6 +568,19 @@ class TestCascade:
         parent = await _item(repo, "org")
         assert _n(parent, "b_rpm_tk") == 2_000
 
+    async def test_a_bypassed_child_of_a_disabled_parent_is_refused(self, repo, limiter):
+        """#311's cascade matrix, child bypass / parent disabled: the parent's
+        403 stands, on the cold and the warm path."""
+        await self._family(repo)
+        await _use(limiter)  # both buckets exist, the family is learned
+        await repo.bypass_entity("u", "llm")
+        await repo.disable_entity("org", "llm")
+        for _ in range(2):  # warm, then from a cold process
+            with pytest.raises(ResourceDisabled) as exc_info:
+                await _use(limiter)
+            assert exc_info.value.entity_id == "org"
+            limiter = RateLimiter(repository=repo)
+
 
 class TestFanout:
     async def test_bypass_then_disable_then_clear(self, repo, limiter):
@@ -593,6 +606,36 @@ class TestFanout:
         assert (await _item(repo, resource="api"))["disabled"] == {"BOOL": True}
         await repo.clear_entity_disabled("u")
         assert "bypass" not in await _item(repo)
+
+    async def test_deleting_the_bypassing_level_re_resolves_the_stamp(self, repo, limiter):
+        """#311: `delete_resource_defaults` / `delete_limits` delete the item
+        holding the bypass, so each re-runs the fan-out on what now resolves."""
+        await _use(limiter)
+        await repo.set_resource_defaults("llm", [RPM], disabled="bypass")
+        assert _live(await _item(repo))
+        await repo.delete_resource_defaults("llm")
+        assert "bypass" not in await _item(repo)
+
+        await repo.set_resource_defaults("llm", [RPM])
+        await repo.set_limits("u", [RPM], resource="llm", disabled="bypass")
+        assert _live(await _item(repo))
+        await repo.delete_limits("u", resource="llm")
+        assert "bypass" not in await _item(repo)
+
+    async def test_setting_and_lifting_a_bypass_is_audited(self, repo):
+        """#311: both levels record the bypass and its clearing."""
+        await repo.set_resource_defaults("llm", [RPM])
+        await repo.bypass_resource("llm", principal="ops")
+        await repo.clear_resource_disabled("llm", principal="ops")
+        await repo.bypass_entity("u", "llm", principal="ops")
+        await repo.clear_entity_disabled("u", resource="llm", principal="ops")
+        for entity_id in ("$RESOURCE:llm", "u"):
+            values = [
+                event.details.get("disabled")
+                for event in await repo.get_audit_events(entity_id)
+                if "disabled" in (event.details or {})
+            ]
+            assert "bypass" in values and None in values, (entity_id, values)
 
     async def test_setters_take_the_bypass_value(self, repo, limiter):
         await _use(limiter)

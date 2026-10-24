@@ -11771,6 +11771,38 @@ class TestSoftLimits:
         assert [s.limit_name for s in exc_info.value.violations] == ["rpm"]
         assert [s.limit_name for s in exc_info.value.passed] == ["tpm"]
 
+    def test_a_soft_limit_in_debt_sets_no_wait(self, sync_limiter):
+        """#467 AC7: the wait comes from the hard limit alone, never from a
+        soft limit's debt (here ~1000 tokens behind at 10/day)."""
+        sync_limiter.set_resource_defaults(
+            "llm", [Limit.per_minute("rpm", 1), Limit.per_day("tpd", 10, soft=True)]
+        )
+        with sync_limiter.acquire("user-1", "llm", {"rpm": 1, "tpd": 1000}):
+            pass
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with sync_limiter.acquire("user-1", "llm", {"rpm": 1, "tpd": 1}):
+                pass
+        assert exc_info.value.retry_after_seconds <= 61
+
+    def test_a_cascade_parent_soft_limit_never_rejects(self, sync_limiter):
+        """#467 AC3, cascade: the parent's own soft limit goes into debt on the
+        cold and warm paths; each entity resolves its own limits, so the same
+        limit hard on the parent still rejects."""
+        sync_limiter.create_entity(entity_id="org")
+        sync_limiter.create_entity(entity_id="u", parent_id="org", cascade=True)
+        sync_limiter.set_limits("u", [Limit.per_minute("tpm", 10000)], resource="llm")
+        sync_limiter.set_limits("org", [Limit.per_minute("tpm", 10, soft=True)], resource="llm")
+        for _ in range(3):
+            with sync_limiter.acquire("u", "llm", {"tpm": 8}):
+                pass
+        parent = sync_limiter.check_availability("org", "llm")
+        assert parent.available["tpm"] < 0
+        sync_limiter.set_limits("org", [Limit.per_minute("tpm", 10)], resource="llm")
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with sync_limiter.acquire("u", "llm", {"tpm": 8}):
+                pass
+        assert [s.entity_id for s in exc_info.value.violations] == ["org"]
+
 
 def _transaction_conflict() -> ClientError:
     """What botocore raises when a single-item write meets an in-flight
