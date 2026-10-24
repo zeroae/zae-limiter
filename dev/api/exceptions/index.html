@@ -512,6 +512,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/soft-limits-and-bypass/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Soft Limits and Bypass
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/reset-and-top-up/" class="md-nav__link">
         
   
@@ -4845,7 +4873,9 @@ then the declared limit with the longest wait, and
 <p>Returns a dictionary suitable for returning in a 429 response body.</p>
 <p>Per-limit entries carry a <code>kind</code> of <code>"rate"</code> or <code>"quota"</code> and,
 for a quota, <code>resets_at_ms</code> in place of the drip fields — see
-:meth:<code>_limit_shape</code>.</p>
+:meth:<code>_limit_shape</code>. Every entry also carries <code>soft</code> (#467): a soft
+limit is metered but never a reason to reject, so it is always among
+the passed limits and its <code>available</code> may be negative.</p>
 
 
     </div>

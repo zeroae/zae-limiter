@@ -512,6 +512,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/soft-limits-and-bypass/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Soft Limits and Bypass
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/reset-and-top-up/" class="md-nav__link">
         
   
@@ -1778,6 +1806,28 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;deficit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimitStatus.soft" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;soft
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimitStatus.overdrawn" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;overdrawn
       
     </span>
   </a>
@@ -5507,6 +5557,28 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimitStatus.soft" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;soft
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimitStatus.overdrawn" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;overdrawn
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -6503,7 +6575,7 @@
   </span>
 
 <a href="#zae_limiter.models.Limit" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Limit</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">,</span> <span class="n">schedule</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_schedule</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_after</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Limit</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">,</span> <span class="n">schedule</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_schedule</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_after</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -6626,6 +6698,20 @@ since the window opened, and the next admitted request after that
 opens a fresh window. The alternative spelling of
 <code>reset_schedule</code>, never a companion to it — setting both is
 rejected at construction.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.Limit.soft">soft</span></code></td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Meter this limit without enforcing it (#467, ADR-151). A soft
+limit is debited on every admitted request and may go into
+debt, but never causes <code>RateLimitExceeded</code>; other, hard limits
+on the same request still gate it. Defaults to <code>False</code>.</p>
               </div>
             </td>
           </tr>
@@ -6775,7 +6861,7 @@ whole number of them, so this cannot lose information.</p>
   </span>
 
 <a href="#zae_limiter.models.Limit.per_second" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_second</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">rate</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_second</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">rate</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -6844,6 +6930,22 @@ temporary spikes above the sustained rate.</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>soft</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Meter without enforcing (#467): debited, never rejects.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -6864,7 +6966,7 @@ temporary spikes above the sustained rate.</p>
   </span>
 
 <a href="#zae_limiter.models.Limit.per_minute" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_minute</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">rate</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_minute</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">rate</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -6933,6 +7035,22 @@ temporary spikes above the sustained rate.</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>soft</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Meter without enforcing (#467): debited, never rejects.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -6953,7 +7071,7 @@ temporary spikes above the sustained rate.</p>
   </span>
 
 <a href="#zae_limiter.models.Limit.per_hour" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_hour</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">rate</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_hour</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">rate</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -7022,6 +7140,22 @@ temporary spikes above the sustained rate.</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>soft</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Meter without enforcing (#467): debited, never rejects.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -7042,7 +7176,7 @@ temporary spikes above the sustained rate.</p>
   </span>
 
 <a href="#zae_limiter.models.Limit.per_day" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_day</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">rate</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_day</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">rate</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -7111,6 +7245,22 @@ temporary spikes above the sustained rate.</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>soft</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Meter without enforcing (#467): debited, never rejects.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -7131,7 +7281,7 @@ temporary spikes above the sustained rate.</p>
   </span>
 
 <a href="#zae_limiter.models.Limit.quota" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">quota</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">amount</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">cron</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s1">'UTC'</span><span class="p">,</span> <span class="n">reset_after</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">quota</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">amount</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">cron</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s1">'UTC'</span><span class="p">,</span> <span class="n">reset_after</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -7248,6 +7398,24 @@ exclusive with <code>cron</code>.</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>soft</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Meter without enforcing (#467): the quota is debited and
+may go into debt within the period, never rejects, and the
+reset restores the allowance and forgives the debt (ADR-151).</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -7279,7 +7447,7 @@ exclusive with <code>cron</code>.</p>
   </span>
 
 <a href="#zae_limiter.models.Limit.custom" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">custom</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">custom</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -8120,6 +8288,56 @@ end across the entity's shards.</p>
 
 </div>
 
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.LimitStatus.soft" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">soft</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.LimitStatus.soft" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">soft</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Whether the limit is soft: metered, never a reason to reject (#467).</p>
+<p>A soft status is never <code>exceeded</code> and its <code>retry_after_seconds</code> is
+0.0; inside <code>RateLimitExceeded</code> it is always among <code>passed</code>.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.LimitStatus.overdrawn" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">overdrawn</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.LimitStatus.overdrawn" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">overdrawn</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>A soft limit running in debt: <code>soft and available &lt; 0</code> (#467).</p>
+
+    </div>
+
+</div>
+
 
 
 
@@ -8145,7 +8363,7 @@ end across the entity's shards.</p>
   </span>
 
 <a href="#zae_limiter.models.Availability" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Availability</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">checked_at_ms</span><span class="p">,</span> <span class="n">statuses</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Availability</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">checked_at_ms</span><span class="p">,</span> <span class="n">statuses</span><span class="p">,</span> <span class="n">bypassed</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -8519,7 +8737,7 @@ restored across every shard.</p>
   </span>
 
 <a href="#zae_limiter.models.BucketState" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">window_start_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reset_after_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_applied_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_consumed_mark_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">grant_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">topped_up_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reset_number</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_vu_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_vu_read</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">stored_item_sched_raw</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_sched_raw</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">window_start_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reset_after_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_applied_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_consumed_mark_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">grant_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">topped_up_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reset_number</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_vu_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_vu_read</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">bypass</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">stored_item_sched_raw</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_sched_raw</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -9391,7 +9609,7 @@ share, <code>BucketState.reset_target_milli</code>. A quota's
   </span>
 
 <a href="#zae_limiter.models.UsageSnapshot" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">UsageSnapshot</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">window_start</span><span class="p">,</span> <span class="n">window_end</span><span class="p">,</span> <span class="n">window_type</span><span class="p">,</span> <span class="n">counters</span><span class="p">,</span> <span class="n">total_events</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">UsageSnapshot</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">window_start</span><span class="p">,</span> <span class="n">window_end</span><span class="p">,</span> <span class="n">window_type</span><span class="p">,</span> <span class="n">counters</span><span class="p">,</span> <span class="n">total_events</span><span class="p">,</span> <span class="n">overdrawn</span><span class="o">=</span><span class="n"><span title="dict">dict</span></span><span class="p">())</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -9487,6 +9705,19 @@ Tracks token consumption per limit type within a time window.</p>
             <td>
               <div class="doc-md-description">
                 <p>Number of consumption events in this window</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.UsageSnapshot.overdrawn">overdrawn</span></code></td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Soft limits only (#467): limit name -&gt; number of stream
+records in the window where the limit was debited and left its
+shard in debt. Empty when no soft limit was overdrawn.</p>
               </div>
             </td>
           </tr>
@@ -11138,7 +11369,7 @@ property.</p>
   </span>
 
 <a href="#zae_limiter.repository_protocol.SpeculativeResult" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SpeculativeResult</span><span class="p">(</span><span class="n">success</span><span class="p">,</span> <span class="n">buckets</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">old_buckets</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_result</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">failure_reason</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pgen</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pinc</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">debited_parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SpeculativeResult</span><span class="p">(</span><span class="n">success</span><span class="p">,</span> <span class="n">buckets</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">old_buckets</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_result</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">failure_reason</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">bypassed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">pgen</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pinc</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">debited_parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">

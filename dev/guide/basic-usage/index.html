@@ -838,6 +838,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../soft-limits-and-bypass/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Soft Limits and Bypass
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../reset-and-top-up/" class="md-nav__link">
         
   
@@ -4553,6 +4581,10 @@ entity(<code>_default_</code>) → resource, and the first level with an explici
 wins regardless of which level supplies the limits. System-level disable is
 not supported; disabling always targets a specific resource, or an entity's
 access to one.</p>
+<p>The same setting has a third value, <strong>bypass</strong>: admit every request without
+debiting any limit, while still counting consumption — see
+<a href="../soft-limits-and-bypass/#bypass">Soft Limits and Bypass</a>. To meter one limit
+without enforcing it, make it <a href="../soft-limits-and-bypass/#soft-limits">soft</a>.</p>
 <h2 id="config-cache">Config Cache<a class="headerlink" href="#config-cache" title="Permanent link">&para;</a></h2>
 <p>zae-limiter caches config data (system defaults, resource defaults, entity limits) to reduce DynamoDB reads. The cache has a 60-second TTL by default.</p>
 <h3 id="configuring-cache-ttl">Configuring Cache TTL<a class="headerlink" href="#configuring-cache-ttl" title="Permanent link">&para;</a></h3>
