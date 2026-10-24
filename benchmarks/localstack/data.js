@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792846782995,
+  "lastUpdate": 1792859182432,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -35573,6 +35573,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.2980871948122154",
             "extra": "mean: 1.4702011626000058 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "28443a365c6f17a678cd9b6a3451525826a5b41d",
+          "message": "🐛 fix: #675 / #677 post-merge review fixes (#762)\n\n## Summary\n\nPost-merge review of **#675** (multi-resource acquire, ADR-148) and\n**#677** (`set_parent`, ADR-150) as they stand on `main`. Both stacks\nhad been validated against their issues but not reviewed the way the\n#470 stack was. This PR is the full process: a fresh-context review of\neach, the fixes one commit apiece, then a validation agent against both\nissues and the gaps it found.\n\n### Fixes\n| | Fix |\n|---|---|\n| **M1** (high) | A negative amount in `acquire(consume=...)` or `also=`\nwas an `ADD +x` whose condition always held, so it minted tokens: one\n`{\"rpm\": -50}`, then 30 admitted against rpm=10. Now a `ValidationError`\nbefore any I/O. Older than #675 |\n| **P1** | A slow pass whose eventually consistent META read predated a\nmove lost its owner pin, and the retry debited the **old** parent and\nnever the new one (org-a +5, org-b +0). It now re-plans once from a\nstrongly consistent read (+1 RCU, only in the race) |\n| **M2** | A quota move lost to **another** item's lock in a merged\ncommit counted as a lost move; the second loss gave an ordinary 429\npointing at the next reset (37,930 s) while the donor held the whole\nquota. It is now the contended \"retry shortly\" 429 |\n| **P2** | `set_parent` / `create_entity` raised a raw\n`TransactionConflictException` on a busy entity (every bucket create\nchecks META in a transaction). Both now retry it |\n| **M4** | On a multi-resource acquire, an IAM denial could hide behind\nanother part's throttle, so under ALLOW the call got an unlimited lease\ninstead of `PermissionDenied` (#751). The denial now wins |\n| **M3** | One part's lost bypass re-planned **every** part enforced;\nnow only that part |\n\n### Docs and tests\n- M5/M6: multi-resource first-acquire RCU (≈10, not 2.5); re-plan count;\ndesign status line. P3/P4: two recreate residuals recorded in ADR-150\n(Proposed).\n- Validation gaps closed: the conservation fuzz with the quota inside\n`also=`; the merged commit losing an `rf` lock or a create race on one\npart; the exit-reconcile write count; **LocalStack** tests for the\nmerged multi-resource transaction and for a move reaching GSI1 and a\nsecond process.\n- Not changed: M7 (sync thread-pool latency with several cascading\nparts, reasoning only, a performance change).\n- Follow-up filed: #761 (Locust `also=` passthrough).\n\n## Test plan\n- [x] `uv run pytest tests/unit/` — 7455+ passed; gevent 45\n- [x] `tests/integration/test_multi_resource_and_move.py` against\nLocalStack — 3 passed\n- [x] each over-admission fix's regression test fails on the previous\ncode (M1: 30 admitted vs 10; P1: new parent +0; M2: 37,930 s\nnon-contended)\n- [x] mypy, ruff clean; pre-push diff coverage 100%\n\nRefs #675\nRefs #677\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_017XzYMYKXNcZNQYS3xQhFdc",
+          "timestamp": "2026-10-24T12:21:25-04:00",
+          "tree_id": "106850f00949c46d4bc9a76ad12bc35821a1ad51",
+          "url": "https://github.com/zeroae/zae-limiter/commit/28443a365c6f17a678cd9b6a3451525826a5b41d"
+        },
+        "date": 1792859181090,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 25.314464264978852,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005635910481149877",
+            "extra": "mean: 39.503107374997626 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.246726762051544,
+            "unit": "iter/sec",
+            "range": "stddev: 0.015264666839545684",
+            "extra": "mean: 57.98201675000314 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.85751169339679,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004564454498365567",
+            "extra": "mean: 27.88815935000173 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 40.23729525561672,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004735886135607114",
+            "extra": "mean: 24.85256510526537 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.753400119608393,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009126446101306003",
+            "extra": "mean: 45.96982515384367 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 61.30030835850625,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001803612796520372",
+            "extra": "mean: 16.31313164285635 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.578304871334115,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00585377736849929",
+            "extra": "mean: 40.686288384611444 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 26.768263731018834,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005255420471633594",
+            "extra": "mean: 37.357671384610896 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 22.781820430797456,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03973116154619692",
+            "extra": "mean: 43.894648500001196 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.44851957944226,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0056651032865329696",
+            "extra": "mean: 37.80929957143136 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 26.860490557071827,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006941562741683019",
+            "extra": "mean: 37.22940196774329 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 25.080457916069417,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006411450682543695",
+            "extra": "mean: 39.87168030769029 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 31.099426976081755,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003648068570610281",
+            "extra": "mean: 32.15493329729482 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9278230625577966,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001700450814203464",
+            "extra": "mean: 518.7198034000176 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.933723377766016,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0010993771570634288",
+            "extra": "mean: 517.1370484000022 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9363550808957682,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010748405478479469",
+            "extra": "mean: 1.0679709230000072 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9166199584328928,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005263181316076984",
+            "extra": "mean: 1.0909646803999977 sec\nrounds: 5"
           }
         ]
       }
