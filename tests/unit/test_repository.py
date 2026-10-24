@@ -42,11 +42,13 @@ from zae_limiter.schema import (
     bucket_attr,
     calculate_bucket_ttl,
     calculate_bucket_ttl_seconds,
+    gsi3_pk_entity,
     limit_attr,
     parse_bucket_attr,
     parse_bucket_sk,
     parse_limit_attr,
     pk_bucket,
+    pk_entity,
     sk_config,
     sk_state,
 )
@@ -3716,6 +3718,138 @@ class TestRepositoryEntityDuplicates:
         assert entity is None
 
 
+async def _entity_with_many_items(repo, entity_id, *, usage=30, resources=("gpt-4", "gpt-3.5")):
+    """An entity whose items span pages and BatchWriteItem chunks (#742).
+
+    META, ``usage`` usage-snapshot stand-ins under the entity's PK (more than
+    one 25-item chunk), and one bucket per resource, found through GSI3.
+    Returns the number of items ``delete_entity`` must delete.
+    """
+    await repo.create_entity(entity_id, name=entity_id)
+    client = await repo._get_client()
+    pk = pk_entity(repo._namespace_id, entity_id)
+    for i in range(usage):
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={"PK": {"S": pk}, "SK": {"S": f"#USAGE#r#{i:04d}"}},
+        )
+    now_ms = int(time.time() * 1000)
+    for resource in resources:
+        states = [BucketState.from_limit(entity_id, resource, Limit.per_minute("rpm", 100), now_ms)]
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, resource, states, now_ms)]
+        )
+    return 1 + usage + len(resources)
+
+
+async def _entity_items_left(repo, entity_id):
+    """Items still under the entity's PK plus buckets still indexed in GSI3."""
+    client = await repo._get_client()
+    base = await client.query(
+        TableName=repo.table_name,
+        KeyConditionExpression="PK = :pk",
+        ExpressionAttributeValues={":pk": {"S": pk_entity(repo._namespace_id, entity_id)}},
+        ConsistentRead=True,
+    )
+    buckets = await client.query(
+        TableName=repo.table_name,
+        IndexName="GSI3",
+        KeyConditionExpression="GSI3PK = :pk",
+        ExpressionAttributeValues={
+            ":pk": {"S": gsi3_pk_entity(repo._namespace_id, entity_id)},
+        },
+    )
+    return base["Items"] + buckets["Items"]
+
+
+class TestDeleteEntityIsComplete:
+    """``delete_entity`` deletes everything or raises (#742).
+
+    BatchWriteItem returns throttled deletes in ``UnprocessedItems`` without
+    raising, and a Query returns at most 1 MB per page. Ignoring either left
+    an entity partly deleted with no error: a leftover ``#META`` keeps the
+    entity looking alive, leftover buckets keep their balances.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unprocessed_items_are_resent(self, repo):
+        expected = await _entity_with_many_items(repo, "e")
+        client = await repo._get_client()
+        real_batch_write = client.batch_write_item
+        calls = []
+
+        async def partly_applied(**params):
+            # The first request applies its first half and hands back the rest.
+            requests = params["RequestItems"][repo.table_name]
+            calls.append(len(requests))
+            if len(calls) > 1:
+                return await real_batch_write(**params)
+            half = len(requests) // 2
+            await real_batch_write(RequestItems={repo.table_name: requests[:half]})
+            return {"UnprocessedItems": {repo.table_name: requests[half:]}}
+
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0),
+            patch.object(client, "batch_write_item", side_effect=partly_applied),
+        ):
+            await repo.delete_entity("e")
+
+        assert await _entity_items_left(repo, "e") == []
+        assert calls[1] == calls[0] - calls[0] // 2  # only the remainder is resent
+        events = await repo.get_audit_events("e")
+        assert events[0].action == AuditAction.ENTITY_DELETED
+        assert events[0].details["records_deleted"] == expected
+
+    @pytest.mark.asyncio
+    async def test_every_query_page_is_deleted(self, repo):
+        """Both the base-table and the GSI3 query follow LastEvaluatedKey."""
+        expected = await _entity_with_many_items(repo, "e", usage=5, resources=("a", "b", "c"))
+        client = await repo._get_client()
+        real_query = client.query
+        paged = []
+
+        async def two_per_page(**params):
+            # A 1 MB page, scaled down: moto pages a Query that sets Limit.
+            response = await real_query(**{"Limit": 2, **params})
+            if "LastEvaluatedKey" in response:
+                paged.append(params.get("IndexName", "base"))
+            return response
+
+        with patch.object(client, "query", side_effect=two_per_page):
+            await repo.delete_entity("e")
+
+        assert {"base", "GSI3"} <= set(paged)
+        assert await _entity_items_left(repo, "e") == []
+        events = await repo.get_audit_events("e")
+        assert events[0].details["records_deleted"] == expected
+
+    @pytest.mark.asyncio
+    async def test_raises_when_items_stay_unprocessed(self, repo):
+        await _entity_with_many_items(repo, "e", usage=3)
+        client = await repo._get_client()
+        calls = []
+
+        async def throttled(**params):
+            requests = params["RequestItems"][repo.table_name]
+            calls.append(len(requests))
+            return {"UnprocessedItems": {repo.table_name: requests}}
+
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0),
+            patch("zae_limiter.repository._BATCH_WRITE_MAX_RETRIES", 2),
+            patch.object(client, "batch_write_item", side_effect=throttled),
+            pytest.raises(RateLimiterUnavailable, match="unprocessed") as exc_info,
+        ):
+            await repo.delete_entity("e")
+
+        assert exc_info.value.entity_id == "e"
+        assert len(calls) == 3  # the first send and two retries
+        # Nothing was deleted, and no deletion was audited.
+        assert await repo.get_entity("e") is not None
+        events = await repo.get_audit_events("e")
+        assert AuditAction.ENTITY_DELETED not in {e.action for e in events}
+
+
 class TestRepositoryTableOperations:
     """Tests for table-level operations."""
 
@@ -6901,7 +7035,7 @@ class TestResetScheduleReachesStorage:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+                "PK": {"S": pk_entity(repo._namespace_id, entity_id)},
                 "SK": {"S": schema.sk_config(resource)},
             },
         )
@@ -7144,7 +7278,7 @@ class TestDurationWindowReachesConfigStorage:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+                "PK": {"S": pk_entity(repo._namespace_id, entity_id)},
                 "SK": {"S": schema.sk_config(resource)},
             },
         )
@@ -7520,7 +7654,7 @@ async def _corrupt_config_sched(repo, entity_id, resource, limit_name, value, fi
     await client.update_item(
         TableName=repo.table_name,
         Key={
-            "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+            "PK": {"S": pk_entity(repo._namespace_id, entity_id)},
             "SK": {"S": schema.sk_config(resource)},
         },
         UpdateExpression="SET #a = :v",
@@ -7543,7 +7677,7 @@ async def _corrupt_config_rsa(repo, entity_id, resource, limit_name, value):
     await client.update_item(
         TableName=repo.table_name,
         Key={
-            "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+            "PK": {"S": pk_entity(repo._namespace_id, entity_id)},
             "SK": {"S": schema.sk_config(resource)},
         },
         UpdateExpression="SET #a = :v",

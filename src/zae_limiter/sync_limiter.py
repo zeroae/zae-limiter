@@ -532,6 +532,10 @@ class SyncRateLimiter:
         Args:
             entity_id: ID of the entity to delete
             principal: Caller identity for audit logging (optional)
+
+        Raises:
+            RateLimiterUnavailable: DynamoDB kept some deletes unprocessed
+                after the retries; re-run the same call to finish.
         """
         self._ensure_initialized()
         self._repository.delete_entity(entity_id, principal=principal)

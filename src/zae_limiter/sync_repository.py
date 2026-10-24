@@ -76,6 +76,9 @@ logger = logging.getLogger(__name__)
 _BATCH_GET_MAX_RETRIES = 3
 _CLIENT_MIN_RATCHET_ATTEMPTS = 3
 _BATCH_GET_RETRY_BASE_DELAY = 0.05
+_BATCH_WRITE_MAX_RETRIES = 5
+_BATCH_WRITE_RETRY_BASE_DELAY = 0.05
+_BATCH_WRITE_MAX_ITEMS = 25
 _OPERATION_MAX_ATTEMPTS = 4
 _OPERATION_RETRY_BASE_DELAY = 0.05
 _OPERATION_RETRY_CODES = frozenset(
@@ -1901,68 +1904,138 @@ class SyncRepository:
         """
         Delete an entity and all its related records.
 
+        Deletes every item under the entity's PK (metadata, configs, usage
+        snapshots), every bucket item GSI3 indexes under it, and its reset and
+        top-up operation records, then audits how many were deleted.
+
         Args:
             entity_id: ID of the entity to delete
             principal: Caller identity for audit logging
+
+        Raises:
+            RateLimiterUnavailable: DynamoDB kept some deletes unprocessed
+                after the retries (#742). Part of the entity may be gone and
+                no deletion is audited; re-run the same call to finish.
         """
-        client = self._get_client()
-        response = client.query(
-            TableName=self.table_name,
-            KeyConditionExpression="PK = :pk",
-            ExpressionAttributeValues={
-                ":pk": {"S": schema.pk_entity(self._namespace_id, entity_id)}
-            },
+        items = self._query_all(
+            {
+                "TableName": self.table_name,
+                "KeyConditionExpression": "PK = :pk",
+                "ExpressionAttributeValues": {
+                    ":pk": {"S": schema.pk_entity(self._namespace_id, entity_id)}
+                },
+                "ProjectionExpression": "PK, SK",
+            }
         )
-        items = response.get("Items", [])
-        gsi3_response = client.query(
-            TableName=self.table_name,
-            IndexName="GSI3",
-            KeyConditionExpression="GSI3PK = :gsi3pk",
-            ExpressionAttributeValues={
-                ":gsi3pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)}
-            },
+        bucket_items = self._query_all(
+            {
+                "TableName": self.table_name,
+                "IndexName": schema.GSI3_NAME,
+                "KeyConditionExpression": "GSI3PK = :gsi3pk",
+                "ExpressionAttributeValues": {
+                    ":gsi3pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)}
+                },
+            }
         )
-        bucket_items = gsi3_response.get("Items", [])
-
-        def _records_in(pk: str) -> list[dict[str, Any]]:
-            found: list[dict[str, Any]] = []
-            start_key: dict[str, Any] | None = None
-            while True:
-                params: dict[str, Any] = {
-                    "TableName": self.table_name,
-                    "KeyConditionExpression": "PK = :pk AND begins_with(SK, :op)",
-                    "ExpressionAttributeValues": {
-                        ":pk": {"S": pk},
-                        ":op": {"S": schema.SK_OPERATION_PREFIX},
-                    },
-                    "ProjectionExpression": "PK, SK",
-                }
-                if start_key:
-                    params["ExclusiveStartKey"] = start_key
-                page = client.query(**params)
-                found.extend(page.get("Items", []))
-                start_key = page.get("LastEvaluatedKey")
-                if not start_key:
-                    return found
-
         shard0_pks = [item["PK"]["S"] for item in bucket_items if item["PK"]["S"].endswith("#0")]
-        pages = self._run_in_executor(*[lambda pk=pk: _records_in(pk) for pk in shard0_pks])
+        pages = self._run_in_executor(
+            *[
+                lambda pk=pk: self._query_all(
+                    {
+                        "TableName": self.table_name,
+                        "KeyConditionExpression": "PK = :pk AND begins_with(SK, :op)",
+                        "ExpressionAttributeValues": {
+                            ":pk": {"S": pk},
+                            ":op": {"S": schema.SK_OPERATION_PREFIX},
+                        },
+                        "ProjectionExpression": "PK, SK",
+                    }
+                )
+                for pk in shard0_pks
+            ]
+        )
         record_items = [record for page in pages for record in page]
-        all_items = items + bucket_items + record_items
-        if not all_items:
+        keys = list(
+            {
+                (item["PK"]["S"], item["SK"]["S"]): {"PK": item["PK"], "SK": item["SK"]}
+                for item in items + bucket_items + record_items
+            }.values()
+        )
+        if not keys:
             return
-        delete_requests = [
-            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in all_items
-        ]
-        for i in range(0, len(delete_requests), 25):
-            chunk = delete_requests[i : i + 25]
-            client.batch_write_item(RequestItems={self.table_name: chunk})
+        deleted = self._batch_delete_all(keys, context=f"entity '{entity_id}'", entity_id=entity_id)
         self._log_audit_event(
             action=AuditAction.ENTITY_DELETED,
             entity_id=entity_id,
             principal=principal,
-            details={"records_deleted": len(all_items)},
+            details={"records_deleted": deleted},
         )
+
+    def _query_all(self, params: dict[str, Any]) -> list[dict[str, Any]]:
+        """Every item a Query matches, following ``LastEvaluatedKey`` (#742)."""
+        client = self._get_client()
+        found: list[dict[str, Any]] = []
+        start_key: dict[str, Any] | None = None
+        while True:
+            page_params = dict(params)
+            if start_key:
+                page_params["ExclusiveStartKey"] = start_key
+            page = client.query(**page_params)
+            found.extend(page.get("Items", []))
+            start_key = page.get("LastEvaluatedKey")
+            if not start_key:
+                return found
+
+    def _batch_delete_all(
+        self, keys: list[dict[str, Any]], *, context: str, entity_id: str | None = None
+    ) -> int:
+        """Delete every key with BatchWriteItem, resending ``UnprocessedItems``.
+
+        DynamoDB may apply part of a BatchWriteItem and return the rest in
+        ``UnprocessedItems`` -- documented behaviour under throttling, not an
+        error, and boto3 does not resend it (#742). Sends ``keys`` in requests
+        of 25, resends each request's remainder with full-jitter backoff, and
+        raises rather than return once a remainder outlasts
+        ``_BATCH_WRITE_MAX_RETRIES`` retries. Deletes are idempotent, so the
+        caller can re-run the whole operation to finish it.
+
+        Args:
+            keys: DynamoDB key dicts, each naming a distinct item.
+            context: What is being deleted, used in the error message.
+            entity_id: Attached to the raised exception when applicable.
+
+        Returns:
+            How many keys were deleted: ``len(keys)``, since it returns only
+            when none is left.
+
+        Raises:
+            RateLimiterUnavailable: Deletes remained unprocessed after the
+                retries; the message says how many landed before that.
+        """
+        client = self._get_client()
+        deleted = 0
+        for start in range(0, len(keys), _BATCH_WRITE_MAX_ITEMS):
+            pending: list[dict[str, Any]] = [
+                {"DeleteRequest": {"Key": key}}
+                for key in keys[start : start + _BATCH_WRITE_MAX_ITEMS]
+            ]
+            attempts = 0
+            while True:
+                response = client.batch_write_item(RequestItems={self.table_name: pending})
+                unprocessed = response.get("UnprocessedItems", {}).get(self.table_name) or []
+                deleted += len(pending) - len(unprocessed)
+                pending = unprocessed
+                if not pending:
+                    break
+                attempts += 1
+                if attempts > _BATCH_WRITE_MAX_RETRIES:
+                    raise RateLimiterUnavailable(
+                        f"Could not delete {context}: DynamoDB left {len(pending)} delete(s) unprocessed after {_BATCH_WRITE_MAX_RETRIES} retries ({deleted} of {len(keys)} deleted); re-run to finish",
+                        stack_name=self.stack_name,
+                        entity_id=entity_id,
+                    )
+                time.sleep(random.uniform(0, _BATCH_WRITE_RETRY_BASE_DELAY * 2 ** (attempts - 1)))
+        return deleted
 
     def get_children(self, parent_id: str) -> list[Entity]:
         """Get all children of a parent entity."""
