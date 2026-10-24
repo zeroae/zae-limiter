@@ -1776,6 +1776,51 @@ class TestTheDisabledLookAcrossResources:
         assert (raised.value.entity_id, raised.value.resource) == ("org-b", "code")
 
 
+class TestMetaWritesRetryAConflict:
+    """Review P2: every bucket create holds a `ConditionCheck` on its owner's
+    META in a transaction (ADR-150), so a META write on a busy entity can meet
+    a `TransactionConflictException`. It did not apply; it is re-sent rather
+    than surfaced raw."""
+
+    @staticmethod
+    def _conflict_once(real):
+        from botocore.exceptions import ClientError
+
+        calls: list[int] = []
+
+        async def flaky(**kwargs):
+            on_meta = kwargs.get("Key", kwargs.get("Item", {})).get("SK") == {"S": schema.sk_meta()}
+            if not on_meta:
+                return await real(**kwargs)
+            calls.append(1)
+            if len(calls) == 1:
+                raise ClientError(
+                    {"Error": {"Code": "TransactionConflictException", "Message": "busy"}},
+                    "Write",
+                )
+            return await real(**kwargs)
+
+        return flaky, calls
+
+    async def test_set_parent_retries(self, limiter):
+        await _hierarchy(limiter)
+        repo = limiter._repository
+        client = await repo._get_client()
+        flaky, calls = self._conflict_once(client.update_item)
+        with patch.object(client, "update_item", side_effect=flaky):
+            await repo.set_parent("user", "org-b")
+        assert len(calls) == 2  # the conflict, then the write that landed
+        assert (await repo.get_entity("user", consistent_read=True)).parent_id == "org-b"
+
+    async def test_create_entity_retries(self, repo):
+        client = await repo._get_client()
+        flaky, calls = self._conflict_once(client.put_item)
+        with patch.object(client, "put_item", side_effect=flaky):
+            await repo.create_entity("fresh")
+        assert len(calls) == 2
+        assert await repo.get_entity("fresh", consistent_read=True) is not None
+
+
 class TestAStaleSlowPassAfterAMove:
     """Review P1 (#677 review): a slow pass whose eventually consistent META
     read predates a move lost its rf-locked owner pin — the bucket already
