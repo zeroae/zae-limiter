@@ -43,7 +43,7 @@ class TestApplyChanges:
                             "rpm": {
                                 "capacity": 1000,
                                 "refill_amount": 1000,
-                                "refill_period": 60,
+                                "refill_period_seconds": 60,
                             }
                         }
                     },
@@ -89,7 +89,7 @@ class TestApplyChanges:
                             "rpm": {
                                 "capacity": 500,
                                 "refill_amount": 500,
-                                "refill_period": 60,
+                                "refill_period_seconds": 60,
                             }
                         }
                     },
@@ -120,7 +120,7 @@ class TestApplyChanges:
                             "tpm": {
                                 "capacity": 50000,
                                 "refill_amount": 50000,
-                                "refill_period": 60,
+                                "refill_period_seconds": 60,
                             }
                         }
                     },
@@ -147,7 +147,7 @@ class TestApplyChanges:
                             "capacity": 1000,
                             "burst": 1000,
                             "refill_amount": 1000,
-                            "refill_period": 60,
+                            "refill_period_seconds": 60,
                         }
                     }
                 },
@@ -162,7 +162,7 @@ class TestApplyChanges:
                             "capacity": 50000,
                             "burst": 50000,
                             "refill_amount": 50000,
-                            "refill_period": 60,
+                            "refill_period_seconds": 60,
                         }
                     }
                 },
@@ -190,7 +190,7 @@ class TestApplyChanges:
                             "rpm": {
                                 "capacity": 1000,
                                 "refill_amount": 1000,
-                                "refill_period": 60,
+                                "refill_period_seconds": 60,
                             }
                         },
                     },
@@ -215,7 +215,11 @@ class TestApplyChanges:
                     data={
                         "disabled": True,
                         "limits": {
-                            "rpm": {"capacity": 10, "refill_amount": 10, "refill_period": 60}
+                            "rpm": {
+                                "capacity": 10,
+                                "refill_amount": 10,
+                                "refill_period_seconds": 60,
+                            }
                         },
                     },
                 )
@@ -239,7 +243,11 @@ class TestApplyChanges:
                     data={
                         "disabled": False,
                         "limits": {
-                            "rpm": {"capacity": 10, "refill_amount": 10, "refill_period": 60}
+                            "rpm": {
+                                "capacity": 10,
+                                "refill_amount": 10,
+                                "refill_period_seconds": 60,
+                            }
                         },
                     },
                 )
@@ -262,7 +270,11 @@ class TestApplyChanges:
                     target="gpt-4",
                     data={
                         "limits": {
-                            "rpm": {"capacity": 10, "refill_amount": 10, "refill_period": 60}
+                            "rpm": {
+                                "capacity": 10,
+                                "refill_amount": 10,
+                                "refill_period_seconds": 60,
+                            }
                         }
                     },
                 )
@@ -330,7 +342,7 @@ class TestScheduleReachesTheConfigItem:
                 "rpm": {
                     "capacity": 1000,
                     "refill_amount": 1000,
-                    "refill_period": 60,
+                    "refill_period_seconds": 60,
                     "schedule": self.BIZ,
                 }
             }
@@ -346,7 +358,7 @@ class TestScheduleReachesTheConfigItem:
                 "rpd": {
                     "capacity": 10000,
                     "refill_amount": 0,
-                    "refill_period": 86400,
+                    "refill_period_seconds": 86400,
                     "reset_schedule": self.MIDNIGHT,
                 }
             }
@@ -358,7 +370,9 @@ class TestScheduleReachesTheConfigItem:
     def test_an_unscheduled_limit_writes_neither_attribute(self):
         """Absence is how "no schedule" is stored; PutItem is full-replace, so
         an omitted attribute is also how a schedule is removed."""
-        item = self._item({"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60}})
+        item = self._item(
+            {"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period_seconds": 60}}
+        )
         assert "l_rpm_sched" not in item
         assert "l_rpm_rsched" not in item
         assert "sched_tz" not in item
@@ -370,10 +384,10 @@ class TestScheduleReachesTheConfigItem:
                 "rpm": {
                     "capacity": 1000,
                     "refill_amount": 1000,
-                    "refill_period": 60,
+                    "refill_period_seconds": 60,
                     "schedule": self.BIZ,
                 },
-                "tpm": {"capacity": 50, "refill_amount": 50, "refill_period": 60},
+                "tpm": {"capacity": 50, "refill_amount": 50, "refill_period_seconds": 60},
             }
         )
         assert item["l_rpm_sched"] == {"S": "1h9-17w1-5s500"}
@@ -395,13 +409,13 @@ class TestScheduleReachesTheConfigItem:
                             "rpm": {
                                 "capacity": 1,
                                 "refill_amount": 1,
-                                "refill_period": 60,
+                                "refill_period_seconds": 60,
                                 "schedule": self.BIZ,
                             },
                             "tpm": {
                                 "capacity": 1,
                                 "refill_amount": 1,
-                                "refill_period": 60,
+                                "refill_period_seconds": 60,
                                 "schedule": [
                                     {"cron": "* 9-17 * * *", "tz": "Europe/London", "scale": 0.5}
                                 ],
@@ -431,7 +445,7 @@ class TestScheduleReachesTheConfigItem:
                             "rpm": {
                                 "capacity": 1000,
                                 "refill_amount": 1000,
-                                "refill_period": 60,
+                                "refill_period_seconds": 60,
                                 "schedule": self.BIZ,
                             }
                         }
@@ -468,7 +482,7 @@ class TestDurationWindowReachesTheConfigItem:
                 "session": {
                     "capacity": 10_000,
                     "refill_amount": 0,
-                    "refill_period": 1,
+                    "refill_period_seconds": 1,
                     "reset_after_seconds": 18_000,
                 }
             }
@@ -479,7 +493,9 @@ class TestDurationWindowReachesTheConfigItem:
         assert item["w_session_ra"] == {"N": "0"}
 
     def test_a_limit_without_a_window_writes_no_rsa_attribute(self):
-        item = self._item({"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60}})
+        item = self._item(
+            {"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period_seconds": 60}}
+        )
         assert "l_rpm_rsa" not in item
 
     def test_only_the_windowed_limit_on_a_shared_item_is_stamped(self):
@@ -488,10 +504,10 @@ class TestDurationWindowReachesTheConfigItem:
                 "session": {
                     "capacity": 10_000,
                     "refill_amount": 0,
-                    "refill_period": 1,
+                    "refill_period_seconds": 1,
                     "reset_after_seconds": 18_000,
                 },
-                "rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60},
+                "rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period_seconds": 60},
             }
         )
         assert item["w_session_rsa"] == {"N": "18000"}
@@ -505,7 +521,7 @@ class TestDurationWindowReachesTheConfigItem:
                 "session": {
                     "capacity": 10_000,
                     "refill_amount": 0,
-                    "refill_period": 1,
+                    "refill_period_seconds": 1,
                     "reset_after_seconds": 18_000,
                 }
             },
@@ -526,10 +542,10 @@ class TestResetAfterVersionGate:
     SESSION = {
         "capacity": 10,
         "refill_amount": 0,
-        "refill_period": 1,
+        "refill_period_seconds": 1,
         "reset_after_seconds": 18_000,
     }
-    RPM = {"capacity": 100, "refill_amount": 100, "refill_period": 60}
+    RPM = {"capacity": 100, "refill_amount": 100, "refill_period_seconds": 60}
 
     @pytest.fixture
     def client(self, mock_dynamodb):
@@ -716,7 +732,7 @@ class TestResetAfterVersionGate:
 class TestCascadePolicy:
     """The applier writes the cascade policy, notes what it changed, and gates it (ADR-146)."""
 
-    RPM = {"capacity": 100, "refill_amount": 100, "refill_period": 60}
+    RPM = {"capacity": 100, "refill_amount": 100, "refill_period_seconds": 60}
 
     @staticmethod
     def _client(old_cascade=None):

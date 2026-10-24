@@ -296,7 +296,7 @@ class TestHandlerIntegration:
                 "Namespace": "test",
                 "System": {
                     "OnUnavailable": "block",
-                    "Limits": {"rpm": {"Capacity": "1500", "RefillPeriod": "60"}},
+                    "Limits": {"rpm": {"Capacity": "1500", "RefillPeriodSeconds": "60"}},
                 },
                 "Resources": {
                     # The carve-out shape: an explicit re-admission carrying no

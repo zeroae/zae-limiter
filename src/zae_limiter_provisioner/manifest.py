@@ -14,6 +14,36 @@ from zae_limiter.schedule import MAX_PERIOD_SECONDS, ScheduleEntry
 _ENTRY_FIELDS = ("cron", "tz", "scale", "capacity", "refill_amount", "refill_period_seconds")
 _RESET_ENTRY_FIELDS = ("cron", "tz")
 
+# Limit keys that were renamed, old -> new. The period is spelled with its unit
+# at every level, as it is on a schedule entry and in the Python API (#735).
+_RENAMED_LIMIT_FIELDS = {"refill_period": "refill_period_seconds"}
+
+
+# The keys a `limits.<name>` mapping may carry. Strict for the same reason
+# `_ENTRY_FIELDS` is: a key outside it is a typo or a spelling from somewhere
+# else, and dropping it silently applies the shorthand default in its place —
+# `refill_period_secs: 3600` would land as a 60-second period, 60x the intended
+# rate, with `limits plan` reporting a clean create (#735).
+_LIMIT_FIELDS = (
+    "capacity",
+    "burst",
+    "refill_amount",
+    "refill_period_seconds",
+    "schedule",
+    "reset_schedule",
+    "reset_after_seconds",
+)
+
+
+def _check_renamed(d: dict[str, Any], renamed: dict[str, str]) -> None:
+    for old, new in renamed.items():
+        if old in d:
+            raise ValueError(
+                f"`{old}` was renamed to `{new}`; rename the key. "
+                "Limits are rejected at parse time so `limits plan` surfaces the "
+                "problem before anything is written."
+            )
+
 
 def _entry_to_dict(entry: ScheduleEntry) -> dict[str, Any]:
     """Emit only the fields that are set, so ``from_dict(to_dict(x)) == x``.
@@ -129,18 +159,26 @@ class LimitDecl:
 
     capacity: int
     refill_amount: int
-    refill_period: int
+    refill_period_seconds: int
     schedule: tuple[ScheduleEntry, ...] = ()
     reset_schedule: tuple[ScheduleEntry, ...] = ()
     reset_after_seconds: int | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> LimitDecl:
+        _check_renamed(d, _RENAMED_LIMIT_FIELDS)
+        unknown = sorted(str(k) for k in d if k not in _LIMIT_FIELDS)
+        if unknown:
+            raise ValueError(
+                f"limit has unknown field(s) {unknown}; allowed: {list(_LIMIT_FIELDS)}. "
+                "Limits are rejected at parse time so `limits plan` surfaces the "
+                "problem before anything is written."
+            )
         capacity = d["capacity"]
         # Accept "burst" from YAML for backwards-compat: use it as capacity
         if "burst" in d:
             capacity = d["burst"]
-        refill_period = d.get("refill_period", 60)
+        refill_period_seconds = d.get("refill_period_seconds", 60)
 
         schedule = _parse_entries(d.get("schedule"), key="schedule", reset=False)
         reset_schedule = _parse_entries(d.get("reset_schedule"), key="reset_schedule", reset=True)
@@ -187,7 +225,7 @@ class LimitDecl:
 
         for field_name, value in (
             ("capacity", capacity),
-            ("refill_period", refill_period),
+            ("refill_period_seconds", refill_period_seconds),
         ):
             if value <= 0:
                 raise ValueError(
@@ -232,7 +270,7 @@ class LimitDecl:
         return cls(
             capacity=capacity,
             refill_amount=refill_amount,
-            refill_period=refill_period,
+            refill_period_seconds=refill_period_seconds,
             schedule=schedule,
             reset_schedule=reset_schedule,
             reset_after_seconds=reset_after_seconds,
@@ -242,7 +280,7 @@ class LimitDecl:
         result: dict[str, Any] = {
             "capacity": self.capacity,
             "refill_amount": self.refill_amount,
-            "refill_period": self.refill_period,
+            "refill_period_seconds": self.refill_period_seconds,
         }
         # Emitted only when declared, so an unscheduled manifest's wire shape is
         # byte-for-byte what it was before schedules existed.

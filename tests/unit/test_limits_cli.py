@@ -335,7 +335,7 @@ class TestLimitsCfnTemplate:
                         "rpm": {
                             "capacity": 1000,
                             "refill_amount": 100,
-                            "refill_period": 60,
+                            "refill_period_seconds": 60,
                         },
                     },
                 },
@@ -357,7 +357,7 @@ class TestLimitsCfnTemplate:
             assert rpm["Capacity"] == 1000
             assert "Burst" not in rpm
             assert rpm["RefillAmount"] == 100
-            assert rpm["RefillPeriod"] == 60
+            assert rpm["RefillPeriodSeconds"] == 60
 
 
 class TestLimitsCfnTemplateDisabled:
@@ -1009,7 +1009,7 @@ class TestLimitsCfnTemplateSchedules:
                     },
                     "rpd": {
                         "capacity": 10000,
-                        "refill_period": 86400,
+                        "refill_period_seconds": 86400,
                         "reset_schedule": [{"cron": "0 0 * * *", "tz": "America/New_York"}],
                     },
                 }
@@ -1043,7 +1043,7 @@ class TestLimitsCfnTemplateSchedules:
                         "limits": {
                             "rpd": {
                                 "capacity": 10000,
-                                "refill_period": 86400,
+                                "refill_period_seconds": 86400,
                                 "schedule": [{"cron": "* * * * SAT,SUN", "scale": 0.5}],
                                 "reset_schedule": [{"cron": "0 0 * * *", "tz": "UTC"}],
                             }
@@ -1307,7 +1307,7 @@ class TestLimitsCfnTemplateSchedules:
                     "limits": {
                         "rpd": {
                             "capacity": 10000,
-                            "refill_period": 86400,
+                            "refill_period_seconds": 86400,
                             "schedule": [
                                 {"cron": "* * * * SAT,SUN", "tz": "UTC", "scale": 0.25},
                                 {
@@ -1397,6 +1397,66 @@ class TestLimitsCfnTemplateDurationWindow:
         )
         assert limits["rpm"] == {"Capacity": 1000}
         assert "ResetAfterSeconds" not in limits["rpm"]
+
+
+class TestLimitsCfnTemplateRefillPeriodSeconds:
+    """#735: `refill_period_seconds` -> `RefillPeriodSeconds`; the old key fails."""
+
+    def _invoke(self, tmp_path, limit: dict):
+        path = tmp_path / "limits.yaml"
+        path.write_text(
+            yaml.dump({"namespace": "n", "resources": {"gpt-4": {"limits": {"rph": limit}}}})
+        )
+        return CliRunner().invoke(
+            cli, ["limits", "cfn-template", "--name", "test-app", "-f", str(path)]
+        )
+
+    def test_old_key_fails_instead_of_being_left_out(self, tmp_path):
+        result = self._invoke(tmp_path, {"capacity": 100, "refill_period": 3600})
+        assert result.exit_code != 0
+        assert "`refill_period` was renamed to `refill_period_seconds`" in result.output
+
+    def test_round_trips_through_the_provisioner(self, tmp_path):
+        from zae_limiter_provisioner.handler import _cfn_limits_to_manifest
+
+        result = self._invoke(tmp_path, {"capacity": 100, "refill_period_seconds": 3600})
+        assert result.exit_code == 0, result.output
+        props = yaml.safe_load(result.output)["Resources"]["TenantLimits"]["Properties"]
+        cfn = props["Resources"]["gpt-4"]["Limits"]
+        assert cfn == {"rph": {"Capacity": 100, "RefillPeriodSeconds": 3600}}
+        assert _cfn_limits_to_manifest(cfn)["rph"]["refill_period_seconds"] == 3600
+
+
+class TestLimitsCfnTemplateUnknownFields:
+    """The generator rejects what the manifest parser rejects (#735)."""
+
+    def _invoke(self, tmp_path, limit: dict):
+        path = tmp_path / "limits.yaml"
+        path.write_text(
+            yaml.dump({"namespace": "n", "resources": {"gpt-4": {"limits": {"rpm": limit}}}})
+        )
+        return CliRunner().invoke(
+            cli, ["limits", "cfn-template", "--name", "test-app", "-f", str(path)]
+        )
+
+    def test_unknown_limit_field_fails_instead_of_being_left_out(self, tmp_path):
+        result = self._invoke(tmp_path, {"capacity": 100, "refill_period_secs": 3600})
+        assert result.exit_code != 0
+        assert "unknown field(s) ['refill_period_secs']" in result.output
+
+    def test_burst_becomes_the_capacity_the_parser_would_use(self, tmp_path):
+        """`LimitDecl.from_dict` reads `burst` in place of `capacity`; a template
+        that dropped it would apply a different ceiling than `limits apply`."""
+        result = self._invoke(tmp_path, {"capacity": 100, "burst": 150})
+        assert result.exit_code == 0, result.output
+        props = yaml.safe_load(result.output)["Resources"]["TenantLimits"]["Properties"]
+        assert props["Resources"]["gpt-4"]["Limits"]["rpm"] == {"Capacity": 150}
+
+    def test_generator_allowlist_is_the_manifest_allowlist(self):
+        from zae_limiter.limits_cli import _LIMIT_FIELDS
+        from zae_limiter_provisioner.manifest import _LIMIT_FIELDS as MANIFEST_FIELDS
+
+        assert set(_LIMIT_FIELDS) == set(MANIFEST_FIELDS)
 
 
 class TestCfnTemplateFromYamlAnchors:

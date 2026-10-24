@@ -105,7 +105,7 @@ The refill formula:
 
 ```
 tokens_to_add = elapsed_time × refill_rate
-             = elapsed_ms × refill_amount / refill_period
+             = elapsed_ms × refill_amount / (refill_period_seconds × 1000)
 ```
 
 `refill_amount` here is the value in force at that instant. With a schedule, that is the

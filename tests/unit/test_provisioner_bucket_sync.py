@@ -37,7 +37,7 @@ def _make_client() -> MagicMock:
     return client
 
 
-LIMITS = {"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60}}
+LIMITS = {"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period_seconds": 60}}
 
 
 class TestBuildBucketParamUpdate:
@@ -51,7 +51,7 @@ class TestBuildBucketParamUpdate:
         rp_alias = next(k for k, v in names.items() if v == bucket_attr("rpm", "rp"))
         assert values[cp_alias.replace("#", ":")] == {"N": "1000000"}
         assert values[ra_alias.replace("#", ":")] == {"N": "1000000"}
-        # refill_period is SECONDS on config, MILLISECONDS on the bucket
+        # refill_period_seconds is SECONDS on config, MILLISECONDS on the bucket
         assert values[rp_alias.replace("#", ":")] == {"N": "60000"}
         assert expr.startswith("SET ")
 
@@ -130,7 +130,7 @@ class TestBuildBucketParamUpdate:
     def test_hyphenated_limit_names_use_indexed_aliases(self):
         """Limit names may contain hyphens, which are illegal in expression names."""
         expr, names, _values = build_bucket_param_update(
-            {"req-per-min": {"capacity": 5, "refill_amount": 5, "refill_period": 1}},
+            {"req-per-min": {"capacity": 5, "refill_amount": 5, "refill_period_seconds": 1}},
             ttl_multiplier=None,
             stale_limit_names=None,
             now_ms=0,
@@ -149,7 +149,7 @@ class TestDurationWindowParamSync:
         "session": {
             "capacity": 10_000,
             "refill_amount": 0,
-            "refill_period": 1,
+            "refill_period_seconds": 1,
             "reset_after_seconds": 18_000,
         }
     }
@@ -242,7 +242,7 @@ class TestDurationWindowParamSync:
             "ns123",
             "user-1",
             "_default_",
-            {"session": {"capacity": 10_000, "refill_amount": 0, "refill_period": 1}},
+            {"session": {"capacity": 10_000, "refill_amount": 0, "refill_period_seconds": 1}},
             ttl_multiplier=0,
             stale_limit_names=None,
             now_ms=0,
@@ -436,7 +436,7 @@ class TestResolveEffectiveLimits:
             }
         )
         assert resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4") == {
-            "rpm": {"capacity": 50, "refill_amount": 50, "refill_period": 60}
+            "rpm": {"capacity": 50, "refill_amount": 50, "refill_period_seconds": 60}
         }
 
     def test_falls_through_to_resource_then_system(self):
@@ -447,7 +447,7 @@ class TestResolveEffectiveLimits:
             }
         )
         assert resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4") == {
-            "rpm": {"capacity": 10, "refill_amount": 10, "refill_period": 60}
+            "rpm": {"capacity": 10, "refill_amount": 10, "refill_period_seconds": 60}
         }
 
     def test_no_level_defines_limits(self):
@@ -484,7 +484,7 @@ class TestResolveEffectiveLimits:
         item[limit_attr("rpm", "zz")] = {"N": "7"}
         client.get_item.side_effect = _levels({(pk_resource("ns123", "gpt-4"), sk_config()): item})
         assert resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4") == {
-            "rpm": {"capacity": 10, "refill_amount": 10, "refill_period": 60}
+            "rpm": {"capacity": 10, "refill_amount": 10, "refill_period_seconds": 60}
         }
 
     def test_partial_limit_attributes_are_skipped(self):
@@ -511,7 +511,9 @@ class TestResolveBucketLimits:
             }
         )
         limits, level = resolve_bucket_limits(client, "tbl", "ns123", "user-1", "gpt-4")
-        assert limits == {"rpm": {"capacity": 900, "refill_amount": 900, "refill_period": 60}}
+        assert limits == {
+            "rpm": {"capacity": 900, "refill_amount": 900, "refill_period_seconds": 60}
+        }
         assert level == "entity"
 
     def test_reports_the_level_that_answered(self):
@@ -521,7 +523,9 @@ class TestResolveBucketLimits:
             {(pk_resource("ns123", "gpt-4"), sk_config()): _limits_item(rpm=(200, 200, 60))}
         )
         limits, level = resolve_bucket_limits(client, "tbl", "ns123", "user-1", "gpt-4")
-        assert limits == {"rpm": {"capacity": 200, "refill_amount": 200, "refill_period": 60}}
+        assert limits == {
+            "rpm": {"capacity": 200, "refill_amount": 200, "refill_period_seconds": 60}
+        }
         assert level == "resource"
 
     def test_nothing_configured_anywhere(self):
@@ -541,7 +545,7 @@ class TestEntityWideScopeWidensDiscovery:
     `fanout.fanout_entity` re-resolves `disabled`.
     """
 
-    ENTITY_DEFAULT = {"rpm": {"capacity": 500, "refill_amount": 500, "refill_period": 60}}
+    ENTITY_DEFAULT = {"rpm": {"capacity": 500, "refill_amount": 500, "refill_period_seconds": 60}}
 
     @staticmethod
     def _client_with(buckets, config):
@@ -669,7 +673,7 @@ class TestEntityWideScopeWidensDiscovery:
             "ns123",
             "user-1",
             "_default_",
-            {"rpm": {"capacity": 50, "refill_amount": 50, "refill_period": 60}},
+            {"rpm": {"capacity": 50, "refill_amount": 50, "refill_period_seconds": 60}},
             ttl_multiplier=DEFAULT_TTL_MULTIPLIER,
             stale_limit_names={"tpm"},
             now_ms=0,
@@ -757,14 +761,16 @@ WEEKEND_COMPACT = "1w6,7s250"
 MIDNIGHT = [{"cron": "0 0 * * *", "tz": "America/New_York"}]
 MIDNIGHT_COMPACT = "1m0h0"
 
-SCHEDULED = {"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60, "schedule": BIZ}}
+SCHEDULED = {
+    "rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period_seconds": 60, "schedule": BIZ}
+}
 QUOTA = {
     "rpd": {
         "capacity": 10000,
         # ADR-137: a reset flips the manifest shorthand default to 0, and
         # `to_dict()` always emits the field, so 0 is what a round trip yields.
         "refill_amount": 0,
-        "refill_period": 86400,
+        "refill_period_seconds": 86400,
         "reset_schedule": MIDNIGHT,
     }
 }
@@ -829,13 +835,13 @@ class TestProvisionerStampsSchedules:
                 "rpm": {
                     "capacity": 1000,
                     "refill_amount": 1000,
-                    "refill_period": 60,
+                    "refill_period_seconds": 60,
                     "schedule": BIZ,
                 },
                 "tpm": {
                     "capacity": 50,
                     "refill_amount": 50,
-                    "refill_period": 60,
+                    "refill_period_seconds": 60,
                     "schedule": WEEKEND,
                 },
             },
@@ -860,13 +866,13 @@ class TestProvisionerStampsSchedules:
                 "rpm": {
                     "capacity": 1000,
                     "refill_amount": 1000,
-                    "refill_period": 60,
+                    "refill_period_seconds": 60,
                     "schedule": BIZ,
                 },
                 "tpm": {
                     "capacity": 50,
                     "refill_amount": 50,
-                    "refill_period": 60,
+                    "refill_period_seconds": 60,
                     "schedule": BIZ,
                 },
             },
@@ -938,13 +944,13 @@ class TestProvisionerStampsSchedules:
                     "rpm": {
                         "capacity": 1,
                         "refill_amount": 1,
-                        "refill_period": 60,
+                        "refill_period_seconds": 60,
                         "schedule": BIZ,
                     },
                     "tpm": {
                         "capacity": 1,
                         "refill_amount": 1,
-                        "refill_period": 60,
+                        "refill_period_seconds": 60,
                         "schedule": [{"cron": "* 9-17 * * *", "tz": "Europe/London", "scale": 0.5}],
                     },
                 },
@@ -978,7 +984,7 @@ class TestProvisionerStampsSchedules:
                 "rpm": {
                     "capacity": 1000,
                     "refill_amount": 1000,
-                    "refill_period": 60,
+                    "refill_period_seconds": 60,
                     "schedule": (entry,),
                 }
             },
@@ -1084,7 +1090,7 @@ class TestDecodeAdmitsScheduledLimits:
             "ns123",
             "user-1",
             "_default_",
-            {"rpm": {"capacity": 500, "refill_amount": 500, "refill_period": 60}},
+            {"rpm": {"capacity": 500, "refill_amount": 500, "refill_period_seconds": 60}},
             ttl_multiplier=0,
             stale_limit_names=None,
             now_ms=0,
@@ -1104,12 +1110,17 @@ class TestTheMirrorMarksUnscheduledLimits:
     """
 
     MIXED = {
-        "rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60, "schedule": BIZ},
-        "tpm": {"capacity": 50, "refill_amount": 50, "refill_period": 60},
+        "rpm": {
+            "capacity": 1000,
+            "refill_amount": 1000,
+            "refill_period_seconds": 60,
+            "schedule": BIZ,
+        },
+        "tpm": {"capacity": 50, "refill_amount": 50, "refill_period_seconds": 60},
         "rpd": {
             "capacity": 10000,
             "refill_amount": 0,
-            "refill_period": 86400,
+            "refill_period_seconds": 86400,
             "reset_schedule": MIDNIGHT,
         },
     }

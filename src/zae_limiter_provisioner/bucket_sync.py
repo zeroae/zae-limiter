@@ -79,7 +79,7 @@ _ENTITY_LEVELS = ("entity", "entity_default")
 _MANIFEST_NUMERIC_KEY = {
     LIMIT_FIELD_CP: "capacity",
     LIMIT_FIELD_RA: "refill_amount",
-    LIMIT_FIELD_RP: "refill_period",
+    LIMIT_FIELD_RP: "refill_period_seconds",
 }
 _MANIFEST_SCHEDULE_KEY = {
     LIMIT_FIELD_SCHED: "schedule",
@@ -204,7 +204,7 @@ def build_bucket_param_update(
 
     Args:
         limits: Manifest-shaped limits, ``{name: {capacity, refill_amount,
-            refill_period}}``, in whole tokens and seconds, optionally with
+            refill_period_seconds}}``, in whole tokens and seconds, optionally with
             ``schedule`` / ``reset_schedule`` entries (#222) or a
             ``reset_after`` duration-window length in seconds (ADR-139).
         ttl_multiplier: None leaves ``ttl`` alone; 0 REMOVEs it (entity has
@@ -230,7 +230,7 @@ def build_bucket_param_update(
         for alias, field, value in (
             (f"#cp{i}", BUCKET_FIELD_CP, decl["capacity"] * 1000),
             (f"#ra{i}", BUCKET_FIELD_RA, decl["refill_amount"] * 1000),
-            (f"#rp{i}", BUCKET_FIELD_RP, decl["refill_period"] * 1000),
+            (f"#rp{i}", BUCKET_FIELD_RP, decl["refill_period_seconds"] * 1000),
         ):
             set_parts.append(f"{alias} = :{alias[1:]}")
             expr_names[alias] = bucket_attr(name, field)
@@ -349,7 +349,7 @@ def build_bucket_param_update(
                         name=n,
                         capacity=limits[n]["capacity"],
                         refill_amount=limits[n]["refill_amount"],
-                        refill_period_seconds=limits[n]["refill_period"],
+                        refill_period_seconds=limits[n]["refill_period_seconds"],
                         schedule=sched,
                         reset_schedule=reset_sched,
                         reset_after=(
