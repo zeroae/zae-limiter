@@ -272,9 +272,8 @@ class TestNamespaceScopedPolicies:
 
     def test_namespace_acquire_policy_actions(self) -> None:
         """ns-acq: Put/Update on namespace prefix, read-only on shared prefix."""
-        # Statement 1: namespace prefix — read + write, and the META pin a
-        # bucket create carries (ADR-150). PutItem authorises the bucket create
-        # inside the create's transaction (ADR-152, #750).
+        # Statement 1: namespace prefix — reads, and the META pin a bucket
+        # create carries (ADR-150).
         ns_actions = _extract_statement_actions(
             self.template, "NamespaceAcquirePolicy", "NamespaceAcquireAccess"
         )
@@ -282,10 +281,14 @@ class TestNamespaceScopedPolicies:
             "dynamodb:GetItem",
             "dynamodb:BatchGetItem",
             "dynamodb:Query",
-            "dynamodb:PutItem",
-            "dynamodb:UpdateItem",
             "dynamodb:ConditionCheckItem",
         }
+        # PutItem authorises the bucket create inside the create's transaction
+        # (ADR-152, #750), on the namespace's bucket items only (#756).
+        writes = _extract_statement_actions(
+            self.template, "NamespaceAcquirePolicy", "NamespaceBucketWrites"
+        )
+        assert writes == {"dynamodb:PutItem", "dynamodb:UpdateItem"}
 
         # Statement 2: shared prefix — read-only
         shared_actions = _extract_statement_actions(
@@ -322,6 +325,36 @@ class TestNamespaceScopedPolicies:
             "dynamodb:BatchGetItem",
             "dynamodb:Query",
         }
+
+    def test_the_acquire_policies_write_bucket_items_only(self) -> None:
+        """#756: `acq` and `ns-acq` grant PutItem / UpdateItem only where every
+        leading key is a bucket's (`{ns}/BUCKET#…`), and only when one is
+        present, so an application role cannot write config, entity META,
+        audit events, the namespace registry or the version record."""
+        for policy, sid, pattern in (
+            ("AcquireOnlyPolicy", "BucketWrites", "*/BUCKET#*"),
+            (
+                "NamespaceAcquirePolicy",
+                "NamespaceBucketWrites",
+                "${aws:PrincipalTag/zael_namespace_id}/BUCKET#*",
+            ),
+        ):
+            statement = next(
+                s
+                for s in self.template["Resources"][policy]["Properties"]["PolicyDocument"][
+                    "Statement"
+                ]
+                if s.get("Sid") == sid
+            )
+            assert _extract_leading_keys(self.template, policy, sid) == [pattern], policy
+            assert statement["Condition"]["Null"] == {"dynamodb:LeadingKeys": "false"}, policy
+            for other in self.template["Resources"][policy]["Properties"]["PolicyDocument"][
+                "Statement"
+            ]:
+                if other is not statement:
+                    actions = other["Action"]
+                    assert "dynamodb:PutItem" not in actions, (policy, other.get("Sid"))
+                    assert "dynamodb:UpdateItem" not in actions, (policy, other.get("Sid"))
 
     def test_namespace_acquire_leading_keys(self) -> None:
         """ns-acq: namespace prefix uses PrincipalTag, shared prefix uses _/*."""
