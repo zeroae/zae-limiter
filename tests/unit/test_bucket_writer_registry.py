@@ -75,6 +75,8 @@ REPOSITORY = {
     "write_each": NOT_BUCKET,
     # Re-sends an UpdateItem its caller built, on a transaction conflict (#724).
     "_update_item_retrying_conflict": NOT_BUCKET,
+    # Its PutItem twin, for an entity's META create (review P2).
+    "_put_item_retrying_conflict": NOT_BUCKET,
     # Config, registry, audit and version items.
     "_cleanup_entity_config_registry": NOT_BUCKET,
     "_initialize_version_record": NOT_BUCKET,
@@ -112,7 +114,8 @@ AGGREGATOR = {
 }
 
 _WRITE = re.compile(
-    r"update_item\(|_update_item_retrying_conflict\(|put_item\(|delete_item\("
+    r"update_item\(|_update_item_retrying_conflict\(|_put_item_retrying_conflict\(|put_item\("
+    r"|delete_item\("
     r"|transact_write_items\("
     r'|"Update"\s*:|"Put"\s*:|"Delete"\s*:|"UpdateExpression"|UpdateExpression='
 )
