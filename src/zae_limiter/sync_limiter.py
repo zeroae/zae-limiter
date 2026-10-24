@@ -3551,7 +3551,9 @@ class SyncRateLimiter:
             else:
                 available = ceiling
             requested = needed.get(limit.name, 0)
-            exceeded = requested > 0 and available < requested and (not limit.soft)
+            exceeded = (
+                requested > 0 and available < requested and (not limit.soft) and (not bypassed)
+            )
             resets_at_ms = window_ends.get(limit.name)
             wait = 0.0
             if exceeded and limit.reset_after is not None:

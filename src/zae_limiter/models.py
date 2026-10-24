@@ -1153,8 +1153,9 @@ class Availability:
     checked_at_ms: int
     # One entry per resolved limit, in resolution order
     statuses: list[LimitStatus]
-    # Whether the bucket read carries the bypass stamp (#311): every request
-    # is admitted and nothing is debited, whatever the statuses say.
+    # Whether the bucket read carries a live bypass stamp (#311): every request
+    # is admitted and nothing is debited, so no status is exceeded and
+    # `allowed` is True whatever the balances (review D12).
     bypassed: bool = False
 
     def status(self, limit_name: str) -> LimitStatus | None:

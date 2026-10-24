@@ -169,6 +169,20 @@ class TestAdmission:
         check = await limiter.check_availability("u", "llm")
         assert check.bypassed is False
 
+    async def test_a_spent_bypassed_bucket_is_allowed(self, repo, limiter):
+        """Review D12: with the bucket spent, `check_availability` said
+        `allowed=False` and quoted a wait while `acquire()` admitted every
+        request. Under a live stamp nothing is exceeded."""
+        await _use(limiter, 2)  # rpm=2 spent
+        assert (await limiter.check_availability("u", "llm", needed={"rpm": 1})).allowed is False
+        await repo.bypass_resource("llm")
+        check = await limiter.check_availability("u", "llm", needed={"rpm": 1})
+        assert check.bypassed is True
+        assert check.allowed is True
+        assert check.retry_after_seconds == 0.0
+        assert check.available["rpm"] == 0  # the balance is still reported
+        await _use(limiter)  # and acquire agrees
+
 
 class TestWarmPathLearning:
     async def test_the_first_request_after_bypass_is_refunded_once(self, repo, limiter):

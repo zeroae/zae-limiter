@@ -2002,7 +2002,8 @@ exact. User guide: `docs/guide/soft-limits-and-bypass.md`. Design:
   `disabled="bypass"` on the setters, `clear_*_disabled()` lifts it; one fan-out write moves a
   bucket between disabled and bypass (`_stamp_bucket_disabled(pk, True | False | "bypass")`,
   mirrored by `zae_limiter_provisioner/fanout.stamp_bucket`). `Lease.bypassed`,
-  `Availability.bypassed`.
+  `Availability.bypassed` (a live stamp on a bucket read; then no status is exceeded and
+  `allowed` is True, as `acquire()` admits, review D12).
 - **Stamps expire (ADR-151 decision 8).** `bypass` and `b_{name}_soft` hold a deadline (`N`,
   epoch ms), never a boolean: at most `stamp_ttl` (T, 60 s) after the config read that justified
   it. Only a write built from a fresh config read sets or extends one (slow-path create, seed,

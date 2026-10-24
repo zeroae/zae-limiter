@@ -4572,8 +4572,10 @@ class RateLimiter:
                 available = ceiling
             requested = needed.get(limit.name, 0)
             # A soft limit is reported, never a reason to wait (#467): its
-            # `available` may be negative, and `overdrawn` says so.
-            exceeded = requested > 0 and available < requested and not limit.soft
+            # `available` may be negative, and `overdrawn` says so. Nor is
+            # anything under a live bypass stamp (#311, review D12): acquire()
+            # admits every request then, so `allowed` must not say otherwise.
+            exceeded = requested > 0 and available < requested and not limit.soft and not bypassed
 
             resets_at_ms = window_ends.get(limit.name)
             wait = 0.0

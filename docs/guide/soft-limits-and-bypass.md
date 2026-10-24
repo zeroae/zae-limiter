@@ -105,6 +105,10 @@ async with limiter.acquire("vip-1", "gpt-4", consume={"rpm": 1}) as lease:
     assert lease.bypassed
 ```
 
+`check_availability()` reports `bypassed=True` once the entity's bucket carries the stamp, and
+then never marks a limit exceeded: `allowed` is True and the wait is 0, matching `acquire()`. The
+balances are still reported as they stand.
+
 Bypass is the fourth value of the [`disabled`](basic-usage.md#disabling-resources-and-entities)
 setting, so it follows the same walk — entity (resource-specific) → entity (`_default_`) →
 resource, first explicit value wins:
