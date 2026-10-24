@@ -1314,6 +1314,25 @@ class TestMultiResourceCapacity:
         assert capacity_counter.put_item == 0
         assert capacity_counter.transact_write_items == []
 
+    def test_the_exit_reconcile_is_one_write_per_item(self, sync_limiter, capacity_counter):
+        """Case 2: adjusting every resource on exit is 3 independent UpdateItems
+        (ADR-148 D7), no transaction: 3 to admit + 3 to reconcile."""
+        self._setup(sync_limiter)
+        for _ in range(2):
+            self._acquire(sync_limiter)
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                "user", "search", {"rpm": 1}, also={"budget": {"weekly": 1}}
+            ) as lease:
+                lease.adjust(rpm=1)
+                lease.resource("budget").adjust(weekly=1)
+
+        assert capacity_counter.update_item == 6
+        assert capacity_counter.transact_write_items == []
+        assert capacity_counter.batch_get_item == []
+
     def test_a_resource_the_rejection_cache_knows_is_short_costs_nothing(
         self, sync_limiter, capacity_counter
     ):

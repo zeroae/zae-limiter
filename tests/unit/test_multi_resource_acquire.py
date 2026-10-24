@@ -371,6 +371,69 @@ def _count_transactions(repo):
     return counts
 
 
+class TestMergedCommitFailures:
+    """The merged commit losing on one part (validation of #675): every part
+    is retried consumption-only, and the ledger is exact."""
+
+    @staticmethod
+    async def _solo(repo):
+        await repo.create_entity("solo", parent_id=None, name="solo")
+        return RateLimiter(repository=repo, speculative_writes=False)
+
+    @staticmethod
+    async def _admit_solo(limiter):
+        async with limiter.acquire("solo", "search", {"rpm": 1}, also={"budget": {"weekly": 10}}):
+            pass
+
+    async def test_a_lost_rf_lock_on_one_part(self, repo):
+        limiter = await self._solo(repo)
+        await self._admit_solo(limiter)  # both buckets exist
+        client = await repo._get_client()
+        real = repo.transact_write
+        bumped: list[int] = []
+
+        async def another_writer_first(items):
+            if len(items) > 1 and not bumped:
+                bumped.append(1)
+                await client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": schema.pk_bucket(repo._namespace_id, "solo", "budget", 0)},
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="ADD rf :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            return await real(items)
+
+        repo.transact_write = another_writer_first
+        await self._admit_solo(limiter)
+        assert bumped == [1]
+        assert await _consumed(repo, "solo", "search") == {"rpm": 2}
+        assert await _consumed(repo, "solo", "budget") == {"weekly": 20}
+
+    async def test_a_lost_create_race_on_one_part(self, repo):
+        limiter = await self._solo(repo)
+        async with limiter.acquire("solo", "search", {"rpm": 1}):
+            pass  # search exists; budget will be created by the merged commit
+        rival = RateLimiter(repository=repo, speculative_writes=False)
+        real = repo.transact_write
+        raced: list[int] = []
+
+        async def rival_creates_first(items):
+            if len(items) > 1 and not raced:
+                raced.append(1)
+                async with rival.acquire("solo", "budget", {"weekly": 5}):
+                    pass
+            return await real(items)
+
+        repo.transact_write = rival_creates_first
+        await self._admit_solo(limiter)
+        assert raced == [1]
+        assert await _consumed(repo, "solo", "search") == {"rpm": 2}
+        assert await _consumed(repo, "solo", "budget") == {"weekly": 15}
+
+
 class TestSlowPathPlanning:
     async def test_every_slow_part_commits_in_one_transaction(self, repo):
         limiter = RateLimiter(repository=repo, speculative_writes=False)
