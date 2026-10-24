@@ -164,7 +164,9 @@ The admitted request does not have to name the session quota. An admitted reques
 resource that takes the slow path — including one passing `acquire(limits=[...])` without the
 session quota — opens an ended window too, because it rewrites the bucket the quota lives on.
 So the new window can start a little before the caller's next use of the quota itself; it never
-grants more than one allowance per window.
+grants more than one allowance per window. A rejected `acquire(limits=[...])` request that
+writes a move (the exception above) still never opens the window of a session quota outside its
+`limits`.
 
 A caller hammering an exhausted quota does not keep restarting its own five hours. Inside a
 window, an exhausted quota's rejection writes nothing — on the fast path it is a rejection that changes nothing on the item,

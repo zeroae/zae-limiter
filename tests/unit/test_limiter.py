@@ -11478,11 +11478,12 @@ class TestOverrideMaterialisesItemLimits:
 
     The override replaces the configured limits for this request only, so the
     pass resolves none of the item's other limits — yet its rf-locked write
-    stamps the item-level `rf`. Each limit on the item that the override does
-    not name is carried through the write and materialised from the item
-    itself, as the aggregator does: a pending reset or window roll is applied,
-    refill is credited, and its next boundary votes into `vu`. Without that,
-    the reset the pass stepped over was lost for a whole period.
+    stamps the item-level `rf`. Each configured limit on the item that the
+    override does not name is carried through the write exactly as a pass
+    without the override materialises an undeclared limit — its schedules
+    from config, its state from the item: a pending reset or window roll is
+    applied, refill is credited, and its next boundary votes into `vu`.
+    Without that, the reset the pass stepped over was lost for a whole period.
     """
 
     @staticmethod
