@@ -2401,7 +2401,7 @@ class SyncRateLimiter:
             disable_moves: bool,
             moves_contended: bool,
             reread: bool,
-            enforced: bool,
+            enforced: frozenset[str],
         ) -> SyncLease | Exception:
             resource, consume, shard, shard_count, parent_hint = part
             try:
@@ -2416,7 +2416,7 @@ class SyncRateLimiter:
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
                     consistent_owner=reread,
-                    disable_bypass=enforced,
+                    disable_bypass=resource in enforced,
                 )
             except Exception as exc:
                 return exc
@@ -2426,7 +2426,7 @@ class SyncRateLimiter:
             moves_contended: bool = False,
             redone: bool = False,
             reread: bool = False,
-            enforced: bool = False,
+            enforced: frozenset[str] = frozenset(),
         ) -> tuple[SyncLease, dict[str, frozenset[str]]]:
             outcomes = self._run_in_executor(
                 *[
@@ -2455,10 +2455,11 @@ class SyncRateLimiter:
             )
             try:
                 lease._commit_initial()
-            except BypassLostError:
-                if enforced:
-                    raise AssertionError("an enforced plan carries no bypass write") from None
-                return plan_and_commit(disable_moves, moves_contended, redone, reread, True)
+            except BypassLostError as lost:
+                grown = enforced | (lost.resources or frozenset(part[0] for part in slow_parts))
+                if grown == enforced:
+                    raise AssertionError("an enforced part carries no bypass write") from None
+                return plan_and_commit(disable_moves, moves_contended, redone, reread, grown)
             except PeriodNotAppliedError:
                 if redone:
                     raise

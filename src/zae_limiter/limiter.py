@@ -3005,7 +3005,7 @@ class RateLimiter:
             disable_moves: bool,
             moves_contended: bool,
             reread: bool,
-            enforced: bool,
+            enforced: frozenset[str],
         ) -> Lease | Exception:
             resource, consume, shard, shard_count, parent_hint = part
             try:
@@ -3020,7 +3020,7 @@ class RateLimiter:
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
                     consistent_owner=reread,
-                    disable_bypass=enforced,
+                    disable_bypass=resource in enforced,
                 )
             except Exception as exc:
                 return exc
@@ -3030,7 +3030,7 @@ class RateLimiter:
             moves_contended: bool = False,
             redone: bool = False,
             reread: bool = False,
-            enforced: bool = False,
+            enforced: frozenset[str] = frozenset(),
         ) -> tuple[Lease, dict[str, frozenset[str]]]:
             # One name per part keeps the sync twin's lambda on one line (#513).
             outcomes = await asyncio.gather(
@@ -3069,15 +3069,20 @@ class RateLimiter:
             )
             try:
                 await lease._commit_initial()
-            except BypassLostError:
+            except BypassLostError as lost:
                 # A part's bypass was cleared between its config read and this
-                # commit (#311, review D5). Nothing was written; re-plan every
-                # part enforced, as `_slow_acquire` re-plans its pass. Left to
-                # propagate, it reached `acquire()`'s generic handler, which
-                # under ALLOW admitted the request without any limit.
-                if enforced:  # pragma: no cover
-                    raise AssertionError("an enforced plan carries no bypass write") from None
-                return await plan_and_commit(disable_moves, moves_contended, redone, reread, True)
+                # commit (#311, review D5). Nothing was written; re-plan the
+                # parts that lost it enforced, as `_slow_acquire` re-plans its
+                # pass. Left to propagate, it reached `acquire()`'s generic
+                # handler, which under ALLOW admitted without any limit. Only
+                # those parts: a resource still bypassed stays bypassed rather
+                # than being debited, and possibly rejecting the whole acquire,
+                # for another's clear (review M3). The set only grows, so the
+                # re-plans are bounded by the number of parts.
+                grown = enforced | (lost.resources or frozenset(part[0] for part in slow_parts))
+                if grown == enforced:  # pragma: no cover
+                    raise AssertionError("an enforced part carries no bypass write") from None
+                return await plan_and_commit(disable_moves, moves_contended, redone, reread, grown)
             except PeriodNotAppliedError:
                 # The retry found a quota period nobody has applied (#743):
                 # redo the pass once from a fresh read, which applies it. A

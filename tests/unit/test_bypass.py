@@ -406,8 +406,8 @@ class TestSlowPath:
         """Review D5: the multi-resource slow path had no `BypassLostError`
         handling, so a bypass cleared between a part's config read and the
         joint commit reached `acquire()`'s generic handler (admitted without
-        limit under ALLOW). It re-plans every part enforced, as `_slow_acquire`
-        does."""
+        limit under ALLOW). It re-plans the part that lost its bypass enforced
+        (review M3: only that part)."""
         await repo.set_resource_defaults("api", [RPM])
         await _use(limiter)
         async with limiter.acquire("u", "api", {"rpm": 1}):
@@ -427,9 +427,39 @@ class TestSlowPath:
         parts = [("llm", {"rpm": 1}, 0, 1, None), ("api", {"rpm": 1}, 0, 1, None)]
         with patch.object(cold, "_do_acquire", side_effect=clearing):
             lease, _unknown = await cold._slow_acquire_resources("u", parts)
-        assert sorted(calls) == [("api", False), ("api", True), ("llm", False), ("llm", True)]
+        assert sorted(calls) == [("api", False), ("api", True), ("llm", False), ("llm", False)]
         assert lease.bypassed is False
         assert _n(await _item(repo, resource="api"), "b_rpm_tk") < 1_000  # enforced
+
+    async def test_a_part_still_bypassed_stays_bypassed_when_another_loses_it(self, repo, limiter):
+        """Review M3: one part's lost bypass re-planned every part enforced, so
+        a resource still bypassed was debited (and could reject the whole
+        acquire). Only the part that lost it is re-planned enforced."""
+        await repo.set_resource_defaults("api", [RPM])
+        await _use(limiter)
+        async with limiter.acquire("u", "api", {"rpm": 1}):
+            pass
+        await repo.bypass_resource("api")
+        await repo.bypass_resource("llm")
+        cold = RateLimiter(repository=repo)
+        real = cold._do_acquire
+        calls: list[tuple[str, bool]] = []
+
+        async def clearing(*args, **kwargs):
+            calls.append((kwargs["resource"], kwargs.get("disable_bypass", False)))
+            planned = await real(*args, **kwargs)
+            if len(calls) == 2:  # both parts planned: api's clear lands now
+                await repo._stamp_bucket_disabled(_pk(repo, resource="api"), False)
+            return planned
+
+        before = _n(await _item(repo), "b_rpm_tk")
+        parts = [("llm", {"rpm": 1}, 0, 1, None), ("api", {"rpm": 1}, 0, 1, None)]
+        with patch.object(cold, "_do_acquire", side_effect=clearing):
+            lease, _unknown = await cold._slow_acquire_resources("u", parts)
+        assert ("llm", True) not in calls
+        assert lease.resource("llm").bypassed is True
+        assert lease.resource("api").bypassed is False
+        assert _n(await _item(repo), "b_rpm_tk") == before  # llm: nothing debited
 
     async def test_an_undeclared_limit_is_not_written_under_bypass(self, repo, limiter):
         await repo.set_resource_defaults("llm", [RPM, Limit.per_minute("tpm", 10)])

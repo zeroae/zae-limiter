@@ -424,7 +424,14 @@ class BypassLostError(Exception):
 
     The bypass was cleared between this pass's (uncached) config read and its
     write. Nothing was written; the acquire is planned again, enforced.
+    ``resources`` names the resources whose bypass write failed, so a
+    multi-resource acquire re-plans only those enforced (review M3); empty
+    when it cannot be told.
     """
+
+    def __init__(self, resources: frozenset[str] = frozenset()) -> None:
+        super().__init__("bypass lost" + (f" on {sorted(resources)}" if resources else ""))
+        self.resources = resources
 
 
 class QuotaMoveLostError(Exception):
@@ -1177,12 +1184,15 @@ class SyncLease:
                 contended=condition_exc is not None
                 and (not _move_items_failed(condition_exc, list(groups.values()), first_check))
             ) from condition_exc
-        if condition_failed and _bypass_write_failed(
-            list(groups.values()),
-            _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None,
-            creates_lose_races=True,
-        ):
-            raise BypassLostError from condition_exc
+        lost_bypass: frozenset[str] = frozenset()
+        if condition_failed and condition_exc is not None:
+            lost_bypass = _bypass_failed_resources(
+                list(groups.values()),
+                _get_cancellation_reason_codes(condition_exc),
+                creates_lose_races=True,
+            )
+        if lost_bypass:
+            raise BypassLostError(lost_bypass) from condition_exc
         reissued_creates: set[tuple[str, str, int]] = set()
         if condition_failed:
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
@@ -1303,8 +1313,11 @@ class SyncLease:
                             break
                         downgraded.append(item)
                         downgraded_groups.append(retry_groups[i])
-                    if _bypass_write_failed([group for _key, group in retry_groups], codes):
-                        raise BypassLostError from retry_exc
+                    lost_bypass = _bypass_failed_resources(
+                        [group for _key, group in retry_groups], codes
+                    )
+                    if lost_bypass:
+                        raise BypassLostError(lost_bypass) from retry_exc
                     if not lost_put or retry_attempt == 1:
                         images = _retry_failure_images(
                             retry_exc, [key for key, _group in retry_groups]
@@ -2022,14 +2035,28 @@ def _bypass_write_failed(
     ``creates_lose_races``, a bypassed create is not counted: its ``Put``
     fails only by losing the create race, which the retry path handles.
     """
+    failed = _bypass_failed_resources(groups, reason_codes, creates_lose_races=creates_lose_races)
+    return bool(failed)
+
+
+def _bypass_failed_resources(
+    groups: list[list[LeaseEntry]],
+    reason_codes: list[str] | None,
+    *,
+    creates_lose_races: bool = False,
+) -> frozenset[str]:
+    """The resources whose bypass-shaped write failed, by :func:`_bypass_write_failed`'s rule."""
+    failed: set[str] = set()
     for idx, group in enumerate(groups):
         if not group[0]._bypass or (creates_lose_races and group[0]._is_new):
             continue
-        if reason_codes is None or idx >= len(reason_codes):
-            return True
-        if reason_codes[idx] == "ConditionalCheckFailed":
-            return True
-    return False
+        if (
+            reason_codes is None
+            or idx >= len(reason_codes)
+            or reason_codes[idx] == "ConditionalCheckFailed"
+        ):
+            failed.add(group[0].resource)
+    return frozenset(failed)
 
 
 def _stamp_deadline(entry: LeaseEntry, now_ms: int, repo: Any) -> int:
