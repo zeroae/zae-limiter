@@ -32,6 +32,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
+    BUCKET_FIELD_SOFT,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
@@ -46,6 +47,7 @@ from zae_limiter.schema import (
     LIMIT_FIELD_RSA,
     LIMIT_FIELD_RSCHED,
     LIMIT_FIELD_SCHED,
+    LIMIT_FIELD_SOFT,
     WINDOW_LIMIT_ATTR_PREFIX,
     bucket_attr,
     calculate_bucket_ttl_seconds,
@@ -130,6 +132,8 @@ _STALE_FIELDS = (
     # restores a balance on a calendar nobody configured.
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_RSCHED,
+    # And its soft stamp (#467), for the same reason.
+    BUCKET_FIELD_SOFT,
 )
 
 
@@ -199,7 +203,7 @@ def build_bucket_param_update(
     ttl_multiplier: int | None,
     stale_limit_names: set[str] | None,
     now_ms: int,
-) -> tuple[str, dict[str, str], dict[str, dict[str, str]]]:
+) -> tuple[str, dict[str, str], dict[str, dict[str, Any]]]:
     """Build the SET/REMOVE UpdateExpression for one bucket shard.
 
     Args:
@@ -221,7 +225,7 @@ def build_bucket_param_update(
     set_parts: list[str] = []
     remove_parts: list[str] = []
     expr_names: dict[str, str] = {}
-    expr_values: dict[str, dict[str, str]] = {}
+    expr_values: dict[str, dict[str, Any]] = {}
 
     # Numeric indices for expression names: limit names may contain hyphens,
     # dots, slashes and colons, none of which are legal in an alias.
@@ -258,6 +262,16 @@ def build_bucket_param_update(
             expr_values[f":{rsa_alias[1:]}"] = {"N": str(reset_after_seconds)}
         else:
             remove_parts.append(rsa_alias)
+
+        # Soft-ness travels with the limit (#467), mirroring
+        # `Repository._build_bucket_param_update`: SET when soft, REMOVE when hard.
+        soft_alias = f"#sft{i}"
+        expr_names[soft_alias] = bucket_attr(name, BUCKET_FIELD_SOFT)
+        if decl.get("soft"):
+            set_parts.append(f"{soft_alias} = :{soft_alias[1:]}")
+            expr_values[f":{soft_alias[1:]}"] = {"BOOL": True}
+        else:
+            remove_parts.append(soft_alias)
 
     # Re-stamp both schedules (#222 §2.2, §3.6). Manifests learned to express
     # schedules in #543, which is what lifts this mirror's old exemption: a
@@ -576,6 +590,8 @@ def _decode_limits(item: dict[str, Any]) -> dict[str, dict[str, Any]]:
             partial.setdefault(name, {})[_MANIFEST_SCHEDULE_KEY[field]] = decoder(
                 value["S"], sched_tz
             )
+        elif field == LIMIT_FIELD_SOFT and value.get("BOOL"):
+            partial.setdefault(name, {})["soft"] = True
     return {name: decl for name, decl in partial.items() if _REQUIRED_MANIFEST_KEYS <= decl.keys()}
 
 
@@ -583,10 +599,17 @@ def _walk(
     client: Any,
     table_name: str,
     levels: list[tuple[str, str, str]],
+    *,
+    consistent_read: bool = False,
 ) -> tuple[dict[str, dict[str, Any]], str | None]:
     """Return the first level that defines any limits, and which one it was."""
     for level, pk, sk in levels:
-        response = client.get_item(TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}})
+        kwargs: dict[str, Any] = {}
+        if consistent_read:
+            kwargs["ConsistentRead"] = True
+        response = client.get_item(
+            TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}}, **kwargs
+        )
         item = response.get("Item")
         if not item:
             continue
@@ -637,6 +660,8 @@ def resolve_bucket_limits(
     namespace_id: str,
     entity_id: str,
     resource: str,
+    *,
+    consistent_read: bool = False,
 ) -> tuple[dict[str, dict[str, Any]], str | None]:
     """Full-precedence walk for one existing bucket, and the level that won.
 
@@ -651,4 +676,4 @@ def resolve_bucket_limits(
         ("entity", pk_entity(namespace_id, entity_id), sk_config(resource))
     ]
     levels.extend(_fallback_levels(namespace_id, entity_id, resource))
-    return _walk(client, table_name, levels)
+    return _walk(client, table_name, levels, consistent_read=consistent_read)

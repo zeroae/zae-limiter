@@ -447,6 +447,19 @@ class TestResourceAndSystemFanout:
         await soft_repo.delete_system_defaults()
         assert _soft_stamp(await _bucket_item(soft_repo, "user-1", "llm"), "tpm") is False
 
+    async def test_a_system_change_leaves_resource_decided_buckets_alone(
+        self, soft_repo, soft_limiter
+    ):
+        await soft_repo.set_system_defaults([HARD_TPM])
+        await soft_repo.set_resource_defaults("llm", [HARD_TPM])
+        await self._bucket(soft_repo, soft_limiter)
+        with patch.object(
+            soft_repo, "_stamp_bucket_soft", wraps=soft_repo._stamp_bucket_soft
+        ) as stamp:
+            await soft_repo.set_system_defaults([SOFT_TPM])
+        stamp.assert_not_called()
+        assert _soft_stamp(await _bucket_item(soft_repo, "user-1", "llm"), "tpm") is False
+
     async def test_a_failed_write_reports_progress(self, soft_repo, soft_limiter):
         await soft_repo.set_resource_defaults("llm", [HARD_TPM])
         await self._bucket(soft_repo, soft_limiter)

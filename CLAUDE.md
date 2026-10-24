@@ -357,6 +357,19 @@ fails is recorded in the `#PROVISIONER` record's `cascade_pending` and retried b
 (with that apply's own changes): being change-only, a re-run would otherwise see no change and
 never reconcile.
 
+**`soft` (#467, ADR-151):** Optional boolean on any `limits.<name>` mapping, at every level
+(`LimitDecl.from_dict` rejects a non-boolean). Omitting it makes the limit hard. Stored as
+`l_{name}_soft` (`applier._build_limit_item`); round-trips through `Custom::ZaeLimiterLimits` as
+a per-limit `Soft` property (`handler._CFN_LIMIT_OPTIONAL_KEYS`, `limits_cli._limits_to_cfn`).
+Entity levels are restamped by the param sync (`bucket_sync.build_bucket_param_update`);
+system- and resource-level changes are **change-only**: `applier._note_soft_change` compares
+each write's `ALL_OLD` image and `handler._fanout_soft_changes` runs `fanout.fanout_soft`
+(GSI2 / GSI4, strongly consistent resolution, entity overrides left alone) only for levels whose
+soft-ness changed. **`disabled: bypass` (#311):** the third value of `disabled`
+(`manifest._parse_disabled`), CloudFormation `Disabled: bypass` (`handler._coerce_disabled`).
+Version gate for both: `applier.require_non_enforcing_readers`, at 0.17.0, free when neither is
+declared.
+
 **Provisioner Lambda:**
 - Function name: `{stack}-limits-provisioner`
 - Deployed by default; disable with `--no-provisioner` (CLI) or `.enable_provisioner(False)` (builder). `--no-iam` also disables it (it needs an IAM role, and unlike the aggregator it has no external-role escape hatch)
@@ -1518,6 +1531,7 @@ Repeat rejection inside the rejection-cache TTL (ADR-147) = 0 RCU + 0 WCU = **$0
 Speculative fallback (refill helps) = 2.5 RCU + 2 WCU = $0.3125 + $1.25 = **$1.5625/M** (worse than normal): the failed write, the META and bucket read (1 RCU), the uncached disabled walk over up to 3 config items (1.5 RCU), and the write. Measured on moto for v0.16.0; the earlier figure left out the disabled walk.
 Client shard create (`BUCKET_MISSING` on shard N, ADR-133, warm config cache) = 2.5 RCU + 5 WCU (1 failed conditional + disable-walk BatchGet 1.5 RCU + META/bucket BatchGet 1 RCU + a 2-item `TransactWriteItems`: the `Put` and the ADR-150 `ConditionCheck` on the owner's META, 2 WCU each) = $0.3125 + $3.125 = **$3.44/M**, paid **once per shard** (+1 WCU when a wcu bump precedes it); the previous broken fallback paid a create on every acquire that drew a missing shard. Every bucket a slow pass creates, a shard or an entity's first bucket on a resource, is such a transaction: **4 WCU** where it used to be a single-item `PutItem` (1 WCU); an aggregator shard clone likewise (+2 WCU for the check on its transaction). A `ConditionCheck` bills as write capacity, 2 WCU like the `Put` (measured on DynamoDB 2026-10-21 with `ReturnConsumedCapacity`: `Put` alone in a transaction 2 WCU, `Put` + check 4 WCU whether the check reads a META item or asserts one absent, plain `PutItem` 1 WCU, 0 RCU in every case; a cancelled transaction returns no `ConsumedCapacity`). AWS bills a transaction [2 units per item](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html#transaction-capacity-handling). This includes an entity with no META (the check asserts it is absent) and every TTL recreation of a resource- or system-default bucket, which pays it again each time the bucket expires and is recreated.
 Quota shard creation or seed on a sharded entity (ADR-145): adds the sibling read (1 GSI3 KEYS_ONLY Query + 1 `BatchGetItem`, one key per existing sibling); when a sibling covers the slot the donor's `Update` joins the write: a create is a **3-item transaction** (the `Put`, the ADR-150 owner check and the donor's `Update`), **6 WCU** instead of 4; a seed, which creates no bucket and so carries no owner check, is a **2-item transaction**, **4 WCU** instead of 1, once per shard, at most 31 per entity per period. No clamp writes. A quota shard N>0 create then reads shard 0's count once (**+1 RCU**, strongly consistent) to repair a create a doubling overtook, writing only when it did. The fast path is unchanged, 0 RCU + 1 WCU, and never reads or writes `gc` (`tests/benchmark/test_capacity.py::TestQuotaGrantCapacity`).
+Soft limit (#467): an admission that drives a soft limit into debt is the ordinary success path, **0 RCU + 1 WCU**. Bypass (#311): a warm bypassed acquire is **0 RCU + 1 WCU** and leaves `tk` untouched; the first request per process after a bypass is set costs +1 WCU (refund), the first after it is cleared +1 failed WCU. A resource-/system-level soft change is O(buckets) restamps, only when soft-ness actually changed.
 Session quota (ADR-139, ADR-140): an acquire inside a window costs exactly what any acquire does (fast path unchanged). A rollover adds **(S − 1) × L** WCU once per window (S = `shard_count`, L = window limits on the item; 0 at S = 1, 31 at `MAX_SHARD_COUNT` with one limit = ~$19/M rollovers). Creating shard N>0 of a windowed bucket adds **1 RCU** (strongly consistent projected `GetItem` of shard 0), once per shard, and once per parent shard on a cascade.
 Reset / top-up (ADR-149), on a bucket with S shards = 1 RCU (strongly consistent META read) + the config read (up to 1.5 RCU) + one GSI3 KEYS_ONLY Query + a strongly consistent `BatchGetItem` of every shard (S RCU), then **one transaction of S + 2 items** (each shard's `Update`, the operation record, the audit event) = **2S + 4 WCU**. A top-up that creates the bucket is a 4-item transaction (create, record, audit, ADR-150 owner check) = **8 WCU**. A call with an idempotency key adds 1 RCU to read its record; the first top-up per repository that raises a ceiling adds the 0.17.0 version-gate read (1 RCU). An admin path: nothing here touches `acquire()`'s fast path. Because of those records, `delete_entity` issues **one extra Query per resource the entity has a bucket on** (≥ 0.5 RCU each, charged even when empty), all at once, so one more round trip rather than R (`tests/benchmark/test_capacity.py`: 2 + R queries). Indexing the records in GSI3 would remove those reads but add 1 WCU to every reset and top-up; that trade-off is to be measured before 1.0.0.
 Speculative cascade (both succeed, sequential) = 0 RCU + 2 WCU = **$1.25/M** (vs $1.75/M normal cascade).
@@ -1630,7 +1644,11 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Aggregator Path 2 clone | `Put` cloned item, a quota's `tk` = the ADR-145 move or fresh grant, `b_{q}_gc = new_count`; always one `TransactWriteItems` with any donor's debit and a `ConditionCheck` on the owner's META (ADR-150) | `attribute_not_exists(PK)`; the check asserts the stream image's `pgen` / `pinc` (none when the image has none), and a clone it cancels is skipped, left to the client | Copies shard 0's |
 | Client shard propagation (#439) | `SET shard_count = :new` | `shard_count < :new` | No |
 | Limit-change sync, per shard (#468), per resource under `_default_` (#487) | `SET cp/ra/rp, sched/rsched/sched_tz, per-limit sched/rsched (compact, or "-" for unscheduled), b_{n}_rsa for a session quota, vu = 0 (+ ttl) REMOVE stale, per-limit overrides that now match the item default, b_{n}_rsa for a limit without a window` (never writes `ws`, ADR-139) | `attribute_exists(PK)` | No |
-| Disable stamp (ADR-125) | `SET disabled = :true` / `REMOVE disabled` | `attribute_exists(PK)` | No |
+| Disable / bypass stamp (ADR-125, #311) | `SET disabled = :true REMOVE bypass` / `SET bypass = :true REMOVE disabled` / `REMOVE disabled, bypass` | `attribute_exists(PK)` | No |
+| Speculative consume, bypass shape (#311) | `ADD tc +c, wcu_tk -1000, wcu_tc +1000` (no `tk`, no `vu` guard) | `attribute_exists(PK) AND attribute_exists(bypass) AND wcu_tk >= 1000 AND ttl-guard AND attribute_not_exists(disabled)` | No |
+| Bypass refund (#311), once per process per pair | `ADD tk +c` (`build_composite_adjust(counter=False)`) | (unconditional) | No |
+| Bypassed slow path (#311) | `ADD tc +c` (`build_bypass_consume`) | `attribute_exists(PK) AND attribute_exists(bypass)` | No |
+| Soft restamp, resource/system change (#467) | `SET` / `REMOVE b_{n}_soft` (`_stamp_bucket_soft`) | `attribute_exists(PK)` | No |
 | Cascade / owner stamp fan-out, per bucket (ADR-146; a move, ADR-150; provisioner mirror) | `SET cascade = :c, parent_id = :p, pgen = :pg, pinc = :inc` (or `REMOVE parent_id`) | `attribute_exists(PK) AND (attribute_not_exists(pinc) OR pinc <> :inc OR attribute_not_exists(pgen) OR pgen <= :pg)`; a lost pin means a newer move of this incarnation stamped it: skipped, and not counted | No |
 | Entity META move (`set_parent`, ADR-150; not a bucket) | `SET parent_id, GSI1PK, GSI1SK, pgen = if_not_exists(pgen, 0) + 1` (to no parent: `parent_id = NULL`, `REMOVE GSI1PK, GSI1SK`), `ALL_OLD` | `attribute_exists(PK)` | — |
 | Reset / top-up, every shard in one transaction (ADR-149) | `ADD b_{n}_tk :delta` per limit, `SET rf = max(now, rf + 1, ws), vu = 0` (+ `gc`, `ws`/`rsa`, `wa`, `b_{q}_tu`, `ttl` on a default bucket; a calendar quota's reset also `ADD b_{q}_rn 1`) `REMOVE b_{q}_tu, b_{n}_wtc` | `rf = :read AND shard_count = :read`; the call's operation record (`SK = #OP#{id}`) and its audit event are `Put`s in the same transaction, the record under `attribute_not_exists(PK) OR (:ent <> :legacy AND ent <> :ent AND ent <> :legacy)` | Yes (optimistic lock) |
@@ -1916,6 +1934,63 @@ supported on system config.
   set-cascade ID on|off [--resource R]` / `entity clear-cascade ID [--resource R]`;
   `resource get-defaults` / `entity get-limits` print `Cascade: on|off (explicit)` for a level
   that sets one.
+
+### Soft limits and bypass (ADR-151, #467, #311)
+
+Two ways to run a limit without enforcing it; both keep counting `tc`, so usage snapshots stay
+exact. User guide: `docs/guide/soft-limits-and-bypass.md`. Design:
+`docs/plans/2026-10-09-non-enforcing-limits-design.md`. Proposed until v0.17.0 ships.
+
+- **Soft** is a property of one limit (`Limit.soft`, every factory takes `soft=`), resolved with
+  the limit (override, not merge). Config `l_{name}_soft` (`w_…` for `reset_after`), bucket
+  `b_{name}_soft`. The fast path decides it **on the server**: each declared limit's condition
+  is `(attribute_exists(#byp) OR attribute_exists(#o{i}) OR #t{i} >= :h{i})`, the `ADD` set
+  unchanged, so a soft limit is debited into debt at 0 RCU + 1 WCU with no client knowledge.
+  `try_consume` admits a soft (or bypassed) state, which covers slow-path admission,
+  `Lease.consume`, failure classification and the rejection cache at once. Slow-path authority
+  (`RateLimiter._soft_authority`): an override, config read fresh (`limits_read_fresh`), or —
+  when the config cache served — the item's own stamp; a create or seed takes soft-ness from
+  the gate's uncached `resolve_access(include_limits=..., include_system=...)` read (+0.5 RCU
+  only when the limits came from the system level) or `resolve_soft_limits`. A fresh pass
+  re-stamps every limit (`build_composite_normal(soft_stamps=...)`); every balance floor
+  (normal and retry writes) admits on the item's stamp, and a trusted soft limit carries none
+  (`soft_trusted`). Propagation: entity level by the param sync (SET/REMOVE `b_{n}_soft`,
+  stale names lose it); resource/system level by `Repository._fanout_soft` (change-only, driven
+  by the config write's `ALL_OLD`, GSI2 / GSI4, strongly consistent per-bucket resolution,
+  entity overrides left alone, `FanoutIncomplete`); `RateLimiter.delete_limits` reads soft-ness
+  uncached before reconciling. Reporting: `LimitStatus.soft` / `overdrawn`, soft limits in
+  `passed`, `as_dict()` `"soft"`, `Lease.overdrawn`, `UsageSnapshot.overdrawn` from the
+  aggregator's `{limit}#od` counter (same snapshot `UpdateItem`). A soft quota's reset forgives
+  its debt (D12).
+- **Bypass** is the fourth value of the ADR-125 `disabled` attribute (`S "bypass"`,
+  `schema.DISABLED_BYPASS`), resolved by the same walk (`ConfigAccess.bypass`,
+  `resolve_bypass_from_fetched`); `"bypass"` is truthy, so every reader tests `disabled is
+  True`, never truthiness. Buckets carry a separate `bypass` stamp (old clients ignore it and
+  enforce). The fast path learns the mode per process (`Repository._bypass_cache`, positive
+  entries only, the returned image always overrules it): a known pair is written bypass-shaped
+  (`ADD tc` + `wcu`, condition `attribute_exists(#byp)`, no `vu` guard); an enforce-shaped write
+  on a bypassed item is admitted by the `#byp` OR terms and refunded (`build_composite_adjust(
+  counter=False)`, once per process per pair); a cleared bypass fails the bypass shape and is
+  re-written enforced. `wcu` is never bypassed (`_deserialize_composite_bucket` keeps it hard),
+  so shard doubling works unchanged. Slow path: bypass needs uncached config **and** the item's
+  stamp; existing items get `build_bypass_consume` (`tc` only, conditioned on the stamp — a
+  failure raises `lease.BypassLostError` and `_slow_acquire` re-plans enforced); a create is
+  funded like any other (ADR-145 grants intact), nothing debited, no window opened (`vu = 0`
+  for a session quota so the first enforced pass opens it); a limit missing from a bypassed item
+  is not seeded until enforcement. Leases adjust/release/roll back `tc` only
+  (`build_composite_adjust(tokens=False)`). The rejection cache never stores a bypassed image.
+  Cascade: each entity resolves its own mode. API: `bypass_resource()`, `bypass_entity()`,
+  `disabled="bypass"` on the setters, `clear_*_disabled()` lifts it; one fan-out write moves a
+  bucket between disabled and bypass (`_stamp_bucket_disabled(pk, True | False | "bypass")`,
+  mirrored by `zae_limiter_provisioner/fanout.stamp_bucket`). `Lease.bypassed`,
+  `Availability.bypassed`.
+- **Version gate:** storing a soft limit or a bypass value needs `lambda_version >= 0.17.0`
+  (`version.MIN_READER_VERSION_FOR_NON_ENFORCING`) or this build, and ratchets
+  `client_min_version` (`_require_non_enforcing_readers`).
+- **CLI:** repeatable `--soft NAME` on `system set-defaults`, `resource set-defaults`,
+  `entity set-limits` (must name a `-l` limit; a set without it makes the limit hard again);
+  `resource bypass NAME`, `entity bypass ID [--resource R]`; `get-*` print `(soft)` and
+  `Status: BYPASSED`.
 
 ### Reset and Top-Up (ADR-149, #470)
 

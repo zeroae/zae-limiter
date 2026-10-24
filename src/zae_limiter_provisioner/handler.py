@@ -32,11 +32,18 @@ from .applier import (
     ApplyResult,
     apply_changes,
     require_cascade_policy_readers,
+    require_non_enforcing_readers,
     require_reset_after_readers,
 )
 from .bucket_sync import DEFAULT_TTL_MULTIPLIER, resolve_effective_limits, sync_bucket_params
 from .differ import Change, compute_diff
-from .fanout import fanout_cascade, fanout_entity, fanout_resource, resolve_disabled
+from .fanout import (
+    fanout_cascade,
+    fanout_entity,
+    fanout_resource,
+    fanout_soft,
+    resolve_disabled,
+)
 from .manifest import LimitsManifest
 
 logger = logging.getLogger(__name__)
@@ -204,8 +211,10 @@ def _apply_and_record(
     # CloudFormation FAILED / CLI error because the table is untouched.
     require_reset_after_readers(changes, table_name)
     require_cascade_policy_readers(changes, table_name)
+    require_non_enforcing_readers(changes, table_name)
     result = apply_changes(changes, table_name, namespace_id)
     result.errors.extend(_fanout_disabled_changes(table_name, namespace_id, changes))
+    result.errors.extend(_fanout_soft_changes(table_name, result.soft_changed, namespace_id))
     cascade_targets: list[tuple[str, str]] = list(
         dict.fromkeys([*(cascade_pending or []), *result.cascade_changed])
     )
@@ -226,6 +235,36 @@ def _apply_and_record(
     _write_provisioner_state(table_name, namespace_id, new_state)
 
     return result
+
+
+def _fanout_soft_changes(
+    table_name: str,
+    changed: list[tuple[str, str | None, list[str]]],
+    namespace_id: str,
+) -> list[str]:
+    """Restamp buckets for every system or resource level whose soft-ness changed (#467).
+
+    Change-only, from each write's own ``ALL_OLD`` image (``ApplyResult.soft_changed``),
+    so a routine apply writes no bucket. Mirrors ``Repository._fanout_soft``;
+    failures are returned, like the disable fan-out's.
+    """
+    errors: list[str] = []
+    if not changed:
+        return errors
+    client = boto3.client("dynamodb")
+    for level, target, names in changed:
+        try:
+            fanout_soft(
+                client,
+                table_name,
+                namespace_id,
+                target if level == "resource" else None,
+                set(names),
+            )
+        except Exception as e:
+            logger.warning("soft fan-out failed for %s %s: %s", level, target, e)
+            errors.append(f"soft fan-out {level} {target}: {e}")
+    return errors
 
 
 def _fanout_disabled_changes(
@@ -486,6 +525,17 @@ def _sync_bucket_param_changes(
 _ABSENT: Any = object()
 
 
+def _coerce_disabled(value: Any, where: str) -> bool | str:
+    """Coerce a CloudFormation ``Disabled`` value: a boolean, or ``bypass`` (#311).
+
+    ``bypass`` is accepted in any case and normalised; every other value goes
+    through ``_coerce_bool``'s strict allowlist.
+    """
+    if isinstance(value, str) and value.lower() == DISABLED_BYPASS:
+        return DISABLED_BYPASS
+    return _coerce_bool(value, where)
+
+
 def _coerce_bool(value: Any, where: str) -> bool:
     """Coerce a CloudFormation-delivered `Disabled` or `Cascade` value to a real ``bool``.
 
@@ -628,7 +678,7 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
             # `_coerce_bool` is therefore applied INSIDE this branch: it converts a
             # present value, it never invents one (#554).
             if "Disabled" in cfn_resource:
-                resource_entry["disabled"] = _coerce_bool(
+                resource_entry["disabled"] = _coerce_disabled(
                     cfn_resource["Disabled"], f"Resources.{resource_name}.Disabled"
                 )
             # The cascade policy (ADR-146), tri-state by the same rule.
@@ -651,7 +701,7 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
                     )
                 }
                 if "Disabled" in cfn_res:
-                    entity_resource_entry["disabled"] = _coerce_bool(
+                    entity_resource_entry["disabled"] = _coerce_disabled(
                         cfn_res["Disabled"], f"{prefix}.Disabled"
                     )
                 if "Cascade" in cfn_res:
@@ -708,6 +758,8 @@ _CFN_LIMIT_OPTIONAL_KEYS: dict[str, tuple[str, Any]] = {
     # back and rejects a bool and a non-integral value (#569). The manifest
     # key mirrors `LimitDecl.reset_after_seconds`.
     "ResetAfterSeconds": ("reset_after_seconds", _coerce_int),
+    # #467: a soft limit. Delivered as a string like every property (#554).
+    "Soft": ("soft", _coerce_bool),
 }
 
 
