@@ -941,6 +941,16 @@ class TestRejectedMoves:
 
 
 class TestMultiResourceLease:
+    def test_a_lease_with_nothing_for_the_resource_is_not_bypassed(self, repo):
+        from zae_limiter.lease import Lease
+
+        assert Lease(repository=repo, entries=[], degraded=True).bypassed is False
+        state = BucketState.from_limit("u", "llm", RPM, 0)
+        entry = LeaseEntry(entity_id="u", resource="llm", limit=RPM, state=state, _bypass=True)
+        lease = Lease(repository=repo, entries=[entry])
+        assert lease.bypassed is True
+        assert lease._bypassed_in("other") is False
+
     async def test_bypassed_and_overdrawn_are_scoped_per_resource(self, repo, limiter):
         """Review D10: `lease.bypassed` read the first entry and `overdrawn`
         every entry, so on a multi-resource lease they described whichever
