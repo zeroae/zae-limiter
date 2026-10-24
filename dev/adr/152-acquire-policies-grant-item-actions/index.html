@@ -620,6 +620,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/per-resource-budgets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-Resource Limits and a Shared Budget
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/llm-integration/" class="md-nav__link">
         
   
@@ -3652,10 +3680,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#restrict-the-new-write-actions-to-bucket-items-with-a-leadingkeys-pattern" class="md-nav__link">
+  <a href="#grant-the-write-actions-on-every-item" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Restrict the new write actions to bucket items with a LeadingKeys pattern
+        Grant the write actions on every item
       
     </span>
   </a>
@@ -3708,7 +3736,7 @@
 <h1 id="adr-152-acquire-policies-grant-the-item-actions-they-write-with">ADR-152: Acquire policies grant the item actions they write with<a class="headerlink" href="#adr-152-acquire-policies-grant-the-item-actions-they-write-with" title="Permanent link">&para;</a></h1>
 <p><strong>Status:</strong> Proposed (accepted at the v0.17.0 release)
 <strong>Date:</strong> 2026-10-20
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/750">#750</a>
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/750">#750</a>, <a href="https://github.com/zeroae/zae-limiter/issues/756">#756</a>
 <strong>Supersedes:</strong> <a href="../124-policy-rename-clarity/">ADR-124</a> on acceptance (its permission matrix only; the policy names stand)
 <strong>Related:</strong> <a href="../117-managed-policies-by-default/">ADR-117</a>, <a href="../150-move-entity-to-new-parent/">ADR-150</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
@@ -3784,13 +3812,13 @@ item actions (<code>GetItem</code>, <code>BatchGetItem</code>, <code>Query</code
 <tr>
 <td><code>PutItem</code></td>
 <td style="text-align: center;">❌</td>
-<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅ bucket items</td>
 <td style="text-align: center;">✅</td>
 </tr>
 <tr>
 <td><code>UpdateItem</code></td>
 <td style="text-align: center;">❌</td>
-<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅ bucket items</td>
 <td style="text-align: center;">✅</td>
 </tr>
 <tr>
@@ -3808,25 +3836,32 @@ item actions (<code>GetItem</code>, <code>BatchGetItem</code>, <code>Query</code
 </tbody>
 </table>
 <p><code>-acq</code> gains <code>PutItem</code> and <code>UpdateItem</code>; <code>-ns-acq</code> gains <code>PutItem</code>. An acquire policy must grant
-every item action <code>acquire()</code> issues, whether alone or inside a transaction.</p>
+every item action <code>acquire()</code> issues, whether alone or inside a transaction, and must grant
+<code>PutItem</code> and <code>UpdateItem</code> on bucket items only: <code>dynamodb:LeadingKeys</code> <code>*/BUCKET#*</code> (and
+<code>{namespace id}/BUCKET#*</code> for <code>-ns-acq</code>), with <code>Null</code> false on the key. Every write <code>acquire()</code>
+issues is a bucket item, whose partition key is <code>{ns}/BUCKET#…</code>; namespace and entity ids contain
+no <code>/</code> or <code>#</code>, so no other item matches.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - <code>acquire()</code> works under the template's acquire policies and the <code>{stack}-app</code> role, as their
   names promise.
 - The matrix states what AWS actually evaluates, and a real-AWS test pins it.</p>
 <p><strong>Negative:</strong>
-- <code>-acq</code> can now <code>PutItem</code> / <code>UpdateItem</code> any item in the table, not only buckets: IAM cannot
-  tell a bucket item from a config item. It still has no <code>DeleteItem</code>, <code>Scan</code> or
-  <code>BatchWriteItem</code>.
-- <code>-ns-acq</code> can likewise write any item in its own namespace; <code>LeadingKeys</code> still keeps it out
-  of other namespaces, and it still reads only from the reserved <code>_</code> prefix.</p>
+- A principal holding only an acquire policy cannot create entities, set limits, reset or top
+  up a bucket, or register a namespace on a first <code>Repository.open()</code>: those write config,
+  entity, audit, registry or version items, which are operator actions (<code>-full</code>, <code>-ns-full</code>).
+  Breaking for an application that did them with an acquire policy alone.
+- Least privilege, not a boundary: a principal that may acquire still writes its own bucket
+  items, so it can raise their balances with a direct write (ADR-149).</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
 <h3 id="keep-adr-124s-matrix-and-document-that-acq-cannot-write">Keep ADR-124's matrix and document that <code>-acq</code> cannot write<a class="headerlink" href="#keep-adr-124s-matrix-and-document-that-acq-cannot-write" title="Permanent link">&para;</a></h3>
 <p>Rejected because: a policy named for <code>acquire()</code> that cannot run <code>acquire()</code> is the misleading
 name ADR-124 set out to remove.</p>
-<h3 id="restrict-the-new-write-actions-to-bucket-items-with-a-leadingkeys-pattern">Restrict the new write actions to bucket items with a <code>LeadingKeys</code> pattern<a class="headerlink" href="#restrict-the-new-write-actions-to-bucket-items-with-a-leadingkeys-pattern" title="Permanent link">&para;</a></h3>
-<p>Rejected because: a bucket's partition key begins with the opaque namespace id, so a table-level
-pattern cannot single out buckets, and <code>LeadingKeys</code> matches only the partition key.</p>
+<h3 id="grant-the-write-actions-on-every-item">Grant the write actions on every item<a class="headerlink" href="#grant-the-write-actions-on-every-item" title="Permanent link">&para;</a></h3>
+<p>Rejected because: it lets an application role write config, entity records, audit events and
+the version record (#756). This ADR first rejected the bucket-only pattern on the belief that a
+table-level pattern cannot single out buckets; <code>*/BUCKET#*</code> does, since <code>LeadingKeys</code> patterns
+match across the namespace id.</p>
 <h3 id="route-every-acquire-write-through-transactwriteitems">Route every <code>acquire()</code> write through <code>TransactWriteItems</code><a class="headerlink" href="#route-every-acquire-write-through-transactwriteitems" title="Permanent link">&para;</a></h3>
 <p>Rejected because: AWS authorises a transaction's items by the same per-item actions, so it would
 still need <code>PutItem</code> / <code>UpdateItem</code>, and it doubles the cost of every write.</p>

@@ -624,6 +624,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/per-resource-budgets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-Resource Limits and a Shared Budget
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/llm-integration/" class="md-nav__link">
         
   
@@ -5434,7 +5462,7 @@ use CLI deployment or CloudFormation template export. See the
 <td><code>AcquireOnlyPolicy</code></td>
 <td><code>-acq</code></td>
 <td>Applications calling <code>acquire()</code></td>
-<td>GetItem, BatchGetItem, Query, ConditionCheckItem, PutItem, UpdateItem</td>
+<td>GetItem, BatchGetItem, Query, ConditionCheckItem; PutItem, UpdateItem on bucket items only</td>
 </tr>
 <tr>
 <td><code>FullAccessPolicy</code></td>
@@ -5479,6 +5507,20 @@ A stack deployed earlier keeps its old policies until its template is updated:
 (and refuses a change that would replace or remove a resource), so run it on each
 stack before rolling out v0.17.0 clients. Custom IAM modelled on the old policies
 must add both actions.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">The acquire policies write bucket items only, from v0.17.0</p>
+<p><code>AcquireOnlyPolicy</code> and <code>NamespaceAcquirePolicy</code> grant <code>PutItem</code> and <code>UpdateItem</code>
+only where the partition key is a bucket's (<code>dynamodb:LeadingKeys</code> <code>*/BUCKET#*</code>, and
+<code>{namespace id}/BUCKET#*</code> for the namespace policy), because every write <code>acquire()</code>
+makes is a bucket write (#756). A principal holding only an acquire policy can no
+longer write config, entity records, audit events, the namespace registry or the
+version record: <code>create_entity()</code>, <code>set_limits()</code>, <code>set_resource_defaults()</code>,
+<code>reset_bucket()</code>, <code>top_up()</code> and a first-time <code>Repository.open()</code> (which registers the
+namespace and writes the version record) are refused with <code>AccessDeniedException</code>.
+Those are operator actions: give them <code>FullAccessPolicy</code> or
+<code>NamespaceFullAccessPolicy</code>. It is least privilege, not a boundary: a principal that
+may acquire can still raise its own buckets' balances with a direct write (ADR-149).</p>
 </div>
 <h3 id="enablingdisabling-iam-resources">Enabling/Disabling IAM Resources<a class="headerlink" href="#enablingdisabling-iam-resources" title="Permanent link">&para;</a></h3>
 <div class="tabbed-set tabbed-alternate" data-tabs="5:2"><input checked="checked" id="__tabbed_5_1" name="__tabbed_5" type="radio" /><input id="__tabbed_5_2" name="__tabbed_5" type="radio" /><div class="tabbed-labels"><label for="__tabbed_5_1">CLI</label><label for="__tabbed_5_2">Programmatic</label></div>
