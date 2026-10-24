@@ -10436,9 +10436,19 @@ class TestAStampedShardIsTrimmedWhereItIs:
         await self._set_tk(repo, "boss", 1, 98_000, stamp=True)
 
     async def _acquire_drawing_parent_shard_1_first(self, limiter):
-        # The fast path draws parent shard 1; any re-draw after it gets 0.
-        draws = iter([1, 0, 0, 0])
-        with patch("zae_limiter.repository.random.randrange", lambda n: next(draws)):
+        # Every fast-path draw of the parent is shard 1; once the slow path
+        # starts, every draw is 0, so only a pinned shard lands on 1.
+        slow = []
+        real_slow_acquire = limiter._slow_acquire
+
+        async def slow_acquire(*args, **kwargs):
+            slow.append(True)
+            return await real_slow_acquire(*args, **kwargs)
+
+        with (
+            patch("zae_limiter.repository.random.randrange", lambda n: 0 if slow else 1),
+            patch.object(limiter, "_slow_acquire", slow_acquire),
+        ):
             async with limiter.acquire("kid", "gpt-4", consume={"rpm": 1}):
                 pass
 
@@ -10451,6 +10461,43 @@ class TestAStampedShardIsTrimmedWhereItIs:
         shard1 = await self._raw(repo, "boss", 1)
         assert BUCKET_FIELD_VU not in shard1
         assert self._tk(shard1) <= self.CEILING_MILLI
+
+    async def test_a_stamped_parent_shard_is_pinned_when_the_child_goes_slow(self, limiter):
+        """The warm parallel path: the child must take the slow path as well.
+
+        Child and parent are written at once; the child's write fails on a
+        drained balance a refill will restore, and the parent's on its stamp
+        only. No parent-only attempt runs, so the full slow path must be
+        pinned to the stamped parent shard, not re-draw it.
+        """
+        repo = limiter._repository
+        await self._sharded_parent(limiter, self.RPM)
+        # Warm the child's cache so the next acquire takes the parallel path.
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            async with limiter.acquire("kid", "gpt-4", consume={"rpm": 1}):
+                pass
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "kid", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #tk = :zero, #rf = :rf",
+            ExpressionAttributeNames={
+                "#tk": bucket_attr("rpm", BUCKET_FIELD_TK),
+                "#rf": BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={
+                ":zero": {"N": "0"},
+                ":rf": {"N": str(self.NOW - 60_000)},  # a full minute of refill due
+            },
+        )
+        await self._acquire_drawing_parent_shard_1_first(limiter)
+
+        shard1 = await self._raw(repo, "boss", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) == self.CEILING_MILLI - 1000
 
     async def test_a_scheduled_cascade_parent_is_materialised_on_its_stamped_shard(self, limiter):
         """A `vu = 0` on a scheduled parent shard reads as a closed window.

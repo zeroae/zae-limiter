@@ -8347,8 +8347,17 @@ class TestAStampedShardIsTrimmedWhereItIs:
         self._set_tk(repo, "boss", 1, 98000, stamp=True)
 
     def _acquire_drawing_parent_shard_1_first(self, sync_limiter):
-        draws = iter([1, 0, 0, 0])
-        with patch("zae_limiter.sync_repository.random.randrange", lambda n: next(draws)):
+        slow = []
+        real_slow_acquire = sync_limiter._slow_acquire
+
+        def slow_acquire(*args, **kwargs):
+            slow.append(True)
+            return real_slow_acquire(*args, **kwargs)
+
+        with (
+            patch("zae_limiter.sync_repository.random.randrange", lambda n: 0 if slow else 1),
+            patch.object(sync_limiter, "_slow_acquire", slow_acquire),
+        ):
             with sync_limiter.acquire("kid", "gpt-4", consume={"rpm": 1}):
                 pass
 
@@ -8360,6 +8369,38 @@ class TestAStampedShardIsTrimmedWhereItIs:
         shard1 = self._raw(repo, "boss", 1)
         assert BUCKET_FIELD_VU not in shard1
         assert self._tk(shard1) <= self.CEILING_MILLI
+
+    def test_a_stamped_parent_shard_is_pinned_when_the_child_goes_slow(self, sync_limiter):
+        """The warm parallel path: the child must take the slow path as well.
+
+        Child and parent are written at once; the child's write fails on a
+        drained balance a refill will restore, and the parent's on its stamp
+        only. No parent-only attempt runs, so the full slow path must be
+        pinned to the stamped parent shard, not re-draw it.
+        """
+        repo = sync_limiter._repository
+        self._sharded_parent(sync_limiter, self.RPM)
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=0):
+            with sync_limiter.acquire("kid", "gpt-4", consume={"rpm": 1}):
+                pass
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "kid", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #tk = :zero, #rf = :rf",
+            ExpressionAttributeNames={
+                "#tk": bucket_attr("rpm", BUCKET_FIELD_TK),
+                "#rf": BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={":zero": {"N": "0"}, ":rf": {"N": str(self.NOW - 60000)}},
+        )
+        self._acquire_drawing_parent_shard_1_first(sync_limiter)
+        shard1 = self._raw(repo, "boss", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) == self.CEILING_MILLI - 1000
 
     def test_a_scheduled_cascade_parent_is_materialised_on_its_stamped_shard(self, sync_limiter):
         """A `vu = 0` on a scheduled parent shard reads as a closed window.
