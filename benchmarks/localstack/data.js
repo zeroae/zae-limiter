@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792874625454,
+  "lastUpdate": 1792876969360,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -36288,6 +36288,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.008347658246739017",
             "extra": "mean: 1.0595355775999962 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d96e9681b9e431703e157df547fb7e243ac254df",
+          "message": "🐛 fix(repository): delete_entity deletes every item or raises (#767)\n\n## Summary\n\n`delete_entity` could leave an entity partly deleted and report no\nerror. Three causes:\n\n1. It ignored `BatchWriteItem`'s `UnprocessedItems`.\n2. Its base-table and GSI3 queries read only one page.\n3. The `ns-full` policy lacked `dynamodb:BatchWriteItem`, so a\nnamespace-scoped admin could not call it at all.\n\n**What changed**\n\n- **New `_query_all`** follows `LastEvaluatedKey`. Used by the\nbase-table query, the GSI3 query, and the ADR-149 operation-record\nqueries (those stay best effort, as before).\n- **New `_batch_delete_all`** sends 25-item batches and resends\n`UnprocessedItems` with jittered backoff (5 retries, 50 ms base,\ndoubling). If items are still left, it raises `RateLimiterUnavailable`\nsaying how many deletes remain (\"N of M deleted; re-run to finish\").\nThis is the same exception `_batch_get_all` uses for `UnprocessedKeys`.\n  - Keys are deduplicated, because `BatchWriteItem` rejects duplicates.\n  - `records_deleted` counts what DynamoDB actually processed.\n  - No audit event is written on failure.\n- **`purge_namespace`** uses the same helper. Its old loop retried\nforever with no backoff. On failure the namespace stays `purging`, so a\nre-run finishes the job.\n- **`ns-full`** gains `dynamodb:BatchWriteItem` under its existing\n`LeadingKeys` condition. The AWS service reference lists\n`dynamodb:LeadingKeys` as a condition key for `BatchWriteItem` ([service\nreference](https://servicereference.us-east-1.amazonaws.com/v1/dynamodb/dynamodb.json);\n[fine-grained access guide\nexamples](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/specifying-conditions.html)).\n- The IAM docs tables and CLAUDE.md are updated.\n\n## Test plan\n\n- [x] `TestDeleteEntityIsComplete` (unprocessed items, multi-page base +\nGSI3, retries exhausted) fails on `main` (leftover `#USAGE` item;\nleftover `BUCKET#c#0`; `DID NOT RAISE`) and passes here, async and sync\n- [x] Purge tests in `test_namespace_registry`\n- [x] `test_repository` + sync + cfn parity: 1120 passed\n- [x] mypy, ruff, cfn-lint clean\n- [x] Pre-push: full unit run 7467 passed, gevent set, diff-cover 100%\n- [ ] AWS e2e `test_role_with_ns_full_can_reset_and_top_up` (now also\ncalls `delete_entity`), to be run on real AWS before merge\n\nCloses #742\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_017XzYMYKXNcZNQYS3xQhFdc",
+          "timestamp": "2026-10-24T17:15:55-04:00",
+          "tree_id": "95aa4a39b368cb5ab3b5b75d6c2807c1e8d5aeb3",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d96e9681b9e431703e157df547fb7e243ac254df"
+        },
+        "date": 1792876968252,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.5385197256009,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010583124917405403",
+            "extra": "mean: 46.42844600000018 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 15.949884673564686,
+            "unit": "iter/sec",
+            "range": "stddev: 0.015532027095473053",
+            "extra": "mean: 62.69637809089607 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 34.21607506578194,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005422686554402136",
+            "extra": "mean: 29.22602893749371 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 38.92841346483555,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004723645407755956",
+            "extra": "mean: 25.688177631572646 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 19.737340319640374,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011030499509536955",
+            "extra": "mean: 50.66538772728728 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 64.89992743071024,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0016878008348376221",
+            "extra": "mean: 15.408337722220722 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 23.775032605521677,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007865474178935126",
+            "extra": "mean: 42.060930750006754 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 26.08150783016049,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004849448078849294",
+            "extra": "mean: 38.341341555552496 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 20.995790331438346,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04028322288086084",
+            "extra": "mean: 47.628595266672846 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.723659190214,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0040081601251009255",
+            "extra": "mean: 37.42002518750098 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 23.49688311531802,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007289974255892552",
+            "extra": "mean: 42.558836212113725 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 25.38264567348428,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00436038249594627",
+            "extra": "mean: 39.396996391303674 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 28.48273004240496,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004431207073629479",
+            "extra": "mean: 35.10899406451574 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9348509697312775,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011638635074279998",
+            "extra": "mean: 516.835671399997 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9079757944070794,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008591789219062588",
+            "extra": "mean: 524.1156638000007 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9482305098712546,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0024006792158634445",
+            "extra": "mean: 1.0545958916000018 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9186506275394355,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01849249086704865",
+            "extra": "mean: 1.0885531126000045 sec\nrounds: 5"
           }
         ]
       }
