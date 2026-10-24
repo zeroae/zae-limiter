@@ -111,14 +111,102 @@ measurement, 1 request in 200 was admitted.
   bucket items for one entity and resource.
 
 **Upgrading does not repair it.** A current version never doubles past 32 and never
-propagates a count above 32, but nothing lowers a `shard_count` that is already there. The
-repair is tracked in [#747](https://github.com/zeroae/zae-limiter/issues/747).
+propagates a count above 32, but nothing lowers a `shard_count` that is already there. A
+repair command is tracked in [#747](https://github.com/zeroae/zae-limiter/issues/747); until
+then, use the manual procedure below. `reset_bucket()` / `entity reset` cannot do it: it
+writes every shard in one transaction, sized for at most 32 shards.
 
-!!! warning "Deleting the bucket items is not a safe workaround"
-    Clients cache each entity's `shard_count` in memory and draw a shard from that cached
-    value (`Repository.select_shard`). A running client that cached the old count recreates
-    the missing shards at that count on its next acquire. No repair procedure is documented
-    yet; follow #747.
+#### Find every over-sharded bucket
+
+```bash
+aws dynamodb scan --table-name <name> \
+  --filter-expression "SK = :state AND shard_count > :cap" \
+  --expression-attribute-values '{":state": {"S": "#STATE"}, ":cap": {"N": "32"}}' \
+  --projection-expression "PK, shard_count"
+```
+
+Each `PK` is `{ns}/BUCKET#{entity}#{resource}#{shard}`; one (entity, resource) pair usually
+shows up once per shard. The scan reads the whole table (about 0.5 RCU per 4 KB), so run it
+once and work from its output.
+
+#### Repair one entity and resource
+
+!!! warning "Stop the clients first"
+    Every client process caches each entity's `shard_count` in memory and only ever raises
+    it. A process still running with the old count recreates the deleted shards **at that
+    count** the next time it acquires for the entity (reproduced on moto: 20 acquires from
+    such a process after the repair created 20 shard items at `shard_count = 2048`). A
+    restarted process reads the count afresh.
+
+1. **Upgrade first:** `zae-limiter upgrade --name <name>`, so the aggregator is a version
+   that can no longer run away (#745).
+2. **Stop every process that calls `acquire()` for the entity** (the application, workers,
+   anything holding a `Repository`). If you cannot stop them, restart all of them right
+   after step 3 and expect to repeat it once (step 5).
+3. **Delete every bucket item of the pair**, with credentials that can delete items
+   (`FullAccessPolicy`):
+
+    ```{.python .requires-external}
+    import boto3
+    from boto3.dynamodb.conditions import Key
+
+    TABLE = "my-app"  # the stack name
+    NAMESPACE_ID = "..."  # zae-limiter namespace show <namespace> --name <name>
+    ENTITY = "user-123"
+    RESOURCE = "gpt-4"
+
+    table = boto3.resource("dynamodb").Table(TABLE)
+    prefix = f"{NAMESPACE_ID}/BUCKET#{ENTITY}#{RESOURCE}#"
+
+    # The shards GSI3 knows about...
+    keys = set()
+    query = {
+        "IndexName": "GSI3",
+        "KeyConditionExpression": Key("GSI3PK").eq(f"{NAMESPACE_ID}/ENTITY#{ENTITY}")
+        & Key("GSI3SK").begins_with(f"BUCKET#{RESOURCE}#"),
+    }
+    while True:
+        page = table.query(**query)
+        keys.update(item["PK"] for item in page["Items"])
+        if "LastEvaluatedKey" not in page:
+            break
+        query["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+    # ...and every slot below the highest count, which GSI3 can lag behind
+    shard0 = table.get_item(
+        Key={"PK": f"{prefix}0", "SK": "#STATE"},
+        ConsistentRead=True,
+        ProjectionExpression="shard_count",
+    ).get("Item", {})
+    highest = max(
+        [int(shard0.get("shard_count", 1))]
+        + [int(pk.rsplit("#", 1)[1]) + 1 for pk in keys]
+    )
+    keys.update(f"{prefix}{shard}" for shard in range(highest))
+
+    with table.batch_writer() as batch:  # resends unprocessed deletes
+        for pk in keys:
+            batch.delete_item(Key={"PK": pk, "SK": "#STATE"})
+    print(f"deleted the bucket items of {highest} shard slots")
+    ```
+
+4. **Start the clients again.** The next acquire creates the bucket at one shard, from the
+   current config.
+5. **Check:** run the scan again. If the pair is listed, a process that was still running
+   recreated it — restart it and repeat step 3.
+
+On moto, a fresh process admitted 2 of 200 requests on a bucket at 2048 shards before the
+repair and 200 of 200 after it.
+
+**What the repair costs you.** It deletes state, not config:
+
+| Lost | Effect |
+|------|--------|
+| Balances | The recreated bucket starts full. A rate limit can admit a burst of up to one capacity; a quota gets its **whole allowance again for the current period**, whatever was already spent; a session quota starts a fresh window |
+| Consumption counters on the bucket items | The usage snapshots already written stay; the aggregator ignores deletes |
+| `disabled` / bypass / soft stamps, owner stamps | Nothing: the first acquire after the repair takes the slow path, which reads `disabled`, bypass and soft from config (uncached) and the owner from the entity record, as for any new bucket |
+
+Entity metadata, stored limits, and reset / top-up operation records are not touched.
 
 **Client clock skew can still double up to 32.** The aggregator projects a bucket's stored
 `wcu` balance from its `rf` timestamp to the aggregator's own clock before deciding to double.
