@@ -924,3 +924,30 @@ class TestRejectedMoves:
         assert after == before, f"held {after} after the move, {before} before"
         # The consumption was counted only to be undone: nothing is counted.
         assert _n(created, "b_rpd_tc") == 0
+
+
+class TestTopUpCreate:
+    async def test_a_top_up_create_stamps_bypass_and_soft(self, repo):
+        """Review D9: a top-up that creates the bucket stamped neither, so a
+        bypassed resource's new bucket enforced — and a soft quota was hard —
+        until a fan-out or a slow pass stamped it. The create takes both from
+        the uncached access read it already makes (ADR-151 decision 4)."""
+        cal = Limit.quota("cal", 10, cron="0 0 * * *", soft=True)
+        await repo.set_resource_defaults("llm", [cal])
+        await repo.bypass_resource("llm")
+        start = repo._now_ms()
+        with patch.object(repo, "_now_ms", return_value=start):
+            result = await repo.top_up("u", "llm", {"cal": 3})
+        assert result.shards == 1
+        item = await _item(repo)
+        assert _live(item, start)
+        assert _n(item, "bypass") <= start + schema.DEFAULT_STAMP_TTL_SECONDS * 1000
+        soft = _n(item, schema.bucket_attr("cal", schema.BUCKET_FIELD_SOFT))
+        assert start < soft <= start + schema.DEFAULT_STAMP_TTL_SECONDS * 1000
+
+    async def test_a_top_up_create_on_an_enforced_hard_quota_stamps_nothing(self, repo):
+        await repo.set_resource_defaults("llm", [Limit.quota("cal", 10, cron="0 0 * * *")])
+        await repo.top_up("u", "llm", {"cal": 3})
+        item = await _item(repo)
+        assert "bypass" not in item
+        assert schema.bucket_attr("cal", schema.BUCKET_FIELD_SOFT) not in item

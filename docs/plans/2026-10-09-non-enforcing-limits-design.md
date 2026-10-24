@@ -308,7 +308,7 @@ stamp pays nothing: `attribute_not_exists` passes.
 | | What | Bound |
 |---|---|---|
 | R1 | A stamp a fan-out missed keeps its old meaning | until its deadline: at most T after the read that justified it, plus clock skew between processes |
-| R2 | A stamp missing where config wants one (an old client's create, a top-up create, a clone of an older image) | under-admission until the next slow pass or fan-out, a rejected one included (it sets the stamp) |
+| R2 | A stamp missing where config wants one (an old client's create, a clone of an older image) | under-admission until the next slow pass or fan-out, a rejected one included (it sets the stamp) |
 | R3 | The consumption-only retry omits the floor of a limit the pass read as soft (`soft_trusted`) though a fan-out has since made it hard | one request |
 | R4 | A cached pass's renewal read is eventually consistent | bounded by T: a stale read can extend a stamp once more |
 

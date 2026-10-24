@@ -11136,11 +11136,25 @@ class Repository:
         }
         if not any(amounts.values()):
             return BucketOperationResult(entity_id, resource, 0, amounts), True
-        access = await self.resolve_access(entity_id, resource)
+        # Before the read the stamps below come from (ADR-151 decision 8).
+        stamp_deadline = self._stamp_deadline(now_ms)
+        # Uncached, with each limit's soft-ness: a create takes its stamps from
+        # config read uncached in that pass (ADR-151 decision 4), as the
+        # acquire path's create does.
+        access = await self.resolve_access(
+            entity_id, resource, include_limits=True, include_system=True
+        )
         if access.disabled:
             raise ResourceDisabled(
                 entity_id=entity_id, resource=resource, level=access.disabled_level or "resource"
             )
+        # Review D9: this create stamped neither, so a bypassed or soft bucket
+        # created by a top-up enforced until a fan-out or a slow pass stamped it.
+        limit_soft = access.limit_soft or {}
+        for name, state in states.items():
+            if limit_soft.get(name, False):
+                state.soft = True
+                state.soft_until_ms = stamp_deadline
         for name, amount in amounts.items():
             if amount:
                 state = states[name]
@@ -11149,8 +11163,6 @@ class Repository:
         await self._require_top_up_readers()
         ttl = self._operation_ttl(resolved, source, now_ms)
         ttl_seconds = None if ttl is None else ttl - now_ms // 1000
-        # TODO(D9): this create stamps no `bypass` (access.bypass) and no
-        # `b_{name}_soft` on its states.
         create = self.build_composite_create(
             entity_id=entity_id,
             resource=resource,
@@ -11163,6 +11175,7 @@ class Repository:
             shard_count=1,
             vu=bucket_ops.creation_vu(resolved, states, now_ms),
             rf_ms=now_ms,
+            bypass_until_ms=stamp_deadline if access.bypass else None,
             pgen=entity.parent_generation if entity is not None else None,
             pinc=entity.incarnation if entity is not None else None,
         )

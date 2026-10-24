@@ -9300,11 +9300,17 @@ class SyncRepository:
         }
         if not any(amounts.values()):
             return (BucketOperationResult(entity_id, resource, 0, amounts), True)
-        access = self.resolve_access(entity_id, resource)
+        stamp_deadline = self._stamp_deadline(now_ms)
+        access = self.resolve_access(entity_id, resource, include_limits=True, include_system=True)
         if access.disabled:
             raise ResourceDisabled(
                 entity_id=entity_id, resource=resource, level=access.disabled_level or "resource"
             )
+        limit_soft = access.limit_soft or {}
+        for name, state in states.items():
+            if limit_soft.get(name, False):
+                state.soft = True
+                state.soft_until_ms = stamp_deadline
         for name, amount in amounts.items():
             if amount:
                 state = states[name]
@@ -9325,6 +9331,7 @@ class SyncRepository:
             shard_count=1,
             vu=bucket_ops.creation_vu(resolved, states, now_ms),
             rf_ms=now_ms,
+            bypass_until_ms=stamp_deadline if access.bypass else None,
             pgen=entity.parent_generation if entity is not None else None,
             pinc=entity.incarnation if entity is not None else None,
         )

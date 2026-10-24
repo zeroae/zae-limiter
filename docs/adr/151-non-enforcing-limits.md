@@ -81,7 +81,7 @@ the design document.
   discovers every bucket in the namespace.
 - A bypassed or soft bucket pays one slow pass per shard per T to renew its stamp, and a stamp
   a fan-out missed keeps its old meaning for up to T plus clock skew between processes.
-- A bucket created without a stamp (an old client, a top-up create, a clone of an older image)
+- A bucket created without a stamp (an old client, a clone of an older image)
   enforces until the next fan-out or slow pass: under-admission, never over-admission.
 - A soft limit's debt is per shard: one shard can be overdrawn while siblings hold tokens.
 - Clients older than v0.15 ignore `client_min_version` and enforce soft and bypassed limits.
