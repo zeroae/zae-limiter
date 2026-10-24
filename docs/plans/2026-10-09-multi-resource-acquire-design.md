@@ -2,8 +2,9 @@
 
 **Decision record:** [ADR-148](../adr/148-multi-resource-acquire.md) (Proposed)
 **Issue:** [#675](https://github.com/zeroae/zae-limiter/issues/675) · **Epic:** [#674](https://github.com/zeroae/zae-limiter/issues/674) · **Milestone:** v0.17.0
-**Status:** design only — nothing here is implemented. The [Open decisions](#open-decisions)
-need the owner's answer before an implementation plan is written.
+**Status:** implemented in v0.17.0 (#713, #717, #718, #748 and the post-merge review fixes),
+on the recommended option of every decision below. The decisions were built **provisionally**
+and are ratified with ADR-148 at release; the section keeps its original title for the record.
 
 ## TLDR
 
@@ -186,8 +187,10 @@ passing, and no new bucket writer is introduced.
   admit, which is the right answer for an all-or-none request.
 - Message: `primary_violation`'s `entity/resource`, as today.
 - **`ResourceDisabled`** from any resource outranks `RateLimitExceeded` from another.
-- `ValidationError` (bad name, duplicate, over the cap, no limits configured for any
-  resource) is raised before any write.
+- `ValidationError` (bad name, duplicate, over the cap, a negative amount) is raised before any
+  write. "No limits configured" for a resource is found when that resource is planned, so a
+  fast-path win for another resource has been written by then; it is refunded before the
+  error propagates, like any other failed part.
 - `VersionMismatchError` (#638) only via `limits=` overrides; see D8.
 
 ## 7. Sync parity and other surfaces

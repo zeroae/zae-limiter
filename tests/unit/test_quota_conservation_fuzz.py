@@ -181,7 +181,7 @@ def pytest_generate_tests(metafunc):
         metafunc.parametrize("seed", metafunc.cls.SEEDS)
 
 
-async def run_fuzz(limiter, seed: int, kind: str) -> None:
+async def run_fuzz(limiter, seed: int, kind: str, quota_in_also: bool = False) -> None:
     """One seeded sequence of ``OPS`` operations, checking I8 after each."""
     quota, period_ms = QUOTAS[kind]
     rng = random.Random(seed)
@@ -243,13 +243,19 @@ async def run_fuzz(limiter, seed: int, kind: str) -> None:
             amount = rng.choice([1, 3, 10, 40, 100, 300])
             lim = fast if rng.random() < 0.5 else slow
             consume = {quota.name: amount} if quota_on else {"rpm": 1}
+            primary, primary_consume = RESOURCE, consume
             also = None
-            if mix.random() < 0.35:
+            if quota_in_also:
+                # The quota as a secondary part (ADR-148): the same moves and
+                # grants, planned and committed beside another resource.
+                primary, primary_consume = OTHER, {"rpm": 5_000 if mix.random() < 0.1 else 1}
+                also = {RESOURCE: consume}
+            elif mix.random() < 0.35:
                 also = {OTHER: {"rpm": 5_000 if mix.random() < 0.1 else 1}}
             ok = True
             with drawn(shard, rng):
                 try:
-                    async with lim.acquire(eid, RESOURCE, consume, also=also):
+                    async with lim.acquire(eid, primary, primary_consume, also=also):
                         pass
                 except RateLimitExceeded:
                     ok = False
@@ -278,10 +284,11 @@ async def run_fuzz(limiter, seed: int, kind: str) -> None:
 # that the real repository keeps I8 on a smaller sample.
 class _Fuzz:
     KIND = "calendar"
+    QUOTA_IN_ALSO = False
     SEEDS: range = range(0)
 
     async def test_admitted_never_exceeds_and_nothing_is_lost(self, limiter, seed):
-        await run_fuzz(limiter, seed, self.KIND)
+        await run_fuzz(limiter, seed, self.KIND, self.QUOTA_IN_ALSO)
 
 
 class TestCalendarSeeds0(_Fuzz):
@@ -309,4 +316,17 @@ class TestCalendarSoftSeeds(_Fuzz):
 
 class TestSessionSoftSeeds(_Fuzz):
     KIND = "session-soft"
+    SEEDS = range(0, 5)
+
+
+# The quota inside `also=` (review of #675): the rate-limited resource is the
+# primary part, and the quota's moves and grants ride as a secondary one.
+class TestCalendarSeedsInAlso(_Fuzz):
+    QUOTA_IN_ALSO = True
+    SEEDS = range(0, 5)
+
+
+class TestSessionSeedsInAlso(_Fuzz):
+    KIND = "session"
+    QUOTA_IN_ALSO = True
     SEEDS = range(0, 5)

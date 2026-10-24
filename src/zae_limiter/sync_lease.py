@@ -38,6 +38,7 @@ from .schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
     BUCKET_FIELD_GC,
+    BUCKET_FIELD_PGEN,
     BUCKET_FIELD_PINC,
     BUCKET_FIELD_RF,
     BUCKET_FIELD_RN,
@@ -423,7 +424,14 @@ class BypassLostError(Exception):
 
     The bypass was cleared between this pass's (uncached) config read and its
     write. Nothing was written; the acquire is planned again, enforced.
+    ``resources`` names the resources whose bypass write failed, so a
+    multi-resource acquire re-plans only those enforced (review M3); empty
+    when it cannot be told.
     """
+
+    def __init__(self, resources: frozenset[str] = frozenset()) -> None:
+        super().__init__("bypass lost" + (f" on {sorted(resources)}" if resources else ""))
+        self.resources = resources
 
 
 class QuotaMoveLostError(Exception):
@@ -1165,14 +1173,26 @@ class SyncLease:
                 if _meta_check_failed(resent_exc, first_check, len(meta_checks)):
                     raise _owner_stamp_lost(self.entries, now_ms) from resent_exc
                 condition_exc = resent_exc
-        if condition_failed and donor_items:
-            raise QuotaMoveLostError from condition_exc
-        if condition_failed and _bypass_write_failed(
-            list(groups.values()),
-            _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None,
-            creates_lose_races=True,
+        if (
+            condition_failed
+            and condition_exc is not None
+            and _owner_moved_since_read(groups, condition_exc)
         ):
-            raise BypassLostError from condition_exc
+            raise _owner_stamp_lost(self.entries, now_ms) from condition_exc
+        if condition_failed and donor_items:
+            raise QuotaMoveLostError(
+                contended=condition_exc is not None
+                and (not _move_items_failed(condition_exc, list(groups.values()), first_check))
+            ) from condition_exc
+        lost_bypass: frozenset[str] = frozenset()
+        if condition_failed and condition_exc is not None:
+            lost_bypass = _bypass_failed_resources(
+                list(groups.values()),
+                _get_cancellation_reason_codes(condition_exc),
+                creates_lose_races=True,
+            )
+        if lost_bypass:
+            raise BypassLostError(lost_bypass) from condition_exc
         reissued_creates: set[tuple[str, str, int]] = set()
         if condition_failed:
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
@@ -1293,8 +1313,11 @@ class SyncLease:
                             break
                         downgraded.append(item)
                         downgraded_groups.append(retry_groups[i])
-                    if _bypass_write_failed([group for _key, group in retry_groups], codes):
-                        raise BypassLostError from retry_exc
+                    lost_bypass = _bypass_failed_resources(
+                        [group for _key, group in retry_groups], codes
+                    )
+                    if lost_bypass:
+                        raise BypassLostError(lost_bypass) from retry_exc
                     if not lost_put or retry_attempt == 1:
                         images = _retry_failure_images(
                             retry_exc, [key for key, _group in retry_groups]
@@ -1926,6 +1949,27 @@ class SyncLeaseResource:
         return f"SyncLeaseResource({self.name!r})"
 
 
+def _move_items_failed(exc: Exception, groups: list[list[LeaseEntry]], first_check: int) -> bool:
+    """Whether a cancelled commit failed on a quota move's own items (ADR-145).
+
+    The commit's items are one per group (bucket items, in order), then the
+    donor debits, then the META checks (from ``first_check``). The move is in
+    play when a donor debit failed, or the bucket receiving a move did. With
+    no per-item reasons nothing can be told, and the move counts as lost.
+    """
+    codes = _get_cancellation_reason_codes(exc)
+    if codes is None:
+        return True
+    for index, code in enumerate(codes[:first_check]):
+        if code == "None":
+            continue
+        if index >= len(groups):
+            return True
+        if any(entry._donor_debit is not None for entry in groups[index]):
+            return True
+    return False
+
+
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:
     """Extract CancellationReasons codes from a TransactionCanceledException.
 
@@ -1991,14 +2035,28 @@ def _bypass_write_failed(
     ``creates_lose_races``, a bypassed create is not counted: its ``Put``
     fails only by losing the create race, which the retry path handles.
     """
+    failed = _bypass_failed_resources(groups, reason_codes, creates_lose_races=creates_lose_races)
+    return bool(failed)
+
+
+def _bypass_failed_resources(
+    groups: list[list[LeaseEntry]],
+    reason_codes: list[str] | None,
+    *,
+    creates_lose_races: bool = False,
+) -> frozenset[str]:
+    """The resources whose bypass-shaped write failed, by :func:`_bypass_write_failed`'s rule."""
+    failed: set[str] = set()
     for idx, group in enumerate(groups):
         if not group[0]._bypass or (creates_lose_races and group[0]._is_new):
             continue
-        if reason_codes is None or idx >= len(reason_codes):
-            return True
-        if reason_codes[idx] == "ConditionalCheckFailed":
-            return True
-    return False
+        if (
+            reason_codes is None
+            or idx >= len(reason_codes)
+            or reason_codes[idx] == "ConditionalCheckFailed"
+        ):
+            failed.add(group[0].resource)
+    return frozenset(failed)
 
 
 def _stamp_deadline(entry: LeaseEntry, now_ms: int, repo: Any) -> int:
@@ -2324,6 +2382,30 @@ def _meta_check_failed(exc: Exception | None, first: int, count: int) -> bool:
         return False
     codes = _get_cancellation_reason_codes(exc) or []
     return any(code == "ConditionalCheckFailed" for code in codes[first : first + count])
+
+
+def _owner_moved_since_read(
+    groups: dict[tuple[str, str, int], list[LeaseEntry]], exc: Exception
+) -> bool:
+    """Whether a failed item shows its owner moved after this pass read META (ADR-150).
+
+    The item's stamp is of the incarnation this pass read, at a higher parent
+    generation: a move landed (and its fan-out reached this bucket) after an
+    eventually consistent META read. A stamp of another incarnation is
+    `_claim_owner_stamps`' case, and an item with no stamp proves nothing.
+    """
+    images = _retry_failure_images(exc, list(groups))
+    for key, group_entries in groups.items():
+        owner = next((e for e in group_entries if e._stamp_owner), None)
+        image = images.get(key)
+        if owner is None or image is None or owner._parent_generation is None:
+            continue
+        if image.get(BUCKET_FIELD_PINC, {}).get("S") != owner._parent_incarnation:
+            continue
+        stored = image.get(BUCKET_FIELD_PGEN, {}).get("N")
+        if stored is not None and int(stored) > owner._parent_generation:
+            return True
+    return False
 
 
 def _owner_stamp_lost(entries: list[LeaseEntry], now_ms: int) -> "OwnerStampLostError":

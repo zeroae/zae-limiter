@@ -2172,7 +2172,11 @@ class Repository:
             item["GSI1SK"] = {"S": schema.gsi1_sk_child(entity_id)}
 
         try:
-            await client.put_item(
+            # A bucket create asserts this META absent with a `ConditionCheck`
+            # in its transaction (ADR-150), so a create racing an acquire can
+            # meet a transaction conflict: not applied, re-sent (review P2).
+            await self._put_item_retrying_conflict(
+                client,
                 TableName=self.table_name,
                 Item=item,
                 ConditionExpression="attribute_not_exists(PK)",
@@ -2538,7 +2542,11 @@ class Repository:
             update = f"SET #pid = :pid, {bump} REMOVE #g1pk, #g1sk"
             values[":pid"] = {"NULL": True}
         try:
-            response = await client.update_item(
+            # Every bucket create holds a `ConditionCheck` on this item in its
+            # transaction (ADR-150), so a busy entity's META write meets a
+            # transaction conflict; it did not apply and is re-sent (review P2).
+            response = await self._update_item_retrying_conflict(
+                client,
                 TableName=self.table_name,
                 Key={
                     "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
@@ -4247,6 +4255,28 @@ class Repository:
                 )
                 await asyncio.sleep(delay)
         return await client.update_item(**kwargs)
+
+    async def _put_item_retrying_conflict(self, client: Any, **kwargs: Any) -> Any:
+        """``PutItem``, retried with full jitter on a transaction conflict (#724).
+
+        The ``PutItem`` twin of :meth:`_update_item_retrying_conflict`: a
+        conflict means the write did not apply, so re-sending is safe.
+        """
+        for attempt in range(_ITEM_CONFLICT_MAX_RETRIES):
+            try:
+                return await client.put_item(**kwargs)
+            except ClientError as e:
+                if not _is_item_transaction_conflict(e):
+                    raise
+                delay = _conflict_backoff_s(attempt)
+                logger.debug(
+                    "TransactionConflictException on PutItem (attempt %d/%d), retrying in %.3fs",
+                    attempt + 1,
+                    _ITEM_CONFLICT_MAX_RETRIES,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+        return await client.put_item(**kwargs)
 
     def build_bypass_consume(
         self,

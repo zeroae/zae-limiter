@@ -24,6 +24,7 @@ from zae_limiter import (
     SyncRepository,
     ValidationError,
     __version__,
+    schema,
 )
 from zae_limiter.models import BucketState, Limit, LimitStatus, QuotaDonorDebit
 from zae_limiter.schema import BUCKET_FIELD_TK, bucket_attr, pk_bucket, sk_state
@@ -301,6 +302,69 @@ def _count_transactions(repo):
     return counts
 
 
+class TestMergedCommitFailures:
+    """The merged commit losing on one part (validation of #675): every part
+    is retried consumption-only, and the ledger is exact."""
+
+    @staticmethod
+    def _solo(repo):
+        repo.create_entity("solo", parent_id=None, name="solo")
+        return SyncRateLimiter(repository=repo, speculative_writes=False)
+
+    @staticmethod
+    def _admit_solo(sync_limiter):
+        with sync_limiter.acquire("solo", "search", {"rpm": 1}, also={"budget": {"weekly": 10}}):
+            pass
+
+    def test_a_lost_rf_lock_on_one_part(self, repo):
+        limiter = self._solo(repo)
+        self._admit_solo(limiter)
+        client = repo._get_client()
+        real = repo.transact_write
+        bumped: list[int] = []
+
+        def another_writer_first(items):
+            if len(items) > 1 and (not bumped):
+                bumped.append(1)
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": schema.pk_bucket(repo._namespace_id, "solo", "budget", 0)},
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="ADD rf :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            return real(items)
+
+        repo.transact_write = another_writer_first
+        self._admit_solo(limiter)
+        assert bumped == [1]
+        assert _consumed(repo, "solo", "search") == {"rpm": 2}
+        assert _consumed(repo, "solo", "budget") == {"weekly": 20}
+
+    def test_a_lost_create_race_on_one_part(self, repo):
+        limiter = self._solo(repo)
+        with limiter.acquire("solo", "search", {"rpm": 1}):
+            pass
+        rival = SyncRateLimiter(repository=repo, speculative_writes=False)
+        real = repo.transact_write
+        raced: list[int] = []
+
+        def rival_creates_first(items):
+            if len(items) > 1 and (not raced):
+                raced.append(1)
+                with rival.acquire("solo", "budget", {"weekly": 5}):
+                    pass
+            return real(items)
+
+        repo.transact_write = rival_creates_first
+        self._admit_solo(limiter)
+        assert raced == [1]
+        assert _consumed(repo, "solo", "search") == {"rpm": 2}
+        assert _consumed(repo, "solo", "budget") == {"weekly": 15}
+
+
 class TestSlowPathPlanning:
     def test_every_slow_part_commits_in_one_transaction(self, repo):
         limiter = SyncRateLimiter(repository=repo, speculative_writes=False)
@@ -480,10 +544,47 @@ class TestRejectionCache:
         repo.close()
 
 
+class TestCombinedError:
+    def test_an_iam_denial_outranks_another_error(self, repo):
+        """Review M4: with no 429 or 403, the first error won, so a throttle on
+        one resource could hide another's `AccessDeniedException`, and under
+        ALLOW the call was admitted unlimited instead of `PermissionDenied`
+        (#751)."""
+        throttled = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+        )
+        denied = ClientError({"Error": {"Code": "AccessDeniedException"}}, "UpdateItem")
+        limiter = SyncRateLimiter(repository=repo)
+        assert limiter._combined_error([throttled, denied], []) is denied
+        assert limiter._combined_error([throttled], []) is throttled
+
+
 class TestValidation:
     @pytest.fixture
     def multi_limiter(self, repo):
         return SyncRateLimiter(repository=repo)
+
+    @pytest.mark.parametrize("speculative", [True, False])
+    def test_a_negative_amount_is_refused_before_any_write(self, repo, speculative):
+        """Review M1: a negative amount is an `ADD +x` whose `tk >= -x`
+        condition always holds, so it minted tokens — one `{"rpm": -50}`
+        acquire, then 30 admitted against rpm=10. Refused before any I/O, in
+        `consume` and in every `also` entry."""
+        repo.set_resource_defaults("search", [Limit.per_day("rpm", 10)])
+        repo.set_resource_defaults("budget", [Limit.per_day("weekly", 10)])
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        for consume, also in (({"rpm": -50}, None), ({"rpm": 1}, {"budget": {"weekly": -5}})):
+            with pytest.raises(ValidationError, match="must be >= 0"):
+                with limiter.acquire("user", "search", consume, also=also):
+                    pass
+        admitted = 0
+        for _ in range(30):
+            try:
+                with limiter.acquire("user", "search", {"rpm": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                pass
+        assert admitted == 10
 
     def test_the_primary_resource_may_not_appear_in_also(self, multi_limiter):
         with pytest.raises(ValidationError, match="primary resource"):
@@ -754,6 +855,55 @@ class TestContendedQuotaMoveAcrossResources:
         assert exc_info.value.violations == []
         assert _consumed(repo, "solo", "daily") == {"rpd": 0}
         assert _consumed(repo, "solo", "budget") == {}
+
+    def test_a_move_lost_to_another_parts_lock_is_a_contended_429(self, repo):
+        """Review M2: in the merged commit, another part's lost `rf` lock was
+        counted as a lost quota move. After two, the slot was granted 0 and
+        the caller got an ordinary 429 pointing at the next reset (~11 hours
+        here) while the donor still held the whole quota. Losing the move to
+        another item's lock is contention: the 429 says "retry shortly"."""
+        now_ms = repo._now_ms()
+        repo._now_ms = lambda: now_ms
+        repo.set_resource_defaults("daily", [self.QUOTA])
+        repo.set_resource_cascade("daily", False)
+        repo.create_entity("solo", parent_id=None, name="solo")
+        state = BucketState.from_limit("solo", "daily", self.QUOTA, now_ms)
+        vu, _reset = SyncRateLimiter._materialisation_stamps(self.QUOTA, state, now_ms)
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "solo", "daily", [state], now_ms, shard_id=0, shard_count=1, vu=vu
+                )
+            ]
+        )
+        assert repo.bump_shard_count("solo", "daily", 1) == 2
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=False)
+        with limiter.acquire("solo", "budget", {"weekly": 1}):
+            pass
+        real = repo.transact_write
+        client = repo._get_client()
+        budget_key = {
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, "solo", "budget", 0)},
+            "SK": {"S": schema.sk_state()},
+        }
+
+        def another_writer_moves_budgets_rf(items):
+            if len(items) > 1:
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key=budget_key,
+                    UpdateExpression="ADD rf :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            return real(items)
+
+        repo.transact_write = another_writer_moves_budgets_rf
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with limiter.acquire("solo", "daily", {"rpd": 1}, also={"budget": {"weekly": 1}}):
+                    pytest.fail("a zeroed slot must not admit")
+        assert exc_info.value.contended is True
+        assert exc_info.value.retry_after_seconds < 1
 
 
 class TestDisabledCheckOnTheRejectionPath:

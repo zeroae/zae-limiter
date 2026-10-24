@@ -1839,8 +1839,11 @@ class SyncRepository:
             item["GSI1PK"] = {"S": schema.gsi1_pk_parent(self._namespace_id, parent_id)}
             item["GSI1SK"] = {"S": schema.gsi1_sk_child(entity_id)}
         try:
-            client.put_item(
-                TableName=self.table_name, Item=item, ConditionExpression="attribute_not_exists(PK)"
+            self._put_item_retrying_conflict(
+                client,
+                TableName=self.table_name,
+                Item=item,
+                ConditionExpression="attribute_not_exists(PK)",
             )
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
@@ -2156,7 +2159,8 @@ class SyncRepository:
             update = f"SET #pid = :pid, {bump} REMOVE #g1pk, #g1sk"
             values[":pid"] = {"NULL": True}
         try:
-            response = client.update_item(
+            response = self._update_item_retrying_conflict(
+                client,
                 TableName=self.table_name,
                 Key={
                     "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
@@ -3583,6 +3587,28 @@ class SyncRepository:
                 )
                 time.sleep(delay)
         return client.update_item(**kwargs)
+
+    def _put_item_retrying_conflict(self, client: Any, **kwargs: Any) -> Any:
+        """``PutItem``, retried with full jitter on a transaction conflict (#724).
+
+        The ``PutItem`` twin of :meth:`_update_item_retrying_conflict`: a
+        conflict means the write did not apply, so re-sending is safe.
+        """
+        for attempt in range(_ITEM_CONFLICT_MAX_RETRIES):
+            try:
+                return client.put_item(**kwargs)
+            except ClientError as e:
+                if not _is_item_transaction_conflict(e):
+                    raise
+                delay = _conflict_backoff_s(attempt)
+                logger.debug(
+                    "TransactionConflictException on PutItem (attempt %d/%d), retrying in %.3fs",
+                    attempt + 1,
+                    _ITEM_CONFLICT_MAX_RETRIES,
+                    delay,
+                )
+                time.sleep(delay)
+        return client.put_item(**kwargs)
 
     def build_bypass_consume(
         self,

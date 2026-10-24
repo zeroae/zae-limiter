@@ -869,7 +869,8 @@ class RateLimiter:
         Args:
             entity_id: Entity to acquire capacity for
             resource: Resource being accessed (e.g., "gpt-4")
-            consume: Amounts to consume by limit name
+            consume: Amounts to consume by limit name, each >= 0 (return
+                capacity with ``lease.release()``)
             limits: Override stored config with explicit limits (optional).
                 Cannot be combined with ``also``.
             use_stored_limits: DEPRECATED - limits are now always resolved from
@@ -890,9 +891,10 @@ class RateLimiter:
             ResourceDisabled: If the resource — or, with ``also``, any of the
                 resources — is disabled. Outranks ``RateLimitExceeded``.
             RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
-            ValidationError: If no limits configured at any level, or ``also``
-                is invalid (a bad or repeated resource name, too many
-                resources, or combined with ``limits``)
+            ValidationError: If no limits configured at any level, an amount
+                in ``consume`` or ``also`` is negative, or ``also`` is invalid
+                (a bad or repeated resource name, too many resources, or
+                combined with ``limits``)
             VersionMismatchError: If ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638). Never subject to
                 ``on_unavailable``.
@@ -2812,10 +2814,23 @@ class RateLimiter:
         single-resource acquire, on today's path.
 
         Raises:
-            ValidationError: For a bad resource name, the primary resource
+            ValidationError: For a negative amount in ``consume`` or any
+                ``also`` entry, a bad resource name, the primary resource
                 named in ``also``, more than ``MAX_ACQUIRE_RESOURCES``
                 resources, or ``also`` combined with ``limits``.
         """
+        # A negative amount is an `ADD +x` whose `tk >= -x` condition always
+        # holds: it mints tokens (review M1: one `{"rpm": -50}` acquire, then
+        # 30 admitted against rpm=10). Returning capacity is `release()`.
+        for part, amounts in [(resource, consume), *(also or {}).items()]:
+            negative = sorted(name for name, amount in amounts.items() if amount < 0)
+            if negative:
+                raise ValidationError(
+                    "consume",
+                    ", ".join(negative),
+                    f"amounts must be >= 0 (resource {part!r}); use lease.release() to "
+                    "return capacity",
+                )
         if not also:
             return [(resource, consume)]
         # A list of limits names no resource, so it cannot say which of the
@@ -2990,7 +3005,7 @@ class RateLimiter:
             disable_moves: bool,
             moves_contended: bool,
             reread: bool,
-            enforced: bool,
+            enforced: frozenset[str],
         ) -> Lease | Exception:
             resource, consume, shard, shard_count, parent_hint = part
             try:
@@ -3005,7 +3020,7 @@ class RateLimiter:
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
                     consistent_owner=reread,
-                    disable_bypass=enforced,
+                    disable_bypass=resource in enforced,
                 )
             except Exception as exc:
                 return exc
@@ -3015,7 +3030,7 @@ class RateLimiter:
             moves_contended: bool = False,
             redone: bool = False,
             reread: bool = False,
-            enforced: bool = False,
+            enforced: frozenset[str] = frozenset(),
         ) -> tuple[Lease, dict[str, frozenset[str]]]:
             # One name per part keeps the sync twin's lambda on one line (#513).
             outcomes = await asyncio.gather(
@@ -3054,15 +3069,20 @@ class RateLimiter:
             )
             try:
                 await lease._commit_initial()
-            except BypassLostError:
+            except BypassLostError as lost:
                 # A part's bypass was cleared between its config read and this
-                # commit (#311, review D5). Nothing was written; re-plan every
-                # part enforced, as `_slow_acquire` re-plans its pass. Left to
-                # propagate, it reached `acquire()`'s generic handler, which
-                # under ALLOW admitted the request without any limit.
-                if enforced:  # pragma: no cover
-                    raise AssertionError("an enforced plan carries no bypass write") from None
-                return await plan_and_commit(disable_moves, moves_contended, redone, reread, True)
+                # commit (#311, review D5). Nothing was written; re-plan the
+                # parts that lost it enforced, as `_slow_acquire` re-plans its
+                # pass. Left to propagate, it reached `acquire()`'s generic
+                # handler, which under ALLOW admitted without any limit. Only
+                # those parts: a resource still bypassed stays bypassed rather
+                # than being debited, and possibly rejecting the whole acquire,
+                # for another's clear (review M3). The set only grows, so the
+                # re-plans are bounded by the number of parts.
+                grown = enforced | (lost.resources or frozenset(part[0] for part in slow_parts))
+                if grown == enforced:  # pragma: no cover
+                    raise AssertionError("an enforced part carries no bypass write") from None
+                return await plan_and_commit(disable_moves, moves_contended, redone, reread, grown)
             except PeriodNotAppliedError:
                 # The retry found a quota period nobody has applied (#743):
                 # redo the pass once from a fresh read, which applies it. A
@@ -3205,6 +3225,10 @@ class RateLimiter:
         anything else. Every rejection's statuses are combined with the
         passed statuses of the resources admitted meanwhile, so
         ``retry_after_seconds`` is the wait until every resource can admit.
+        Among the rest, an IAM denial outranks any other error (review M4):
+        returned behind, say, a throttle on another resource, it would reach
+        ``on_unavailable=ALLOW`` as an outage and admit the call unlimited,
+        where #751 raises ``PermissionDenied`` under every mode.
         """
         for error in errors:
             if isinstance(error, ResourceDisabled):
@@ -3218,7 +3242,8 @@ class RateLimiter:
                 statuses + self._admitted_statuses(admitted),
                 contended=all(error.contended for error in rejections),
             )
-        return errors[0]
+        denied = next((error for error in errors if _access_denied_in(error) is not None), None)
+        return denied if denied is not None else errors[0]
 
     async def _do_acquire(
         self,

@@ -760,7 +760,8 @@ class SyncRateLimiter:
         Args:
             entity_id: Entity to acquire capacity for
             resource: Resource being accessed (e.g., "gpt-4")
-            consume: Amounts to consume by limit name
+            consume: Amounts to consume by limit name, each >= 0 (return
+                capacity with ``lease.release()``)
             limits: Override stored config with explicit limits (optional).
                 Cannot be combined with ``also``.
             use_stored_limits: DEPRECATED - limits are now always resolved from
@@ -781,9 +782,10 @@ class SyncRateLimiter:
             ResourceDisabled: If the resource — or, with ``also``, any of the
                 resources — is disabled. Outranks ``RateLimitExceeded``.
             RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
-            ValidationError: If no limits configured at any level, or ``also``
-                is invalid (a bad or repeated resource name, too many
-                resources, or combined with ``limits``)
+            ValidationError: If no limits configured at any level, an amount
+                in ``consume`` or ``also`` is negative, or ``also`` is invalid
+                (a bad or repeated resource name, too many resources, or
+                combined with ``limits``)
             VersionMismatchError: If ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638). Never subject to
                 ``on_unavailable``.
@@ -2230,10 +2232,19 @@ class SyncRateLimiter:
         single-resource acquire, on today's path.
 
         Raises:
-            ValidationError: For a bad resource name, the primary resource
+            ValidationError: For a negative amount in ``consume`` or any
+                ``also`` entry, a bad resource name, the primary resource
                 named in ``also``, more than ``MAX_ACQUIRE_RESOURCES``
                 resources, or ``also`` combined with ``limits``.
         """
+        for part, amounts in [(resource, consume), *(also or {}).items()]:
+            negative = sorted((name for name, amount in amounts.items() if amount < 0))
+            if negative:
+                raise ValidationError(
+                    "consume",
+                    ", ".join(negative),
+                    f"amounts must be >= 0 (resource {part!r}); use lease.release() to return capacity",
+                )
         if not also:
             return [(resource, consume)]
         if limits is not None:
@@ -2390,7 +2401,7 @@ class SyncRateLimiter:
             disable_moves: bool,
             moves_contended: bool,
             reread: bool,
-            enforced: bool,
+            enforced: frozenset[str],
         ) -> SyncLease | Exception:
             resource, consume, shard, shard_count, parent_hint = part
             try:
@@ -2405,7 +2416,7 @@ class SyncRateLimiter:
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
                     consistent_owner=reread,
-                    disable_bypass=enforced,
+                    disable_bypass=resource in enforced,
                 )
             except Exception as exc:
                 return exc
@@ -2415,7 +2426,7 @@ class SyncRateLimiter:
             moves_contended: bool = False,
             redone: bool = False,
             reread: bool = False,
-            enforced: bool = False,
+            enforced: frozenset[str] = frozenset(),
         ) -> tuple[SyncLease, dict[str, frozenset[str]]]:
             outcomes = self._run_in_executor(
                 *[
@@ -2444,10 +2455,11 @@ class SyncRateLimiter:
             )
             try:
                 lease._commit_initial()
-            except BypassLostError:
-                if enforced:
-                    raise AssertionError("an enforced plan carries no bypass write") from None
-                return plan_and_commit(disable_moves, moves_contended, redone, reread, True)
+            except BypassLostError as lost:
+                grown = enforced | (lost.resources or frozenset(part[0] for part in slow_parts))
+                if grown == enforced:
+                    raise AssertionError("an enforced part carries no bypass write") from None
+                return plan_and_commit(disable_moves, moves_contended, redone, reread, grown)
             except PeriodNotAppliedError:
                 if redone:
                     raise
@@ -2574,6 +2586,10 @@ class SyncRateLimiter:
         anything else. Every rejection's statuses are combined with the
         passed statuses of the resources admitted meanwhile, so
         ``retry_after_seconds`` is the wait until every resource can admit.
+        Among the rest, an IAM denial outranks any other error (review M4):
+        returned behind, say, a throttle on another resource, it would reach
+        ``on_unavailable=ALLOW`` as an outage and admit the call unlimited,
+        where #751 raises ``PermissionDenied`` under every mode.
         """
         for error in errors:
             if isinstance(error, ResourceDisabled):
@@ -2585,7 +2601,8 @@ class SyncRateLimiter:
                 statuses + self._admitted_statuses(admitted),
                 contended=all(error.contended for error in rejections),
             )
-        return errors[0]
+        denied = next((error for error in errors if _access_denied_in(error) is not None), None)
+        return denied if denied is not None else errors[0]
 
     def _do_acquire(
         self,

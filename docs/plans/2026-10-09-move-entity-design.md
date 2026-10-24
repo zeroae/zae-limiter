@@ -81,7 +81,7 @@ consistent, typically sub-second). No other item carries GSI1 keys.
 | `_entity_cache` in another process (v0.16) | old `parent_id` | the child's returned item, after the call | **1 debit** per (process, entity), kept |
 | `_cascade_cache` | per-resource policy | not keyed on the parent; stays valid unless the move changes the effective cascade (to/from no parent), which the item's stamp corrects (§5) | as above |
 | Rejection cache (`parent_of`) | old parent's shards | age cap | none: it only rejects (ADR-147). A child can get a 429 judged on the old parent for ≤ `rejection_cache_ttl` (default 1 s) |
-| Slow pass in flight across the move | old META | `pgen` pin makes its owner stamp fail → consumption-only retry | that one acquire (in flight, §7) |
+| Slow pass in flight across the move, or reading a stale META replica | old META | `pgen` pin makes its owner stamp fail; the image shows the same `pinc` at a higher `pgen`, so the acquire re-plans once from a strongly consistent read (`OwnerStampLostError`, +1 RCU) | **0**: the new parent is debited. Was: the consumption-only retry debited the old parent on every such pass while META reads lagged (review P1) |
 
 The issue's three options for cache staleness (refresh from the item, a TTL, both): **refresh
 from the item**. Every speculative response already returns the stamp at no cost; a TTL would
