@@ -869,7 +869,8 @@ class RateLimiter:
         Args:
             entity_id: Entity to acquire capacity for
             resource: Resource being accessed (e.g., "gpt-4")
-            consume: Amounts to consume by limit name
+            consume: Amounts to consume by limit name, each >= 0 (return
+                capacity with ``lease.release()``)
             limits: Override stored config with explicit limits (optional).
                 Cannot be combined with ``also``.
             use_stored_limits: DEPRECATED - limits are now always resolved from
@@ -890,9 +891,10 @@ class RateLimiter:
             ResourceDisabled: If the resource — or, with ``also``, any of the
                 resources — is disabled. Outranks ``RateLimitExceeded``.
             RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
-            ValidationError: If no limits configured at any level, or ``also``
-                is invalid (a bad or repeated resource name, too many
-                resources, or combined with ``limits``)
+            ValidationError: If no limits configured at any level, an amount
+                in ``consume`` or ``also`` is negative, or ``also`` is invalid
+                (a bad or repeated resource name, too many resources, or
+                combined with ``limits``)
             VersionMismatchError: If ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638). Never subject to
                 ``on_unavailable``.
@@ -2812,10 +2814,23 @@ class RateLimiter:
         single-resource acquire, on today's path.
 
         Raises:
-            ValidationError: For a bad resource name, the primary resource
+            ValidationError: For a negative amount in ``consume`` or any
+                ``also`` entry, a bad resource name, the primary resource
                 named in ``also``, more than ``MAX_ACQUIRE_RESOURCES``
                 resources, or ``also`` combined with ``limits``.
         """
+        # A negative amount is an `ADD +x` whose `tk >= -x` condition always
+        # holds: it mints tokens (review M1: one `{"rpm": -50}` acquire, then
+        # 30 admitted against rpm=10). Returning capacity is `release()`.
+        for part, amounts in [(resource, consume), *(also or {}).items()]:
+            negative = sorted(name for name, amount in amounts.items() if amount < 0)
+            if negative:
+                raise ValidationError(
+                    "consume",
+                    ", ".join(negative),
+                    f"amounts must be >= 0 (resource {part!r}); use lease.release() to "
+                    "return capacity",
+                )
         if not also:
             return [(resource, consume)]
         # A list of limits names no resource, so it cannot say which of the

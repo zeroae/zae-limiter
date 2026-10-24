@@ -485,6 +485,28 @@ class TestValidation:
     def multi_limiter(self, repo):
         return SyncRateLimiter(repository=repo)
 
+    @pytest.mark.parametrize("speculative", [True, False])
+    def test_a_negative_amount_is_refused_before_any_write(self, repo, speculative):
+        """Review M1: a negative amount is an `ADD +x` whose `tk >= -x`
+        condition always holds, so it minted tokens — one `{"rpm": -50}`
+        acquire, then 30 admitted against rpm=10. Refused before any I/O, in
+        `consume` and in every `also` entry."""
+        repo.set_resource_defaults("search", [Limit.per_minute("rpm", 10)])
+        repo.set_resource_defaults("budget", [Limit.per_minute("weekly", 10)])
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        for consume, also in (({"rpm": -50}, None), ({"rpm": 1}, {"budget": {"weekly": -5}})):
+            with pytest.raises(ValidationError, match="must be >= 0"):
+                with limiter.acquire("user", "search", consume, also=also):
+                    pass
+        admitted = 0
+        for _ in range(30):
+            try:
+                with limiter.acquire("user", "search", {"rpm": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                pass
+        assert admitted == 10
+
     def test_the_primary_resource_may_not_appear_in_also(self, multi_limiter):
         with pytest.raises(ValidationError, match="primary resource"):
             with multi_limiter.acquire("user", "search", {"rpm": 1}, also={"search": {"rpm": 1}}):

@@ -1298,7 +1298,10 @@ recommended options **provisionally** (see `docs/plans/2026-10-09-multi-resource
 
 - **Boundary** (`RateLimiter._acquire_parts`, before any I/O): `validate_resource` on every
   name; the primary in `also`, more than `MAX_ACQUIRE_RESOURCES = 16` resources, or `limits=`
-  with a non-empty `also` (D8) is a `ValidationError`. An empty `also` takes today's path.
+  with a non-empty `also` (D8) is a `ValidationError`. An empty `also` takes today's path. So is
+  a negative amount in `consume` or any `also` entry, on every acquire, single-resource included:
+  it is an `ADD +x` whose `tk >= -x` condition always holds, so it minted tokens (review M1;
+  returning capacity is `release()`).
 - **Fast path** (`_acquire_resources`): `_rejection_precheck` for **every** resource before
   any write (a known-short one raises with 0 calls), then `_try_speculative_acquire` for all
   of them through one `asyncio.gather` with the `_attempt` wrapper (D4), its `prechecked=`
