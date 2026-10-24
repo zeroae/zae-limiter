@@ -29,7 +29,7 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 | `available()` / `time_until_available()` | 1 + shards/4 | 0 | Thin wrappers over `check_availability()`, so the cost is the same and the two can never disagree |
 | `get_limits()` | 1 | 0 | Query operation |
 | `set_limits()` | 1 | N+1 | Query + N PutItems |
-| `delete_entity()` | 1 | batched | Query + BatchWrite in 25-item chunks |
+| `delete_entity()` | 1 per query page | batched | Queries every page of the entity's PK and of GSI3, then BatchWrite in 25-item chunks, resending unprocessed deletes |
 
 !!! note "O(1) Cost Optimization (v0.7.0)"
     ADR-114 (Composite Bucket Items) and ADR-115 (ADD-Based Writes) reduced `acquire()` costs

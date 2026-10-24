@@ -76,6 +76,9 @@ logger = logging.getLogger(__name__)
 _BATCH_GET_MAX_RETRIES = 3
 _CLIENT_MIN_RATCHET_ATTEMPTS = 3
 _BATCH_GET_RETRY_BASE_DELAY = 0.05
+_BATCH_WRITE_MAX_RETRIES = 5
+_BATCH_WRITE_RETRY_BASE_DELAY = 0.05
+_BATCH_WRITE_MAX_ITEMS = 25
 _OPERATION_MAX_ATTEMPTS = 4
 _OPERATION_RETRY_BASE_DELAY = 0.05
 _OPERATION_RETRY_CODES = frozenset(
@@ -1337,6 +1340,9 @@ class SyncRepository:
         Raises:
             NamespaceStateError: If the namespace is ``"active"`` (cannot purge
                 an active namespace).
+            RateLimiterUnavailable: DynamoDB kept some deletes unprocessed
+                after the retries. The namespace stays ``"purging"``; re-run
+                the purge to finish.
         """
         client = self._get_client()
         pk = schema.pk_system(schema.RESERVED_NAMESPACE)
@@ -1376,15 +1382,14 @@ class SyncRepository:
             response = client.query(**query_params)
             items = response.get("Items", [])
             if items:
-                delete_requests = [
-                    {"DeleteRequest": {"Key": {"PK": i["PK"], "SK": i["SK"]}}} for i in items
-                ]
-                for batch_start in range(0, len(delete_requests), 25):
-                    chunk = delete_requests[batch_start : batch_start + 25]
-                    unprocessed: list[Any] = chunk
-                    while unprocessed:
-                        resp = client.batch_write_item(RequestItems={self.table_name: unprocessed})
-                        unprocessed = resp.get("UnprocessedItems", {}).get(self.table_name, [])
+                deleted, left = self._batch_delete_all(
+                    [{"PK": i["PK"], "SK": i["SK"]} for i in items]
+                )
+                if left:
+                    raise RateLimiterUnavailable(
+                        f"Could not purge namespace '{namespace_id}': DynamoDB left {left} delete(s) unprocessed after {_BATCH_WRITE_MAX_RETRIES} retries ({deleted} of {len(items)} on this page deleted); run the purge again to finish",
+                        stack_name=self.stack_name,
+                    )
             if "LastEvaluatedKey" not in response:
                 break
             exclusive_start_key = response["LastEvaluatedKey"]
@@ -1901,68 +1906,160 @@ class SyncRepository:
         """
         Delete an entity and all its related records.
 
+        Deletes the entity's reset and top-up operation records, then every
+        bucket item GSI3 indexes under it, then every item under the entity's
+        PK (configs, usage snapshots, and ``#META`` last). The audit event
+        records how many items this call deleted (``records_deleted``) and
+        whether the entity is now gone (``complete``).
+
         Args:
             entity_id: ID of the entity to delete
             principal: Caller identity for audit logging
+
+        Raises:
+            RateLimiterUnavailable: DynamoDB kept some deletes unprocessed
+                after the retries (#742). What this call deleted is audited
+                with ``complete: False``, and what is left can still be found,
+                so calling ``delete_entity`` again finishes it and audits the
+                rest.
+        """
+        items = self._query_all(
+            {
+                "TableName": self.table_name,
+                "KeyConditionExpression": "PK = :pk",
+                "ExpressionAttributeValues": {
+                    ":pk": {"S": schema.pk_entity(self._namespace_id, entity_id)}
+                },
+                "ProjectionExpression": "PK, SK",
+            }
+        )
+        bucket_items = self._query_all(
+            {
+                "TableName": self.table_name,
+                "IndexName": schema.GSI3_NAME,
+                "KeyConditionExpression": "GSI3PK = :gsi3pk",
+                "ExpressionAttributeValues": {
+                    ":gsi3pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)}
+                },
+            }
+        )
+        shard0_pks = [item["PK"]["S"] for item in bucket_items if item["PK"]["S"].endswith("#0")]
+        pages = self._run_in_executor(
+            *[
+                lambda pk=pk: self._query_all(
+                    {
+                        "TableName": self.table_name,
+                        "KeyConditionExpression": "PK = :pk AND begins_with(SK, :op)",
+                        "ExpressionAttributeValues": {
+                            ":pk": {"S": pk},
+                            ":op": {"S": schema.SK_OPERATION_PREFIX},
+                        },
+                        "ProjectionExpression": "PK, SK",
+                    }
+                )
+                for pk in shard0_pks
+            ]
+        )
+        record_items = [record for page in pages for record in page]
+        meta_sk = schema.sk_meta()
+        phases = [
+            record_items,
+            bucket_items,
+            sorted(items, key=lambda item: item["SK"]["S"] == meta_sk),
+        ]
+        seen: set[tuple[str, str]] = set()
+        phase_keys: list[list[dict[str, Any]]] = []
+        for phase in phases:
+            keys: list[dict[str, Any]] = []
+            for item in phase:
+                key_id = (item["PK"]["S"], item["SK"]["S"])
+                if key_id not in seen:
+                    seen.add(key_id)
+                    keys.append({"PK": item["PK"], "SK": item["SK"]})
+            phase_keys.append(keys)
+        if not seen:
+            return
+        deleted = 0
+        left = 0
+        for keys in phase_keys:
+            landed, left = self._batch_delete_all(keys)
+            deleted += landed
+            if left:
+                break
+        if deleted:
+            try:
+                self._log_audit_event(
+                    action=AuditAction.ENTITY_DELETED,
+                    entity_id=entity_id,
+                    principal=principal,
+                    details={"records_deleted": deleted, "complete": not left},
+                )
+            except Exception:
+                if not left:
+                    raise
+                logger.warning("Could not audit an incomplete entity delete", exc_info=True)
+        if left:
+            raise RateLimiterUnavailable(
+                f"Could not delete the entity: DynamoDB left {left} delete(s) unprocessed after {_BATCH_WRITE_MAX_RETRIES} retries ({deleted} of {len(seen)} item(s) deleted); call delete_entity again to finish",
+                stack_name=self.stack_name,
+                entity_id=entity_id,
+            )
+
+    def _query_all(self, params: dict[str, Any]) -> list[dict[str, Any]]:
+        """Every item a Query matches, following ``LastEvaluatedKey`` (#742)."""
+        client = self._get_client()
+        found: list[dict[str, Any]] = []
+        start_key: dict[str, Any] | None = None
+        while True:
+            page_params = dict(params)
+            if start_key:
+                page_params["ExclusiveStartKey"] = start_key
+            page = client.query(**page_params)
+            found.extend(page.get("Items", []))
+            start_key = page.get("LastEvaluatedKey")
+            if not start_key:
+                return found
+
+    def _batch_delete_all(self, keys: list[dict[str, Any]]) -> tuple[int, int]:
+        """Delete every key with BatchWriteItem, resending ``UnprocessedItems``.
+
+        DynamoDB may apply part of a BatchWriteItem and return the rest in
+        ``UnprocessedItems`` -- documented behaviour under throttling, not an
+        error, and boto3 does not resend it (#742). Sends ``keys`` in requests
+        of 25, in order, and resends each request's remainder with full-jitter
+        backoff. A remainder that outlasts ``_BATCH_WRITE_MAX_RETRIES``
+        retries stops it: no later request is sent, so every key after it is
+        untouched. Deletes are idempotent, so the caller can run the whole
+        operation again to finish it.
+
+        Args:
+            keys: DynamoDB key dicts, each naming a distinct item.
+
+        Returns:
+            ``(deleted, left)``: how many deletes DynamoDB processed, and how
+            many it still held unprocessed when the retries ran out (0 when
+            every key was deleted). The caller raises on ``left``.
         """
         client = self._get_client()
-        response = client.query(
-            TableName=self.table_name,
-            KeyConditionExpression="PK = :pk",
-            ExpressionAttributeValues={
-                ":pk": {"S": schema.pk_entity(self._namespace_id, entity_id)}
-            },
-        )
-        items = response.get("Items", [])
-        gsi3_response = client.query(
-            TableName=self.table_name,
-            IndexName="GSI3",
-            KeyConditionExpression="GSI3PK = :gsi3pk",
-            ExpressionAttributeValues={
-                ":gsi3pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)}
-            },
-        )
-        bucket_items = gsi3_response.get("Items", [])
-
-        def _records_in(pk: str) -> list[dict[str, Any]]:
-            found: list[dict[str, Any]] = []
-            start_key: dict[str, Any] | None = None
+        deleted = 0
+        for start in range(0, len(keys), _BATCH_WRITE_MAX_ITEMS):
+            pending: list[dict[str, Any]] = [
+                {"DeleteRequest": {"Key": key}}
+                for key in keys[start : start + _BATCH_WRITE_MAX_ITEMS]
+            ]
+            attempts = 0
             while True:
-                params: dict[str, Any] = {
-                    "TableName": self.table_name,
-                    "KeyConditionExpression": "PK = :pk AND begins_with(SK, :op)",
-                    "ExpressionAttributeValues": {
-                        ":pk": {"S": pk},
-                        ":op": {"S": schema.SK_OPERATION_PREFIX},
-                    },
-                    "ProjectionExpression": "PK, SK",
-                }
-                if start_key:
-                    params["ExclusiveStartKey"] = start_key
-                page = client.query(**params)
-                found.extend(page.get("Items", []))
-                start_key = page.get("LastEvaluatedKey")
-                if not start_key:
-                    return found
-
-        shard0_pks = [item["PK"]["S"] for item in bucket_items if item["PK"]["S"].endswith("#0")]
-        pages = self._run_in_executor(*[lambda pk=pk: _records_in(pk) for pk in shard0_pks])
-        record_items = [record for page in pages for record in page]
-        all_items = items + bucket_items + record_items
-        if not all_items:
-            return
-        delete_requests = [
-            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in all_items
-        ]
-        for i in range(0, len(delete_requests), 25):
-            chunk = delete_requests[i : i + 25]
-            client.batch_write_item(RequestItems={self.table_name: chunk})
-        self._log_audit_event(
-            action=AuditAction.ENTITY_DELETED,
-            entity_id=entity_id,
-            principal=principal,
-            details={"records_deleted": len(all_items)},
-        )
+                response = client.batch_write_item(RequestItems={self.table_name: pending})
+                unprocessed = response.get("UnprocessedItems", {}).get(self.table_name) or []
+                deleted += len(pending) - len(unprocessed)
+                pending = unprocessed
+                if not pending:
+                    break
+                attempts += 1
+                if attempts > _BATCH_WRITE_MAX_RETRIES:
+                    return (deleted, len(pending))
+                time.sleep(random.uniform(0, _BATCH_WRITE_RETRY_BASE_DELAY * 2 ** (attempts - 1)))
+        return (deleted, 0)
 
     def get_children(self, parent_id: str) -> list[Entity]:
         """Get all children of a parent entity."""
