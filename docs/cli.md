@@ -38,7 +38,7 @@ The CLI respects standard AWS environment variables:
 Most data-access commands accept `--namespace` / `-N` to scope operations to a specific namespace. When omitted, operations default to the `"default"` namespace.
 
 !!! note "Namespace registration"
-    Commands that **write** (`set-*`, `delete-*`, `entity create`, `disable` / `enable` / `clear-disabled`, `set-cascade` / `clear-cascade`, `limits apply`) register the namespace if it does not exist yet. Commands that only **read** never do: they exit 1 and name the register command (see [Read-Only Commands](#read-only-commands)).
+    Commands that **write** (`set-*`, `delete-*`, `entity create`, `disable` / `enable` / `clear-disabled`, `set-cascade` / `clear-cascade`, `entity set-parent`, `entity reset` / `entity top-up`, `limits apply`) register the namespace if it does not exist yet. Commands that only **read** never do: they exit 1 and name the register command (see [Read-Only Commands](#read-only-commands)).
 
 ```bash
 # Entity operations in a specific namespace
@@ -89,6 +89,17 @@ deployed no Lambda code) is refused the same way, as `run unknown`.
 
 Every other command intends to write and keeps its behaviour: `deploy` and `upgrade` provision
 and update, and the data commands that write register a missing namespace.
+
+`upgrade` applies this version's CloudFormation template to an existing stack before it pushes
+Lambda code, so the stack's IAM policies match the client (`deploy` leaves an existing stack's
+template alone). Unlike the other writing commands it does not connect through
+`Repository.open()`: it never auto-updates the Lambdas on connect (that would push code before
+the template) and never provisions a missing stack. Its steps are the template, the Lambda code,
+the version record, then the stack tags; it reports "already up to date" when the template has
+nothing to change and the Lambdas already run this version. The template goes through a change set; a change that would replace or remove a
+resource is refused, nothing is applied, no code is pushed, and the command exits 1 naming each
+resource. `--lambda-only` skips the template. Run `zae-limiter upgrade` on each stack before
+rolling out v0.17.0 clients: their bucket writes need IAM actions the v0.16.0 policies lack.
 
 ## Declarative Limits
 
@@ -531,6 +542,91 @@ clearing a policy needs a stack whose Lambdas are 0.16.0 or later — otherwise 
 
 `resource get-defaults` and `entity get-limits` print `Cascade: on (explicit)` or
 `Cascade: off (explicit)` when that level sets a policy, and nothing when it inherits.
+
+## Reset and Top-Up
+
+`entity reset` and `entity top-up` change an entity's balance on one resource **now**, on every
+shard, without touching its configuration. Use them for a plan upgrade, a purchase of more
+allowance, or a support action that gives a user their allowance back. See
+[ADR-149](adr/149-reset-and-top-up.md) and the
+[Reset and Top-Up guide](guide/reset-and-top-up.md).
+
+```bash
+# Give user-123 its whole gpt-4 allowance back
+zae-limiter entity reset user-123 --resource gpt-4
+
+# Reset only the session quota
+zae-limiter entity reset user-123 -r claude --limit session
+
+# A purchase: 5,000 more session tokens, this period only
+zae-limiter entity top-up user-123 -r claude --add session:5000
+
+# A plan upgrade from 10,000 to 25,000 a day: new plan, then the difference
+zae-limiter entity set-limits user-123 -r claude -l ...
+zae-limiter entity top-up user-123 -r claude --add daily:15000
+```
+
+| Command | Option | Meaning |
+|---------|--------|---------|
+| `entity reset ID` | `--resource/-r` (required) | The resource to reset, one at a time |
+| | `--limit/-l` (repeatable) | Limits to reset; omit for every limit on the resource |
+| `entity top-up ID` | `--resource/-r` (required) | The resource to top up |
+| | `--add/-a LIMIT:N` (repeatable, required) | Add `N` whole tokens to `LIMIT`; repeats add up |
+| both | `--idempotency-key KEY` | Name the operation (1-64 of letters, digits, `.` `_` `:` `-`); a retry with the same key within three days is applied once |
+
+**Pass `--idempotency-key` when you may retry.** Without one, an error leaves the outcome
+unknown: the command may have landed before it failed, and running it again may apply it twice.
+
+**What each does**
+
+| Limit shape | `reset` | `top-up --add L:N` |
+|-------------|---------|--------------------|
+| Dripping (`rpm`, …) | Back to its ceiling; debt forgiven | At most the room below its ceiling (a refund). Less than asked is reported on stderr |
+| Calendar quota | Back to its share; a new period starts | Exactly `N`, above the plan if need be, until the next reset |
+| Session quota | Its current window ends; the next request opens a fresh one at its full share (the balance is left for that request to restore) | Exactly `N` until the window ends; with no live window, one opens now |
+
+Neither command touches the consumption counter, the `disabled` flag, configuration, the
+parent's buckets or other resources. A reset of an entity that has never acquired is a no-op;
+a quota top-up for one creates its bucket.
+
+A top-up of a limit not yet on the bucket (configured after the bucket existed, never used
+since) exits 1 naming it. A quota top-up needs a stack whose Lambdas are **0.17.0 or later**
+(an older aggregator would clamp the purchase away): otherwise the command exits 1 and names
+`zae-limiter upgrade`. The
+first top-up raises the stack's minimum client version to 0.17.0. A reset is not gated.
+
+## Moving an Entity to a New Parent
+
+`entity set-parent` moves an entity under another parent, or makes it a root entity. Give
+exactly one of `--parent` or `--none`. See [ADR-150](adr/150-move-entity-to-new-parent.md).
+
+```bash
+# Move a user to another organisation
+zae-limiter entity set-parent user-123 --parent org-b
+
+# Make a user a root entity
+zae-limiter entity set-parent user-123 --none
+```
+
+```
+Moved entity 'user-123' from org-a to org-b (3 buckets stamped)
+```
+
+The move is eager, like a cascade policy change: the entity's buckets are restamped at once,
+and every process debits the new parent from its next acquire. Usage already charged to the old
+parent stays there, including by leases open across the move. Whether the entity debits its new
+parent follows its [cascade policy](#cascade-policy-per-resource), falling back to the
+`--cascade` flag it was created with, which the move does not change. A root entity created
+without `--cascade` and moved under a parent therefore does not cascade until you run
+`entity set-cascade ID on`.
+
+The command refuses a parent that does not exist and a move that would make the entity its own
+ancestor, and exits 1 for either. If restamping stops part-way (throttling, for example), it
+exits 1 with the number of buckets restamped: the move itself landed, and re-running the same
+command finishes it. It needs a stack whose Lambdas are 0.17.0 or later and raises the stack's
+minimum client version to 0.17.0. Restart every client after upgrading, before the first move:
+a process that opened the stack with an older version keeps debiting the old parent until it
+reopens it.
 
 ## Namespace Lifecycle
 

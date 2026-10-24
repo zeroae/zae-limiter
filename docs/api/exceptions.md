@@ -14,6 +14,7 @@ ZAELimiterError (base)
 │   └── EntityExistsError
 ├── InfrastructureError
 │   ├── RateLimiterUnavailable
+│   │   └── PermissionDenied
 │   ├── StackOperationError
 │   ├── StackAlreadyExistsError
 │   ├── InfrastructureNotFoundError
@@ -69,6 +70,13 @@ ZAELimiterError (base)
 ## Infrastructure Exceptions
 
 ::: zae_limiter.exceptions.RateLimiterUnavailable
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+
+::: zae_limiter.exceptions.PermissionDenied
     options:
       show_root_heading: true
       show_source: false
@@ -239,7 +247,8 @@ except RateLimitExceeded as e:
     # Only the passed limits
     print(f"Passed: {len(e.passed)}")
 
-    # Primary bottleneck (longest wait time)
+    # Primary bottleneck (longest wait time). Always set; prefer it to
+    # `e.violations[0]`, which is empty on a contended 429 (see below)
     print(f"Bottleneck: {e.primary_violation.limit_name}")
     print(f"Total retry after: {e.retry_after_seconds}s")
 ```
@@ -252,6 +261,7 @@ The `as_dict()` method returns a dictionary suitable for API responses:
 {
     "error": "rate_limit_exceeded",
     "message": "Rate limit exceeded for user-123/api: [rpm]. Retry after 45.2s",
+    "contended": False,
     "retry_after_seconds": 45.2,
     "retry_after_ms": 45200,
     "limits": [
@@ -289,6 +299,32 @@ The `as_dict()` method returns a dictionary suitable for API responses:
     returned in a single `limits` array. Limits you did not name in `consume` are
     never reported, since they never gate admission. Use the `exceeded` field to
     distinguish between violations and passed limits.
+
+#### `contended`: retry shortly
+
+A `RateLimitExceeded` with `contended == True` does not mean the entity is out of
+capacity. Its write kept colliding with concurrent DynamoDB transactions on the same
+bucket item (`TransactionConflictException`), so the limiter gave up after a few
+retries instead of treating short-lived contention as an outage. Nothing was debited.
+`retry_after_seconds` is short (about 0.1 s). Return it as a 429 like any other
+rejection; the client should simply retry soon.
+
+!!! warning "`violations` can be empty"
+    On a contended 429 every status has `exceeded: false`, so `e.violations` is an
+    **empty list** and `e.violations[0]` raises `IndexError`. `primary_violation` is
+    always set: on a contended 429 it is the declared limit with the longest wait.
+    Check `contended` first, or read `primary_violation` / `retry_after_seconds`,
+    which are safe for every `RateLimitExceeded`:
+
+    ```python
+    from zae_limiter import RateLimitExceeded
+
+
+    def describe(e: RateLimitExceeded) -> str:
+        if e.contended:
+            return f"busy, retry in {e.retry_after_seconds:.1f}s"
+        return f"{e.primary_violation.limit_name} exhausted"
+    ```
 
 #### `kind`: how the limit recovers
 

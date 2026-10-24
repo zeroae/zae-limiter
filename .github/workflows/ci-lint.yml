@@ -8,12 +8,6 @@ on:
       - 'release/[0-9]*'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    branches:
-      - main
-      - 'release/v*'
-      - 'release/[0-9]*'
-      - 'milestone/v*'
-      - 'milestone/[0-9]*'
   workflow_dispatch:
 
 permissions:
@@ -31,5 +25,5 @@ jobs:
         # Must match the pin in pyproject.toml and .pre-commit-config.yaml, or CI
         # generates the sync twins with one formatter and checks them with another
         # (#486). The check-ruff-pin hook guards the other three declarations.
-        run: pip install ruff==0.16.10
+        run: pip install ruff==0.17.0
       - uses: pre-commit/action@v3.0.1
