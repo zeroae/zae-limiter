@@ -5264,9 +5264,7 @@ class Repository:
                     # A soft limit cannot have failed the condition (#467).
                     app_exhausted = any(
                         b.limit_name != schema.WCU_LIMIT_NAME
-                        and not b.soft
-                        and not b.bypass
-                        and b.tokens_milli < consume.get(b.limit_name, 0) * 1000
+                        and b.fast_path_short(consume.get(b.limit_name, 0))
                         for b in old_buckets
                     )
                     if wcu_exhausted and app_exhausted:

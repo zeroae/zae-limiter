@@ -1382,6 +1382,18 @@ class BucketState:
         cp, _ra, _rp = self._scheduled_params(now_ms)
         return cp // self.shard_count
 
+    def fast_path_short(self, amount: int) -> bool:
+        """Whether this image fails the fast path's balance term for ``amount`` tokens.
+
+        The speculative condition's per-limit term, read off a failure image:
+        ``tk >= amount``, waived for a soft limit (#467) or a bypassed bucket
+        (#311), whose stamps admit it. A stamp seen here is live: an expired
+        one is classified first, as a closed window. One predicate for the
+        repository's failure classification and the limiter's "failed only
+        on its stamp" test (#741), so the two cannot disagree.
+        """
+        return not self.soft and not self.bypass and self.tokens_milli < amount * 1000
+
     def ceiling_milli(self, now_ms: int) -> int:
         """The most this shard may hold at ``now_ms`` — the refill clamp (ADR-145).
 
