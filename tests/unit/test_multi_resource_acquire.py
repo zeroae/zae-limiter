@@ -658,8 +658,9 @@ class TestValidation:
         condition always holds, so it minted tokens — one `{"rpm": -50}`
         acquire, then 30 admitted against rpm=10. Refused before any I/O, in
         `consume` and in every `also` entry."""
-        await repo.set_resource_defaults("search", [Limit.per_minute("rpm", 10)])
-        await repo.set_resource_defaults("budget", [Limit.per_minute("weekly", 10)])
+        # Per day, so no token refills while 30 acquires run on a loaded host.
+        await repo.set_resource_defaults("search", [Limit.per_day("rpm", 10)])
+        await repo.set_resource_defaults("budget", [Limit.per_day("weekly", 10)])
         limiter = RateLimiter(repository=repo, speculative_writes=speculative)
         for consume, also in (
             ({"rpm": -50}, None),
