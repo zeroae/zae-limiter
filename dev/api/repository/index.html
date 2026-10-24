@@ -1832,6 +1832,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.build_stamp_fix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;build_stamp_fix
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.fix_bucket_stamps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;fix_bucket_stamps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.transact_write" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3410,6 +3432,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;build_bypass_consume
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.fix_bucket_stamps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;fix_bucket_stamps
       
     </span>
   </a>
@@ -6494,6 +6527,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.build_stamp_fix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;build_stamp_fix
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.fix_bucket_stamps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;fix_bucket_stamps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.transact_write" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -8079,6 +8134,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.fix_bucket_stamps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;fix_bucket_stamps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository_protocol.RepositoryProtocol.resolve_bypass_from_fetched" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -8437,7 +8503,7 @@ counterpart is available with the same signature.</p>
 
 
 <a href="#zae_limiter.repository.Repository" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Repository</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">rejection_cache_ttl</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_TTL">DEFAULT_REJECTION_CACHE_TTL</span></span><span class="p">,</span> <span class="n">rejection_cache_size</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></span><span class="p">,</span> <span class="n">_skip_deprecation_warning</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Repository</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">rejection_cache_ttl</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_TTL">DEFAULT_REJECTION_CACHE_TTL</span></span><span class="p">,</span> <span class="n">rejection_cache_size</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></span><span class="p">,</span> <span class="n">stamp_ttl</span><span class="o">=</span><span class="n"><span title="zae_limiter.schema.DEFAULT_STAMP_TTL_SECONDS">DEFAULT_STAMP_TTL_SECONDS</span></span><span class="p">,</span> <span class="n">_skip_deprecation_warning</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -8585,6 +8651,27 @@ request without a DynamoDB call (default: 1.0, 0 to disable). ADR-147.</p>
             </td>
             <td>
                   <code><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>stamp_ttl</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Seconds a <code>bypass</code> or soft stamp this repository writes
+stands after the config read that justified it (default: 60, at
+least 10). ADR-151 decision 8: a stamp a fan-out missed keeps its
+old meaning for at most this long, and every bypassed or soft
+bucket renews its stamp through one slow pass per shard per
+<code>stamp_ttl</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="zae_limiter.schema.DEFAULT_STAMP_TTL_SECONDS">DEFAULT_STAMP_TTL_SECONDS</span></code>
             </td>
           </tr>
       </tbody>
@@ -8742,7 +8829,7 @@ or <code>"zae-limiter"</code>, namespace <code>"default"</code>.</p>
   </span>
 
 <a href="#zae_limiter.repository.Repository.open" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">open</span><span class="p">(</span><span class="n">namespace</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">stack</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">rejection_cache_ttl</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_TTL">DEFAULT_REJECTION_CACHE_TTL</span></span><span class="p">,</span> <span class="n">rejection_cache_size</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">open</span><span class="p">(</span><span class="n">namespace</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">stack</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">rejection_cache_ttl</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_TTL">DEFAULT_REJECTION_CACHE_TTL</span></span><span class="p">,</span> <span class="n">rejection_cache_size</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></span><span class="p">,</span> <span class="n">stamp_ttl</span><span class="o">=</span><span class="n"><span title="zae_limiter.schema.DEFAULT_STAMP_TTL_SECONDS">DEFAULT_STAMP_TTL_SECONDS</span></span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -8913,6 +9000,24 @@ disable). See ADR-147.</p>
                   <code><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>stamp_ttl</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Seconds a <code>bypass</code> or soft stamp this repository
+writes stands after the config read that justified it
+(default: 60, at least 10). See ADR-151 decision 8.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="zae_limiter.schema.DEFAULT_STAMP_TTL_SECONDS">DEFAULT_STAMP_TTL_SECONDS</span></code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -9003,7 +9108,7 @@ repo = await Repository.open()
   </span>
 
 <a href="#zae_limiter.repository.Repository.connect" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">connect</span><span class="p">(</span><span class="n">namespace</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">stack</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">rejection_cache_ttl</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_TTL">DEFAULT_REJECTION_CACHE_TTL</span></span><span class="p">,</span> <span class="n">rejection_cache_size</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">connect</span><span class="p">(</span><span class="n">namespace</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">stack</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">rejection_cache_ttl</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_TTL">DEFAULT_REJECTION_CACHE_TTL</span></span><span class="p">,</span> <span class="n">rejection_cache_size</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></span><span class="p">,</span> <span class="n">stamp_ttl</span><span class="o">=</span><span class="n"><span title="zae_limiter.schema.DEFAULT_STAMP_TTL_SECONDS">DEFAULT_STAMP_TTL_SECONDS</span></span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -9156,6 +9261,24 @@ disable). See ADR-147.</p>
             </td>
             <td>
                   <code><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>stamp_ttl</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Seconds a <code>bypass</code> or soft stamp this repository
+writes stands after the config read that justified it
+(default: 60, at least 10). See ADR-151 decision 8.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="zae_limiter.schema.DEFAULT_STAMP_TTL_SECONDS">DEFAULT_STAMP_TTL_SECONDS</span></code>
             </td>
           </tr>
       </tbody>
@@ -11704,7 +11827,7 @@ new bucket. Needs <code>dynamodb:ConditionCheckItem</code>. Writes nothing.</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_composite_create" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_create</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">states</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="mi">86400</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">bypass</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">pgen</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pinc</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_create</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">states</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="mi">86400</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">bypass_until_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pgen</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pinc</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -11913,19 +12036,20 @@ item carries (ADR-140). <code>None</code> stamps <code>now_ms</code>.</p>
           </tr>
           <tr class="doc-section-item">
             <td>
-                <code>bypass</code>
+                <code>bypass_until_ms</code>
             </td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><span title="int">int</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Stamp the item <code>bypass</code> (#311): created by a bypassed
-acquire, from config read uncached on that pass.</p>
+                <p>Stamp the item <code>bypass</code> with this deadline
+(#311, ADR-151 decision 8): created by a bypassed acquire,
+from config read uncached on that pass. None stamps nothing.</p>
               </div>
             </td>
             <td>
-                  <code>False</code>
+                  <code>None</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -11982,7 +12106,7 @@ second fan-out pass restamps with the higher generation.</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_composite_normal" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">applied_windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">grant_counts</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">owner</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">expected_vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_stamps</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_trusted</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">owner_pgen</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">owner_pinc</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">read_tokens</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">cleared_top_ups</span><span class="o">=</span><span class="p">())</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">applied_windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">grant_counts</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">owner</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">expected_vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_stamps</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_trusted</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">owner_pgen</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">owner_pinc</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">read_tokens</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">cleared_top_ups</span><span class="o">=</span><span class="p">(),</span> <span class="n">bypass_stamp</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_reads</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -12389,16 +12513,37 @@ every other writer of the marker.</p>
                 <code>soft_stamps</code>
             </td>
             <td>
-                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="bool">bool</span>] | None</code>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span> | None] | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Limit name -&gt; soft-ness to stamp as <code>b_{name}_soft</code>
-(SET when true, REMOVE when false) (#467, ADR-151). Only a pass
-whose limits were read <strong>uncached</strong> passes it, so a stamp left
-wrong — by an older client, or a missed fan-out — self-heals on
-the next fresh slow pass. A seeded name must not appear here;
-its stamp rides in the seed.</p>
+                <p>Limit name -&gt; the deadline to stamp as
+<code>b_{name}_soft</code>, or None to REMOVE it (#467, ADR-151
+decisions 4 and 8). Only a pass whose limits were read
+<strong>uncached</strong> passes it, so a stamp left wrong — by an older
+client, or a missed fan-out — self-heals on the next fresh slow
+pass. A seeded name must not appear here; its stamp rides in
+the seed.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>soft_reads</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span> | None] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; the deadline the pass read off the item
+for that stamp (None when absent), for every name in
+<code>soft_stamps</code>: each stamp write is pinned on it, so a pass
+that read config before a fan-out cannot undo the fan-out. A
+lost pin falls to the consumption-only retry. Omitted: no pins.</p>
               </div>
             </td>
             <td>
@@ -12418,7 +12563,8 @@ its stamp rides in the seed.</p>
 trusts over the item's stamp (config read fresh, or an
 <code>acquire(limits=...)</code> override). Their balance floor is
 omitted. Every other floor is OR'ed with the item's own soft
-stamp, so a limit soft on the item is never rejected here.</p>
+stamp while it is live (<code>&gt; now_ms</code>), so a limit soft on the
+item is never rejected here.</p>
               </div>
             </td>
             <td>
@@ -12484,6 +12630,29 @@ was bought in. Only names the item was read carrying one.</p>
                   <code>()</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>bypass_stamp</code>
+            </td>
+            <td>
+                  <code><span title="tuple">tuple</span>[<span title="int">int</span> | None, <span title="int">int</span> | None] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(deadline, read)</code> to SET the item's <code>bypass</code>
+stamp to <code>deadline</code> or, when it is None, REMOVE it, from
+bypass config read uncached on this pass (#311, ADR-151
+decisions 4 and 8), or <code>None</code> to leave it. <code>read</code> is the
+deadline the pass read off the item (None when it carried no
+stamp): the write is pinned on it, so a pass that read config
+before a fan-out cannot undo the fan-out. A lost pin falls to
+the consumption-only retry, which writes no stamp.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -12500,7 +12669,7 @@ was bought in. Only names the item was read carrying one.</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_composite_retry" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_retry</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_trusted</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">period_guards</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_retry</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_trusted</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">period_guards</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">now_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -12565,13 +12734,31 @@ therefore debited, never re-seeded.</p>
               <div class="doc-md-description">
                 <p>As for :meth:<code>build_composite_normal</code> (#467): these
 soft limits carry no balance condition, and every other limit's
-condition admits on the item's own soft stamp. A soft seed
-carries none either — its soft-ness came from config read
-uncached on this pass.</p>
+condition admits on the item's own soft stamp while it is live
+at <code>now_ms</code>. A soft seed carries none either — its soft-ness
+came from config read uncached on this pass. The retry never
+writes a stamp, so an expired one admits nothing here.</p>
               </div>
             </td>
             <td>
                   <code><span title="frozenset">frozenset</span>()</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>now_ms</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The instant a soft stamp's deadline is judged against
+(ADR-151 decision 8); None reads the clock.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -12662,17 +12849,20 @@ write that landed on a bypassed bucket, whose consumption stays counted.</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_bypass_consume" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_bypass_consume</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_bypass_consume</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bypass_until_ms</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>The slow path's write for a bypassed existing bucket (#311, ADR-151 §4).</p>
-<p><code>ADD tc</code> per limit and nothing else: no <code>tk</code> debit, no refill, no
-<code>rf</code> advance, no reset or window roll, so lifting the bypass needs no
-reset and leaves no debt. Conditioned on the item's <code>bypass</code> stamp:
-a bypass cleared since this pass read config fails here, and the
-acquire is planned again, enforced. Positional tokens (<code>#bc{i}</code>).</p>
+<p><code>ADD tc</code> per limit and the renewed stamp, nothing else: no <code>tk</code>
+debit, no refill, no <code>rf</code> advance, no reset or window roll, so lifting
+the bypass needs no reset and leaves no debt. Conditioned on the item
+carrying a <code>bypass</code> stamp, whatever its deadline: a bypass cleared
+since this pass read config fails here, and the acquire is planned
+again, enforced. Only a pass that read bypass config uncached builds
+this write, so it is also the stamp's renewal (ADR-151 decision 8).
+Positional tokens (<code>#bc{i}</code>).</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -12702,8 +12892,129 @@ acquire is planned again, enforced. Positional tokens (<code>#bc{i}</code>).</p>
                 <em>required</em>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>bypass_until_ms</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The stamp's new deadline, at most T after this
+pass's uncached config read.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
       </tbody>
     </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository.Repository.build_stamp_fix" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">build_stamp_fix</span>
+
+
+<a href="#zae_limiter.repository.Repository.build_stamp_fix" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_stamp_fix</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bypass</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>A rejected slow pass's stamp correction (ADR-151 decisions 4 and 8).</p>
+<p>The stamps only: <code>SET</code> a deadline or <code>REMOVE</code>, for <code>bypass</code> and
+each <code>b_{name}_soft</code>, as the config this pass read uncached says.
+Nothing else on the item moves (no <code>tk</code>, <code>tc</code>, <code>rf</code> or <code>vu</code>),
+so it admits nothing. Each stamp is pinned on its value as read, so a
+fan-out or another pass that changed it since wins and this is a no-op.
+Positional tokens (<code>#xb</code>, <code>#xo{i}</code>).</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>bypass</code>
+            </td>
+            <td>
+                  <code><span title="tuple">tuple</span>[<span title="int">int</span> | None, <span title="int">int</span> | None] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(deadline, read)</code>: the deadline to set, None to remove;
+the deadline read off the item, None when it carried none.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>soft</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="tuple">tuple</span>[<span title="int">int</span> | None, <span title="int">int</span> | None]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; <code>(deadline, read)</code>, as for <code>bypass</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository.Repository.fix_bucket_stamps" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">fix_bucket_stamps</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository.Repository.fix_bucket_stamps" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">fix_bucket_stamps</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bypass</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Write :meth:<code>build_stamp_fix</code>; False when a pin no longer matched.</p>
+<p>Called by a slow pass about to raise <code>RateLimitExceeded</code>, which
+otherwise writes nothing: an expired stamp config no longer backs then
+kept every rejection on the slow path until refill (review E1). The
+shard's cached state is forgotten once it lands (ADR-147), so the next
+fast rejection is remembered from the corrected item. Any error other
+than a lost pin propagates.</p>
 
 
     </div>
@@ -18145,6 +18456,43 @@ longer holds the parent generation and incarnation the pass read (or now
 exists when the pass read none). The lease calls <code>restamp_owner_if_current</code>
 when the slow path's owner stamp lost its pin to another incarnation.</p>
 </div>
+<div class="admonition warning">
+<p class="admonition-title">Changed in v0.17.0: soft limits and bypass (ADR-151)</p>
+<p>A custom backend must implement <code>build_bypass_consume</code>,
+<code>resolve_bypass_from_fetched</code>, <code>resolve_soft_limits</code>, <code>limits_read_fresh</code>,
+<code>_stamp_deadline</code>, <code>bypass_resource</code> and <code>bypass_entity</code>, and accept the new
+keywords below; the limiter and the lease pass them on every slow pass, so a
+backend that does not raises <code>TypeError</code> there. <code>fix_bucket_stamps</code> is
+optional: the limiter skips it on a backend without it.</p>
+<ul>
+<li><strong>Stamps are deadlines.</strong> A bucket's <code>bypass</code> and <code>b_{name}_soft</code> hold an
+  epoch-ms deadline. <code>speculative_consume</code> must admit a declared limit
+  without testing its balance only while <code>b_{name}_soft</code> is live <strong>and</strong> the
+  item carries the limit, or while <code>bypass</code> is live; fail an expired stamp as
+  <code>SCHEDULE_BOUNDARY</code> (never a rejection); and report <code>bypassed</code> on its
+  result. A bypassed bucket is debited nothing but still counts <code>tc</code> and
+  <code>wcu</code>.</li>
+<li><strong><code>build_composite_create(bypass_until_ms=...)</code></strong> stamps <code>bypass</code> with that
+  deadline; each state's <code>soft</code> / <code>soft_until_ms</code> stamps <code>b_{name}_soft</code>.</li>
+<li><strong><code>build_composite_normal(soft_stamps=, soft_reads=, soft_trusted=,
+  bypass_stamp=)</code></strong>: SET each stamp to its deadline or REMOVE it, each pinned
+  on the value read (<code>soft_reads</code>, the second element of <code>bypass_stamp</code>);
+  waive a balance floor on a live soft stamp, and omit it for a
+  <code>soft_trusted</code> limit.</li>
+<li><strong><code>build_composite_retry(soft_trusted=, now_ms=)</code></strong>: the same waivers on the
+  consumption-only retry, for its balance floors and its quota period guards;
+  it never writes a stamp except a seed's.</li>
+<li><strong><code>build_composite_adjust(tokens=False)</code></strong> writes <code>tc</code> only (a bypassed
+  lease's adjustment); <strong><code>counter=False</code></strong> writes <code>tk</code> only (the bypass
+  refund), still subject to the ceilings and period guards above.</li>
+<li><strong><code>resolve_access(include_limits=, include_system=)</code></strong> returns each limit's
+  soft-ness, read uncached, in <code>ConfigAccess.limit_soft</code>; <code>bypass</code> is set
+  when the deciding <code>disabled</code> value is <code>"bypass"</code>.</li>
+<li><code>get_resource_disabled</code> / <code>get_entity_disabled</code> may return <code>"bypass"</code>, and
+  the setters accept <code>disabled="bypass"</code>: test <code>disabled is True</code>, never its
+  truthiness.</li>
+</ul>
+</div>
 
 
 <div class="doc doc-object doc-class">
@@ -20508,7 +20856,7 @@ landing between the read and the create cancels it.</p>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_composite_create" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_create</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">states</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="mi">86400</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">bypass</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">pgen</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pinc</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_create</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">states</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="mi">86400</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">bypass_until_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pgen</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pinc</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -20678,6 +21026,23 @@ landing between the read and the create cancels it.</p>
           </tr>
           <tr class="doc-section-item">
             <td>
+                <code>bypass_until_ms</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The <code>bypass</code> stamp's deadline for a bucket
+created under bypass (#311, ADR-151), or None to stamp none</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                 <code>pgen</code>
             </td>
             <td>
@@ -20725,7 +21090,7 @@ landing between the read and the create cancels it.</p>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_composite_normal" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">applied_windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">grant_counts</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">owner</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">expected_vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_stamps</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_trusted</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">owner_pgen</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">owner_pinc</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">read_tokens</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">cleared_top_ups</span><span class="o">=</span><span class="p">())</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">applied_windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">grant_counts</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">owner</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pin_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">expected_vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_stamps</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_trusted</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">owner_pgen</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">owner_pinc</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">read_tokens</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">cleared_top_ups</span><span class="o">=</span><span class="p">(),</span> <span class="n">bypass_stamp</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_reads</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -21039,6 +21404,60 @@ on this write re-granted it at, stamped as <code>b_{name}_gc</code>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>bypass_stamp</code>
+            </td>
+            <td>
+                  <code><span title="tuple">tuple</span>[<span title="int">int</span> | None, <span title="int">int</span> | None] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(deadline, read)</code>: SET the item's <code>bypass</code>
+stamp to <code>deadline</code> (REMOVE it when None) from bypass config
+read uncached on this pass, pinned on the deadline read
+(absent when None) (#311, ADR-151); <code>None</code> leaves it.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>soft_stamps</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span> | None] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; the <code>b_{name}_soft</code> deadline to SET,
+or None to REMOVE it, from limits read uncached (#467, ADR-151).</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>soft_reads</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span> | None] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; the soft deadline read off the item
+(None when absent), pinning each stamp write in
+<code>soft_stamps</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -21055,7 +21474,7 @@ on this write re-granted it at, stamped as <code>b_{name}_gc</code>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_composite_retry" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_retry</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_trusted</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">period_guards</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_retry</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft_trusted</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">period_guards</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">now_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -21146,6 +21565,24 @@ reports a failure here from the item's real balance (#633).</p>
                 <p>Limit name -&gt; state of a limit still missing from the item
 (#633), written with <code>if_not_exists</code> so a limit another
 writer seeded first is debited, never re-seeded.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>now_ms</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The instant a soft stamp's deadline is judged against
+(#467, ADR-151): a balance floor is waived only by a stamp
+live at it. None reads the clock.</p>
               </div>
             </td>
             <td>
@@ -24494,14 +24931,45 @@ that the completed fan-out will never revisit.</p>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_bypass_consume" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_bypass_consume</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_bypass_consume</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bypass_until_ms</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>The slow path's <code>tc</code>-only write for a bypassed bucket (#311).</p>
-<p>Conditioned on the item's <code>bypass</code> stamp, so a bypass cleared since the
-pass read config fails the write rather than admitting unenforced.</p>
+<p>Conditioned on the item carrying a <code>bypass</code> stamp (any deadline), so a
+bypass cleared since the pass read config fails the write rather than
+admitting unenforced. Renews the stamp to <code>bypass_until_ms</code> (ADR-151
+decision 8).</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository_protocol.RepositoryProtocol.fix_bucket_stamps" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">fix_bucket_stamps</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository_protocol.RepositoryProtocol.fix_bucket_stamps" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">fix_bucket_stamps</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bypass</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Correct a bucket's stamps before a slow-path rejection (ADR-151, review E1).</p>
+<p><code>SET</code> or <code>REMOVE</code> <code>bypass</code> and each <code>b_{name}_soft</code> as config
+read uncached says, each given as <code>(deadline, read)</code> and pinned on
+<code>read</code>; nothing else is written. False when a pin no longer matched.
+Optional: the limiter looks it up with <code>getattr</code>, so a backend
+without it simply skips the correction.</p>
 
 
     </div>

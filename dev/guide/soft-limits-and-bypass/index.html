@@ -635,6 +635,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#stamps-expire" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stamps expire
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#version-requirements" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3782,6 +3793,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#stamps-expire" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stamps expire
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#version-requirements" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3861,6 +3883,11 @@ snapshots stay exact. See <a href="../../adr/151-non-enforcing-limits/">ADR-151<
 <td>0 RCU + 1 WCU, unchanged</td>
 <td>0 RCU + 1 WCU once the process has seen the bypass</td>
 </tr>
+<tr>
+<td>Extra cost</td>
+<td>One renewal per bucket shard per <code>stamp_ttl</code> (<a href="#stamps-expire">below</a>)</td>
+<td>Same</td>
+</tr>
 </tbody>
 </table>
 <h2 id="soft-limits">Soft limits<a class="headerlink" href="#soft-limits" title="Permanent link">&para;</a></h2>
@@ -3899,7 +3926,9 @@ whatever the resource level says.</p>
   carries <code>"soft": true|false</code>.</li>
 <li><code>LimitStatus.soft</code> and the derived <code>LimitStatus.overdrawn</code> (<code>soft</code> and <code>available &lt; 0</code>).</li>
 <li><code>Lease.overdrawn</code> — the declared soft limits whose balance is below zero after the admission
-  write, on the shard written. Free: it is read off the write's own result.</li>
+  write, on the shard written. Free: it is read off the write's own result. On a lease that
+  covers several resources (<code>acquire(..., also=...)</code>) it describes the primary resource, like
+  <code>lease.bypassed</code>; <code>lease.resource(name).overdrawn</code> and <code>.bypassed</code> describe another.</li>
 <li><code>check_availability()</code> reports a soft limit's real (possibly negative) balance; it never makes
   <code>allowed</code> false.</li>
 <li>Usage snapshots carry <code>UsageSnapshot.overdrawn</code>: per soft limit, the number of requests in the
@@ -3912,7 +3941,10 @@ restores the allowance and <strong>forgives the debt</strong> — the overdraw c
 admission anchors a <a href="../session-quotas/">session window</a> like a hard one.</p>
 <h3 id="how-a-change-takes-effect">How a change takes effect<a class="headerlink" href="#how-a-change-takes-effect" title="Permanent link">&para;</a></h3>
 <p>Bucket items carry a per-limit <code>soft</code> stamp, and the conditional write that admits a request
-reads it on the server, so a change takes effect on the next request:</p>
+reads it on the server, so a change takes effect on the next request. The stamp is a deadline
+that the next request past it renews or removes from config (see
+<a href="#stamps-expire">Stamps expire</a>), so even a change the restamping below misses takes effect
+within <code>stamp_ttl</code>:</p>
 <ul>
 <li><strong>Entity level</strong> (<code>set_limits</code>, <code>delete_limits</code>): every bucket of the entity is restamped by the
   existing parameter sync.</li>
@@ -3921,6 +3953,11 @@ reads it on the server, so a change takes effect on the next request:</p>
   restamped (an entity's own override is left alone). A system-level change reaches every bucket
   in the namespace.</li>
 </ul>
+<p>A soft limit passed to one call, <code>acquire(..., limits=[...])</code>, is soft for that call only: it is
+not config, so it stamps no bucket and other callers keep the stored definition. Such a call takes
+the slow path (a read before the write) whenever it consumes a limit it declares soft. The reverse
+holds too: a call whose override declares a limit hard is enforced on it even where stored config
+made that limit soft.</p>
 <h2 id="bypass">Bypass<a class="headerlink" href="#bypass" title="Permanent link">&para;</a></h2>
 <p>Bypass waives every limit for one entity, one resource, or one entity on one resource. Requests
 are admitted, no balance is debited, and consumption is still counted. Only the reserved <code>wcu</code>
@@ -3934,6 +3971,9 @@ limit — which protects the DynamoDB partition, not the tenant — still gates.
 </span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="s2">"vip-1"</span><span class="p">,</span> <span class="s2">"gpt-4"</span><span class="p">,</span> <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">})</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
 </span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="k">assert</span> <span class="n">lease</span><span class="o">.</span><span class="n">bypassed</span>
 </span></code></pre></div>
+<p><code>check_availability()</code> reports <code>bypassed=True</code> once the entity's bucket carries the stamp, and
+then never marks a limit exceeded: <code>allowed</code> is True and the wait is 0, matching <code>acquire()</code>. The
+balances are still reported as they stand.</p>
 <p>Bypass is the fourth value of the <a href="../basic-usage/#disabling-resources-and-entities"><code>disabled</code></a>
 setting, so it follows the same walk — entity (resource-specific) → entity (<code>_default_</code>) →
 resource, first explicit value wins:</p>
@@ -3972,10 +4012,39 @@ resource, first explicit value wins:</p>
 too; <code>get_resource_disabled()</code> and <code>get_entity_disabled()</code> return <code>"bypass"</code>.</p>
 <p>Lifting a bypass needs no reset: nothing was debited while it stood, so the entity resumes with
 the balance it had. A calendar reset or session window that fell due while bypassed is applied by
-the first enforced request.</p>
+the first enforced request. Lifting it reaches existing buckets at once through the same eager
+restamping <code>disabled</code> uses, and at the latest within <code>stamp_ttl</code> for any bucket that restamping
+missed (see <a href="#stamps-expire">Stamps expire</a>).</p>
 <p><strong>Cascade.</strong> Each entity resolves its own mode. A bypassed child still debits, and can be
 rejected by, its cascade parent; bypass the parent, or turn cascade off for that resource, when
 the child must also skip the organisation's cap.</p>
+<h2 id="stamps-expire">Stamps expire<a class="headerlink" href="#stamps-expire" title="Permanent link">&para;</a></h2>
+<p>Both settings reach existing buckets as a stamp on each bucket item, which the admitting write
+checks on the server. A change of setting restamps every existing bucket at once, but that
+restamping can miss one: a bucket created by a request already in flight, a copy the aggregator
+made of an older bucket, or a restamping that failed part-way. So every stamp carries a
+<strong>deadline</strong>, at most <code>stamp_ttl</code> seconds (default 60) after the configuration read that
+justified it:</p>
+<ul>
+<li>Before the deadline the stamp is honoured, with no configuration read: the request costs what
+  any request costs.</li>
+<li>The first request after the deadline takes the slow path, which reads the configuration
+  (bypassing the configuration cache) and renews the stamp — or removes it, when the setting has
+  changed. That costs about one extra failed write, 2.5 read units and one more write, once per
+  bucket shard per <code>stamp_ttl</code>: roughly +$0.016 per million requests at 1 request a second on
+  the bucket, and about +0.15% at 100–1,000 requests a second.</li>
+<li>A bucket the restamping missed therefore keeps its old setting for at most <code>stamp_ttl</code> (plus
+  clock skew between your processes). A bucket missing a stamp it should carry enforces, which
+  only ever under-admits, until its next slow-path request or restamping.</li>
+</ul>
+<p><code>stamp_ttl</code> is set by the process that writes the stamps — the one running <code>acquire()</code> and the
+one making the change:</p>
+<div class="language-python lint-only highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">"my-app"</span><span class="p">,</span> <span class="n">stamp_ttl</span><span class="o">=</span><span class="mi">30</span><span class="p">)</span>          <span class="c1"># also Repository.connect()</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">()</span><span class="o">.</span><span class="n">stamp_ttl</span><span class="p">(</span><span class="mi">30</span><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">()</span>
+</span></code></pre></div>
+<p>It must be at least 10 seconds. A shorter <code>stamp_ttl</code> bounds how long a missed change lasts; a
+longer one renews less often. The provisioner Lambda (<code>zae-limiter limits apply</code>) uses 60
+seconds.</p>
 <h2 id="version-requirements">Version requirements<a class="headerlink" href="#version-requirements" title="Permanent link">&para;</a></h2>
 <p>Storing a soft limit or a bypass needs a stack whose Lambdas are 0.17.0 or later, and raises the
 stack's minimum client version to 0.17.0. Older components fail safe — they <strong>enforce</strong>: an

@@ -656,6 +656,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#hard-vs-soft-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hard vs Soft Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#config-cache" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4120,6 +4131,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#hard-vs-soft-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hard vs Soft Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#config-cache" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4585,41 +4607,58 @@ access to one.</p>
 debiting any limit, while still counting consumption — see
 <a href="../soft-limits-and-bypass/#bypass">Soft Limits and Bypass</a>. To meter one limit
 without enforcing it, make it <a href="../soft-limits-and-bypass/#soft-limits">soft</a>.</p>
+<h2 id="hard-vs-soft-limits">Hard vs Soft Limits<a class="headerlink" href="#hard-vs-soft-limits" title="Permanent link">&para;</a></h2>
+<p>Every limit is <strong>hard</strong> by default: a request that does not fit is rejected with
+<code>RateLimitExceeded</code>. A <strong>soft</strong> limit (<code>soft=True</code> on any <code>Limit</code> factory, <code>--soft NAME</code>
+on the CLI, <code>soft: true</code> in a manifest) is metered exactly the same way — its tokens are
+debited and the bucket may go into debt — but it never rejects a request. Use one for a
+billing-style <code>tpm</code> beside a hard <code>rpm</code>, or to roll a new limit out in shadow mode:</p>
+<div class="language-python lint-only highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">set_resource_defaults</span><span class="p">(</span><span class="s2">"gpt-4"</span><span class="p">,</span> <span class="p">[</span>
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>    <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">500</span><span class="p">),</span>                <span class="c1"># hard: rejects</span>
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>    <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"tpm"</span><span class="p">,</span> <span class="mi">50_000</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>  <span class="c1"># soft: metered only</span>
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="p">])</span>
+</span></code></pre></div>
+<p>A soft limit is reported as <code>soft</code> in every <code>LimitStatus</code> and never appears among a
+rejection's <code>violations</code>; <code>lease.overdrawn</code> names the ones a request drove into debt. A
+cascading child's soft limit does not relax its parent: each entity resolves its own
+limits. See <a href="../soft-limits-and-bypass/">Soft Limits and Bypass</a> for the details.</p>
 <h2 id="config-cache">Config Cache<a class="headerlink" href="#config-cache" title="Permanent link">&para;</a></h2>
 <p>zae-limiter caches config data (system defaults, resource defaults, entity limits) to reduce DynamoDB reads. The cache has a 60-second TTL by default.</p>
 <h3 id="configuring-cache-ttl">Configuring Cache TTL<a class="headerlink" href="#configuring-cache-ttl" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span><span class="p">,</span> <span class="n">RateLimiter</span>
-</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>
-</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="c1"># Default: 60-second cache TTL</span>
-</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">)</span>
-</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
-</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>
-</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a><span class="c1"># Disable caching (for testing)</span>
-</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
-</span><span id="__span-17-9"><a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span><span class="p">,</span> <span class="n">RateLimiter</span>
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="c1"># Default: 60-second cache TTL</span>
+</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">)</span>
+</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
+</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a>
+</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a><span class="c1"># Disable caching (for testing)</span>
+</span><span id="__span-18-8"><a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+</span><span id="__span-18-9"><a id="__codelineno-18-9" name="__codelineno-18-9" href="#__codelineno-18-9"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
 </span></code></pre></div>
 <p><code>Repository.open()</code> also takes <code>rejection_cache_ttl</code> (seconds, default <code>1.0</code>, <code>0</code> disables) and
 <code>rejection_cache_size</code> (default <code>10_000</code>) for the rejection cache; see
-<a href="#speculative-writes">Speculative Writes</a>.</p>
+<a href="#speculative-writes">Speculative Writes</a>. <code>stamp_ttl</code> (seconds, default <code>60</code>, at least <code>10</code>)
+bounds how long a soft or bypass stamp stands before it is renewed from configuration; see
+<a href="../soft-limits-and-bypass/#stamps-expire">Stamps expire</a>.</p>
 <h3 id="automatic-cache-eviction">Automatic Cache Eviction<a class="headerlink" href="#automatic-cache-eviction" title="Permanent link">&para;</a></h3>
 <p>Config-modifying methods (<code>set_limits()</code>, <code>delete_limits()</code>) automatically evict relevant cache entries. Manual invalidation is only needed after external changes (e.g., direct DynamoDB writes).</p>
 <h3 id="manual-cache-invalidation">Manual Cache Invalidation<a class="headerlink" href="#manual-cache-invalidation" title="Permanent link">&para;</a></h3>
 <p>After external config changes, force immediate refresh:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">invalidate_config_cache</span><span class="p">()</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">invalidate_config_cache</span><span class="p">()</span>
 </span></code></pre></div>
 <h3 id="monitoring-cache-performance">Monitoring Cache Performance<a class="headerlink" href="#monitoring-cache-performance" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="n">stats</span> <span class="o">=</span> <span class="n">repo</span><span class="o">.</span><span class="n">get_cache_stats</span><span class="p">()</span>
-</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Hits: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">hits</span><span class="si">}</span><span class="s2">, Misses: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">misses</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Cache entries: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="n">stats</span> <span class="o">=</span> <span class="n">repo</span><span class="o">.</span><span class="n">get_cache_stats</span><span class="p">()</span>
+</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Hits: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">hits</span><span class="si">}</span><span class="s2">, Misses: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">misses</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Cache entries: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 </span></code></pre></div>
 <p>See <a href="../../performance/#7-config-cache-tuning">Config Cache Tuning</a> for advanced configuration.</p>
 <h2 id="speculative-writes">Speculative Writes<a class="headerlink" href="#speculative-writes" title="Permanent link">&para;</a></h2>
 <p>Speculative writes are enabled by default, skipping the read round trip for pre-warmed buckets. To disable them:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
-</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
-</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>    <span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">,</span>
-</span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>    <span class="n">speculative_writes</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>  <span class="c1"># Disable speculative writes</span>
-</span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
+</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
+</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>    <span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">,</span>
+</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a>    <span class="n">speculative_writes</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>  <span class="c1"># Disable speculative writes</span>
+</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="p">)</span>
 </span></code></pre></div>
 <p>With speculative writes, <code>acquire()</code> attempts a conditional UpdateItem directly instead of reading bucket state first. On success, this saves one DynamoDB round trip (0 RCU, 1 WCU instead of 1 RCU + 1 WCU). When the bucket is exhausted and refill would not help, it rejects immediately without a read (0 RCU, 1 WCU: the failed conditional write is charged).</p>
 <p>The speculative path falls back to the normal read-write path when:</p>

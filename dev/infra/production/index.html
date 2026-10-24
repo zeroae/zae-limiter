@@ -4506,6 +4506,7 @@
 </tbody>
 </table>
 <p>These policies use <code>dynamodb:LeadingKeys</code> with the <code>zael_namespace_id</code> principal tag to restrict DynamoDB access to items whose partition key starts with the tenant's namespace ID.</p>
+<p><code>NamespaceFullAccessPolicy</code> also matches the bare namespace ID: that is the namespace's partition key on GSI4 (a keys-only index), which a system-level soft-limit change queries to find every bucket it must restamp. No table item has it as its partition key. A custom config-management policy needs the same key, or <code>set_system_defaults()</code> with a changed <code>soft</code> writes the config and is then denied on its fan-out.</p>
 <p><code>NamespaceAcquirePolicy</code> grants <code>GetItem</code>, <code>BatchGetItem</code>, <code>Query</code>, <code>PutItem</code>, <code>UpdateItem</code> and <code>ConditionCheckItem</code> within the namespace, plus reads of the reserved <code>_/</code> prefix (the namespace registry). <code>PutItem</code> and <code>UpdateItem</code> are what authorise the bucket create and update inside <code>acquire()</code>'s transactions: AWS checks each item in a <code>TransactWriteItems</code> against its own action (ADR-152).</p>
 <h5 id="single-namespace-most-common">Single Namespace (Most Common)<a class="headerlink" href="#single-namespace-most-common" title="Permanent link">&para;</a></h5>
 <p>Attach a namespace-scoped policy and tag the principal with the namespace ID:</p>
