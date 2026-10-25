@@ -48,34 +48,49 @@ REPOSITORY = {
     "build_composite_normal": (True, True),  # rf-locked: reset/roll/seed stamp gc, pinned
     "build_composite_retry": (True, False),  # ADD only; never seeds a quota
     "build_composite_adjust": (True, False),  # adjust / rollback ADD; vu = 0 on trim (#721)
+    "build_bypass_consume": (False, False),  # bypassed slow path: tc only (#311)
+    "build_stamp_fix": (False, False),  # stamps only, before a rejection (ADR-151, E1)
+    "build_bucket_operation": (True, True),  # reset / top-up (ADR-149): tk delta, gc, tu
+    "build_operation_record": NOT_BUCKET,  # reset / top-up operation record (ADR-149)
     "build_quota_donor_debits": (True, False),  # the donor side of a move
     "_build_quota_count_freeze": (False, True),  # gc = if_not_exists(gc, :g) on a raise
     "_build_bucket_param_update": (False, False),  # param sync: cp/ra/rp/sched, vu = 0
     # Direct bucket writes.
-    "_speculative_consume_single": (True, False),  # the fast path ADD; never gc
+    "_speculative_consume_once": (True, False),  # the fast path ADD; never gc
+    # (bypass shape: tc only, #311)
     "bump_shard_count": (False, False),  # shard_count on shard 0
     "_propagate_shard_count": (False, False),  # shard_count on siblings (R6 residual)
     "_freeze_and_raise_shard_counts": (False, True),  # the planner's raise, with the freeze
     "repair_created_quota_shard": (False, True),  # raise a create a doubling overtook, freeze
     "_propagate_window_start": (False, False),  # ws / rsa / vu / wtc, never tk
     "_stamp_bucket_disabled": (False, False),  # disabled flag
-    "_stamp_bucket_cascade": (False, False),  # cascade policy + owner parent_id (ADR-146)
+    "_stamp_bucket_cascade": (False, False),  # cascade + owner parent_id + pgen (ADR-146/150)
+    "_stamp_bucket_soft": (False, False),  # b_{name}_soft SET/REMOVE (#467, ADR-151)
+    "fix_bucket_stamps": (False, False),  # issues build_stamp_fix
     "_sync_one_bucket_shard": (False, False),  # issues _build_bucket_param_update
     "get_or_create_bucket": (True, True),  # legacy create via build_bucket_put_item
     "purge_namespace": (True, True),  # deletes whole items, buckets included
     # Executors: run builders registered above.
     "transact_write": NOT_BUCKET,
     "write_each": NOT_BUCKET,
+    # Re-sends an UpdateItem its caller built, on a transaction conflict (#724).
+    "_update_item_retrying_conflict": NOT_BUCKET,
+    # Its PutItem twin, for an entity's META create (review P2).
+    "_put_item_retrying_conflict": NOT_BUCKET,
     # Config, registry, audit and version items.
     "_cleanup_entity_config_registry": NOT_BUCKET,
     "_initialize_version_record": NOT_BUCKET,
     "_log_audit_event": NOT_BUCKET,
+    "_build_audit_item": NOT_BUCKET,  # the audit item _log_audit_event puts
+    "_operation_audit": NOT_BUCKET,  # a reset / top-up's audit, in its transaction (ADR-149)
     "_register_namespace": NOT_BUCKET,
     "_require_readers": NOT_BUCKET,  # the version gate's client_min_version ratchet
     "_write_entity_config_flag": NOT_BUCKET,  # disabled / cascade on entity config
     "_write_resource_config_flag": NOT_BUCKET,  # disabled / cascade on resource config
     "_write_audit_retention_config": NOT_BUCKET,
     "create_entity": NOT_BUCKET,
+    "_write_parent": NOT_BUCKET,  # META parent_id, GSI1 keys and pgen (ADR-150)
+    "build_owner_check": NOT_BUCKET,  # ConditionCheck on META pinning a create (ADR-150)
     "delete_limits": NOT_BUCKET,
     "delete_namespace": NOT_BUCKET,
     "delete_resource_defaults": NOT_BUCKET,
@@ -93,13 +108,15 @@ AGGREGATOR = {
     "_donor_update_items": (True, False),  # the donor side of a Path 2 move
     "_quota_count_freeze": (False, True),  # Path 1 raising a legacy item freezes gc
     "_repair_quota_clones": (False, True),  # raise clones a doubling overtook, freeze
-    "propagate_shard_count": (True, True),  # Path 1 raise + Path 2 clone put / transaction
+    "propagate_shard_count": (True, True),  # Path 1 raise + Path 2 clone transaction
     "try_proactive_shard": (False, False),  # shard_count on shard 0
     "update_snapshot": NOT_BUCKET,  # usage snapshot items
 }
 
 _WRITE = re.compile(
-    r"update_item\(|put_item\(|delete_item\(|transact_write_items\("
+    r"update_item\(|_update_item_retrying_conflict\(|_put_item_retrying_conflict\(|put_item\("
+    r"|delete_item\("
+    r"|transact_write_items\("
     r'|"Update"\s*:|"Put"\s*:|"Delete"\s*:|"UpdateExpression"|UpdateExpression='
 )
 
@@ -149,8 +166,8 @@ def test_every_aggregator_writer_is_registered():
 
 def test_the_fast_path_never_writes_gc():
     """I3: the speculative consume must stay 0 RCU + 1 WCU and blind to ``gc``."""
-    assert REPOSITORY["_speculative_consume_single"] == (True, False)
-    source = inspect.getsource(Repository._speculative_consume_single)
+    assert REPOSITORY["_speculative_consume_once"] == (True, False)
+    source = inspect.getsource(Repository._speculative_consume_once)
     assert "BUCKET_FIELD_GC" not in source
     assert "grant_count" not in source
 
@@ -168,6 +185,7 @@ def test_only_grant_writers_write_gc():
         "build_bucket_put_item",
         "build_composite_create",
         "build_composite_normal",
+        "build_bucket_operation",
         "_build_quota_count_freeze",
         "_freeze_and_raise_shard_counts",
         "repair_created_quota_shard",
@@ -178,6 +196,19 @@ def test_only_grant_writers_write_gc():
         "_repair_quota_clones",
         "propagate_shard_count",
     }
+
+
+def test_the_aggregator_never_writes_a_bypass_or_soft_stamp():
+    """ADR-151 decision 8: only a write built from a fresh config read may set
+    or extend a stamp's deadline. The aggregator reads no config, so none of
+    its writers names either stamp; a Path 2 clone copies them verbatim from
+    shard 0's image (``dict(base_item)``), deadline included, and so can never
+    extend one."""
+    for name in AGGREGATOR:
+        source = inspect.getsource(getattr(processor, name))
+        for stamp in ("BUCKET_FIELD_BYPASS", "BUCKET_FIELD_SOFT", '"bypass"', "_soft"):
+            assert stamp not in source, f"aggregator writer {name} names {stamp}"
+    assert "dict(base_item)" in inspect.getsource(processor.propagate_shard_count)
 
 
 # --- Behavioural: what the pure builders actually write -----------------------

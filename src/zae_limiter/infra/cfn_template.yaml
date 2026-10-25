@@ -514,16 +514,15 @@ Resources:
   # -------------------------------------------------------------------------
   # IAM Managed Policies (Created when EnableIAM=true)
   # -------------------------------------------------------------------------
+  # Never change a policy's Description, even where it is out of date: CloudFormation
+  # replaces a ManagedPolicy to change it, a named policy cannot be replaced, and
+  # `upgrade` refuses a replacement, so every existing stack would be stuck (#752).
+  # Pinned by tests/unit/test_cfn_iam_parity.py.
 
-  # AcquireOnlyPolicy: For applications running acquire() - read + transact write
+  # AcquireOnlyPolicy: For applications running acquire() - read + write
   AcquireOnlyPolicy:
     Type: AWS::IAM::ManagedPolicy
     Condition: DeployIAM
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
     Properties:
       ManagedPolicyName: !If
         - HasCustomAcquireOnlyPolicyName
@@ -538,20 +537,35 @@ Resources:
               - dynamodb:GetItem
               - dynamodb:BatchGetItem
               - dynamodb:Query
-              - dynamodb:TransactWriteItems
+              # A bucket create is pinned to its owner's META (ADR-150)
+              - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt RateLimitsTable.Arn
               - !Sub ${RateLimitsTable.Arn}/index/*
+          # Each Put / Update inside TransactWriteItems is authorised by
+          # PutItem / UpdateItem (IAM defines no TransactWriteItems action),
+          # and the fast path, adjustments and rollbacks are plain UpdateItems
+          # (ADR-152). Every acquire() write is a bucket item, `{ns}/BUCKET#…`,
+          # so these two are granted on bucket items only (#756): no config,
+          # entity, audit, registry or version write.
+          - Sid: BucketWrites
+            Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+            Condition:
+              ForAllValues:StringLike:
+                dynamodb:LeadingKeys:
+                  - "*/BUCKET#*"
+              "Null":
+                dynamodb:LeadingKeys: "false"
 
   # FullAccessPolicy: Full access for apps and ops - all operations
   FullAccessPolicy:
     Type: AWS::IAM::ManagedPolicy
     Condition: DeployIAM
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
     Properties:
       ManagedPolicyName: !If
         - HasCustomFullAccessPolicyName
@@ -568,11 +582,11 @@ Resources:
               - dynamodb:Query
               - dynamodb:Scan
               - dynamodb:DescribeTable
-              - dynamodb:TransactWriteItems
               - dynamodb:PutItem
               - dynamodb:DeleteItem
               - dynamodb:UpdateItem
               - dynamodb:BatchWriteItem
+              - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt RateLimitsTable.Arn
               - !Sub ${RateLimitsTable.Arn}/index/*
@@ -626,7 +640,8 @@ Resources:
               - dynamodb:GetItem
               - dynamodb:BatchGetItem
               - dynamodb:Query
-              - dynamodb:UpdateItem
+              # A bucket create is pinned to its owner's META (ADR-150)
+              - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt RateLimitsTable.Arn
               - !Sub ${RateLimitsTable.Arn}/index/*
@@ -634,6 +649,22 @@ Resources:
               ForAllValues:StringLike:
                 dynamodb:LeadingKeys:
                   - "${aws:PrincipalTag/zael_namespace_id}/*"
+          # A bucket create is a Put, authorised by PutItem even inside
+          # TransactWriteItems (ADR-152); writes are granted on the
+          # namespace's bucket items only (#756).
+          - Sid: NamespaceBucketWrites
+            Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+            Condition:
+              ForAllValues:StringLike:
+                dynamodb:LeadingKeys:
+                  - "${aws:PrincipalTag/zael_namespace_id}/BUCKET#*"
+              "Null":
+                dynamodb:LeadingKeys: "false"
           - Sid: SharedReadAccess
             Effect: Allow
             Action:
@@ -670,6 +701,11 @@ Resources:
               - dynamodb:PutItem
               - dynamodb:UpdateItem
               - dynamodb:DeleteItem
+              # delete_entity deletes with BatchWriteItem (#742). LeadingKeys
+              # is checked on every item it puts or deletes, so it reaches
+              # exactly the keys below, as PutItem and DeleteItem already do.
+              - dynamodb:BatchWriteItem
+              - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt RateLimitsTable.Arn
               - !Sub ${RateLimitsTable.Arn}/index/*
@@ -677,6 +713,10 @@ Resources:
               ForAllValues:StringLike:
                 dynamodb:LeadingKeys:
                   - "${aws:PrincipalTag/zael_namespace_id}/*"
+                  # The bare id is the namespace's GSI4 partition key: a
+                  # system-level soft change discovers its buckets there
+                  # (ADR-151, #467). No table item has it as its PK.
+                  - "${aws:PrincipalTag/zael_namespace_id}"
                   - "_/*"
 
   # NamespaceReadOnlyPolicy: Read-only access scoped to namespace + shared prefix
@@ -784,6 +824,8 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:UpdateItem
                   - dynamodb:Query
+                  # A shard clone is pinned to its owner's META (ADR-150)
+                  - dynamodb:ConditionCheckItem
                 Resource:
                   - !GetAtt RateLimitsTable.Arn
                   - !Sub ${RateLimitsTable.Arn}/index/*
@@ -835,7 +877,7 @@ Resources:
   # Application IAM Roles
   # -------------------------------------------------------------------------
 
-  # AppRole: For applications running acquire() - read + transact write
+  # AppRole: For applications running acquire() - read + write
   AppRole:
     Type: AWS::IAM::Role
     Condition: DeployIAMRolesWithIAM

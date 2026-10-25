@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from .models import (
         AuditEvent,
         BackendCapabilities,
+        BucketOperationResult,
         BucketState,
         ConfigAccess,
         CreditCeiling,
@@ -46,6 +47,12 @@ class SpeculativeFailureReason(Enum):
     it cannot help and would create a shard needlessly) and above all not
     fast-reject, which would report RateLimitExceeded against limits the new
     window may have already raised.
+
+    CONTENTION means the write kept colliding with an in-flight DynamoDB
+    transaction on the same item (``TransactionConflictException``, #724)
+    after the repository's bounded retries. Nothing was written and there is
+    no image. The limiter must take the slow path — never fast-reject (there
+    is nothing to judge) and never treat it as the backend being unavailable.
     """
 
     APP_LIMIT_EXHAUSTED = "app_limit_exhausted"
@@ -54,6 +61,7 @@ class SpeculativeFailureReason(Enum):
     BUCKET_MISSING = "bucket_missing"
     DISABLED = "disabled"
     SCHEDULE_BOUNDARY = "schedule_boundary"
+    CONTENTION = "contention"
 
 
 @dataclass
@@ -74,6 +82,16 @@ class SpeculativeResult:
         shard_count: The total shard count read from the bucket item. Used by
             the limiter to decide whether to retry on another shard or double
             shards when the ``wcu`` limit is exhausted.
+        pgen: The parent generation stamped on the item (ADR-150), or None
+            when the item carries none. A stamp with a generation is
+            authoritative for ``cascade`` and ``parent_id`` even when it names
+            no parent.
+        pinc: The entity incarnation stamped beside ``pgen`` (ADR-150), or
+            None. A generation compares only within one incarnation.
+        debited_parent_id: On the warm parallel cascade path, the parent the
+            nested write in ``parent_result`` went to: the cached parent, which
+            the item's ``parent_id`` can contradict after a move (ADR-150).
+            None when no parallel parent write was issued.
     """
 
     success: bool
@@ -85,6 +103,26 @@ class SpeculativeResult:
     shard_id: int = 0
     shard_count: int = 1
     failure_reason: SpeculativeFailureReason | None = None
+    # The image carries a **live** `bypass` stamp (#311), one before its
+    # deadline (ADR-151 decision 8): on success nothing was spent (the write
+    # was bypass-shaped, or an enforce-shaped write was refunded); on failure
+    # the bucket is bypassed and the image must not be read as a rejection. An
+    # expired stamp is never live: that failure is `SCHEDULE_BOUNDARY`.
+    bypassed: bool = False
+    pgen: int | None = None
+    pinc: str | None = None
+    debited_parent_id: str | None = None
+
+    @property
+    def stamp_is_policy(self) -> bool:
+        """Whether the item's ``cascade`` / ``parent_id`` stamp can be trusted.
+
+        A stamp carrying a parent generation is authoritative (ADR-150); one
+        without is trusted only when it carries a ``parent_id`` (ADR-146: a
+        ``cascade=False`` with no ``parent_id`` and no generation is a bucket an
+        older version created for a parent from its child's view, #684).
+        """
+        return self.pgen is not None or self.parent_id is not None
 
 
 #: Sentinel default for the tri-state ``disabled`` parameter (ADR-125).
@@ -175,6 +213,14 @@ class RepositoryProtocol(Protocol):
     # -------------------------------------------------------------------------
     # Clock
     # -------------------------------------------------------------------------
+
+    def _stamp_deadline(self, now_ms: int) -> int:
+        """The deadline a ``bypass`` or soft stamp written now carries (ADR-151).
+
+        At most this writer's ``stamp_ttl`` after ``now_ms``, which must be no
+        later than the uncached config read that justifies the stamp.
+        """
+        ...
 
     def _now_ms(self) -> int:
         """Current time in epoch milliseconds — the token-bucket clock.
@@ -382,6 +428,11 @@ class RepositoryProtocol(Protocol):
         Args:
             entity_id: Entity to delete
             principal: Caller identity for audit logging
+
+        Raises:
+            RateLimiterUnavailable: The backend could not delete every record.
+                What was deleted is audited, and calling ``delete_entity``
+                again finishes the rest.
         """
         ...
 
@@ -394,6 +445,63 @@ class RepositoryProtocol(Protocol):
 
         Returns:
             List of child entities
+        """
+        ...
+
+    async def set_parent(
+        self,
+        entity_id: str,
+        parent_id: str | None,
+        *,
+        principal: str | None = None,
+    ) -> int:
+        """
+        Move an entity to a new parent, or to no parent (ADR-150).
+
+        Updates the entity's parent and makes every one of its bucket items
+        name the new parent, so the next acquire debits it wherever the cascade
+        policy (ADR-146) says the entity cascades. Consumption already charged
+        to the old parent stays there.
+
+        Args:
+            entity_id: Entity to move.
+            parent_id: The new parent, which must exist, or None for no parent.
+            principal: Caller identity for audit logging.
+
+        Returns:
+            Number of bucket items restamped.
+
+        Raises:
+            ValidationError: The move would make the entity its own ancestor.
+            EntityNotFoundError: The entity or the new parent does not exist.
+            VersionMismatchError: The backend's readers predate parent moves.
+            FanoutIncomplete: The move landed but restamping stopped part-way;
+                repeating the call finishes it.
+        """
+        ...
+
+    async def restamp_owner_if_current(
+        self, entity_id: str, resource: str, shard_id: int, incarnation: str
+    ) -> bool:
+        """
+        Claim a bucket stamped by another incarnation, if this one is current (ADR-150).
+
+        The slow path's owner stamp only overwrites a stamp of its own
+        incarnation, because its META read is eventually consistent and may be
+        a deleted predecessor's. When that pin is lost to another incarnation,
+        one strongly consistent META read settles it: if ``incarnation`` is
+        current, the bucket is a predecessor's leftover and is restamped with
+        the current owner (``cascade``, ``parent_id``, generation and
+        incarnation), never lowering a newer stamp; if not, it is left alone.
+
+        Args:
+            entity_id: The bucket's owner.
+            resource: The bucket's resource.
+            shard_id: The bucket's shard.
+            incarnation: The incarnation the caller's pass read.
+
+        Returns:
+            Whether the bucket was restamped.
         """
         ...
 
@@ -570,6 +678,18 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    def build_owner_check(
+        self, entity_id: str, *, exists: bool, pgen: int | None, pinc: str | None
+    ) -> dict[str, Any]:
+        """Build the ``ConditionCheck`` that pins a bucket create to its owner's META (ADR-150).
+
+        A transaction item asserting the owner's META still holds the parent
+        generation and incarnation the create read, or is still absent when
+        ``exists`` is False. Rides in the create's own transaction, so a move
+        landing between the read and the create cancels it.
+        """
+        ...
+
     def build_composite_create(
         self,
         entity_id: str,
@@ -583,6 +703,9 @@ class RepositoryProtocol(Protocol):
         shard_count: int = 1,
         vu: int | None = None,
         rf_ms: int | None = None,
+        bypass_until_ms: int | None = None,
+        pgen: int | None = None,
+        pinc: str | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -596,6 +719,11 @@ class RepositoryProtocol(Protocol):
             parent_id: The entity's parent_id (if any)
             vu: Valid-until stamp in epoch ms, or None to omit (#222 §2.1)
             rf_ms: The ``rf`` to stamp, or None for ``now_ms`` (ADR-140)
+            bypass_until_ms: The ``bypass`` stamp's deadline for a bucket
+                created under bypass (#311, ADR-151), or None to stamp none
+            pgen: The owner's parent generation read with ``cascade`` /
+                ``parent_id`` (ADR-150), or None to stamp none
+            pinc: The owner's incarnation read with ``pgen``, or None
         """
         ...
 
@@ -621,7 +749,14 @@ class RepositoryProtocol(Protocol):
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
+        soft_stamps: "dict[str, int | None] | None" = None,
+        soft_trusted: frozenset[str] = frozenset(),
+        owner_pgen: int | None = None,
+        owner_pinc: str | None = None,
         read_tokens: dict[str, int] | None = None,
+        cleared_top_ups: Sequence[str] = (),
+        bypass_stamp: tuple[int | None, int | None] | None = None,
+        soft_reads: dict[str, int | None] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -633,6 +768,11 @@ class RepositoryProtocol(Protocol):
         ``owner`` is ``(cascade, parent_id)`` from the item owner's META, read
         this pass: when given, both stamps are rewritten so the fast path's
         denormalised copy is repaired (#684). ``None`` leaves them as stored.
+        ``owner_pgen`` is the owner's parent generation read with them
+        (ADR-150): stamped beside them, and the write is pinned on not
+        lowering it, so a pass that read META before a move cannot undo it.
+        ``owner_pinc`` is the owner's incarnation: the pin passes over a stamp
+        of another incarnation, whose generation is not comparable.
 
         ``pin_vu``: when the write sets or removes ``vu``, require it to still be
         ``expected_vu`` (absent when None), the value the caller read, so a
@@ -674,6 +814,15 @@ class RepositoryProtocol(Protocol):
             grant_counts: Limit name -> the shard count a quota reset or roll
                 on this write re-granted it at, stamped as ``b_{name}_gc``
                 (ADR-145 I3).
+            bypass_stamp: ``(deadline, read)``: SET the item's ``bypass``
+                stamp to ``deadline`` (REMOVE it when None) from bypass config
+                read uncached on this pass, pinned on the deadline read
+                (absent when None) (#311, ADR-151); ``None`` leaves it.
+            soft_stamps: Limit name -> the ``b_{name}_soft`` deadline to SET,
+                or None to REMOVE it, from limits read uncached (#467, ADR-151).
+            soft_reads: Limit name -> the soft deadline read off the item
+                (None when absent), pinning each stamp write in
+                ``soft_stamps``.
         """
         ...
 
@@ -684,7 +833,9 @@ class RepositoryProtocol(Protocol):
         consumed: dict[str, int],
         shard_id: int = 0,
         seeds: "dict[str, BucketState] | None" = None,
+        soft_trusted: frozenset[str] = frozenset(),
         period_guards: dict[str, tuple[int | None, int | None]] | None = None,
+        now_ms: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
 
@@ -704,6 +855,9 @@ class RepositoryProtocol(Protocol):
             seeds: Limit name -> state of a limit still missing from the item
                 (#633), written with ``if_not_exists`` so a limit another
                 writer seeded first is debited, never re-seeded.
+            now_ms: The instant a soft stamp's deadline is judged against
+                (#467, ADR-151): a balance floor is waived only by a stamp
+                live at it. None reads the clock.
         """
         ...
 
@@ -716,10 +870,16 @@ class RepositoryProtocol(Protocol):
         ceilings: "dict[str, CreditCeiling] | None" = None,
         trim: bool = False,
         pin: "CreditPin | None" = None,
+        *,
+        tokens: bool = True,
+        counter: bool = True,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
         An ADD for post-hoc correction. Can go negative by design.
+
+        ``tokens=False`` writes ``tc`` only (a bypassed lease, #311);
+        ``counter=False`` writes ``tk`` only (a bypass refund).
         Positive delta = consumed more (subtract tokens, add to counter).
         Negative delta = consumed less (add tokens, subtract from counter).
 
@@ -743,7 +903,9 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
-    async def transact_write(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    async def transact_write(
+        self, items: list[dict[str, Any]], client_request_token: str | None = None
+    ) -> dict[str, Any] | None:
         """
         Execute a write of one or more items.
 
@@ -753,6 +915,8 @@ class RepositoryProtocol(Protocol):
 
         Args:
             items: List of transaction items from build_bucket_put_item
+            client_request_token: Idempotency token for a multi-item
+                transaction (ADR-149); ignored for a single item.
 
         Returns:
             For a single-item update, the item's attributes after the write
@@ -1003,7 +1167,7 @@ class RepositoryProtocol(Protocol):
         resource: str = "_default_",
         principal: str | None = None,
         *,
-        disabled: "bool | None" = PRESERVE_DISABLED,
+        disabled: "bool | str | None" = PRESERVE_DISABLED,
         cascade: "bool | None" = PRESERVE_CASCADE,
     ) -> None:
         """
@@ -1094,7 +1258,7 @@ class RepositoryProtocol(Protocol):
         limits: "list[Limit]",
         principal: str | None = None,
         *,
-        disabled: "bool | None" = PRESERVE_DISABLED,
+        disabled: "bool | str | None" = PRESERVE_DISABLED,
         cascade: "bool | None" = PRESERVE_CASCADE,
     ) -> None:
         """
@@ -1325,8 +1489,8 @@ class RepositoryProtocol(Protocol):
         self,
         entity_id: str,
         resource: str,
-        disabled_out: "dict[tuple[str, str], bool | None] | None" = None,
-        cascade_out: "dict[tuple[str, str], bool | None] | None" = None,
+        disabled_out: "dict[tuple[str, str], bool | str | None] | None" = None,
+        cascade_out: "dict[tuple[str, str], bool | str | None] | None" = None,
     ) -> "tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]":
         """
         Resolve effective limits using the four-level config hierarchy.
@@ -1371,13 +1535,44 @@ class RepositoryProtocol(Protocol):
         ...
 
     async def resolve_access(
-        self, entity_id: str, resource: str, *, consistent_read: bool = False
+        self,
+        entity_id: str,
+        resource: str,
+        *,
+        consistent_read: bool = False,
+        include_limits: bool = False,
+        include_system: bool = False,
     ) -> "ConfigAccess":
         """Resolve ``disabled`` and the cascade policy from one uncached read (ADR-146).
 
         Both walks cover the same config items, so a backend answers them from
         one read. Never from cache, for the reasons ``resolve_disabled`` gives.
         ``consistent_read`` is for a caller resolving a level it just wrote.
+        ``include_limits`` also returns each resolved limit's soft-ness in
+        ``ConfigAccess.limit_soft`` from the same read (#467);
+        ``include_system`` adds the system level to it.
+        """
+        ...
+
+    def limits_read_fresh(
+        self,
+        entity_id: str,
+        resource: str,
+        source: str | None,
+        fetched: "dict[tuple[str, str], bool | str | None]",
+    ) -> bool:
+        """Whether one config fetch read every level that decided the limits (#467).
+
+        ``fetched`` is the ``disabled_out`` of that ``resolve_limits`` call. A
+        fresh read is the authority the slow path re-stamps soft-ness from.
+        """
+        ...
+
+    async def resolve_soft_limits(self, entity_id: str, resource: str) -> "dict[str, bool]":
+        """Each resolved limit's soft-ness, read uncached (#467, ADR-151 §6.2).
+
+        Used when the slow path creates or seeds a bucket from limits the
+        config cache served: a created bucket's soft stamp must never be stale.
         """
         ...
 
@@ -1385,7 +1580,7 @@ class RepositoryProtocol(Protocol):
         self,
         entity_id: str,
         resource: str,
-        fetched: "dict[tuple[str, str], bool | None]",
+        fetched: "dict[tuple[str, str], bool | str | None]",
     ) -> "tuple[bool | None, str | None] | None":
         """Answer the cascade-policy walk from a config fetch, or decline (ADR-146).
 
@@ -1395,7 +1590,7 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
-    async def get_entity_disabled(self, entity_id: str, resource: str) -> "bool | None":
+    async def get_entity_disabled(self, entity_id: str, resource: str) -> "bool | str | None":
         """Read the tri-state disabled flag from an entity config item (ADR-125).
 
         Returns True/False when set explicitly, None when unset (inherit).
@@ -1403,7 +1598,7 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
-    async def get_resource_disabled(self, resource: str) -> "bool | None":
+    async def get_resource_disabled(self, resource: str) -> "bool | str | None":
         """Read the tri-state disabled flag from a resource config item (ADR-125).
 
         Returns True/False when set explicitly, None when unset (inherit).
@@ -1415,7 +1610,7 @@ class RepositoryProtocol(Protocol):
         self,
         entity_id: str,
         resource: str,
-        fetched: "dict[tuple[str, str], bool | None]",
+        fetched: "dict[tuple[str, str], bool | str | None]",
     ) -> "tuple[bool, str | None] | None":
         """Answer the disable walk from a config fetch, or decline (ADR-125).
 
@@ -1428,8 +1623,58 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    def build_bypass_consume(
+        self,
+        entity_id: str,
+        resource: str,
+        consumed: dict[str, int],
+        shard_id: int = 0,
+        *,
+        bypass_until_ms: int,
+    ) -> dict[str, Any]:
+        """The slow path's ``tc``-only write for a bypassed bucket (#311).
+
+        Conditioned on the item carrying a ``bypass`` stamp (any deadline), so a
+        bypass cleared since the pass read config fails the write rather than
+        admitting unenforced. Renews the stamp to ``bypass_until_ms`` (ADR-151
+        decision 8).
+        """
+        ...
+
+    async def fix_bucket_stamps(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int = 0,
+        *,
+        bypass: tuple[int | None, int | None] | None = None,
+        soft: dict[str, tuple[int | None, int | None]] | None = None,
+    ) -> bool:
+        """Correct a bucket's stamps before a slow-path rejection (ADR-151, review E1).
+
+        ``SET`` or ``REMOVE`` ``bypass`` and each ``b_{name}_soft`` as config
+        read uncached says, each given as ``(deadline, read)`` and pinned on
+        ``read``; nothing else is written. False when a pin no longer matched.
+        Optional: the limiter looks it up with ``getattr``, so a backend
+        without it simply skips the correction.
+        """
+        ...
+
+    def resolve_bypass_from_fetched(
+        self,
+        entity_id: str,
+        resource: str,
+        fetched: "dict[tuple[str, str], bool | str | None]",
+    ) -> "bool | None":
+        """Whether the walk resolves to bypass, from a config fetch, or decline (#311)."""
+        ...
+
     async def disable_resource(self, resource: str, principal: str | None = None) -> int:
         """Disable a resource for all entities without an explicit override (ADR-125)."""
+        ...
+
+    async def bypass_resource(self, resource: str, principal: str | None = None) -> int:
+        """Bypass a resource: admit everything, debit nothing, count usage (#311)."""
         ...
 
     async def enable_resource(self, resource: str, principal: str | None = None) -> int:
@@ -1456,6 +1701,15 @@ class RepositoryProtocol(Protocol):
         principal: str | None = None,
     ) -> int:
         """Explicitly enable an entity, overriding a disabled resource."""
+        ...
+
+    async def bypass_entity(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Bypass an entity, for one resource or across all of them (#311)."""
         ...
 
     async def clear_entity_disabled(
@@ -1502,6 +1756,36 @@ class RepositoryProtocol(Protocol):
         principal: str | None = None,
     ) -> int:
         """Remove the entity's cascade policy, reverting to inherit (ADR-146)."""
+        ...
+
+    async def reset_bucket(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: Sequence[str] | None = None,
+        principal: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> "BucketOperationResult":
+        """Restore an entity's balance on one resource to its full share, now (ADR-149).
+
+        Every shard, one rf-locked zero-consumption pass, one transaction; the
+        named limits (all when None) back to their full share and a new period.
+        """
+        ...
+
+    async def top_up(
+        self,
+        entity_id: str,
+        resource: str,
+        amounts: dict[str, int],
+        principal: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> "BucketOperationResult":
+        """Add whole tokens per limit to an entity's balance on one resource, now (ADR-149).
+
+        A quota gains exactly the amount (above its plan for this period, behind
+        the 0.17.0 version gate); a dripping limit at most up to its ceiling.
+        """
         ...
 
     async def resolve_on_unavailable(self) -> "OnUnavailableAction":

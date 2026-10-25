@@ -214,7 +214,13 @@ async with limiter.acquire(
 When infrastructure is owned entirely by your own CloudFormation, Terraform, or
 CDK, use `Repository.connect()`. It reads only — it never creates a stack,
 registers a namespace, writes the version record, or updates the Lambda, so an
-application role needs no CloudFormation or Lambda permissions at all:
+application role needs no CloudFormation or Lambda permissions at all. It is also
+the entry point for an application role that holds **only an acquire policy**:
+since v0.17.0 those policies allow writes to rate-limit buckets only, so `open()`'s
+first-time setup (namespace registration, the version record) and its Lambda
+auto-update are refused for such a role. Run `deploy`, `upgrade` and
+`namespace register` with an operator role (`FullAccessPolicy` /
+`NamespaceFullAccessPolicy`) instead:
 
 ```python
 from zae_limiter import Repository, RateLimiter
@@ -409,6 +415,7 @@ The Lambda function has minimal permissions:
 - dynamodb:PutItem
 - dynamodb:UpdateItem
 - dynamodb:Query
+- dynamodb:ConditionCheckItem
 ```
 
 When X-Ray tracing is enabled, additional permissions are granted:
@@ -477,9 +484,60 @@ The stack creates three managed IAM policies by default for different access pat
 
 | Policy | Suffix | Use Case | DynamoDB Permissions |
 |--------|--------|----------|---------------------|
-| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, TransactWriteItems |
-| `FullAccessPolicy` | `-full` | Ops teams managing config | All of the above + PutItem, DeleteItem, UpdateItem, BatchWriteItem, Scan, DescribeTable |
+| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, ConditionCheckItem; PutItem, UpdateItem on bucket items only |
+| `FullAccessPolicy` | `-full` | Ops teams managing config | All of the above + DeleteItem, BatchWriteItem, Scan, DescribeTable |
 | `ReadOnlyPolicy` | `-read` | Monitoring and dashboards | GetItem, BatchGetItem, Query, Scan, DescribeTable |
+
+!!! warning "`dynamodb:ConditionCheckItem` is required from v0.17.0"
+    A bucket create is one transaction that also checks the owner entity's record
+    (ADR-150), so every principal that acquires — and the aggregator's role, which
+    pre-creates shards — needs `dynamodb:ConditionCheckItem` on the table. The policies
+    and roles this template creates grant it once the stack runs the v0.17.0 template: a
+    new `deploy`, or `zae-limiter upgrade` on an existing stack, which applies the new
+    template (and refuses a change that would replace or remove a resource). Run
+    `zae-limiter upgrade` on each stack before rolling out v0.17.0 clients; custom IAM
+    must add it. Without it a bucket create is denied, and `acquire()` raises
+    `PermissionDenied` under `BLOCK` and `ALLOW` alike
+    ([ALLOW never covers permission errors](../guide/unavailability.md#allow-never-covers-permission-errors)).
+
+!!! warning "`AcquireOnlyPolicy` gains `PutItem` and `UpdateItem` in v0.17.0"
+    AWS authorises each `Put` and `Update` inside a `TransactWriteItems` by
+    `dynamodb:PutItem` / `dynamodb:UpdateItem`, not by `TransactWriteItems`
+    ([AWS docs](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html)).
+    Before v0.17.0 `AcquireOnlyPolicy` granted neither, so a principal holding only it
+    (including the `{stack}-app` role) could not write a bucket, and
+    `NamespaceAcquirePolicy` lacked `PutItem`, so it could never create one (ADR-152).
+    The policies no longer list `dynamodb:TransactWriteItems`: IAM defines no such action
+    ([service reference](https://servicereference.us-east-1.amazonaws.com/v1/dynamodb/dynamodb.json)),
+    so it never granted anything.
+    A stack deployed earlier keeps its old policies until its template is updated:
+    `zae-limiter upgrade` applies the new template through a CloudFormation change set
+    (and refuses a change that would replace or remove a resource), so run it on each
+    stack before rolling out v0.17.0 clients. Custom IAM modelled on the old policies
+    must add both actions.
+
+!!! warning "The acquire policies write bucket items only, from v0.17.0"
+    `AcquireOnlyPolicy` and `NamespaceAcquirePolicy` grant `PutItem` and `UpdateItem`
+    only where the partition key is a bucket's (`dynamodb:LeadingKeys` `*/BUCKET#*`, and
+    `{namespace id}/BUCKET#*` for the namespace policy), because every write `acquire()`
+    makes is a bucket write (#756). A principal holding only an acquire policy can no
+    longer write config, entity records, audit events, the namespace registry or the
+    version record: `create_entity()`, `set_limits()`, `set_resource_defaults()`,
+    `reset_bucket()`, `top_up()` and a first-time `Repository.open()` (which registers the
+    namespace and writes the version record) are refused with `AccessDeniedException`.
+    Those are operator actions: give them `FullAccessPolicy` or
+    `NamespaceFullAccessPolicy`. It is least privilege, not a boundary: a principal that
+    may acquire can still raise its own buckets' balances with a direct write (ADR-149).
+
+!!! warning "`NamespaceFullAccessPolicy` gains `BatchWriteItem` in v0.17.0"
+    `delete_entity()` deletes with `BatchWriteItem`, which the policy did not grant, so a
+    principal holding only `NamespaceFullAccessPolicy` got `AccessDeniedException` from it
+    (#742). `dynamodb:LeadingKeys` is checked on every item of a `BatchWriteItem`
+    ([AWS docs](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/specifying-conditions.html)),
+    so it can put or delete only the items the policy's `PutItem` and `DeleteItem` already
+    reach: the namespace's own (`{id}/…`), the bare namespace ID, and the shared `_/` prefix
+    (the namespace registry). It adds no reach. Run `zae-limiter upgrade` on an existing
+    stack to apply it; custom IAM modelled on the policy must add the action.
 
 ### Enabling/Disabling IAM Resources
 

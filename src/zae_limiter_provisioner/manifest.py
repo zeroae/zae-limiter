@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from zae_limiter.schedule import MAX_PERIOD_SECONDS, ScheduleEntry
+from zae_limiter.schema import DISABLED_BYPASS
 
 # The fields a YAML schedule entry may carry, mirroring `ScheduleEntry`'s public
 # ones. `_reset` is deliberately absent: it is what separates the two tuples, and
@@ -133,6 +134,9 @@ class LimitDecl:
     schedule: tuple[ScheduleEntry, ...] = ()
     reset_schedule: tuple[ScheduleEntry, ...] = ()
     reset_after_seconds: int | None = None
+    # #467: metered, never enforced. Part of the limit's definition, so it is
+    # declared on the limit at every level, and omitting it makes the limit hard.
+    soft: bool = False
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> LimitDecl:
@@ -185,6 +189,12 @@ class LimitDecl:
         resets = bool(reset_schedule) or reset_after_seconds is not None
         refill_amount = d.get("refill_amount", 0 if resets else capacity)
 
+        # #467: checked rather than coerced, like `cascade`: a mistyped
+        # `soft: "yes"` must fail the plan, not land as a truthy string.
+        soft = d.get("soft", False)
+        if not isinstance(soft, bool):
+            raise ValueError(f"soft: must be true or false, got {soft!r}")
+
         for field_name, value in (
             ("capacity", capacity),
             ("refill_period", refill_period),
@@ -236,6 +246,7 @@ class LimitDecl:
             schedule=schedule,
             reset_schedule=reset_schedule,
             reset_after_seconds=reset_after_seconds,
+            soft=soft,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -252,6 +263,8 @@ class LimitDecl:
             result["reset_schedule"] = [_entry_to_dict(e) for e in self.reset_schedule]
         if self.reset_after_seconds is not None:
             result["reset_after_seconds"] = self.reset_after_seconds
+        if self.soft:
+            result["soft"] = True
         return result
 
 
@@ -291,6 +304,18 @@ class SystemDecl:
         return result
 
 
+def _parse_disabled(d: dict[str, Any]) -> bool | str | None:
+    """The ``disabled`` value (ADR-125): absent = inherit, a boolean, or ``bypass`` (#311).
+
+    Checked rather than coerced, like ``cascade``: a mistyped value must fail
+    the plan, not land as a truthy string that disables the resource.
+    """
+    value = d.get("disabled")
+    if value is None or isinstance(value, bool) or value == DISABLED_BYPASS:
+        return value
+    raise ValueError(f"disabled: must be true, false or {DISABLED_BYPASS!r}, got {value!r}")
+
+
 def _parse_cascade(d: dict[str, Any]) -> bool | None:
     """The tri-state cascade policy (ADR-146): absent = inherit, else a boolean.
 
@@ -308,13 +333,13 @@ class ResourceDecl:
     """Resource-level limit declaration."""
 
     limits: dict[str, LimitDecl]
-    disabled: bool | None = None
+    disabled: bool | str | None = None
     cascade: bool | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ResourceDecl:
         limits = {name: LimitDecl.from_dict(val) for name, val in d.get("limits", {}).items()}
-        return cls(limits=limits, disabled=d.get("disabled"), cascade=_parse_cascade(d))
+        return cls(limits=limits, disabled=_parse_disabled(d), cascade=_parse_cascade(d))
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -332,13 +357,13 @@ class EntityResourceDecl:
     """Entity-resource-level limit declaration."""
 
     limits: dict[str, LimitDecl]
-    disabled: bool | None = None
+    disabled: bool | str | None = None
     cascade: bool | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EntityResourceDecl:
         limits = {name: LimitDecl.from_dict(val) for name, val in d.get("limits", {}).items()}
-        return cls(limits=limits, disabled=d.get("disabled"), cascade=_parse_cascade(d))
+        return cls(limits=limits, disabled=_parse_disabled(d), cascade=_parse_cascade(d))
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {

@@ -55,6 +55,7 @@ The stack creates three IAM managed policies by default:
 **Best practices:**
 
 - **Attach AcquireOnlyPolicy for applications** - Provides only the permissions needed for rate limiting
+- **Open acquire-only applications with `Repository.connect()`** - Since v0.17.0 the acquire policies write rate-limit buckets only, so `Repository.open()`'s first-time setup (namespace registration, version record) and its Lambda auto-update are refused under them. Run `zae-limiter deploy`, `upgrade` and `namespace register` with an operator role holding `FullAccessPolicy`
 - **Attach FullAccessPolicy for config management** - Separate from application credentials
 - **Attach ReadOnlyPolicy for observability** - Safe access for monitoring systems
 - **Disable with `--no-iam`** - When using existing IAM policies or cross-account access
@@ -64,7 +65,8 @@ The stack creates three IAM managed policies by default:
 
 The Lambda aggregator processes DynamoDB Stream events for usage aggregation, proactive bucket refill, and audit archival. It uses a separate execution role with least-privilege permissions:
 
-- `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `Query`
+- `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `Query`, `ConditionCheckItem` (a shard
+  clone is pinned to its owner's META, ADR-150)
 - `s3:PutObject` (when audit archival is enabled)
 
 #### Permission Boundaries
@@ -129,6 +131,12 @@ The stack creates three additional namespace-scoped policies:
 | **NamespaceReadOnlyPolicy** | `-ns-read` | Tenant monitoring | Yes |
 
 These policies use `dynamodb:LeadingKeys` with the `zael_namespace_id` principal tag to restrict DynamoDB access to items whose partition key starts with the tenant's namespace ID.
+
+`NamespaceFullAccessPolicy` also matches the bare namespace ID: that is the namespace's partition key on GSI4 (a keys-only index), which a system-level soft-limit change queries to find every bucket it must restamp. No table item has it as its partition key. A custom config-management policy needs the same key, or `set_system_defaults()` with a changed `soft` writes the config and is then denied on its fan-out.
+
+`NamespaceFullAccessPolicy` grants `GetItem`, `BatchGetItem`, `Query`, `PutItem`, `UpdateItem`, `DeleteItem`, `BatchWriteItem` and `ConditionCheckItem` within the namespace and on the reserved `_/` prefix. `BatchWriteItem` is what `delete_entity()` deletes with; before v0.17.0 the policy lacked it, so a principal holding only `NamespaceFullAccessPolicy` got `AccessDeniedException` from `delete_entity()` (#742). Run `zae-limiter upgrade` on an existing stack to apply the new policy; custom IAM modelled on it must add the action. `dynamodb:LeadingKeys` is checked on every item of a `BatchWriteItem`, so it can put or delete only the items the policy's `PutItem` and `DeleteItem` already reach: the namespace's own, the bare namespace ID, and the shared `_/` prefix. It adds no reach.
+
+`NamespaceAcquirePolicy` grants `GetItem`, `BatchGetItem`, `Query` and `ConditionCheckItem` within the namespace, `PutItem` and `UpdateItem` on the namespace's bucket items only (`{id}/BUCKET#*`, #756), plus reads of the reserved `_/` prefix (the namespace registry). `PutItem` and `UpdateItem` are what authorise the bucket create and update inside `acquire()`'s transactions: AWS checks each item in a `TransactWriteItems` against its own action (ADR-152). Creating entities, setting limits, resetting or topping up a bucket and registering the namespace need `NamespaceFullAccessPolicy`.
 
 ##### Single Namespace (Most Common)
 
@@ -204,7 +212,9 @@ response = sts.assume_role(
                         "dynamodb:GetItem",
                         "dynamodb:BatchGetItem",
                         "dynamodb:Query",
+                        "dynamodb:PutItem",
                         "dynamodb:UpdateItem",
+                        "dynamodb:ConditionCheckItem",
                     ],
                     "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/shared-table",
                     "Condition": {
@@ -239,7 +249,8 @@ aws iam create-policy --policy-name my-multi-ns-policy \
       \"Effect\": \"Allow\",
       \"Action\": [
         \"dynamodb:GetItem\", \"dynamodb:BatchGetItem\",
-        \"dynamodb:Query\", \"dynamodb:UpdateItem\"
+        \"dynamodb:Query\", \"dynamodb:PutItem\",
+        \"dynamodb:UpdateItem\", \"dynamodb:ConditionCheckItem\"
       ],
       \"Resource\": \"arn:aws:dynamodb:us-east-1:123456789012:table/shared-table\",
       \"Condition\": {

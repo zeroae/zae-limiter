@@ -29,7 +29,7 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 | `available()` / `time_until_available()` | 1 + shards/4 | 0 | Thin wrappers over `check_availability()`, so the cost is the same and the two can never disagree |
 | `get_limits()` | 1 | 0 | Query operation |
 | `set_limits()` | 1 | N+1 | Query + N PutItems |
-| `delete_entity()` | 1 | batched | Query + BatchWrite in 25-item chunks |
+| `delete_entity()` | 1 per query page | batched | Queries every page of the entity's PK and of GSI3, then BatchWrite in 25-item chunks, resending unprocessed deletes |
 
 !!! note "O(1) Cost Optimization (v0.7.0)"
     ADR-114 (Composite Bucket Items) and ADR-115 (ADD-Based Writes) reduced `acquire()` costs
@@ -252,8 +252,10 @@ infrastructure limit tracks per-partition write pressure.
 4. The client creates the new shard's bucket item itself on its next slow-path acquire,
    with `capacity / shard_count` tokens — the aggregator is **not** required for
    sharding to engage (ADR-133)
-5. The Lambda aggregator, when deployed, proactively doubles shards at >=80% wcu capacity
-   and pre-creates the new shard items so clients skip that one-time slow path
+5. The Lambda aggregator, when deployed, is a backstop: it can also double shards when the
+   stored `wcu` balance, projected to now, is below 20% of capacity (never past 32), though it
+   rarely does so before the client has (step 3 is what protects a hot shard). It pre-creates
+   the new shard items so clients skip that one-time slow path
 6. Shard count changes on shard 0 are propagated to all other shards by the aggregator
 7. Clients pick a random shard from the entity cache: `random.randrange(shard_count)`
 8. If application limits are exhausted on one shard but the entity has multiple shards,
@@ -274,7 +276,7 @@ by an atomic move off the shard whose grant covers it — or, when no shard cove
 share — and each shard's ceiling is the share it was granted, not the current share. A doubling
 therefore neither creates nor destroys quota allowance
 ([ADR-145](adr/145-sharded-quota-conserves-allowance.md)). A shard creation that moves tokens
-reads the entity's other shards once and writes a two-item transaction (4 WCU), once per shard,
+reads the entity's other shards once and writes one transaction carrying the new shard, the donor's debit and the owner check (6 WCU), once per shard,
 then reads shard 0's count once (1 RCU) to catch a doubling that landed while it was being
 created.
 

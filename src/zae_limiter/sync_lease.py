@@ -11,7 +11,7 @@ import random
 import time
 import warnings
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import InitVar, dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from .bucket import (
@@ -21,7 +21,7 @@ from .bucket import (
     try_consume,
     window_end_in_force,
 )
-from .exceptions import LeaseExpiredError, RateLimitExceeded
+from .exceptions import LeaseExpiredError, RateLimitExceeded, ValidationError
 from .models import (
     BucketState,
     CreditCeiling,
@@ -38,11 +38,16 @@ from .schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
     BUCKET_FIELD_GC,
+    BUCKET_FIELD_PGEN,
+    BUCKET_FIELD_PINC,
     BUCKET_FIELD_RF,
+    BUCKET_FIELD_RN,
     BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
+    BUCKET_FIELD_SOFT,
     BUCKET_FIELD_TK,
+    BUCKET_FIELD_TU,
     BUCKET_FIELD_VU,
     BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
@@ -50,12 +55,14 @@ from .schema import (
     bucket_attr,
     calculate_bucket_ttl_seconds,
     calculate_ttl,
+    decode_stamp,
     explicit_schedule_overrides,
 )
 
 _CONFLICT_MAX_RETRIES = 3
 _CONFLICT_BASE_DELAY_S = 0.025
 _MIN_RETRY_AFTER_S = 0.001
+_CONTENTION_RETRY_AFTER_S = 0.1
 if TYPE_CHECKING:
     from .sync_repository_protocol import SyncRepositoryProtocol
 logger = logging.getLogger(__name__)
@@ -82,6 +89,9 @@ class LeaseEntry:
     _cascade: bool = False
     _parent_id: str | None = None
     _stamp_owner: bool = False
+    _parent_generation: int | None = None
+    _parent_incarnation: str | None = None
+    _owner_read: bool = False
     _declared: bool = True
     _boundary_ms: int | None = None
     _reset_edge_ms: int | None = None
@@ -91,6 +101,13 @@ class LeaseEntry:
     _seed: bool = False
     _granted: bool = False
     _donor_debit: QuotaDonorDebit | None = None
+    _soft_trusted: bool = False
+    _soft_restamp: bool = False
+    _stamp_deadline_ms: int | None = None
+    _bypass: bool = False
+    _bypass_until_ms: int | None = None
+    _bypass_restamp: tuple[int | None, int | None] | None = None
+    _stored_top_up: bool = False
 
 
 def credit_ceilings(
@@ -157,11 +174,13 @@ def credit_ceiling(
     cron the lease held, so the period also pins the stored strings that cron
     came from (``item_sched``'s ``rsched`` / ``sched_tz`` and the limit's own
     ``b_{name}_rsched``, from the same image as the ceiling); without them the
-    credit is dropped too.
+    credit is dropped too. An operator reset (ADR-149) crosses no edge, so it
+    also pins the reset count ``b_{name}_rn`` from the newest view.
 
     The one place the ceiling and its pins are decided, with
     ``SyncRepository._credit_limit_terms`` the one place they become condition
-    terms: a new input to the ceiling (a quota top-up, #720) extends both.
+    terms: a new input to the ceiling extends both, as a quota's top-up
+    (``b_{name}_tu``, ADR-149) does.
     """
     quota = state.is_quota_state is True
     if period_limit is None:
@@ -177,6 +196,7 @@ def credit_ceiling(
             period = QuotaPeriodPin(
                 reset_edge_ms=next_reset_edge(state.reset_sched, now_ms=rf_ms),
                 reset_sched_raw=(item_sched[1], item_sched[2], limit_image.sched_raw[1]),
+                reset_number=period_limit.reset_number if period_limit is not None else None,
             )
     if limit_image is None:
         return CreditCeiling(
@@ -192,6 +212,7 @@ def credit_ceiling(
         capacity_milli=limit_image.capacity_milli,
         grant_count=limit_image.grant_count,
         sched_raw=limit_image.sched_raw,
+        topped_up_milli=limit_image.topped_up_milli,
         quota=quota,
         quota_period=period,
     )
@@ -205,6 +226,9 @@ def write_credit(
     shard_id: int,
     ceilings: dict[str, CreditCeiling],
     pin: CreditPin | None,
+    *,
+    tokens: bool = True,
+    counter: bool = True,
 ) -> None:
     """Write one adjust item whose credits trim themselves (#721, refs #680).
 
@@ -240,7 +264,20 @@ def write_credit(
     stub that rejects the entity forever. When the last write's condition
     fails, the item is gone and there is nothing to adjust: logged at debug,
     not an error. Errors other than a failed condition propagate.
+
+    ``tokens=False`` is a bypassed item's adjustment (#311): it writes ``tc``
+    only, so there is no balance to bound and no ceiling or period applies —
+    a counter credit can admit nothing (review D6). ``counter=False`` is the
+    opposite, ``tk`` only: the bypass refund (#311), whose consumption stays
+    counted; its credit trims itself like any other.
     """
+    if not tokens:
+        item = repository.build_composite_adjust(
+            entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, tokens=False
+        )
+        if item:
+            _write_unless_gone(repository, item, resource)
+        return
     unknown = {
         name
         for name, ceiling in ceilings.items()
@@ -251,9 +288,11 @@ def write_credit(
         deltas = {name: delta for name, delta in deltas.items() if name not in unknown}
         ceilings = {name: c for name, c in ceilings.items() if name not in unknown}
     if ceilings and (pin is None or any(c.sched_raw is None for c in ceilings.values())):
-        _write_trimmed(repository, entity_id, resource, deltas, shard_id, ceilings)
+        _write_trimmed(repository, entity_id, resource, deltas, shard_id, ceilings, counter)
         return
     kwargs: dict[str, Any] = {"ceilings": ceilings, "pin": pin} if ceilings else {}
+    if not counter:
+        kwargs["counter"] = False
     item = repository.build_composite_adjust(
         entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, **kwargs
     )
@@ -267,7 +306,7 @@ def write_credit(
     except Exception as exc:
         if not _is_condition_check_failure(exc):
             raise
-        _write_trimmed(repository, entity_id, resource, deltas, shard_id, ceilings)
+        _write_trimmed(repository, entity_id, resource, deltas, shard_id, ceilings, counter)
 
 
 def _write_trimmed(
@@ -277,6 +316,7 @@ def _write_trimmed(
     deltas: dict[str, int],
     shard_id: int,
     ceilings: dict[str, CreditCeiling],
+    counter: bool = True,
 ) -> None:
     """Step 2 of a credit: the same ``ADD`` plus ``vu = 0``, quota credits period-guarded.
 
@@ -287,6 +327,7 @@ def _write_trimmed(
     (#721). That costs one write per quota credit on the item, on a path
     taken only after a reset or roll raced a refund.
     """
+    shape: dict[str, Any] = {} if counter else {"counter": False}
     trimmed = repository.build_composite_adjust(
         entity_id=entity_id,
         resource=resource,
@@ -294,6 +335,7 @@ def _write_trimmed(
         shard_id=shard_id,
         ceilings=ceilings,
         trim=True,
+        **shape,
     )
     if not trimmed:
         return
@@ -316,6 +358,7 @@ def _write_trimmed(
             deltas={name: delta for name, delta in deltas.items() if name not in guarded},
             shard_id=shard_id,
             trim=True,
+            **shape,
         )
         if rest:
             _write_unless_gone(repository, rest, resource)
@@ -327,6 +370,7 @@ def _write_trimmed(
                 shard_id=shard_id,
                 ceilings={name: ceilings[name]},
                 trim=True,
+                **shape,
             )
             try:
                 repository.write_each([single])
@@ -356,8 +400,10 @@ def _write_unless_gone(
         logger.debug("adjustment skipped: the bucket for resource=%s is gone", resource)
 
 
-_CreditWrite = tuple[str, str, int, dict[str, int], dict[str, CreditCeiling], CreditPin | None]
-"(entity_id, resource, shard_id, deltas, ceilings, pin) for one adjust write (#721)."
+_CreditWrite = tuple[
+    str, str, int, dict[str, int], dict[str, CreditCeiling], CreditPin | None, dict[str, bool]
+]
+"(entity_id, resource, shard_id, deltas, ceilings, pin, shape) for one adjust write (#721).\n\n``shape`` is ``_bypass_shape``'s keywords for ``write_credit`` (#311)."
 
 
 class PeriodNotAppliedError(RateLimitExceeded):
@@ -373,6 +419,40 @@ class PeriodNotAppliedError(RateLimitExceeded):
     """
 
 
+class SeedNotAppliedError(RateLimitExceeded):
+    """The consumption-only retry found a limit the item does not carry yet (#771).
+
+    The slow pass was to seed it (#633) on its rf-locked write, which lost its
+    lock to a writer that does not seed; the retry cannot seed a quota,
+    session window or schedule (it stamps no ``vu``), and must not debit a
+    balance nothing granted — a ``tk`` with no ADR-145 ``gc``, which every
+    later pass would read as present and never seed. Nothing was written, so
+    the acquire re-plans once from a fresh read (`SyncRateLimiter._slow_acquire`),
+    whose rf-locked write seeds it. Raised as the contended 429 (#724): the
+    request was not short of anything, it lost two writes in a row to other
+    writers, so a second loss stands as "retry shortly" — never a rejection on
+    a soft limit's own balance (ADR-151 decision 1).
+    """
+
+    def __init__(self, statuses: list[LimitStatus]) -> None:
+        super().__init__(statuses, contended=True)
+
+
+class BypassLostError(Exception):
+    """A bypass-shaped slow-path write found the bucket's stamp gone (internal, #311).
+
+    The bypass was cleared between this pass's (uncached) config read and its
+    write. Nothing was written; the acquire is planned again, enforced.
+    ``resources`` names the resources whose bypass write failed, so a
+    multi-resource acquire re-plans only those enforced (review M3); empty
+    when it cannot be told.
+    """
+
+    def __init__(self, resources: frozenset[str] = frozenset()) -> None:
+        super().__init__("bypass lost" + (f" on {sorted(resources)}" if resources else ""))
+        self.resources = resources
+
+
 class QuotaMoveLostError(Exception):
     """A commit carrying an ADR-145 quota move did not land (internal).
 
@@ -380,6 +460,27 @@ class QuotaMoveLostError(Exception):
     since it was read, or the recipient raced — or kept conflicting past its
     retries. It rolled back whole, donor untouched, so the plan is stale and
     the acquire re-plans from a fresh read (design §6 step 6). Not exported.
+
+    ``contended`` is True when the move was lost to write conflicts rather
+    than to a failed condition: the donor was busy, not spent (#724).
+    """
+
+    def __init__(self, *, contended: bool = False) -> None:
+        super().__init__("quota move lost" + (" to contention" if contended else ""))
+        self.contended = contended
+
+
+class OwnerStampLostError(RateLimitExceeded):
+    """A bucket create was cancelled by its owner's META check (ADR-150).
+
+    The commit created a bucket item stamped with an owner (``cascade`` /
+    ``parent_id``) read from META, and the transaction's ``ConditionCheck``
+    found that META changed since — a move, or a delete and recreate. Nothing
+    was written. The acquire re-plans once from a strongly consistent META
+    read (`SyncRateLimiter._slow_acquire`), which also sends the cascade to the
+    new parent. A contended `RateLimitExceeded`, so a caller that does not
+    re-plan (or a second loss) reads it as a short "busy, retry" rejection:
+    it can only under-admit, never reach `on_unavailable`.
     """
 
 
@@ -392,6 +493,7 @@ def _mark_granted(entry: LeaseEntry) -> None:
     """
     if entry.limit.is_quota:
         entry.state.grant_count = entry.state.shard_count
+        entry.state.topped_up_milli = None
         entry._granted = True
 
 
@@ -415,11 +517,15 @@ class SyncLease:
     _carriers: list[LeaseEntry] = field(default_factory=list)
     _cache_mark: int | None = None
     _declared_names: frozenset[str] = field(init=False, default=frozenset())
+    _resources: tuple[str, ...] = ()
+    _unknown_keys_by_resource: dict[str, frozenset[str]] = field(default_factory=dict)
+    _declared_by_resource: dict[str, frozenset[str]] = field(init=False, default_factory=dict)
+    compute_images: InitVar[bool] = True
 
-    def __post_init__(self) -> None:
-        self._declared_names = frozenset(
-            entry.limit.name for entry in self.entries if entry._declared
-        )
+    def __post_init__(self, compute_images: bool = True) -> None:
+        self._index_declared()
+        if not compute_images:
+            return
         groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in self.entries:
             groups.setdefault((entry.entity_id, entry.resource, entry._shard_id), []).append(entry)
@@ -429,18 +535,165 @@ class SyncLease:
             for entry in group_entries:
                 entry._image = entry._period_image = image
 
-    @property
-    def consumed(self) -> dict[str, int]:
-        """Total consumed amounts by limit name (declared limits only)."""
-        result: dict[str, int] = {}
+    def _index_declared(self) -> None:
+        """Index declared limit names, lease-wide and per resource."""
+        by_resource: dict[str, set[str]] = {}
         for entry in self.entries:
-            if not entry._declared:
-                continue
+            if entry._declared:
+                by_resource.setdefault(entry.resource, set()).add(entry.limit.name)
+        self._declared_by_resource = {r: frozenset(names) for r, names in by_resource.items()}
+        primary = self._primary
+        self._declared_names = frozenset(
+            entry.limit.name
+            for entry in self.entries
+            if entry._declared and (primary is None or entry.resource == primary)
+        )
+
+    def _bind_resources(self, resources: tuple[str, ...]) -> None:
+        """Record the resources this lease covers, primary first (ADR-148)."""
+        self._resources = resources
+        self._index_declared()
+
+    @property
+    def _primary(self) -> str | None:
+        """The primary resource, or None for a lease that never bound one."""
+        return self._resources[0] if self._resources else None
+
+    @property
+    def resources(self) -> tuple[str, ...]:
+        """The resources this lease covers, the primary one first (ADR-148).
+
+        A single-resource acquire covers one resource; ``acquire(...,
+        also={...})`` covers the primary resource and every resource in
+        ``also``, in that order. Empty on the degraded lease yielded under
+        ``on_unavailable=ALLOW``, which covers nothing.
+        """
+        if self._resources:
+            return self._resources
+        return tuple(dict.fromkeys(entry.resource for entry in self.entries))
+
+    def resource(self, name: str) -> "SyncLeaseResource":
+        """A handle on one resource of this lease (ADR-148).
+
+        ``lease.adjust()``, ``consume()``, ``release()`` and ``consumed`` act
+        on the primary resource only — the ``resource`` argument of
+        ``acquire()`` — so a single-resource lease behaves exactly as it
+        always has. Every other resource of a multi-resource lease is reached
+        through its handle::
+
+            async with limiter.acquire(
+                "user-1", "search", consume={"rpm": 1, "units": est},
+                also={"budget": {"weekly": est}},
+            ) as lease:
+                ...
+                lease.adjust(units=actual - est)
+                lease.resource("budget").adjust(weekly=actual - est)
+
+        Adjustments made through a handle are written with the rest of the
+        lease's adjustments when the context exits, one write per bucket.
+        Two resources may declare limits of the same name; each handle sees
+        only its own.
+
+        On the degraded lease yielded under ``on_unavailable=ALLOW`` every
+        name returns a no-op handle.
+
+        Raises:
+            ValidationError: If ``name`` is not a resource of this lease.
+        """
+        if not self.degraded and name not in self.resources:
+            raise ValidationError(
+                "resource",
+                name,
+                f"not a resource of this lease (resources: {list(self.resources)})",
+            )
+        return SyncLeaseResource(self, name)
+
+    def _scoped(self, resource: str | None) -> list[LeaseEntry]:
+        """The declared entries of ``resource`` (every resource for None)."""
+        return [
+            entry
+            for entry in self.entries
+            if entry._declared and (resource is None or entry.resource == resource)
+        ]
+
+    def _consumed_in(self, resource: str | None) -> dict[str, int]:
+        """Total consumed amounts by limit name, for one resource."""
+        result: dict[str, int] = {}
+        for entry in self._scoped(resource):
             name = entry.limit.name
             result[name] = result.get(name, 0) + entry.consumed
         return result
 
-    def _check_declared(self, amounts: dict[str, int], method: str) -> None:
+    def _bypassed_in(self, resource: str | None) -> bool:
+        """Whether the acquiring entity was admitted under bypass on ``resource``.
+
+        The acquiring entity is the first entry's (a cascade parent's entries
+        follow it); ``None`` is the first entry's own resource.
+        """
+        if not self.entries:
+            return False
+        entity_id = self.entries[0].entity_id
+        for entry in self.entries:
+            if entry.entity_id == entity_id and (resource is None or entry.resource == resource):
+                return entry._bypass
+        return False
+
+    def _overdrawn_in(self, resource: str | None) -> list[str]:
+        """The declared soft limits of ``resource`` in debt (every resource for None)."""
+        return sorted(
+            {
+                entry.limit.name
+                for entry in self._scoped(resource)
+                if entry.limit.soft and entry.state.tokens_milli < 0
+            }
+        )
+
+    @property
+    def bypassed(self) -> bool:
+        """Whether the acquiring entity was admitted under bypass (#311).
+
+        Nothing was debited from its limits' balances; consumption is still
+        counted. A cascade parent resolves its own mode, so a bypassed child
+        can still have been gated by its parent. False for the degraded lease.
+        Scoped to the primary resource, like ``consumed``: each resource of a
+        multi-resource lease resolves its own mode, so use
+        ``lease.resource(name).bypassed`` for another one (ADR-148, review D10).
+        """
+        return self._bypassed_in(self._primary)
+
+    @property
+    def overdrawn(self) -> list[str]:
+        """Declared soft limits whose balance is in debt on the shard written (#467).
+
+        A soft limit is admitted whatever its balance and may go below zero;
+        this says which ones did, read off the admission write's result
+        (``ALL_NEW`` on the fast path, the in-memory state on the slow path),
+        so it costs nothing. Per shard: a sharded entity can be overdrawn on
+        one shard while its siblings still hold tokens. Reflects the state
+        after any ``adjust()`` / ``consume()`` / ``release()`` made since.
+        Empty for a hard limit, which is never admitted into debt, and for
+        the degraded lease. Scoped to the primary resource, like ``consumed``;
+        ``lease.resource(name).overdrawn`` for another one (ADR-148, review D10).
+        """
+        return self._overdrawn_in(self._primary)
+
+    @property
+    def consumed(self) -> dict[str, int]:
+        """Total consumed amounts by limit name (declared limits only).
+
+        Scoped to the primary resource; use ``lease.resource(name).consumed``
+        for another resource of a multi-resource lease (ADR-148).
+        """
+        return self._consumed_in(self._primary)
+
+    def _require_open(self) -> None:
+        """Raise LeaseExpiredError once the lease has committed or rolled back."""
+        if self._committed or self._rolled_back:
+            raise LeaseExpiredError()
+
+    def _check_declared(
+        self, amounts: dict[str, int], method: str, resource: str | None = None
+    ) -> None:
         """Report keys that name no declared limit on this lease (Issue #455).
 
         A limit absent from ``consume`` was never checked at admission, so
@@ -461,14 +714,24 @@ class SyncLease:
         it has no entries by design, and warning on every call during an
         outage would turn graceful degradation into noise.
         """
-        if self.degraded or amounts.keys() <= self._declared_names:
+        if resource is None or resource == self._primary:
+            names = self._declared_names
+            unknown = self._unknown_keys
+            label = f"lease.{method}()"
+            where = "acquire(consume=...)"
+        else:
+            names = self._declared_by_resource.get(resource, frozenset())
+            unknown = self._unknown_keys_by_resource.get(resource, frozenset())
+            label = f"lease.resource({resource!r}).{method}()"
+            where = f"acquire(also={{{resource!r}: ...}})"
+        if self.degraded or amounts.keys() <= names:
             return
-        undeclared = sorted(amounts.keys() - self._declared_names - self._unknown_keys)
+        undeclared = sorted(amounts.keys() - names - unknown)
         if not undeclared:
             return
-        declared = sorted(self._declared_names)
+        declared = sorted(names)
         warnings.warn(
-            f"lease.{method}() names limit(s) {undeclared} that were not declared in acquire(consume=...); declared limits on this lease: {declared}. Undeclared keys are ignored. Name the limit in `consume` (an estimate of 0 is valid) to make it adjustable. This becomes a ValidationError in v1.0.0.",
+            f"{label} names limit(s) {undeclared} that were not declared in {where}; declared limits on this lease: {declared}. Undeclared keys are ignored. Name the limit in `consume` (an estimate of 0 is valid) to make it adjustable. This becomes a ValidationError in v1.0.0.",
             FutureWarning,
             stacklevel=3,
         )
@@ -486,19 +749,23 @@ class SyncLease:
 
         Only limits declared in ``acquire(consume=...)`` can be consumed;
         other keys are reported (Issue #455) and ignored.
+        On a multi-resource lease this acts on the primary resource only;
+        reach the others through :meth:`resource` (ADR-148).
 
         Args:
             **amounts: Mapping of limit_name -> amount to consume
         """
-        if self._committed or self._rolled_back:
-            raise LeaseExpiredError()
+        self._require_open()
         self._check_declared(amounts, "consume")
+        self._consume_in(self._primary, amounts)
+
+    def _consume_in(self, resource: str | None, amounts: dict[str, int]) -> None:
+        """Consume ``amounts`` from ``resource``'s declared limits, all or none."""
         now_ms = self.repository._now_ms()
         statuses: list[LimitStatus] = []
         updates: list[tuple[LeaseEntry, int, int]] = []
-        for entry in self.entries:
-            if not entry._declared:
-                continue
+        scoped = self._scoped(resource)
+        for entry in scoped:
             amount = amounts.get(entry.limit.name, 0)
             if amount <= 0:
                 continue
@@ -507,7 +774,9 @@ class SyncLease:
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                limit=entry.limit.per_shard(
+                    entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                ),
                 available=result.available,
                 requested=amount,
                 exceeded=not result.success,
@@ -517,15 +786,17 @@ class SyncLease:
             statuses.append(status)
             if result.success:
                 updates.append((entry, result.new_tokens_milli, result.new_last_refill_ms))
-        for entry in self.entries:
-            if entry._declared and entry.limit.name not in amounts:
+        for entry in scoped:
+            if entry.limit.name not in amounts:
                 available = calculate_available(entry.state, now_ms)
                 statuses.append(
                     LimitStatus(
                         entity_id=entry.entity_id,
                         resource=entry.resource,
                         limit_name=entry.limit.name,
-                        limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                        limit=entry.limit.per_shard(
+                            entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                        ),
                         available=available,
                         requested=0,
                         exceeded=False,
@@ -563,21 +834,20 @@ class SyncLease:
 
         Only limits declared in ``acquire(consume=...)`` can be adjusted;
         other keys are reported (Issue #455) and ignored.
+        On a multi-resource lease this acts on the primary resource only;
+        reach the others through :meth:`resource` (ADR-148).
 
         Args:
             **amounts: Mapping of limit_name -> delta (positive = consume more)
         """
-        if self._committed or self._rolled_back:
-            raise LeaseExpiredError()
+        self._require_open()
         self._check_declared(amounts, "adjust")
-        self._apply_adjust(amounts)
+        self._apply_adjust(amounts, self._primary)
 
-    def _apply_adjust(self, amounts: dict[str, int]) -> None:
+    def _apply_adjust(self, amounts: dict[str, int], resource: str | None = None) -> None:
         """Apply adjust() deltas to declared entries (shared with release())."""
         now_ms = self.repository._now_ms()
-        for entry in self.entries:
-            if not entry._declared:
-                continue
+        for entry in self._scoped(resource):
             amount = amounts.get(entry.limit.name, 0)
             if amount == 0:
                 continue
@@ -600,15 +870,15 @@ class SyncLease:
 
         Only limits declared in ``acquire(consume=...)`` can be released;
         other keys are reported (Issue #455) and ignored.
+        On a multi-resource lease this acts on the primary resource only;
+        reach the others through :meth:`resource` (ADR-148).
 
         Args:
             **amounts: Mapping of limit_name -> amount to return
         """
-        if self._committed or self._rolled_back:
-            raise LeaseExpiredError()
+        self._require_open()
         self._check_declared(amounts, "release")
-        negated = {k: -v for k, v in amounts.items()}
-        self._apply_adjust(negated)
+        self._apply_adjust({k: -v for k, v in amounts.items()}, self._primary)
 
     def _commit_initial(self) -> None:
         """Write initial consumption to DynamoDB on context enter (Issue #309).
@@ -660,6 +930,17 @@ class SyncLease:
             boundaries = [e._boundary_ms for e in group_entries if e._boundary_ms is not None]
             vu = min(boundaries) if boundaries else None
             owner_entry = next((e for e in group_entries if e._stamp_owner), None)
+            if group_entries[0]._bypass and (not is_new):
+                items.append(
+                    repo.build_bypass_consume(
+                        entity_id,
+                        resource,
+                        {e.limit.name: e.consumed * 1000 for e in group_entries if e._declared},
+                        shard_id,
+                        bypass_until_ms=_bypass_deadline(group_entries, now_ms, repo),
+                    )
+                )
+                continue
             if is_new:
                 first_entry = owner_entry or group_entries[0]
                 items.append(
@@ -675,6 +956,11 @@ class SyncLease:
                         shard_count=first_entry._shard_count,
                         vu=vu,
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
+                        bypass_until_ms=_bypass_deadline(group_entries, now_ms, repo)
+                        if group_entries[0]._bypass
+                        else None,
+                        pgen=owner_entry._parent_generation if owner_entry is not None else None,
+                        pinc=owner_entry._parent_incarnation if owner_entry is not None else None,
                     )
                 )
                 created = items[-1].get("Put") if isinstance(items[-1], dict) else None
@@ -765,6 +1051,11 @@ class SyncLease:
                     for e in group_entries
                     if e._granted and (not e._seed) and (e.state.grant_count is not None)
                 }
+                cleared_top_ups = [
+                    e.limit.name
+                    for e in group_entries
+                    if e._granted and (not e._seed) and e._stored_top_up
+                ]
                 pin = [e.state.shard_count for e in group_entries if e._seed and e.limit.is_quota]
                 pin += list(grant_counts.values())
                 written_rf = _monotonic_rf(now_ms, expected_rf, group_entries)
@@ -804,6 +1095,16 @@ class SyncLease:
                             (owner_entry._cascade, owner_entry._parent_id),
                         )
                     )
+                soft_stamps: dict[str, int | None] = {}
+                soft_reads: dict[str, int | None] = {}
+                for e in group_entries:
+                    if not e._soft_restamp or e._seed:
+                        continue
+                    wanted = _stamp_deadline(e, now_ms, repo) if e.state.soft else None
+                    if wanted is None and e.state.soft_until_ms is None:
+                        continue
+                    soft_stamps[e.limit.name] = wanted
+                    soft_reads[e.limit.name] = e.state.soft_until_ms
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
@@ -825,12 +1126,30 @@ class SyncLease:
                         applied_windows=_applied_windows(group_entries),
                         seeds=seeds,
                         grant_counts=grant_counts,
+                        cleared_top_ups=cleared_top_ups,
                         pin_shard_count=min(pin, default=None),
                         rf_ms=written_rf,
                         clear_vu=not boundaries,
                         pin_vu=read_state is not None,
                         expected_vu=read_state.stored_vu_ms if read_state is not None else None,
                         owner=(owner_entry._cascade, owner_entry._parent_id)
+                        if owner_entry is not None
+                        else None,
+                        soft_stamps=soft_stamps or None,
+                        soft_reads=soft_reads or None,
+                        soft_trusted=_soft_trusted(group_entries),
+                        bypass_stamp=next(
+                            (
+                                e._bypass_restamp
+                                for e in group_entries
+                                if e._bypass_restamp is not None
+                            ),
+                            None,
+                        ),
+                        owner_pgen=owner_entry._parent_generation
+                        if owner_entry is not None
+                        else None,
+                        owner_pinc=owner_entry._parent_incarnation
                         if owner_entry is not None
                         else None,
                     )
@@ -853,34 +1172,46 @@ class SyncLease:
         for (entity_id, resource), debits in by_bucket.items():
             donor_items += repo.build_quota_donor_debits(entity_id, resource, debits)
         items += donor_items
-        condition_failed = False
-        condition_exc: Exception | None = None
-        for attempt in range(_CONFLICT_MAX_RETRIES + 1):
-            try:
-                repo.transact_write(items)
-                break
-            except Exception as exc:
-                if _is_condition_check_failure(exc):
-                    condition_failed = True
-                    condition_exc = exc
-                    break
-                if _is_transaction_conflict(exc):
-                    if attempt < _CONFLICT_MAX_RETRIES:
-                        delay = random.uniform(0, _CONFLICT_BASE_DELAY_S * 2**attempt)
-                        logger.debug(
-                            "TransactionConflict (attempt %d/%d), retrying in %.3fs",
-                            attempt + 1,
-                            _CONFLICT_MAX_RETRIES,
-                            delay,
-                        )
-                        time.sleep(delay)
-                        continue
-                    if donor_items:
-                        raise QuotaMoveLostError from exc
-                    raise
-                raise
+        meta_checks = _meta_checks(repo, list(groups.items()), self.entries, now_ms)
+        first_check = len(items)
+        items += meta_checks
+        condition_exc = self._send_commit(items, bool(donor_items), now_ms)
+        condition_failed = condition_exc is not None
+        if condition_failed and _meta_check_failed(condition_exc, first_check, len(meta_checks)):
+            raise _owner_stamp_lost(self.entries, now_ms) from condition_exc
+        if (
+            condition_failed
+            and condition_exc is not None
+            and self._claim_owner_stamps(groups, condition_exc)
+        ):
+            resent_exc = self._send_commit(items, bool(donor_items), now_ms)
+            if resent_exc is None:
+                condition_failed = False
+                condition_exc = None
+            else:
+                if _meta_check_failed(resent_exc, first_check, len(meta_checks)):
+                    raise _owner_stamp_lost(self.entries, now_ms) from resent_exc
+                condition_exc = resent_exc
+        if (
+            condition_failed
+            and condition_exc is not None
+            and _owner_moved_since_read(groups, condition_exc)
+        ):
+            raise _owner_stamp_lost(self.entries, now_ms) from condition_exc
         if condition_failed and donor_items:
-            raise QuotaMoveLostError from condition_exc
+            raise QuotaMoveLostError(
+                contended=condition_exc is not None
+                and (not _move_items_failed(condition_exc, list(groups.values()), first_check))
+            ) from condition_exc
+        lost_bypass: frozenset[str] = frozenset()
+        if condition_failed and condition_exc is not None:
+            lost_bypass = _bypass_failed_resources(
+                list(groups.values()),
+                _get_cancellation_reason_codes(condition_exc),
+                creates_lose_races=True,
+            )
+        if lost_bypass:
+            raise BypassLostError(lost_bypass) from condition_exc
         reissued_creates: set[tuple[str, str, int]] = set()
         if condition_failed:
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
@@ -888,6 +1219,8 @@ class SyncLease:
                 _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None
             )
             retry_guards: dict[tuple[str, str, int], dict[str, tuple[int | None, int | None]]] = {}
+            retry_unseeded: dict[tuple[str, str, int], set[str]] = {}
+            retry_maybe_missing: set[tuple[str, str, int]] = set()
 
             def _consumption_only(
                 entity_id: str, resource: str, shard_id: int, group_entries: list[LeaseEntry]
@@ -895,6 +1228,18 @@ class SyncLease:
                 consumed = {
                     e.limit.name: e.consumed * 1000 for e in group_entries if e.consumed > 0
                 }
+                if group_entries[0]._bypass:
+                    return (
+                        repo.build_bypass_consume(
+                            entity_id,
+                            resource,
+                            consumed,
+                            shard_id,
+                            bypass_until_ms=_bypass_deadline(group_entries, now_ms, repo),
+                        )
+                        if consumed
+                        else None
+                    )
                 seeds = {
                     e.limit.name: e.state
                     for e in group_entries
@@ -906,6 +1251,11 @@ class SyncLease:
                 }
                 if not consumed:
                     return None
+                unseeded = {name for name in consumed if name not in seeds}
+                if any((e._seed or e._is_new) and e.limit.name in unseeded for e in group_entries):
+                    retry_maybe_missing.add((entity_id, resource, shard_id))
+                if unseeded:
+                    retry_unseeded[entity_id, resource, shard_id] = unseeded
                 guards = _period_guards(group_entries, now_ms)
                 if guards:
                     retry_guards[entity_id, resource, shard_id] = guards
@@ -915,7 +1265,9 @@ class SyncLease:
                         consumed=consumed,
                         shard_id=shard_id,
                         seeds=seeds or None,
+                        soft_trusted=_soft_trusted(group_entries),
                         period_guards=guards,
+                        now_ms=now_ms,
                     )
                 return repo.build_composite_retry(
                     entity_id=entity_id,
@@ -923,6 +1275,8 @@ class SyncLease:
                     consumed=consumed,
                     shard_id=shard_id,
                     seeds=seeds or None,
+                    soft_trusted=_soft_trusted(group_entries),
+                    now_ms=now_ms,
                 )
 
             retry_items: list[dict[str, Any]] = []
@@ -944,11 +1298,25 @@ class SyncLease:
             for retry_attempt in range(2):
                 if not retry_items:
                     break
+                retry_checks = _meta_checks(
+                    repo,
+                    [
+                        group
+                        for item, group in zip(retry_items, retry_groups, strict=True)
+                        if isinstance(item, dict) and "Put" in item
+                    ],
+                    self.entries,
+                    now_ms,
+                )
                 try:
-                    retry_attrs = repo.transact_write(retry_items)
+                    retry_attrs = _transact_retrying_conflict(repo, retry_items + retry_checks)
                     break
                 except Exception as retry_exc:
+                    if _meta_check_failed(retry_exc, len(retry_items), len(retry_checks)):
+                        raise _owner_stamp_lost(self.entries, now_ms) from retry_exc
                     if not _is_condition_check_failure(retry_exc):
+                        if _is_transaction_conflict(retry_exc):
+                            raise _contention_rejection(self.entries, now_ms) from retry_exc
                         raise
                     codes = _get_cancellation_reason_codes(retry_exc)
                     downgraded: list[dict[str, Any]] = []
@@ -971,11 +1339,22 @@ class SyncLease:
                             break
                         downgraded.append(item)
                         downgraded_groups.append(retry_groups[i])
+                    lost_bypass = _bypass_failed_resources(
+                        [group for _key, group in retry_groups], codes
+                    )
+                    if lost_bypass:
+                        raise BypassLostError(lost_bypass) from retry_exc
                     if not lost_put or retry_attempt == 1:
                         images = _retry_failure_images(
                             retry_exc, [key for key, _group in retry_groups]
                         )
-                        unapplied = _unapplied_periods(retry_guards, images)
+                        if _still_unseeded(retry_unseeded, images, bool(retry_maybe_missing)) and (
+                            not _genuinely_short(retry_groups, images, now_ms)
+                        ):
+                            raise SeedNotAppliedError(
+                                _contention_rejection(self.entries, now_ms).statuses
+                            ) from retry_exc
+                        unapplied = _unapplied_periods(retry_guards, images, now_ms)
                         if unapplied:
                             raise PeriodNotAppliedError(
                                 _period_statuses(self.entries, now_ms, unapplied)
@@ -1015,6 +1394,56 @@ class SyncLease:
             self._repair_created_quota_shards(
                 [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
             )
+
+    def _send_commit(
+        self, items: list[dict[str, Any]], carries_moves: bool, now_ms: int
+    ) -> Exception | None:
+        """Send the commit transaction once, retrying a write conflict (#332, #724).
+
+        A ``TransactionConflict`` rolls the whole transaction back, so it is
+        re-sent as-is with full jitter, up to ``_CONFLICT_MAX_RETRIES`` times.
+        Every send of the commit goes through here — the first, and the
+        re-send after a claimed predecessor's bucket (ADR-150) — so none of
+        them can let a conflict escape raw: under ``on_unavailable=ALLOW`` a
+        raw error is an unlimited degraded lease.
+
+        Returns:
+            None when the transaction landed, or the exception when it failed
+            a condition (checked first: a lost lock routes to the
+            consumption-only retry, a META check to a re-plan). The caller
+            decides which.
+
+        Raises:
+            QuotaMoveLostError: Sustained contention on a commit carrying an
+                ADR-145 move; nothing was written and the caller re-plans.
+            RateLimitExceeded: Sustained contention otherwise — the contended
+                429 (#724); nothing was debited.
+            Exception: Any other error, unchanged.
+        """
+        attempt = 0
+        while True:
+            try:
+                self.repository.transact_write(items)
+                return None
+            except Exception as exc:
+                if _is_condition_check_failure(exc):
+                    return exc
+                if not _is_transaction_conflict(exc):
+                    raise
+                if attempt < _CONFLICT_MAX_RETRIES:
+                    delay = random.uniform(0, _CONFLICT_BASE_DELAY_S * 2**attempt)
+                    logger.debug(
+                        "TransactionConflict (attempt %d/%d), retrying in %.3fs",
+                        attempt + 1,
+                        _CONFLICT_MAX_RETRIES,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    attempt += 1
+                    continue
+                if carries_moves:
+                    raise QuotaMoveLostError(contended=True) from exc
+                raise _contention_rejection(self.entries, now_ms) from exc
 
     def _record_written_states(
         self,
@@ -1104,6 +1533,51 @@ class SyncLease:
                     exc_info=True,
                 )
 
+    def _claim_owner_stamps(
+        self, groups: dict[tuple[str, str, int], list[LeaseEntry]], exc: Exception
+    ) -> bool:
+        """Claim buckets whose owner pin was lost to another incarnation (ADR-150).
+
+        The rf-locked owner stamp only overwrites a stamp of its own
+        incarnation, since this pass's META read may be a deleted
+        predecessor's. A bucket a predecessor left behind then refuses every
+        slow pass. Each failed item whose image carries a different ``pinc``
+        is settled by one strongly consistent META read
+        (:meth:`SyncRepository.restamp_owner_if_current`): restamped when this
+        pass's incarnation is current, left alone when this pass read a stale
+        record. When a bucket was claimed the caller re-sends its write once;
+        otherwise this acquire proceeds on the consumption-only retry with the
+        parents it planned: a pass that read a predecessor's record debits
+        that predecessor's parent once, like any lease opened before a move
+        (§7). Failures are logged without the entity id and swallowed.
+
+        Returns:
+            Whether any bucket was claimed.
+        """
+        claimed = False
+        images = _retry_failure_images(exc, list(groups))
+        for key, group_entries in groups.items():
+            owner = next((e for e in group_entries if e._stamp_owner), None)
+            image = images.get(key)
+            if owner is None or owner._parent_incarnation is None or image is None:
+                continue
+            stored = image.get(BUCKET_FIELD_PINC, {}).get("S")
+            if stored is None or stored == owner._parent_incarnation:
+                continue
+            try:
+                claimed = (
+                    self.repository.restamp_owner_if_current(*key, owner._parent_incarnation)
+                    or claimed
+                )
+            except Exception:
+                logger.warning(
+                    "could not claim a predecessor's bucket for resource=%s shard=%d",
+                    key[1],
+                    key[2],
+                    exc_info=True,
+                )
+        return claimed
+
     def _fan_out_windows(
         self, window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]]
     ) -> None:
@@ -1173,8 +1647,9 @@ class SyncLease:
             lambda entry: (entry.consumed - entry._initial_consumed) * 1000
         )
         self._committed = True
-        for entity_id, resource, shard_id, deltas, ceilings, pin in writes:
-            write_credit(self.repository, entity_id, resource, deltas, shard_id, ceilings, pin)
+        failures = self._write_credits_independently(writes)
+        if failures:
+            raise failures[0][1]
 
     def _rollback(self) -> None:
         """Write compensating deltas to restore consumed tokens (Issue #309).
@@ -1184,6 +1659,12 @@ class SyncLease:
         self-trimming credit per bucket item (``write_credit``, #721): a reset
         edge or a refill to capacity that landed since the debit can no longer
         lift the balance above the ceiling where the fast path would spend it.
+
+        Each refund is written on its own (#729): one that fails after its
+        retries — a transaction conflict or throttling on a busy item — is
+        logged and the rest are still attempted, so a stuck child refund
+        cannot leave the parent debited for work that never happened. Never
+        raises: a rollback failure must not mask the caller's exception.
         """
         if self._committed or self._rolled_back:
             return
@@ -1191,14 +1672,14 @@ class SyncLease:
         if not self._initial_committed:
             return
         writes = self._adjust_writes(lambda entry: -entry._initial_consumed * 1000)
-        try:
-            for entity_id, resource, shard_id, deltas, ceilings, pin in writes:
-                write_credit(self.repository, entity_id, resource, deltas, shard_id, ceilings, pin)
-        except Exception:
+        for (_entity_id, resource, shard_id, *_rest), exc in self._write_credits_independently(
+            writes
+        ):
             logger.warning(
-                "Failed to rollback consumed tokens for entities: %s",
-                [write[:3] for write in writes],
-                exc_info=True,
+                "Failed to roll back consumed tokens for resource=%s shard=%d (%s)",
+                resource,
+                shard_id,
+                type(exc).__name__,
             )
 
     def _adjust_writes(self, delta_of: Callable[[LeaseEntry], int]) -> list[_CreditWrite]:
@@ -1236,8 +1717,47 @@ class SyncLease:
                 period_image,
             )
             pin = image.pin if image is not None else None
-            writes.append((entity_id, resource, shard_id, deltas, ceilings, pin))
+            shape = _bypass_shape(group_entries)
+            writes.append((entity_id, resource, shard_id, deltas, ceilings, pin, shape))
         return writes
+
+    def _write_credits_independently(
+        self, writes: list[_CreditWrite]
+    ) -> list[tuple[_CreditWrite, Exception]]:
+        """Write each bucket item's credit on its own, concurrently (ADR-148 D7).
+
+        Adjustments and refunds are ``ADD``s with no cross-item atomicity, so
+        their order does not matter — only knowing which ones landed does
+        (#682). One round trip for every item instead of one each, and one
+        that fails after its retries (#729) never stops the others from being
+        attempted.
+
+        Returns:
+            Each write that failed, with its exception, in order.
+        """
+
+        def _write(write: _CreditWrite) -> Exception | None:
+            entity_id, resource, shard_id, deltas, ceilings, pin, shape = write
+            try:
+                write_credit(
+                    self.repository, entity_id, resource, deltas, shard_id, ceilings, pin, **shape
+                )
+            except Exception as exc:
+                return exc
+            return None
+
+        outcomes = self._run_in_executor(*[lambda write=write: _write(write) for write in writes])
+        return [
+            (write, outcome)
+            for write, outcome in zip(writes, outcomes, strict=True)
+            if outcome is not None
+        ]
+
+    def _run_in_executor(self, *funcs: Any) -> Any:
+        """Run ``funcs`` concurrently per the repository's ``parallel_mode`` (ADR-148)."""
+        from ._parallel import run_parallel
+
+        return run_parallel(self.repository, funcs)
 
 
 def _limit_image(
@@ -1252,6 +1772,8 @@ def _limit_image(
         sched_raw=sched_raw if sched_raw is not None else state.stored_sched_raw or (None, None),
         window_start_ms=window_start_ms,
         window_applied_ms=window_applied_ms,
+        topped_up_milli=state.topped_up_milli if state.is_quota_state is True else None,
+        reset_number=state.reset_number if state.is_quota_state is True else None,
     )
 
 
@@ -1320,6 +1842,8 @@ def credit_image_from_item(item: Any) -> CreditImage | None:
                     ),
                     window_start_ms=num(bucket_attr(name, BUCKET_FIELD_WS)),
                     window_applied_ms=num(bucket_attr(name, BUCKET_FIELD_WA)),
+                    topped_up_milli=num(bucket_attr(name, BUCKET_FIELD_TU)),
+                    reset_number=num(bucket_attr(name, BUCKET_FIELD_RN)),
                 ),
             )
         )
@@ -1387,6 +1911,97 @@ def _written_image(
     )
 
 
+class SyncLeaseResource:
+    """One resource of a lease, reached through ``SyncLease.resource(name)`` (ADR-148).
+
+    ``adjust()``, ``consume()``, ``release()`` and ``consumed`` behave exactly
+    as the lease-level methods do, scoped to this resource's declared limits:
+    the ones named for it in ``acquire()``'s ``consume`` (the primary
+    resource) or ``also`` (every other one). Nothing is written until the
+    lease's context exits, where every resource is reconciled together.
+    """
+
+    def __init__(self, lease: "SyncLease", name: str) -> None:
+        self._lease = lease
+        self.name = name
+        "The resource this handle acts on."
+
+    @property
+    def consumed(self) -> dict[str, int]:
+        """Total consumed amounts by limit name, for this resource."""
+        return self._lease._consumed_in(self.name)
+
+    @property
+    def bypassed(self) -> bool:
+        """Whether the acquiring entity was admitted under bypass on this resource (#311)."""
+        return self._lease._bypassed_in(self.name)
+
+    @property
+    def overdrawn(self) -> list[str]:
+        """This resource's declared soft limits in debt on the shard written (#467)."""
+        return self._lease._overdrawn_in(self.name)
+
+    def consume(self, **amounts: int) -> None:
+        """Consume more of this resource; see :meth:`SyncLease.consume`.
+
+        Raises:
+            RateLimitExceeded: If any of this resource's limits cannot cover it.
+            LeaseExpiredError: If the lease has already exited.
+        """
+        lease = self._lease
+        lease._require_open()
+        lease._check_declared(amounts, "consume", self.name)
+        lease._consume_in(self.name, amounts)
+
+    def adjust(self, **amounts: int) -> None:
+        """Adjust this resource's consumption by delta; see :meth:`SyncLease.adjust`.
+
+        Never raises for capacity: the bucket may go negative.
+
+        Raises:
+            LeaseExpiredError: If the lease has already exited.
+        """
+        lease = self._lease
+        lease._require_open()
+        lease._check_declared(amounts, "adjust", self.name)
+        lease._apply_adjust(amounts, self.name)
+
+    def release(self, **amounts: int) -> None:
+        """Return unused capacity of this resource; see :meth:`SyncLease.release`.
+
+        Raises:
+            LeaseExpiredError: If the lease has already exited.
+        """
+        lease = self._lease
+        lease._require_open()
+        lease._check_declared(amounts, "release", self.name)
+        lease._apply_adjust({k: -v for k, v in amounts.items()}, self.name)
+
+    def __repr__(self) -> str:
+        return f"SyncLeaseResource({self.name!r})"
+
+
+def _move_items_failed(exc: Exception, groups: list[list[LeaseEntry]], first_check: int) -> bool:
+    """Whether a cancelled commit failed on a quota move's own items (ADR-145).
+
+    The commit's items are one per group (bucket items, in order), then the
+    donor debits, then the META checks (from ``first_check``). The move is in
+    play when a donor debit failed, or the bucket receiving a move did. With
+    no per-item reasons nothing can be told, and the move counts as lost.
+    """
+    codes = _get_cancellation_reason_codes(exc)
+    if codes is None:
+        return True
+    for index, code in enumerate(codes[:first_check]):
+        if code == "None":
+            continue
+        if index >= len(groups):
+            return True
+        if any(entry._donor_debit is not None for entry in groups[index]):
+            return True
+    return False
+
+
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:
     """Extract CancellationReasons codes from a TransactionCanceledException.
 
@@ -1433,7 +2048,111 @@ def _is_transaction_conflict(exc: Exception) -> bool:
     reason_codes = _get_cancellation_reason_codes(exc)
     if reason_codes is not None:
         return "TransactionConflict" in reason_codes
+    if hasattr(exc, "response"):
+        error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        return bool(error_code == "TransactionConflictException")
     return False
+
+
+def _bypass_write_failed(
+    groups: list[list[LeaseEntry]],
+    reason_codes: list[str] | None,
+    *,
+    creates_lose_races: bool = False,
+) -> bool:
+    """Whether a failed transaction failed on a bypass-shaped write (#311).
+
+    ``groups`` is index-aligned with the transaction's items. Without reasons
+    (a single-item write) the one group is the one that failed. With
+    ``creates_lose_races``, a bypassed create is not counted: its ``Put``
+    fails only by losing the create race, which the retry path handles.
+    """
+    failed = _bypass_failed_resources(groups, reason_codes, creates_lose_races=creates_lose_races)
+    return bool(failed)
+
+
+def _bypass_failed_resources(
+    groups: list[list[LeaseEntry]],
+    reason_codes: list[str] | None,
+    *,
+    creates_lose_races: bool = False,
+) -> frozenset[str]:
+    """The resources whose bypass-shaped write failed, by :func:`_bypass_write_failed`'s rule."""
+    failed: set[str] = set()
+    for idx, group in enumerate(groups):
+        if not group[0]._bypass or (creates_lose_races and group[0]._is_new):
+            continue
+        if (
+            reason_codes is None
+            or idx >= len(reason_codes)
+            or reason_codes[idx] == "ConditionalCheckFailed"
+        ):
+            failed.add(group[0].resource)
+    return frozenset(failed)
+
+
+def _stamp_deadline(entry: LeaseEntry, now_ms: int, repo: Any) -> int:
+    """The deadline a soft stamp this entry's write sets (ADR-151 decision 8).
+
+    The one the acquire computed before its uncached config read; an entry
+    built without one (by hand) takes the commit's own reading.
+    """
+    if entry._stamp_deadline_ms is not None:
+        return entry._stamp_deadline_ms
+    return int(repo._stamp_deadline(now_ms))
+
+
+def _bypass_deadline(group: list[LeaseEntry], now_ms: int, repo: Any) -> int:
+    """The deadline a bypassed group's write stamps (ADR-151 decision 8).
+
+    The one the acquire computed from its uncached config read; a lease built
+    without one (a hand-built entry) takes the commit's own reading, which is
+    later than any read the entry could have come from only by the commit's
+    own latency.
+    """
+    deadline = group[0]._bypass_until_ms
+    return deadline if deadline is not None else int(repo._stamp_deadline(now_ms))
+
+
+def _bypass_shape(group: list[LeaseEntry]) -> dict[str, bool]:
+    """``build_composite_adjust`` keywords for one bucket item's adjustment.
+
+    A bypassed item (#311) never had ``tk`` debited, so its adjustments,
+    releases and rollbacks write ``tc`` only. Passed only when needed, so a
+    backend whose builder predates the keyword keeps working.
+    """
+    return {"tokens": False} if group and group[0]._bypass else {}
+
+
+def _soft_trusted(group: list[LeaseEntry]) -> frozenset[str]:
+    """The soft limits whose balance condition a write may omit (#467).
+
+    Only limits admitted as soft on authority trusted over the item's own
+    stamp. Every other limit's condition admits on the item's stamp instead,
+    so a limit soft on the item is never rejected by a write either way.
+    """
+    return frozenset(
+        e.limit.name for e in group if e._soft_trusted and e.state.soft and (not e._seed)
+    )
+
+
+def _transact_retrying_conflict(
+    repo: "SyncRepositoryProtocol", items: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """``transact_write`` retried with full jitter on a transaction conflict (#724).
+
+    A conflict rolls the whole write back, so re-sending it is safe. Returns
+    what ``transact_write`` returns (a single update's ``ALL_NEW`` image). The
+    last attempt's error propagates unchanged.
+    """
+    for attempt in range(_CONFLICT_MAX_RETRIES):
+        try:
+            return repo.transact_write(items)
+        except Exception as exc:
+            if not _is_transaction_conflict(exc) or _is_condition_check_failure(exc):
+                raise
+            time.sleep(random.uniform(0, _CONFLICT_BASE_DELAY_S * 2**attempt))
+    return repo.transact_write(items)
 
 
 def _applied_windows(group: list[LeaseEntry]) -> dict[str, int]:
@@ -1513,11 +2232,20 @@ def _period_guards(
     have applied, the latest at or before ``now_ms`` — or ``(None,
     window_start_ms)`` for a session quota, the window it opened or rolled to.
     Only a quota the retry debits, and only one this pass granted: a period
-    nobody granted was already current.
+    nobody granted was already current. Never a trusted soft quota (review
+    D7): a soft limit is never a reason to reject (ADR-151 decision 1), and
+    its guard tripping raised a 429 marking it exceeded. Debiting the old
+    period instead is harmless for it — the reset that is still pending
+    forgives its debt — and the consumption stays counted in ``tc``. A soft
+    quota trusted only on the item's stamp keeps a guard, waived by a live
+    stamp exactly as its balance floor is (``build_composite_retry``).
     """
     guards: dict[str, tuple[int | None, int | None]] = {}
+    trusted_soft = _soft_trusted(group)
     for entry in group:
         if not (entry._granted and entry.limit.is_quota and (entry.consumed > 0)):
+            continue
+        if entry.limit.name in trusted_soft:
             continue
         state = entry.state
         if state.reset_after_seconds is not None:
@@ -1533,12 +2261,15 @@ def _period_guards(
 def _unapplied_periods(
     guards: dict[tuple[str, str, int], dict[str, tuple[int | None, int | None]]],
     images: dict[tuple[str, str, int], dict[str, Any]],
+    now_ms: int,
 ) -> set[tuple[tuple[str, str, int], str]]:
     """The (bucket, quota) pairs whose period guard the failed retry tripped (#743).
 
     Read off each failed write's ``ALL_OLD`` image: a calendar quota whose
     ``rf`` is still before the edge, or a session quota whose ``wa`` is not
     the window. No image, nothing can be told: the rejection stands as before.
+    A quota whose image carries a live soft stamp waived its guard (review
+    D7): it did not trip, and it is never reported exceeded.
     """
     unapplied: set[tuple[tuple[str, str, int], str]] = set()
     for key, per_limit in guards.items():
@@ -1547,6 +2278,9 @@ def _unapplied_periods(
             continue
         rf = int(item.get(BUCKET_FIELD_RF, {}).get("N", "0"))
         for name, (edge, window_start) in per_limit.items():
+            soft_until = decode_stamp(item.get(bucket_attr(name, BUCKET_FIELD_SOFT)))
+            if soft_until is not None and soft_until > now_ms:
+                continue
             applied = item.get(bucket_attr(name, BUCKET_FIELD_WA), {}).get("N")
             if (
                 edge is not None
@@ -1555,6 +2289,78 @@ def _unapplied_periods(
             ):
                 unapplied.add((key, name))
     return unapplied
+
+
+def _still_unseeded(
+    unseeded: dict[tuple[str, str, int], set[str]],
+    images: dict[tuple[str, str, int], dict[str, Any]],
+    maybe_missing: bool = True,
+) -> bool:
+    """A failed retry's item lacks a limit the retry debited without seeding (#771).
+
+    Read off each failed write's ``ALL_OLD`` image: the limit's ``cp`` or
+    ``tk`` is absent. A transaction returns an image only for the items whose
+    condition failed, so an item with none passed its condition and is not
+    the cause. With no image at all (a backend that returns none) nothing can
+    be told: the pass is re-planned when ``maybe_missing`` — it was to seed a
+    limit, or its create lost its race, so the retry's debit may have had no
+    balance to land on and a fresh read either seeds it or finds the real
+    shortfall. Otherwise the rejection stands, as before.
+    """
+    if not images:
+        return maybe_missing and bool(unseeded)
+    return any(
+        (
+            (item := images.get(key)) is not None
+            and any(
+                (
+                    bucket_attr(name, field) not in item
+                    for name in names
+                    for field in (BUCKET_FIELD_CP, BUCKET_FIELD_TK)
+                )
+            )
+            for key, names in unseeded.items()
+        )
+    )
+
+
+def _genuinely_short(
+    groups: list[tuple[tuple[str, str, int], list[LeaseEntry]]],
+    images: dict[tuple[str, str, int], dict[str, Any]],
+    now_ms: int,
+) -> bool:
+    """A failed retry's image shows a limit the item carries short of its debit.
+
+    A real rejection outranks a missing limit's re-plan (#771 review): the
+    redo would only find the same shortfall, a round trip later — or, on a
+    second loss, report it as the contended 429. Only an enforced limit
+    counts: a trusted soft one carries no balance condition, and one whose
+    image stamp is live is waived (ADR-151 decision 1). Only a declared one:
+    the reserved ``wcu`` is never a reason to reject (a short one doubles the
+    shard count on the fast path).
+    """
+    for key, group in groups:
+        item = images.get(key)
+        if not item:
+            continue
+        trusted = _soft_trusted(group)
+        for entry in group:
+            name = entry.limit.name
+            raw_tk = item.get(bucket_attr(name, BUCKET_FIELD_TK), {}).get("N")
+            if (
+                entry.consumed <= 0
+                or not entry._declared
+                or name in trusted
+                or (raw_tk is None)
+                or (bucket_attr(name, BUCKET_FIELD_CP) not in item)
+            ):
+                continue
+            soft_until = decode_stamp(item.get(bucket_attr(name, BUCKET_FIELD_SOFT)))
+            if soft_until is not None and soft_until > now_ms:
+                continue
+            if int(raw_tk) < entry.consumed * 1000:
+                return True
+    return False
 
 
 def _period_statuses(
@@ -1634,6 +2440,117 @@ def _build_retry_failure_statuses(
     return _retry_statuses(entries, now_ms, None)
 
 
+def _meta_checks(
+    repo: "SyncRepositoryProtocol",
+    groups: list[tuple[tuple[str, str, int], list[LeaseEntry]]],
+    entries: list[LeaseEntry],
+    now_ms: int,
+) -> list[dict[str, Any]]:
+    """One ``ConditionCheck`` per distinct owner whose bucket these groups create (ADR-150).
+
+    Asserts the META each create's pass read: the parent generation and
+    incarnation it stamps, or no META at all when the read found none. A
+    group whose pass read no META (an entry built elsewhere) carries none.
+    One per owner: two actions on one item are not allowed in a transaction.
+
+    Raises:
+        OwnerStampLostError: Two creates of one owner read different META
+            (a multi-resource commit plans each resource with its own read),
+            so one of them is stale and no single check can pin both.
+    """
+    read: dict[str, tuple[bool, int | None, str | None]] = {}
+    for (entity_id, _resource, _shard), group_entries in groups:
+        if not group_entries[0]._is_new or not any(e._owner_read for e in group_entries):
+            continue
+        owner = next((e for e in group_entries if e._stamp_owner), None)
+        seen = (
+            (True, owner._parent_generation, owner._parent_incarnation)
+            if owner is not None
+            else (False, None, None)
+        )
+        if read.setdefault(entity_id, seen) != seen:
+            raise _owner_stamp_lost(entries, now_ms)
+    return [
+        repo.build_owner_check(entity_id, exists=exists, pgen=pgen, pinc=pinc)
+        for entity_id, (exists, pgen, pinc) in read.items()
+    ]
+
+
+def _meta_check_failed(exc: Exception | None, first: int, count: int) -> bool:
+    """Whether a cancelled transaction failed one of its META checks (ADR-150).
+
+    The checks sit at indices ``first .. first + count - 1``; the per-index
+    cancellation reasons say which items failed their condition.
+    """
+    if exc is None or count == 0:
+        return False
+    codes = _get_cancellation_reason_codes(exc) or []
+    return any(code == "ConditionalCheckFailed" for code in codes[first : first + count])
+
+
+def _owner_moved_since_read(
+    groups: dict[tuple[str, str, int], list[LeaseEntry]], exc: Exception
+) -> bool:
+    """Whether a failed item shows its owner moved after this pass read META (ADR-150).
+
+    The item's stamp is of the incarnation this pass read, at a higher parent
+    generation: a move landed (and its fan-out reached this bucket) after an
+    eventually consistent META read. A stamp of another incarnation is
+    `_claim_owner_stamps`' case, and an item with no stamp proves nothing.
+    """
+    images = _retry_failure_images(exc, list(groups))
+    for key, group_entries in groups.items():
+        owner = next((e for e in group_entries if e._stamp_owner), None)
+        image = images.get(key)
+        if owner is None or image is None or owner._parent_generation is None:
+            continue
+        if image.get(BUCKET_FIELD_PINC, {}).get("S") != owner._parent_incarnation:
+            continue
+        stored = image.get(BUCKET_FIELD_PGEN, {}).get("N")
+        if stored is not None and int(stored) > owner._parent_generation:
+            return True
+    return False
+
+
+def _owner_stamp_lost(entries: list[LeaseEntry], now_ms: int) -> "OwnerStampLostError":
+    """The rejection a META-check cancellation raises: nothing was written (ADR-150)."""
+    return OwnerStampLostError(_contention_rejection(entries, now_ms).statuses, contended=True)
+
+
+def _contention_rejection(
+    entries: list[LeaseEntry], now_ms: int, consume: dict[str, int] | None = None
+) -> RateLimitExceeded:
+    """A short 429 for a commit that kept conflicting (#724).
+
+    One status per declared entry, from the in-memory state, none marked
+    exceeded: the request was not short of capacity, it lost to concurrent
+    transactions on the same items. Nothing was debited.
+
+    ``requested`` is what the caller asked for (``consume``), not what the
+    entry was admitted for: a slot granted 0 after its moves were lost
+    admits nothing (``consumed == 0``) and must still report the request.
+    Without ``consume`` the admitted amount stands in, which on the commit
+    path is the same number.
+    """
+    statuses = [
+        LimitStatus(
+            entity_id=entry.entity_id,
+            resource=entry.resource,
+            limit_name=entry.limit.name,
+            limit=entry.limit.per_shard(
+                entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+            ),
+            available=(entry.state.tokens_milli + entry.consumed * 1000) // 1000,
+            requested=(consume or {}).get(entry.limit.name, entry.consumed),
+            exceeded=False,
+            retry_after_seconds=_CONTENTION_RETRY_AFTER_S,
+            resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
+        )
+        for entry in [e for e in entries if e._declared] or entries
+    ]
+    return RateLimitExceeded(statuses, contended=True)
+
+
 def _retry_statuses(
     entries: list[LeaseEntry],
     now_ms: int,
@@ -1662,7 +2579,9 @@ def _retry_statuses(
                     entity_id=entry.entity_id,
                     resource=entry.resource,
                     limit_name=entry.limit.name,
-                    limit=entry.limit.per_shard(real.report_shard_count, now_ms),
+                    limit=entry.limit.per_shard(
+                        real.report_shard_count, now_ms, real.report_top_up_milli
+                    ),
                     available=result.available,
                     requested=entry.consumed,
                     exceeded=exceeded,
@@ -1682,7 +2601,9 @@ def _retry_statuses(
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                limit=entry.limit.per_shard(
+                    entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                ),
                 available=entry.state.tokens_milli // 1000,
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,

@@ -1496,6 +1496,37 @@ class TestChangesElsewhere:
     See docs/plans/2026-10-07-adr147-phase3-withdrawn.md.
     """
 
+    async def test_a_reset_elsewhere_admits_after_the_cache_ttl_and_never_more(self, limiter, repo):
+        """ADR-149: a reset by another process is a credit this one cannot see.
+
+        The cached short state may refuse it until the entry ages out — the
+        documented under-admission — and then the write admits exactly the
+        restored share, never more.
+        """
+        await _spent_and_cached(limiter)
+        other = Repository(
+            name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
+        )
+        other._namespace_id = repo._namespace_id
+        await other.reset_bucket("u", "r")
+        with pytest.raises(RateLimitExceeded):  # refused from the cached state
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        repo._rejection_cache._clock.now += 2  # past the 1 s TTL
+        async with limiter.acquire("u", "r", consume={"rpm": 2}):  # the restored share
+            pass
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        await other.close()
+
+    async def test_a_reset_in_this_process_admits_at_once(self, limiter, repo):
+        """ADR-149: the reset clears this process's cache, so no TTL wait."""
+        await _spent_and_cached(limiter)
+        await repo.reset_bucket("u", "r")
+        async with limiter.acquire("u", "r", consume={"rpm": 2}):
+            pass
+
     async def test_a_write_since_the_state_was_cached_falls_back(self, limiter, repo):
         """The rf lock: another writer moved rf, so the state is stale."""
         await _spent_and_cached(limiter)
@@ -1788,6 +1819,78 @@ class TestChangesElsewhere:
                     except RateLimitExceeded:
                         break
         assert admitted == 2  # the scheduled capacity, not the base 4
+
+    @staticmethod
+    async def _stamp_soft(repo: Repository, soft: bool) -> None:
+        """Another process's soft fan-out (#467): SET or REMOVE `b_rpm_soft`."""
+        await repo._stamp_bucket_soft(
+            schema.pk_bucket(repo._namespace_id, "u", "r", 0), {"rpm": soft}
+        )
+
+    async def test_soft_made_elsewhere_is_seen_once_the_entry_ages_out(self, limiter, repo):
+        """Hard -> soft elsewhere: the documented under-admission, bounded by the TTL."""
+        clock = _Clock()
+        repo._rejection_cache._clock = clock
+        await _teach(limiter, repo)
+        await self._stamp_soft(repo, True)
+        with pytest.raises(RateLimitExceeded):  # still judged from the cached hard state
+            await _drain(limiter)
+        clock.now += 10
+        async with limiter.acquire("u", "r", consume={"rpm": 2}) as lease:
+            pass
+        assert lease.overdrawn == ["rpm"]
+
+    async def test_a_soft_state_is_never_rejected_locally(self, limiter, repo):
+        """The cache holds a soft image: no local rejection, the item decides."""
+        async with limiter.acquire("u", "r", consume={"rpm": 1}):  # creates the bucket
+            pass
+        await self._stamp_soft(repo, True)
+        await _drain(limiter)
+        await _drain(limiter)  # admitted into debt; the image now cached is soft
+        assert repo.get_cache_stats().local_rejections == 0
+        # Soft -> hard elsewhere is enforced on the very next request: the cache
+        # never admits, so the server's condition answers.
+        await self._stamp_soft(repo, False)
+        async with _count_client_calls(repo) as calls:
+            with pytest.raises(RateLimitExceeded):
+                await _drain(limiter)
+        assert calls  # a real write was tried, not a local rejection
+        assert repo.get_cache_stats().local_rejections == 0
+
+    async def test_a_move_elsewhere_debits_the_new_parent_and_admits_no_more(self, repo):
+        """ADR-150: another process moves u from org-a to a full org-b.
+
+        This process's cache still names org-a, with room; DynamoDB alone would
+        reject (org-b is spent), and org-a must end where it started.
+        """
+        roomy = Limit.per_day("rpm", 100)  # no refill to speak of during the test
+        for org in ("org-a", "org-b"):
+            await repo.create_entity(org)
+            await repo.set_limits(org, [roomy], resource="r")
+        await repo.create_entity("u", parent_id="org-a", cascade=True)
+        await repo.set_limits("u", [roomy], resource="r")
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            for _ in range(2):  # warm: the second call takes the parallel path
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+            org_a = await _consumed(repo, "org-a")
+            other = Repository(
+                name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
+            )
+            other._namespace_id = repo._namespace_id
+            await _stamp_current_lambdas(other)
+            async with RateLimiter(repository=other) as other_limiter:
+                async with other_limiter.acquire("org-b", "r", consume={"rpm": 100}):
+                    pass  # org-b spent
+            await other.set_parent("u", "org-b")
+            await other.close()
+
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+            assert {s.entity_id for s in exc_info.value.violations} == {"org-b"}
+        assert await _consumed(repo, "org-a") == org_a
 
 
 def test_recording_written_states_skips_a_backend_without_the_cache():

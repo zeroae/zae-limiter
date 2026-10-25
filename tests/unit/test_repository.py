@@ -14,6 +14,8 @@ from zae_limiter.exceptions import (
     EntityExistsError,
     InvalidIdentifierError,
     RateLimiterUnavailable,
+    ResourceDisabled,
+    ValidationError,
     VersionMismatchError,
 )
 from zae_limiter.models import BucketState, CreditCeiling
@@ -28,6 +30,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TK,
+    BUCKET_FIELD_TU,
     BUCKET_FIELD_VU,
     BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
@@ -35,14 +38,18 @@ from zae_limiter.schema import (
     CONFIG_FIELD_SCHED_TZ,
     LIMIT_FIELD_RSA,
     LIMIT_FIELD_RSCHED,
+    SK_OPERATION_PREFIX,
     WCU_LIMIT_NAME,
     bucket_attr,
     calculate_bucket_ttl,
+    calculate_bucket_ttl_seconds,
+    gsi3_pk_entity,
     limit_attr,
     parse_bucket_attr,
     parse_bucket_sk,
     parse_limit_attr,
     pk_bucket,
+    pk_entity,
     sk_config,
     sk_state,
 )
@@ -3712,6 +3719,300 @@ class TestRepositoryEntityDuplicates:
         assert entity is None
 
 
+async def _entity_with_many_items(repo, entity_id, *, usage=30, resources=("gpt-4", "gpt-3.5")):
+    """An entity whose items span pages and BatchWriteItem chunks (#742).
+
+    META, ``usage`` usage-snapshot stand-ins under the entity's PK (more than
+    one 25-item chunk), and one bucket per resource, found through GSI3.
+    Returns the number of items ``delete_entity`` must delete.
+    """
+    await repo.create_entity(entity_id, name=entity_id)
+    client = await repo._get_client()
+    pk = pk_entity(repo._namespace_id, entity_id)
+    for i in range(usage):
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={"PK": {"S": pk}, "SK": {"S": f"#USAGE#r#{i:04d}"}},
+        )
+    now_ms = int(time.time() * 1000)
+    for resource in resources:
+        states = [BucketState.from_limit(entity_id, resource, Limit.per_minute("rpm", 100), now_ms)]
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, resource, states, now_ms)]
+        )
+    return 1 + usage + len(resources)
+
+
+async def _entity_items_left(repo, entity_id):
+    """Items still under the entity's PK plus buckets still indexed in GSI3."""
+    client = await repo._get_client()
+    base = await client.query(
+        TableName=repo.table_name,
+        KeyConditionExpression="PK = :pk",
+        ExpressionAttributeValues={":pk": {"S": pk_entity(repo._namespace_id, entity_id)}},
+        ConsistentRead=True,
+    )
+    buckets = await client.query(
+        TableName=repo.table_name,
+        IndexName="GSI3",
+        KeyConditionExpression="GSI3PK = :pk",
+        ExpressionAttributeValues={
+            ":pk": {"S": gsi3_pk_entity(repo._namespace_id, entity_id)},
+        },
+    )
+    return base["Items"] + buckets["Items"]
+
+
+class TestDeleteEntityIsComplete:
+    """``delete_entity`` deletes everything or raises (#742).
+
+    BatchWriteItem returns throttled deletes in ``UnprocessedItems`` without
+    raising, and a Query returns at most 1 MB per page. Ignoring either left
+    an entity partly deleted with no error: a leftover ``#META`` keeps the
+    entity looking alive, leftover buckets keep their balances.
+
+    The retry constants are patched with ``create=True`` so that, run against a
+    build without them, each test fails on the behaviour it pins rather than on
+    the patch.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unprocessed_items_are_resent(self, repo):
+        expected = await _entity_with_many_items(repo, "e")
+        client = await repo._get_client()
+        real_batch_write = client.batch_write_item
+        calls = []
+
+        async def partly_applied(**params):
+            # The first request applies its first half and hands back the rest.
+            requests = params["RequestItems"][repo.table_name]
+            calls.append(len(requests))
+            if len(calls) > 1:
+                return await real_batch_write(**params)
+            half = len(requests) // 2
+            await real_batch_write(RequestItems={repo.table_name: requests[:half]})
+            return {"UnprocessedItems": {repo.table_name: requests[half:]}}
+
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch.object(client, "batch_write_item", side_effect=partly_applied),
+        ):
+            await repo.delete_entity("e")
+
+        assert await _entity_items_left(repo, "e") == []
+        assert calls[1] == calls[0] - calls[0] // 2  # only the remainder is resent
+        events = await repo.get_audit_events("e")
+        assert events[0].action == AuditAction.ENTITY_DELETED
+        assert events[0].details["records_deleted"] == expected
+
+    @pytest.mark.asyncio
+    async def test_every_query_page_is_deleted(self, repo):
+        """Both the base-table and the GSI3 query follow LastEvaluatedKey."""
+        expected = await _entity_with_many_items(repo, "e", usage=5, resources=("a", "b", "c"))
+        client = await repo._get_client()
+        real_query = client.query
+        paged = []
+
+        async def two_per_page(**params):
+            # A 1 MB page, scaled down: moto pages a Query that sets Limit.
+            response = await real_query(**{"Limit": 2, **params})
+            if "LastEvaluatedKey" in response:
+                paged.append(params.get("IndexName", "base"))
+            return response
+
+        with patch.object(client, "query", side_effect=two_per_page):
+            await repo.delete_entity("e")
+
+        assert {"base", "GSI3"} <= set(paged)
+        assert await _entity_items_left(repo, "e") == []
+        events = await repo.get_audit_events("e")
+        assert events[0].details["records_deleted"] == expected
+
+    @pytest.mark.asyncio
+    async def test_raises_when_items_stay_unprocessed(self, repo):
+        await _entity_with_many_items(repo, "e", usage=3)
+        client = await repo._get_client()
+        calls = []
+
+        async def throttled(**params):
+            requests = params["RequestItems"][repo.table_name]
+            calls.append(len(requests))
+            return {"UnprocessedItems": {repo.table_name: requests}}
+
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch("zae_limiter.repository._BATCH_WRITE_MAX_RETRIES", 2, create=True),
+            patch.object(client, "batch_write_item", side_effect=throttled),
+            pytest.raises(RateLimiterUnavailable, match="unprocessed") as exc_info,
+        ):
+            await repo.delete_entity("e")
+
+        assert exc_info.value.entity_id == "e"
+        assert len(calls) == 3  # the first send and two retries
+        # Nothing was deleted, and no deletion was audited.
+        assert await repo.get_entity("e") is not None
+        events = await repo.get_audit_events("e")
+        assert AuditAction.ENTITY_DELETED not in {e.action for e in events}
+
+
+async def _with_operation_records(repo, entity_id, resources, per_resource):
+    """Operation-record stand-ins (ADR-149) in each resource's shard-0 partition."""
+    client = await repo._get_client()
+    for resource in resources:
+        for j in range(per_resource):
+            await client.put_item(
+                TableName=repo.table_name,
+                Item={
+                    "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, 0)},
+                    "SK": {"S": f"{SK_OPERATION_PREFIX}op-{j}"},
+                },
+            )
+    return len(resources) * per_resource
+
+
+async def _operation_records_left(repo, entity_id, resources):
+    client = await repo._get_client()
+    left = []
+    for resource in resources:
+        response = await client.query(
+            TableName=repo.table_name,
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :op)",
+            ExpressionAttributeValues={
+                ":pk": {"S": pk_bucket(repo._namespace_id, entity_id, resource, 0)},
+                ":op": {"S": SK_OPERATION_PREFIX},
+            },
+        )
+        left.extend(response["Items"])
+    return left
+
+
+def _throttle_requests_naming(client, table, sk_test):
+    """Never process a delete whose SK matches; process the rest of its request.
+
+    What DynamoDB does to a partly throttled request: the other deletes in it
+    land, the matching ones come back in ``UnprocessedItems``, every time.
+    """
+    real_batch_write = client.batch_write_item
+
+    async def throttled(**params):
+        requests = params["RequestItems"][table]
+        held = [r for r in requests if sk_test(r["DeleteRequest"]["Key"]["SK"]["S"])]
+        if not held:
+            return await real_batch_write(**params)
+        served = [r for r in requests if r not in held]
+        if served:
+            await real_batch_write(RequestItems={table: served})
+        return {"UnprocessedItems": {table: held}}
+
+    return patch.object(client, "batch_write_item", side_effect=throttled)
+
+
+class TestDeleteEntityStopsFindably:
+    """A delete that stops part-way can be finished, and is audited (#742 review).
+
+    The deletes run in an order that keeps what is left findable by a second
+    call: operation records (found only through their shard-0 bucket), then
+    buckets, then the entity's own items with ``#META`` last. Every call that
+    deleted anything writes an ``entity_deleted`` event saying how many items
+    it deleted and whether the entity is gone.
+    """
+
+    RESOURCES = ("gpt-4", "gpt-3.5")
+
+    @pytest.mark.asyncio
+    async def test_a_stopped_delete_is_audited_and_finished(self, repo):
+        expected = await _entity_with_many_items(repo, "e", resources=self.RESOURCES)
+        expected += await _with_operation_records(repo, "e", self.RESOURCES, 2)
+        client = await repo._get_client()
+
+        # The request holding #META never lands: it is the last one sent.
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch("zae_limiter.repository._BATCH_WRITE_MAX_RETRIES", 2, create=True),
+            _throttle_requests_naming(client, repo.table_name, lambda sk: sk == "#META"),
+            pytest.raises(RateLimiterUnavailable, match="unprocessed"),
+        ):
+            await repo.delete_entity("e", principal="admin")
+
+        # Everything before the entity's last request is gone; the entity is not.
+        assert await _operation_records_left(repo, "e", self.RESOURCES) == []
+        assert await repo.get_entity("e", consistent_read=True) is not None
+        [stopped] = [
+            e for e in await repo.get_audit_events("e") if e.action == AuditAction.ENTITY_DELETED
+        ]
+        assert stopped.principal == "admin"
+        assert stopped.details["complete"] is False
+        assert 0 < stopped.details["records_deleted"] < expected
+
+        # A second call finds what is left, finishes, and audits the rest.
+        await repo.delete_entity("e", principal="admin")
+
+        assert await _entity_items_left(repo, "e") == []
+        events = [
+            e for e in await repo.get_audit_events("e") if e.action == AuditAction.ENTITY_DELETED
+        ]
+        assert sorted(e.details["complete"] for e in events) == [False, True]
+        [first] = [e for e in events if not e.details["complete"]]
+        [finished] = [e for e in events if e.details["complete"]]
+        assert first.details == stopped.details
+        assert finished.details["complete"] is True
+        assert first.details["records_deleted"] + finished.details["records_deleted"] == expected
+
+    @pytest.mark.asyncio
+    async def test_operation_records_go_before_their_bucket(self, repo):
+        """A bucket deleted before its records would hide them from a second
+        call, which finds records only through the shard-0 bucket."""
+        await _entity_with_many_items(repo, "e", usage=0, resources=self.RESOURCES)
+        await _with_operation_records(repo, "e", self.RESOURCES, 1)
+        client = await repo._get_client()
+
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch("zae_limiter.repository._BATCH_WRITE_MAX_RETRIES", 2, create=True),
+            _throttle_requests_naming(
+                client, repo.table_name, lambda sk: sk.startswith(SK_OPERATION_PREFIX)
+            ),
+            pytest.raises(RateLimiterUnavailable),
+        ):
+            await repo.delete_entity("e")
+
+        # Nothing after the records was touched, and nothing was deleted to audit.
+        assert len(await _entity_items_left(repo, "e")) == 1 + len(self.RESOURCES)
+        assert len(await _operation_records_left(repo, "e", self.RESOURCES)) == 2
+        assert AuditAction.ENTITY_DELETED not in {
+            e.action for e in await repo.get_audit_events("e")
+        }
+
+        await repo.delete_entity("e")
+        assert await _entity_items_left(repo, "e") == []
+        assert await _operation_records_left(repo, "e", self.RESOURCES) == []
+
+    @pytest.mark.asyncio
+    async def test_an_audit_failure_does_not_hide_the_stopped_delete(self, repo):
+        await _entity_with_many_items(repo, "e", usage=3, resources=self.RESOURCES)
+        client = await repo._get_client()
+
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch("zae_limiter.repository._BATCH_WRITE_MAX_RETRIES", 2, create=True),
+            _throttle_requests_naming(client, repo.table_name, lambda sk: sk == "#META"),
+            patch.object(repo, "_log_audit_event", side_effect=RuntimeError("audit down")),
+            pytest.raises(RateLimiterUnavailable),
+        ):
+            await repo.delete_entity("e")
+
+    @pytest.mark.asyncio
+    async def test_an_audit_failure_after_a_complete_delete_raises(self, repo):
+        """Passes before #742 too: the audit error was never swallowed."""
+        await _entity_with_many_items(repo, "e", usage=3, resources=self.RESOURCES)
+
+        with (
+            patch.object(repo, "_log_audit_event", side_effect=RuntimeError("audit down")),
+            pytest.raises(RuntimeError, match="audit down"),
+        ):
+            await repo.delete_entity("e")
+
+
 class TestRepositoryTableOperations:
     """Tests for table-level operations."""
 
@@ -4214,7 +4515,9 @@ class TestScheduleBoundaryFastPathCost:
         # changed: the SET/ADD expression is untouched.
         condition = captured[0]["ConditionExpression"]
         assert condition.count("#vu") == 2, condition  # attribute_not_exists(#vu) OR #vu > :vu_now
-        assert condition.count(":vu_now") == 1, condition
+        assert condition.count("#vu > :vu_now") == 1, condition
+        # The same bound instant judges the stamp deadlines (ADR-151 decision 8).
+        assert set(captured[0]["ExpressionAttributeValues"]) >= {":vu_now"}
         assert "#vu" not in captured[0]["UpdateExpression"]
 
     async def test_vu_clause_costs_no_extra_call_when_present(self, repo):
@@ -5692,7 +5995,7 @@ class TestStaleLimitAliasesAreExpressionSafe:
         assert removed == {
             bucket_attr(name, field)
             for name in ("req-min", "tok.sec")
-            for field in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched")
+            for field in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched", "soft")
         } | {
             "sched",
             "rsched",
@@ -5700,6 +6003,8 @@ class TestStaleLimitAliasesAreExpressionSafe:
             bucket_attr("rpm", "sched"),
             bucket_attr("rpm", "rsched"),
             bucket_attr("rpm", "rsa"),
+            # A hard limit's soft stamp is REMOVEd, like its `rsa` (#467).
+            bucket_attr("rpm", "soft"),
         }
 
     @pytest.mark.asyncio
@@ -8674,3 +8979,801 @@ class TestAutoUpdateSkipsFunctionsTheStackDoesNotDeploy:
             "aggregator": "0.15.0",
             "limits-provisioner": None,
         }
+
+
+# ---------------------------------------------------------------------------
+# Reset and top-up of one (entity, resource) (ADR-149, #470)
+# ---------------------------------------------------------------------------
+
+_OP_T0 = 1_767_268_800_000  # 2026-01-01T12:00:00Z, well inside a day
+_OP_RPM = Limit.per_minute("rpm", 100)
+_OP_CAL = Limit.quota("cal", 1000, cron="0 0 * * *")
+_OP_SES = Limit.quota("ses", 1000, reset_after=timedelta(hours=5))
+
+
+async def _op_put_shard(
+    repo,
+    entity_id,
+    resource,
+    limits,
+    shard_id=0,
+    shard_count=1,
+    now_ms=_OP_T0,
+    tokens=None,
+    grant_counts=None,
+    extra=None,
+):
+    """Write one shard item as the slow path's create would, then adjust it raw."""
+    states = [
+        BucketState.from_limit(entity_id, resource, limit, now_ms, shard_count=shard_count)
+        for limit in limits
+    ]
+    for state in states:
+        if tokens and state.limit_name in tokens:
+            state.tokens_milli = tokens[state.limit_name]
+        if grant_counts and state.limit_name in grant_counts:
+            state.grant_count = grant_counts[state.limit_name]
+    item = repo.build_composite_create(
+        entity_id=entity_id,
+        resource=resource,
+        states=states,
+        now_ms=now_ms,
+        ttl_seconds=None,
+        shard_id=shard_id,
+        shard_count=shard_count,
+        rf_ms=now_ms,
+    )
+    if extra:
+        item["Put"]["Item"].update(extra)
+    await repo.transact_write([item])
+
+
+async def _op_item(repo, entity_id, resource, shard_id=0):
+    client = await repo._get_client()
+    response = await client.get_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard_id)},
+            "SK": {"S": sk_state()},
+        },
+        ConsistentRead=True,
+    )
+    return response.get("Item")
+
+
+def _op_num(item, name, field):
+    raw = item.get(bucket_attr(name, field))
+    return None if raw is None else int(raw["N"])
+
+
+class TestResetAndTopUp:
+    """ADR-149: in-place, rf-locked passes over every shard, in one transaction."""
+
+    async def test_reset_of_a_missing_bucket_is_a_no_op(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        result = await repo.reset_bucket("e", "r", principal="ops")
+        assert (result.shards, result.amounts) == (0, {"rpm": 0})
+        assert await repo.get_audit_events("e") == [
+            e for e in await repo.get_audit_events("e") if e.action != AuditAction.BUCKET_RESET
+        ]
+
+    async def test_reset_restores_a_dripping_limit_and_keeps_the_counter(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(
+            repo,
+            "e",
+            "r",
+            [_OP_RPM],
+            tokens={"rpm": -5_000},
+            extra={bucket_attr("rpm", "tc"): {"N": "105000"}, "disabled": {"BOOL": True}},
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        result = await repo.reset_bucket("e", "r", principal="ops")
+        item = await _op_item(repo, "e", "r")
+        assert result.shards == 1
+        assert _op_num(item, "rpm", BUCKET_FIELD_TK) == 100_000
+        assert result.amounts == {"rpm": 104}  # from the refilled -4.9 tokens
+        assert _op_num(item, "rpm", "tc") == 105_000  # never touched (#179)
+        assert item["disabled"] == {"BOOL": True}  # never touched (ADR-125)
+        assert int(item[BUCKET_FIELD_VU]["N"]) == 0  # one forced slow pass
+        assert int(item[BUCKET_FIELD_RF]["N"]) == _OP_T0 + 1
+        events = [e for e in await repo.get_audit_events("e") if e.action == "bucket_reset"]
+        assert len(events) == 1
+        assert events[0].resource == "r"
+        assert events[0].principal == "ops"
+        assert events[0].details == {"amounts": {"rpm": 104}, "shards": 1}
+
+    async def test_reset_of_named_limits_only_refills_the_others(self, repo):
+        tpm = Limit.per_minute("tpm", 600)
+        await repo.set_limits("e", [_OP_RPM, tpm], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM, tpm], tokens={"rpm": 0, "tpm": 0})
+        repo._now_ms = lambda: _OP_T0 + 6_000  # 6 s: rpm +10, tpm +60
+        result = await repo.reset_bucket("e", "r", limits=["rpm"])
+        item = await _op_item(repo, "e", "r")
+        assert result.amounts == {"rpm": 90}
+        assert _op_num(item, "rpm", BUCKET_FIELD_TK) == 100_000
+        assert _op_num(item, "tpm", BUCKET_FIELD_TK) == 60_000  # refilled, not reset
+
+    async def test_a_limit_no_longer_configured_is_left_alone(self, repo):
+        tpm = Limit.per_minute("tpm", 600)
+        await repo.set_limits("e", [_OP_RPM, tpm], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM, tpm], tokens={"rpm": 0, "tpm": 0})
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        repo._now_ms = lambda: _OP_T0 + 6_000
+        result = await repo.reset_bucket("e", "r")
+        item = await _op_item(repo, "e", "r")
+        assert result.amounts == {"rpm": 90}
+        assert _op_num(item, "tpm", BUCKET_FIELD_TK) == 0  # neither refilled nor reset
+
+    async def test_names_must_be_configured_limits(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        with pytest.raises(ValidationError, match="not a limit configured"):
+            await repo.reset_bucket("e", "r", limits=["tpm"])
+        with pytest.raises(ValidationError, match="not a limit configured"):
+            await repo.top_up("e", "r", {WCU_LIMIT_NAME: 1})
+        with pytest.raises(ValidationError, match="no limits are configured"):
+            await repo.reset_bucket("e", "other")
+        with pytest.raises(InvalidIdentifierError):
+            await repo.reset_bucket("#bad", "r")
+
+    @pytest.mark.parametrize("amount", [0, -1, True, 1.5, "3", 10**15 + 1])
+    async def test_top_up_amounts_must_be_positive_integers(self, repo, amount):
+        with pytest.raises(ValidationError, match="amount"):
+            await repo.top_up("e", "r", {"rpm": amount})
+
+    async def test_top_up_needs_an_amount(self, repo):
+        with pytest.raises(ValidationError, match="at least one"):
+            await repo.top_up("e", "r", {})
+
+    async def test_reset_of_a_sharded_calendar_quota_regrants_every_shard(self, repo):
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        for shard in range(4):
+            await _op_put_shard(
+                repo,
+                "e",
+                "r",
+                [_OP_CAL],
+                shard_id=shard,
+                shard_count=4,
+                tokens={"cal": 10_000},
+                grant_counts={"cal": 2 if shard < 2 else 4},
+                extra={bucket_attr("cal", "tu"): {"N": "5000"}},
+            )
+        repo._now_ms = lambda: _OP_T0 + 1
+        result = await repo.reset_bucket("e", "r")
+        assert result.shards == 4
+        assert result.amounts == {"cal": 4 * 240}
+        for shard in range(4):
+            item = await _op_item(repo, "e", "r", shard)
+            assert _op_num(item, "cal", BUCKET_FIELD_TK) == 250_000
+            assert _op_num(item, "cal", "gc") == 4
+            assert _op_num(item, "cal", "tu") is None
+
+    async def test_reset_of_a_session_quota_ends_and_applies_its_window(self, repo):
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_SES], resource="r")
+        await _op_put_shard(
+            repo,
+            "e",
+            "r",
+            [_OP_SES],
+            tokens={"ses": 0},
+            extra={bucket_attr("ses", "wtc"): {"N": "7"}},
+        )
+        now = _OP_T0 + 60_000
+        repo._now_ms = lambda: now
+        result = await repo.reset_bucket("e", "r")
+        item = await _op_item(repo, "e", "r")
+        ended = now - 5 * 3600 * 1000
+        # The balance is left for the next opener to restore (PR #720 review):
+        # a share written into an ended window could be spent twice.
+        assert _op_num(item, "ses", BUCKET_FIELD_TK) == 0
+        assert result.amounts == {"ses": 1000}  # what that opener restores
+        assert _op_num(item, "ses", BUCKET_FIELD_WS) == ended
+        assert _op_num(item, "ses", BUCKET_FIELD_WA) == ended
+        assert _op_num(item, "ses", "wtc") is None
+        assert _op_num(item, "ses", "gc") == 1
+        assert int(item[BUCKET_FIELD_RF]["N"]) == now
+
+    async def test_top_up_of_a_quota_adds_exactly_the_amount_by_coverage(self, repo):
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        # Shard 0 holds slots {0, 2} (gc 2), shards 1 and 3 one slot each (gc 4).
+        for shard, gc in ((0, 2), (1, 4), (3, 4)):
+            await _op_put_shard(
+                repo,
+                "e",
+                "r",
+                [_OP_CAL],
+                shard_id=shard,
+                shard_count=4,
+                tokens={"cal": 100_000},
+                grant_counts={"cal": gc},
+            )
+        repo._now_ms = lambda: _OP_T0 + 1
+        result = await repo.top_up("e", "r", {"cal": 1001})
+        assert result.amounts == {"cal": 1001} and result.shards == 3
+        tokens = {
+            shard: _op_num(await _op_item(repo, "e", "r", shard), "cal", BUCKET_FIELD_TK)
+            for shard in (0, 1, 3)
+        }
+        # Weights 2:1:1 of 1001 → 500, 250, 250, remainder 1 to the lowest shard.
+        assert tokens == {0: 601_000, 1: 350_000, 3: 350_000}
+        item0 = await _op_item(repo, "e", "r", 0)
+        assert _op_num(item0, "cal", "tu") == 501_000  # the whole portion
+        assert _op_num(await _op_item(repo, "e", "r", 1), "cal", "tu") == 250_000
+        events = [e for e in await repo.get_audit_events("e") if e.action == "bucket_topped_up"]
+        assert events[0].details == {"amounts": {"cal": 1001}, "shards": 3}
+
+    async def test_a_top_up_into_spent_room_still_raises_the_ceiling(self, repo):
+        """A refund of the consumption it replaced must not be clamped away."""
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 100_000})
+        repo._now_ms = lambda: _OP_T0 + 1
+        result = await repo.top_up("e", "r", {"cal": 300})
+        item = await _op_item(repo, "e", "r")
+        assert result.amounts == {"cal": 300}
+        assert _op_num(item, "cal", BUCKET_FIELD_TK) == 400_000
+        assert _op_num(item, "cal", "tu") == 300_000
+
+    async def test_a_limit_not_yet_on_the_bucket_is_refused_by_name(self, repo):
+        """PR #720 second review, finding 5: never a silent grant of 0."""
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM])
+        await repo.set_limits("e", [_OP_RPM, _OP_CAL], resource="r")
+        with pytest.raises(ValidationError, match="'cal' is configured but not yet on"):
+            await repo.top_up("e", "r", {"cal": 5})
+
+    async def test_a_shard_the_index_has_not_listed_is_read_by_key(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        for shard in (0, 1):
+            await _op_put_shard(
+                repo, "e", "r", [_OP_RPM], shard_id=shard, shard_count=2, tokens={"rpm": 0}
+            )
+        repo._now_ms = lambda: _OP_T0
+        with patch.object(repo, "_discover_entity_bucket_pks", return_value=[]):
+            result = await repo.reset_bucket("e", "r")
+        assert result.shards == 2
+
+    async def test_top_up_of_a_dripping_limit_is_bounded_by_its_ceiling(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        for shard, tk in ((0, 10_000), (1, 40_000)):
+            await _op_put_shard(
+                repo, "e", "r", [_OP_RPM], shard_id=shard, shard_count=2, tokens={"rpm": tk}
+            )
+        repo._now_ms = lambda: _OP_T0
+        result = await repo.top_up("e", "r", {"rpm": 500})
+        assert result.amounts == {"rpm": 50}
+        for shard in (0, 1):
+            item = await _op_item(repo, "e", "r", shard)
+            assert _op_num(item, "rpm", BUCKET_FIELD_TK) == 50_000
+            assert _op_num(item, "rpm", "tu") is None
+
+    async def test_a_partial_dripping_top_up_is_split_by_headroom(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        for shard, tk in ((0, 10_000), (1, 30_000)):
+            await _op_put_shard(
+                repo, "e", "r", [_OP_RPM], shard_id=shard, shard_count=2, tokens={"rpm": tk}
+            )
+        repo._now_ms = lambda: _OP_T0
+        result = await repo.top_up("e", "r", {"rpm": 21})
+        assert result.amounts == {"rpm": 21}
+        tokens = [
+            _op_num(await _op_item(repo, "e", "r", shard), "rpm", BUCKET_FIELD_TK)
+            for shard in (0, 1)
+        ]
+        assert tokens == [10_000 + 14_000, 30_000 + 7_000]  # headroom 40:20 of 21
+
+    async def test_a_pending_reset_is_applied_before_the_top_up(self, repo):
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(
+            repo,
+            "e",
+            "r",
+            [_OP_CAL],
+            tokens={"cal": 0},
+            extra={bucket_attr("cal", "tu"): {"N": "50000"}},
+        )
+        repo._now_ms = lambda: _OP_T0 + 86_400_000  # past the next midnight
+        await repo.top_up("e", "r", {"cal": 10})
+        item = await _op_item(repo, "e", "r")
+        assert _op_num(item, "cal", BUCKET_FIELD_TK) == 1_010_000
+        assert _op_num(item, "cal", "tu") == 10_000  # the old period's is gone
+        assert _op_num(item, "cal", "gc") == 1
+
+    async def test_a_session_top_up_with_no_live_window_opens_one(self, repo):
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_SES], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_SES], tokens={"ses": 0})
+        now = _OP_T0 + 6 * 3600 * 1000  # the 5 h window has ended
+        repo._now_ms = lambda: now
+        result = await repo.top_up("e", "r", {"ses": 5})
+        item = await _op_item(repo, "e", "r")
+        assert result.amounts == {"ses": 5}
+        assert _op_num(item, "ses", BUCKET_FIELD_WS) == now
+        assert _op_num(item, "ses", BUCKET_FIELD_WA) == now
+        assert _op_num(item, "ses", BUCKET_FIELD_TK) == 1_005_000
+        assert _op_num(item, "ses", "tu") == 5_000
+
+    async def test_a_top_up_of_a_legacy_quota_freezes_its_grant_size(self, repo):
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL], shard_count=2, tokens={"cal": 100_000})
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={"PK": {"S": pk_bucket(repo._namespace_id, "e", "r", 0)}, "SK": {"S": sk_state()}},
+            UpdateExpression="REMOVE #gc",
+            ExpressionAttributeNames={"#gc": bucket_attr("cal", "gc")},
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        await repo.top_up("e", "r", {"cal": 1})
+        assert _op_num(await _op_item(repo, "e", "r"), "cal", "gc") == 2
+
+    async def test_a_top_up_with_no_bucket_creates_shard_zero(self, repo):
+        await _stamp_deployed(repo)
+        await repo.create_entity("p")
+        await repo.create_entity("e", parent_id="p", cascade=True)
+        await repo.set_limits("e", [_OP_RPM, _OP_SES], resource="r")
+        repo._now_ms = lambda: _OP_T0
+        result = await repo.top_up("e", "r", {"ses": 7, "rpm": 3})
+        assert (result.shards, result.amounts) == (1, {"ses": 7, "rpm": 0})
+        item = await _op_item(repo, "e", "r")
+        assert _op_num(item, "ses", BUCKET_FIELD_TK) == 1_007_000
+        assert _op_num(item, "ses", "tu") == 7_000
+        assert _op_num(item, "ses", BUCKET_FIELD_WS) == _OP_T0
+        assert _op_num(item, "rpm", BUCKET_FIELD_TK) == 100_000
+        assert item["cascade"] == {"BOOL": True} and item["parent_id"] == {"S": "p"}
+        assert "ttl" not in item  # entity-level config persists
+        assert int(item[BUCKET_FIELD_VU]["N"]) == _OP_T0 + 5 * 3600 * 1000
+
+    async def test_a_new_bucket_on_resource_defaults_carries_a_ttl(self, repo):
+        await _stamp_deployed(repo)
+        await repo.set_resource_defaults("r", [_OP_CAL])
+        repo._now_ms = lambda: _OP_T0
+        await repo.top_up("e", "r", {"cal": 1})
+        assert "ttl" in await _op_item(repo, "e", "r")
+
+    async def test_a_dripping_top_up_with_no_bucket_writes_nothing(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        result = await repo.top_up("e", "r", {"rpm": 3})
+        assert (result.shards, result.amounts) == (0, {"rpm": 0})
+        assert await _op_item(repo, "e", "r") is None
+
+    async def test_a_top_up_with_no_bucket_on_a_disabled_resource_is_refused(self, repo):
+        await repo.set_resource_defaults("r", [_OP_CAL])
+        await repo.disable_resource("r")
+        with pytest.raises(ResourceDisabled):
+            await repo.top_up("e", "r", {"cal": 1})
+
+    async def test_a_lost_create_race_tops_up_in_place(self, repo):
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        repo._now_ms = lambda: _OP_T0
+        real = repo.transact_write
+        calls = []
+
+        async def racing(items, **kwargs):
+            if not calls:
+                calls.append(1)
+                await _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
+            return await real(items, **kwargs)
+
+        with patch.object(repo, "transact_write", side_effect=racing):
+            result = await repo.top_up("e", "r", {"cal": 2})
+        assert result.amounts == {"cal": 2}
+        assert _op_num(await _op_item(repo, "e", "r"), "cal", BUCKET_FIELD_TK) == 2_000
+
+    async def test_a_top_up_above_the_plan_needs_017_lambdas(self, repo):
+        await repo.set_version_record(schema_version="1.0.0", lambda_version="0.16.0")
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL])
+        with pytest.raises(VersionMismatchError, match="predate 0.17.0"):
+            await repo.top_up("e", "r", {"cal": 1})
+        await repo.reset_bucket("e", "r")  # a reset is never gated
+
+    async def test_a_quota_top_up_ratchets_client_min_version(self, repo):
+        """#470: the gate also raises the stack's client minimum past the last
+        release, so a v0.16 client is refused; a reset and a dripping top-up,
+        which no older reader misreads, leave it alone."""
+        from zae_limiter import __version__
+        from zae_limiter.version import get_schema_version, parse_version
+
+        await repo.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version=__version__,
+            client_min_version="0.0.0",
+        )
+        await repo.set_limits("e", [_OP_RPM], resource="drip")
+        await _op_put_shard(repo, "e", "drip", [_OP_RPM], tokens={"rpm": 50_000})
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL])
+        repo._now_ms = lambda: _OP_T0 + 1
+
+        await repo.reset_bucket("e", "r")
+        await repo.top_up("e", "drip", {"rpm": 10})
+        assert (await repo.get_version_record())["client_min_version"] == "0.0.0"
+
+        await repo.top_up("e", "r", {"cal": 1})
+        stored = (await repo.get_version_record())["client_min_version"]
+        assert parse_version(stored) > parse_version("0.16.0")
+
+    async def test_the_top_up_gate_is_read_once_per_repository(self, repo):
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL])
+        await repo.top_up("e", "r", {"cal": 1})
+        with patch.object(repo, "_require_readers", side_effect=AssertionError("read again")):
+            await repo.top_up("e", "r", {"cal": 1})
+
+    async def test_a_lagging_shard_count_is_raised_before_planning(self, repo):
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL], shard_count=2, tokens={"cal": 400_000})
+        await _op_put_shard(repo, "e", "r", [_OP_CAL], shard_id=1, shard_count=1)
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={"PK": {"S": pk_bucket(repo._namespace_id, "e", "r", 1)}, "SK": {"S": sk_state()}},
+            UpdateExpression="REMOVE #gc",
+            ExpressionAttributeNames={"#gc": bucket_attr("cal", "gc")},
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        result = await repo.reset_bucket("e", "r")
+        assert result.shards == 2
+        for shard in (0, 1):
+            item = await _op_item(repo, "e", "r", shard)
+            assert int(item["shard_count"]["N"]) == 2
+            assert _op_num(item, "cal", BUCKET_FIELD_TK) == 500_000
+
+    async def test_a_conflict_is_retried_from_a_fresh_read(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        real = repo.transact_write
+        calls = []
+
+        async def conflicting(items, **kwargs):
+            if not calls:
+                calls.append(1)
+                # Another writer moves rf between the read and the write.
+                client = await repo._get_client()
+                await client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": pk_bucket(repo._namespace_id, "e", "r", 0)},
+                        "SK": {"S": sk_state()},
+                    },
+                    UpdateExpression="SET rf = rf + :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            return await real(items, **kwargs)
+
+        with patch.object(repo, "transact_write", side_effect=conflicting):
+            result = await repo.reset_bucket("e", "r")
+        assert result.shards == 1
+        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 100_000
+
+    async def test_a_bucket_that_keeps_changing_fails_after_the_retries(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM])
+        lost = ClientError(
+            {"Error": {"Code": "TransactionCanceledException", "Message": "x"}}, "Tx"
+        )
+        with (
+            patch.object(repo, "transact_write", side_effect=lost),
+            patch("zae_limiter.repository._OPERATION_RETRY_BASE_DELAY", 0),
+            pytest.raises(RateLimiterUnavailable, match="kept changing"),
+        ):
+            await repo.reset_bucket("e", "r")
+
+    async def test_each_call_leaves_one_operation_record(self, repo):
+        """ADR-149: the record rides in the same transaction, expires, and
+        carries the GSI4 keys `purge_namespace` uses."""
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM])
+        repo._now_ms = lambda: _OP_T0
+        result = await repo.reset_bucket("e", "r")
+        client = await repo._get_client()
+        records = (
+            await client.query(
+                TableName=repo.table_name,
+                KeyConditionExpression="PK = :pk AND begins_with(SK, :op)",
+                ExpressionAttributeValues={
+                    ":pk": {"S": pk_bucket(repo._namespace_id, "e", "r", 0)},
+                    ":op": {"S": "#OP#"},
+                },
+                ConsistentRead=True,
+            )
+        )["Items"]
+        assert len(records) == 1
+        record = records[0]
+        assert record["operation"] == {"S": "reset"}
+        assert int(record["shards"]["N"]) == result.shards
+        assert int(record["ttl"]["N"]) == _OP_T0 // 1000 + 3 * 86_400
+        assert record["GSI4PK"] == {"S": repo._namespace_id}
+        assert "GSI3PK" not in record  # invisible to bucket discovery
+
+    async def test_a_write_that_landed_on_the_last_attempt_is_found(self, repo):
+        """Every attempt reports a conflict, but the last one had landed: the
+        operation record says so, and the call returns rather than raising."""
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        repo._now_ms = lambda: _OP_T0
+        real = repo.transact_write
+        calls = []
+        lost = ClientError(
+            {"Error": {"Code": "TransactionCanceledException", "Message": "x"}}, "Tx"
+        )
+
+        async def unlucky(items, **kwargs):
+            calls.append(1)
+            if len(calls) == 4:
+                await real(items, **kwargs)  # the last attempt lands
+            raise lost
+
+        with (
+            patch.object(repo, "transact_write", side_effect=unlucky),
+            patch("zae_limiter.repository._OPERATION_RETRY_BASE_DELAY", 0),
+        ):
+            result = await repo.reset_bucket("e", "r")
+        assert len(calls) == 4
+        assert result.shards == 1
+        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 100_000
+
+    async def test_a_retry_with_the_same_idempotency_key_is_applied_once(self, repo):
+        """The caller saw an error and retried with the same key: the first
+        call's result comes back and nothing is granted twice."""
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
+        repo._now_ms = lambda: _OP_T0 + 1
+        key = "purchase:" + "x" * 55  # 64 characters, longer than a request token
+        first = await repo.top_up("e", "r", {"cal": 5}, idempotency_key=key)
+        again = await repo.top_up("e", "r", {"cal": 5}, idempotency_key=key)
+        assert again == first
+        assert _op_num(await _op_item(repo, "e", "r"), "cal", BUCKET_FIELD_TK) == 5_000
+        assert (
+            len([e for e in await repo.get_audit_events("e") if e.action == "bucket_topped_up"])
+            == 1
+        )
+
+    async def test_an_idempotency_key_names_one_kind_of_operation(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM])
+        repo._now_ms = lambda: _OP_T0
+        await repo.reset_bucket("e", "r", idempotency_key="k1")
+        await repo.reset_bucket("e", "r", idempotency_key="k1")  # a retry: fine
+        with pytest.raises(ValidationError, match="already used for a reset"):
+            await repo.top_up("e", "r", {"rpm": 1}, idempotency_key="k1")
+
+    @pytest.mark.parametrize("key", ["", "a#b", "x" * 65, "sp ace", 7])
+    async def test_an_idempotency_key_is_validated_before_any_io(self, repo, key):
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(ValidationError, match="idempotency_key"),
+        ):
+            await repo.reset_bucket("e", "r", idempotency_key=key)
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(ValidationError, match="idempotency_key"),
+        ):
+            await repo.top_up("e", "r", {"rpm": 1}, idempotency_key=key)
+
+    async def test_delete_entity_removes_its_operation_records(self, repo):
+        """PR #720 third review, finding 3: a recreated entity reusing an
+        idempotency key must get a fresh operation, not the old entity's."""
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
+        repo._now_ms = lambda: _OP_T0 + 1
+        await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy-1")
+        # A second shard: only shard 0's partition holds operation records.
+        await _op_put_shard(repo, "e", "r", [_OP_CAL], shard_id=1, shard_count=2)
+        client = await repo._get_client()
+        real_query = client.query
+
+        async def paged(**params):
+            # Force a second page on the record query, to walk the pagination.
+            if ":op" in params.get("ExpressionAttributeValues", {}):
+                if "ExclusiveStartKey" in params:
+                    return {"Items": []}
+                response = await real_query(**params)
+                return {**response, "LastEvaluatedKey": response["Items"][0]}
+            return await real_query(**params)
+
+        with patch.object(client, "query", side_effect=paged):
+            await repo.delete_entity("e")
+        remaining = (
+            await client.query(
+                TableName=repo.table_name,
+                KeyConditionExpression="PK = :pk",
+                ExpressionAttributeValues={
+                    ":pk": {"S": pk_bucket(repo._namespace_id, "e", "r", 0)}
+                },
+                ConsistentRead=True,
+            )
+        )["Items"]
+        assert remaining == []
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
+        await repo.top_up("e", "r", {"cal": 5}, idempotency_key="buy-1")
+        assert _op_num(await _op_item(repo, "e", "r"), "cal", BUCKET_FIELD_TK) == 5_000
+
+    async def test_an_unexpected_write_error_is_not_retried(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM])
+        boom = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "x"}}, "Tx")
+        with (
+            patch.object(repo, "transact_write", side_effect=boom),
+            pytest.raises(ClientError),
+        ):
+            await repo.reset_bucket("e", "r")
+
+    async def test_an_unexpected_create_error_is_not_retried(self, repo):
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        boom = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "x"}}, "Put")
+        with (
+            patch.object(repo, "transact_write", side_effect=boom),
+            pytest.raises(ClientError),
+        ):
+            await repo.top_up("e", "r", {"cal": 1})
+
+    async def test_an_audit_that_cannot_be_built_writes_nothing(self, repo):
+        """The audit event rides in the operation's transaction (round-6
+        review): when it cannot be built, nothing is written and the call
+        raises, rather than landing an unaudited reset."""
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        repo._now_ms = lambda: _OP_T0
+        with (
+            patch.object(repo, "_build_audit_item", side_effect=RuntimeError("throttled")),
+            pytest.raises(RuntimeError),
+        ):
+            await repo.reset_bucket("e", "r")
+        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 0
+        assert [e for e in await repo.get_audit_events("e") if e.action == "bucket_reset"] == []
+
+    async def test_a_top_up_refreshes_a_default_buckets_ttl(self, repo):
+        """Round-6 review, P3: a top-up left a near-expiry `ttl` alone, so the
+        item and its purchase could be swept in 60 s with 12 h of the period
+        left. It now stamps the acquire path's ttl, never before the period end."""
+        await _stamp_deployed(repo)
+        await repo.set_resource_defaults("r", [_OP_CAL])
+        now_s = (_OP_T0 + 1) // 1000
+        await _op_put_shard(
+            repo, "e", "r", [_OP_CAL], tokens={"cal": 0}, extra={"ttl": {"N": str(now_s + 60)}}
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        await repo.top_up("e", "r", {"cal": 500})
+        item = await _op_item(repo, "e", "r")
+        ttl = int(item["ttl"]["N"])
+        period_end_s = (_OP_T0 // 86_400_000 + 1) * 86_400
+        assert ttl >= period_end_s
+        assert ttl == now_s + calculate_bucket_ttl_seconds([_OP_CAL], 7)
+
+    async def test_a_reset_refreshes_a_default_buckets_ttl(self, repo):
+        await repo.set_resource_defaults("r", [_OP_RPM])
+        now_s = (_OP_T0 + 1) // 1000
+        await _op_put_shard(
+            repo, "e", "r", [_OP_RPM], tokens={"rpm": 0}, extra={"ttl": {"N": str(now_s + 1)}}
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        await repo.reset_bucket("e", "r")
+        item = await _op_item(repo, "e", "r")
+        assert int(item["ttl"]["N"]) == now_s + calculate_bucket_ttl_seconds([_OP_RPM], 7)
+
+    async def test_a_top_up_adds_no_ttl_to_an_entity_bucket(self, repo):
+        """ADR-136: an entity-level bucket persists; a top-up gives it no ttl."""
+        await _stamp_deployed(repo)
+        await repo.set_limits("e", [_OP_CAL], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
+        repo._now_ms = lambda: _OP_T0 + 1
+        await repo.top_up("e", "r", {"cal": 5})
+        assert "ttl" not in await _op_item(repo, "e", "r")
+
+    @pytest.mark.parametrize("scope", ["resource", "entity_default"])
+    async def test_a_top_up_removes_a_stale_ttl_from_an_entity_bucket(self, repo, scope):
+        """#720 review, Low 1: a bucket that ran on defaults kept its ttl after
+        its entity got its own limits, until the next acquire removed it; a
+        top-up in between could be swept with the item. It now removes it,
+        as acquire does (ADR-136)."""
+        await _stamp_deployed(repo)
+        if scope == "resource":
+            await repo.set_limits("e", [_OP_CAL], resource="r")
+        else:
+            await repo.set_limits("e", [_OP_CAL])  # the entity-wide `_default_`
+        now_s = (_OP_T0 + 1) // 1000
+        await _op_put_shard(
+            repo, "e", "r", [_OP_CAL], tokens={"cal": 0}, extra={"ttl": {"N": str(now_s + 60)}}
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        await repo.top_up("e", "r", {"cal": 5})
+        item = await _op_item(repo, "e", "r")
+        assert "ttl" not in item
+        assert _op_num(item, "cal", BUCKET_FIELD_TU) == 5_000
+
+    async def test_a_window_a_top_up_opens_ends_before_its_ttl(self, repo):
+        """D4: a session top-up with no live window opens one; the bucket's
+        ttl outlives it."""
+        await _stamp_deployed(repo)
+        await repo.set_resource_defaults("r", [_OP_SES])
+        now_s = (_OP_T0 + 1) // 1000
+        await _op_put_shard(
+            repo, "e", "r", [_OP_SES], tokens={"ses": 0}, extra={"ttl": {"N": str(now_s + 60)}}
+        )
+        repo._now_ms = lambda: _OP_T0 + 1
+        await repo.top_up("e", "r", {"ses": 5})
+        item = await _op_item(repo, "e", "r")
+        window_end_ms = _op_num(item, "ses", BUCKET_FIELD_WS) + 5 * 3_600_000
+        assert int(item["ttl"]["N"]) * 1000 >= window_end_ms
+
+    async def test_a_created_bucket_outlives_its_period(self, repo):
+        """D5's create takes the same rule, and a reset edge out of reach (a
+        leap day three years off) adds nothing to it."""
+        leap = Limit.quota("leap", 10, cron="0 0 29 2 *")
+        await _stamp_deployed(repo)
+        await repo.set_resource_defaults("r", [_OP_SES, leap])
+        repo._now_ms = lambda: _OP_T0
+        await repo.top_up("e", "r", {"ses": 5})
+        item = await _op_item(repo, "e", "r")
+        now_s = _OP_T0 // 1000
+        assert int(item["ttl"]["N"]) == now_s + calculate_bucket_ttl_seconds([_OP_SES, leap], 7)
+        assert int(item["ttl"]["N"]) * 1000 >= _op_num(item, "ses", BUCKET_FIELD_WS) + 18_000_000
+
+    async def test_a_keyed_no_op_top_up_is_recorded(self, repo):
+        """Round-6 review, P4: a keyed dripping-only top-up with no bucket wrote
+        nothing, so a retry with its key after the bucket appeared applied it
+        ({'rpm': 5}, 1 shard). The no-op now records itself, result 0."""
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        repo._now_ms = lambda: _OP_T0
+        first = await repo.top_up("e", "r", {"rpm": 5}, idempotency_key="k")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        again = await repo.top_up("e", "r", {"rpm": 5}, idempotency_key="k")
+        assert again == first
+        assert again.amounts == {"rpm": 0} and again.shards == 0
+        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 0
+        events = [e for e in await repo.get_audit_events("e") if e.action == "bucket_topped_up"]
+        assert [(e.details["amounts"], e.details["shards"]) for e in events] == [({"rpm": 0}, 0)]
+
+    async def test_a_keyed_no_op_reset_is_recorded(self, repo):
+        """The same for a reset of a missing bucket, and the record's kind
+        holds: the key cannot then be reused for a top-up."""
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        repo._now_ms = lambda: _OP_T0
+        first = await repo.reset_bucket("e", "r", idempotency_key="k")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        assert await repo.reset_bucket("e", "r", idempotency_key="k") == first
+        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 0
+        with pytest.raises(ValidationError):
+            await repo.top_up("e", "r", {"rpm": 5}, idempotency_key="k")
+        events = [e for e in await repo.get_audit_events("e") if e.action == "bucket_reset"]
+        assert len(events) == 1
+
+    async def test_an_unkeyed_no_op_writes_nothing(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        repo._now_ms = lambda: _OP_T0
+        with patch.object(repo, "transact_write", side_effect=AssertionError("write")):
+            assert (await repo.reset_bucket("e", "r")).shards == 0
+            assert (await repo.top_up("e", "r", {"rpm": 5})).shards == 0
+
+    async def test_an_invalid_principal_is_refused_before_any_io(self, repo):
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(InvalidIdentifierError),
+        ):
+            await repo.reset_bucket("e", "r", principal="ops team!")
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(InvalidIdentifierError),
+        ):
+            await repo.top_up("e", "r", {"rpm": 1}, principal="ops team!")
+
+    async def test_reset_and_top_up_clear_the_rejection_cache(self, repo):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM])
+        with patch.object(repo._rejection_cache, "clear") as clear:
+            await repo.reset_bucket("e", "r")
+            await repo.top_up("e", "r", {"rpm": 1})
+        assert clear.call_count == 4  # before and after each

@@ -22,16 +22,26 @@ level is written before anything reads it back.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Iterator
 from typing import Any
 
 from zae_limiter.schema import (
+    BUCKET_FIELD_BYPASS,
     BUCKET_FIELD_DISABLED,
+    BUCKET_FIELD_PGEN,
+    BUCKET_FIELD_PINC,
+    BUCKET_FIELD_SOFT,
+    BUCKET_PREFIX,
     DEFAULT_RESOURCE,
+    DISABLED_BYPASS,
+    ENTITY_FIELD_PGEN,
     GSI2_NAME,
     GSI3_NAME,
+    GSI4_NAME,
     decode_cascade,
     decode_disabled,
+    entity_incarnation,
     gsi2_pk_resource,
     gsi3_pk_entity,
     parse_bucket_pk,
@@ -40,24 +50,57 @@ from zae_limiter.schema import (
     sk_config,
     sk_meta,
     sk_state,
+    stamp_deadline,
 )
+
+from .bucket_sync import STAMP_TTL_SECONDS, resolve_bucket_limits
 
 logger = logging.getLogger(__name__)
 
 
-def stamp_bucket(client: Any, table_name: str, pk: str, disabled: bool) -> None:
-    """Set or remove the disabled attribute on one bucket item."""
+def now_ms() -> int:
+    """Wall-clock epoch milliseconds, the instant a stamp's deadline counts from."""
+    return int(time.time() * 1000)
+
+
+def deadline_from(read_ms: int) -> int:
+    """A stamp's deadline for a resolution read no earlier than ``read_ms``."""
+    return stamp_deadline(read_ms, STAMP_TTL_SECONDS)
+
+
+def stamp_bucket(
+    client: Any,
+    table_name: str,
+    pk: str,
+    disabled: bool | str,
+    bypass_until_ms: int | None = None,
+) -> None:
+    """Stamp one bucket item with its access mode (ADR-125, #311).
+
+    Mirrors ``Repository._stamp_bucket_disabled``: True SETs ``disabled``,
+    ``"bypass"`` SETs ``bypass`` to a deadline (ADR-151 decision 8;
+    ``bypass_until_ms``, or T from now), False clears both; each write removes
+    the stamp it does not set.
+    """
     kwargs: dict[str, Any] = {
         "TableName": table_name,
         "Key": {"PK": {"S": pk}, "SK": {"S": sk_state()}},
-        "ExpressionAttributeNames": {"#disabled": BUCKET_FIELD_DISABLED},
+        "ExpressionAttributeNames": {
+            "#disabled": BUCKET_FIELD_DISABLED,
+            "#byp": BUCKET_FIELD_BYPASS,
+        },
         "ConditionExpression": "attribute_exists(PK)",
     }
-    if disabled:
-        kwargs["UpdateExpression"] = "SET #disabled = :true"
+    if disabled == DISABLED_BYPASS:
+        if bypass_until_ms is None:
+            bypass_until_ms = deadline_from(now_ms())
+        kwargs["UpdateExpression"] = "SET #byp = :until REMOVE #disabled"
+        kwargs["ExpressionAttributeValues"] = {":until": {"N": str(bypass_until_ms)}}
+    elif disabled:
+        kwargs["UpdateExpression"] = "SET #disabled = :true REMOVE #byp"
         kwargs["ExpressionAttributeValues"] = {":true": {"BOOL": True}}
     else:
-        kwargs["UpdateExpression"] = "REMOVE #disabled"
+        kwargs["UpdateExpression"] = "REMOVE #disabled, #byp"
 
     try:
         client.update_item(**kwargs)
@@ -71,8 +114,10 @@ def resolve_disabled(
     namespace_id: str,
     entity_id: str,
     resource: str,
-) -> bool:
+) -> bool | str:
     """Resolve the effective disabled state for an entity+resource (ADR-125).
+
+    Returns ``"bypass"`` when the deciding level is a bypass (#311).
 
     Sync boto3 mirror of ``Repository.resolve_disabled``: walks
     entity(resource) -> entity(_default_) -> resource and returns the first
@@ -109,7 +154,7 @@ def fanout_resource(
     table_name: str,
     namespace_id: str,
     resource: str,
-    disabled: bool,
+    disabled: bool | str,
     *,
     skip_matching: bool = False,
 ) -> int:
@@ -131,22 +176,30 @@ def fanout_resource(
 
     Returns the number of buckets stamped.
     """
-    effective_by_entity: dict[str, bool] = {}
+    effective_by_entity: dict[str, tuple[bool | str, int]] = {}
 
-    def _decide(pk: str) -> bool | None:
+    def _decide(pk: str) -> tuple[bool | str, int] | None:
         _ns, entity_id, _res, _shard = parse_bucket_pk(pk)
         if entity_id not in effective_by_entity:
-            effective_by_entity[entity_id] = resolve_disabled(
-                client, table_name, namespace_id, entity_id, resource
+            read_ms = now_ms()
+            effective_by_entity[entity_id] = (
+                resolve_disabled(client, table_name, namespace_id, entity_id, resource),
+                read_ms,
             )
-        if effective_by_entity[entity_id] != disabled:
+        value, read_ms = effective_by_entity[entity_id]
+        if value != disabled:
             # This entity overrides the resource-level value; leave it alone.
             return None
-        return disabled
+        return disabled, read_ms
 
     def _matches(item: dict[str, Any]) -> bool:
-        stamp = item.get(BUCKET_FIELD_DISABLED, {}).get("BOOL", False)
-        return bool(stamp) == disabled
+        if item.get(BUCKET_FIELD_DISABLED, {}).get("BOOL", False):
+            return disabled is True
+        if BUCKET_FIELD_BYPASS in item:
+            # Any deadline: an expired one is renewed from config by the next
+            # slow pass (ADR-151 decision 8), so the bucket is not missed.
+            return disabled == DISABLED_BYPASS
+        return disabled is False
 
     return _fanout(
         client,
@@ -168,7 +221,7 @@ def fanout_entity(
     namespace_id: str,
     entity_id: str,
     resource: str | None,
-    disabled: bool,
+    disabled: bool | str,
 ) -> int:
     """Stamp every bucket for an entity. Returns the number stamped.
 
@@ -188,15 +241,15 @@ def fanout_entity(
     scoped to one resource, the caller's directive is unambiguous for every
     discovered bucket, so all buckets are stamped with `disabled` directly.
     """
-    effective_by_resource: dict[str, bool] = {}
+    effective_by_resource: dict[str, tuple[bool | str, int]] = {}
 
-    def _decide(pk: str) -> bool | None:
-        if resource is not None:
-            return disabled
+    def _decide(pk: str) -> tuple[bool | str, int] | None:
         _ns, _eid, bucket_resource, _shard = parse_bucket_pk(pk)
         if bucket_resource not in effective_by_resource:
-            effective_by_resource[bucket_resource] = resolve_disabled(
-                client, table_name, namespace_id, entity_id, bucket_resource
+            read_ms = now_ms()
+            effective_by_resource[bucket_resource] = (
+                resolve_disabled(client, table_name, namespace_id, entity_id, bucket_resource),
+                read_ms,
             )
         return effective_by_resource[bucket_resource]
 
@@ -209,7 +262,9 @@ def fanout_entity(
         pk_value=gsi3_pk_entity(namespace_id, entity_id),
         sk_prefix=f"BUCKET#{resource}#" if resource else "BUCKET#",
         disabled=disabled,
-        decide=_decide,
+        # Scoped to one resource, the caller's directive is unambiguous for
+        # every discovered bucket: stamp it directly, timed from the start.
+        decide=None if resource is not None else _decide,
     )
 
 
@@ -221,8 +276,8 @@ def _fanout(
     sk_name: str,
     pk_value: str,
     sk_prefix: str,
-    disabled: bool,
-    decide: Callable[[str], bool | None] | None = None,
+    disabled: bool | str,
+    decide: Callable[[str], tuple[bool | str, int] | None] | None = None,
     already: Callable[[dict[str, Any]], bool] | None = None,
 ) -> int:
     """Discover and stamp matching bucket items, across two passes.
@@ -230,13 +285,21 @@ def _fanout(
     Runs the paginated discovery query twice (see module docstring), with
     `stamped` shared across both passes so a PK visited on pass one is never
     re-stamped on pass two. `decide`, when given, chooses the value to stamp
-    on each newly-discovered PK, or returns None to leave it alone; a PK it
-    declines is NOT added to `stamped`, so it is re-considered (cheaply,
-    since the caller's resolutions are memoized) on a later pass or page.
+    on each newly-discovered PK and the instant just before the resolution it
+    came from was read, or returns None to leave it alone; a PK it declines is
+    NOT added to `stamped`, so it is re-considered (cheaply, since the
+    caller's resolutions are memoized) on a later pass or page.
     `already`, when given, is asked first about the indexed item and skips it
     (unstamped and unresolved) when it says the bucket already holds the value.
+
+    A deadline counts from the read behind its value (ADR-151 decision 8),
+    like ``Repository._stamp_bucket_disabled``: counted from the fan-out's
+    start, a long fan-out stamped late buckets with deadlines already near or
+    past, each paying an immediate renewal (review E4). The caller's own
+    directive (`decide` None) counts from the start.
     """
     stamped: set[str] = set()
+    started_ms = now_ms()
 
     for _pass in range(2):
         for item in _query_bucket_items(
@@ -246,10 +309,11 @@ def _fanout(
             if already is not None and already(item):
                 continue
             if pk not in stamped:
-                value = disabled if decide is None else decide(pk)
-                if value is None:
+                decided = (disabled, started_ms) if decide is None else decide(pk)
+                if decided is None:
                     continue
-                stamp_bucket(client, table_name, pk, value)
+                value, read_ms = decided
+                stamp_bucket(client, table_name, pk, value, deadline_from(read_ms))
                 stamped.add(pk)
 
     return len(stamped)
@@ -345,9 +409,12 @@ def _walk_keys(namespace_id: str, entity_id: str, resource: str) -> list[tuple[s
 
 def _owner(
     client: Any, table_name: str, namespace_id: str, entity_id: str
-) -> tuple[bool, str | None] | None:
-    """An entity's META ``(cascade, parent_id)``, or None when it has no META.
+) -> tuple[bool, str | None, int, str] | None:
+    """An entity's META ``(cascade, parent_id, pgen, pinc)``, or None when it has no META.
 
+    ``pgen`` is the parent generation and ``pinc`` the incarnation (ADR-150);
+    an entity created before v0.17 reads as generation 0 of the legacy
+    incarnation.
     Strongly consistent, like ``resolve_cascade``.
     """
     item = client.get_item(
@@ -357,33 +424,65 @@ def _owner(
     ).get("Item")
     if item is None:
         return None
-    return item.get("cascade", {}).get("BOOL", False), item.get("parent_id", {}).get("S")
+    return (
+        item.get("cascade", {}).get("BOOL", False),
+        item.get("parent_id", {}).get("S"),
+        int(item.get(ENTITY_FIELD_PGEN, {}).get("N", "0")),
+        entity_incarnation(item),
+    )
 
 
 def stamp_bucket_cascade(
-    client: Any, table_name: str, pk: str, cascade: bool, parent_id: str | None
-) -> None:
+    client: Any,
+    table_name: str,
+    pk: str,
+    cascade: bool,
+    parent_id: str | None,
+    pgen: int | None = None,
+    pinc: str | None = None,
+) -> bool:
     """Write one bucket's effective cascade policy and owner `parent_id` (ADR-146).
 
-    Mirrors ``Repository._stamp_bucket_cascade``.
+    Mirrors ``Repository._stamp_bucket_cascade``, including the owner pin
+    (ADR-150): a stamp older than the bucket's, within one incarnation, is
+    skipped. Returns whether the bucket was stamped.
     """
+    names = {"#c": "cascade", "#p": "parent_id"}
     values: dict[str, Any] = {":c": {"BOOL": cascade}}
+    sets = ["#c = :c"]
+    condition = "attribute_exists(PK)"
     if parent_id is not None:
-        update = "SET #c = :c, #p = :p"
+        sets.append("#p = :p")
         values[":p"] = {"S": parent_id}
-    else:
-        update = "SET #c = :c REMOVE #p"
+    if pgen is not None:
+        sets.append("#pg = :pg")
+        names["#pg"] = BUCKET_FIELD_PGEN
+        values[":pg"] = {"N": str(pgen)}
+        if pinc is not None:
+            sets.append("#pi = :pi")
+            names["#pi"] = BUCKET_FIELD_PINC
+            values[":pi"] = {"S": pinc}
+            # A stamp of another incarnation always loses (ADR-150).
+            condition += (
+                " AND (attribute_not_exists(#pi) OR #pi <> :pi"
+                " OR attribute_not_exists(#pg) OR #pg <= :pg)"
+            )
+        else:
+            condition += " AND (attribute_not_exists(#pg) OR #pg <= :pg)"
+    update = "SET " + ", ".join(sets) + ("" if parent_id is not None else " REMOVE #p")
     try:
         client.update_item(
             TableName=table_name,
             Key={"PK": {"S": pk}, "SK": {"S": sk_state()}},
             UpdateExpression=update,
-            ConditionExpression="attribute_exists(PK)",
-            ExpressionAttributeNames={"#c": "cascade", "#p": "parent_id"},
+            ConditionExpression=condition,
+            ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
         )
     except client.exceptions.ConditionalCheckFailedException:
-        logger.debug("Bucket %s vanished before stamping", pk)
+        logger.debug("Bucket %s vanished or a newer move stamped it", pk)
+        return False
+    return True
 
 
 def fanout_cascade(
@@ -403,7 +502,8 @@ def fanout_cascade(
     META ``cascade``, plus the owner's ``parent_id``. A bucket whose entity
     has no META is skipped.
 
-    Returns the number of buckets stamped.
+    Returns the number of buckets stamped; one gone, or already carrying a
+    newer stamp, is not counted.
     """
     scope = None if resource == DEFAULT_RESOURCE else resource
     if entity_id is not None:
@@ -414,9 +514,10 @@ def fanout_cascade(
         query = (GSI2_NAME, "GSI2PK", "GSI2SK", gsi2_pk_resource(namespace_id, scope))
         prefix = "BUCKET#"
 
-    owners: dict[str, tuple[bool, str | None] | None] = {}
-    targets: dict[tuple[str, str], tuple[bool, str | None] | None] = {}
+    owners: dict[str, tuple[bool, str | None, int, str] | None] = {}
+    targets: dict[tuple[str, str], tuple[bool, str | None, int, str] | None] = {}
     stamped: set[str] = set()
+    written = 0
     for _pass in range(2):
         for pk in _query_bucket_pks(client, table_name, *query, prefix):
             if pk in stamped:
@@ -430,13 +531,101 @@ def fanout_cascade(
                 if owner is None:
                     targets[key] = None
                 else:
-                    meta_cascade, parent_id = owner
+                    meta_cascade, parent_id, pgen, pinc = owner
                     policy = resolve_cascade(client, table_name, namespace_id, eid, bucket_resource)
                     effective = bool(parent_id) and (meta_cascade if policy is None else policy)
-                    targets[key] = (effective, parent_id)
+                    targets[key] = (effective, parent_id, pgen, pinc)
             target = targets[key]
             if target is None:
                 continue
-            stamp_bucket_cascade(client, table_name, pk, *target)
+            if stamp_bucket_cascade(client, table_name, pk, *target):
+                written += 1
+            stamped.add(pk)
+    return written
+
+
+def stamp_bucket_soft(
+    client: Any,
+    table_name: str,
+    pk: str,
+    targets: dict[str, bool],
+    soft_until_ms: int | None = None,
+) -> None:
+    """SET or REMOVE ``b_{name}_soft`` on one bucket item (#467).
+
+    Mirrors ``Repository._stamp_bucket_soft``, positional tokens included. A
+    stamp SET carries ``soft_until_ms`` (ADR-151 decision 8), or T from now.
+    """
+    set_parts: list[str] = []
+    remove_parts: list[str] = []
+    names: dict[str, str] = {}
+    for i, (name, is_soft) in enumerate(sorted(targets.items())):
+        names[f"#f{i}"] = f"b_{name}_{BUCKET_FIELD_SOFT}"
+        (set_parts if is_soft else remove_parts).append(f"#f{i} = :t" if is_soft else f"#f{i}")
+    expr = []
+    kwargs: dict[str, Any] = {}
+    if set_parts:
+        expr.append(f"SET {', '.join(set_parts)}")
+        if soft_until_ms is None:
+            soft_until_ms = deadline_from(now_ms())
+        kwargs["ExpressionAttributeValues"] = {":t": {"N": str(soft_until_ms)}}
+    if remove_parts:
+        expr.append(f"REMOVE {', '.join(remove_parts)}")
+    try:
+        client.update_item(
+            TableName=table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": sk_state()}},
+            UpdateExpression=" ".join(expr),
+            ConditionExpression="attribute_exists(PK)",
+            ExpressionAttributeNames=names,
+            **kwargs,
+        )
+    except client.exceptions.ConditionalCheckFailedException:
+        logger.debug("Bucket %s vanished before stamping", pk)
+
+
+def fanout_soft(
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    resource: str | None,
+    names: set[str],
+) -> int:
+    """Restamp soft-ness after a resource- or system-level change (#467).
+
+    Mirrors ``Repository._fanout_soft``: GSI2 for one resource, GSI4 for the
+    whole namespace when ``resource`` is None; two discovery passes; each
+    bucket stamped from the limits resolved, strongly consistent, for its own
+    entity and resource, and left alone when either entity level decides them.
+
+    Returns the number of buckets stamped.
+    """
+    if resource is not None:
+        query = (GSI2_NAME, "GSI2PK", "GSI2SK", gsi2_pk_resource(namespace_id, resource))
+    else:
+        query = (GSI4_NAME, "GSI4PK", "GSI4SK", namespace_id)
+    resolved: dict[tuple[str, str], tuple[dict[str, dict[str, Any]], str | None]] = {}
+    # Per bucket key, taken before the resolution its stamps come from.
+    deadlines: dict[tuple[str, str], int] = {}
+    stamped: set[str] = set()
+    for _pass in range(2):
+        for pk in _query_bucket_pks(client, table_name, *query, BUCKET_PREFIX):
+            if pk in stamped:
+                continue
+            _ns, eid, bucket_resource, _shard = parse_bucket_pk(pk)
+            key = (eid, bucket_resource)
+            if key not in resolved:
+                deadlines[key] = deadline_from(now_ms())
+                resolved[key] = resolve_bucket_limits(
+                    client, table_name, namespace_id, eid, bucket_resource, consistent_read=True
+                )
+            limits, level = resolved[key]
+            # The changed level decides only buckets that resolve from it or
+            # from below it: an entity override owns its stamps, and under a
+            # system change so does a resource level.
+            if level in ("entity", "entity_default") or (resource is None and level == "resource"):
+                continue
+            targets = {name: bool(limits.get(name, {}).get("soft")) for name in names | set(limits)}
+            stamp_bucket_soft(client, table_name, pk, targets, deadlines[key])
             stamped.add(pk)
     return len(stamped)

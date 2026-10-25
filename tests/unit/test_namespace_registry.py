@@ -9,6 +9,7 @@ from zae_limiter import schema
 from zae_limiter.exceptions import (
     EntityNotFoundError,
     NamespaceStateError,
+    RateLimiterUnavailable,
     ValidationError,
 )
 from zae_limiter.repository import Repository
@@ -661,3 +662,92 @@ class TestPurgeNamespaceGSI4Pagination:
             ExpressionAttributeValues={":pk": {"S": ns_id}},
         )
         assert len(response.get("Items", [])) == 0
+
+
+class TestPurgeNamespaceUnprocessedItems:
+    """purge_namespace() resends UnprocessedItems with backoff, and stops (#742).
+
+    The retry constants are patched with ``create=True`` so that, run against a
+    build without them, each test fails on the behaviour it pins rather than on
+    the patch. ``test_unprocessed_deletes_are_resent`` pins behaviour the
+    unbounded loop before #742 already had, so it passes there too.
+    """
+
+    async def _deleted_namespace_with_data(self, repo, name):
+        ns_id = await repo.register_namespace(name)
+        original_ns_id = repo._namespace_id
+        repo._namespace_id = ns_id
+        await repo.create_entity("ent-a")
+        await repo.create_entity("ent-b")
+        repo._namespace_id = original_ns_id
+        await repo.delete_namespace(name)
+        return ns_id
+
+    async def _gsi4_items(self, repo, ns_id):
+        client = await repo._get_client()
+        response = await client.query(
+            TableName=repo.table_name,
+            IndexName=schema.GSI4_NAME,
+            KeyConditionExpression="GSI4PK = :pk",
+            ExpressionAttributeValues={":pk": {"S": ns_id}},
+        )
+        return response.get("Items", [])
+
+    @pytest.mark.asyncio
+    async def test_unprocessed_deletes_are_resent(self, repo):
+        ns_id = await self._deleted_namespace_with_data(repo, "ns-purge-unprocessed")
+        client = await repo._get_client()
+        real_batch_write = client.batch_write_item
+        calls = []
+
+        async def partly_applied(**params):
+            requests = params["RequestItems"][repo.table_name]
+            calls.append(len(requests))
+            if len(calls) > 1:
+                return await real_batch_write(**params)
+            await real_batch_write(RequestItems={repo.table_name: requests[:1]})
+            return {"UnprocessedItems": {repo.table_name: requests[1:]}}
+
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch.object(client, "batch_write_item", side_effect=partly_applied),
+        ):
+            await repo.purge_namespace(ns_id)
+
+        assert calls[1] == calls[0] - 1
+        assert await self._gsi4_items(repo, ns_id) == []
+
+    @pytest.mark.asyncio
+    async def test_raises_and_stays_purging_when_deletes_stay_unprocessed(self, repo):
+        ns_id = await self._deleted_namespace_with_data(repo, "ns-purge-throttled")
+        client = await repo._get_client()
+        real_batch_write = client.batch_write_item
+        calls = []
+
+        async def throttled(**params):
+            # Throttled for far longer than the retry budget, then served: a
+            # loop with no bound finishes here instead of hanging the test,
+            # and so fails the raise below.
+            calls.append(1)
+            if len(calls) > 20:
+                return await real_batch_write(**params)
+            return {"UnprocessedItems": params["RequestItems"]}
+
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch("zae_limiter.repository._BATCH_WRITE_MAX_RETRIES", 2, create=True),
+            patch.object(client, "batch_write_item", side_effect=throttled),
+            pytest.raises(RateLimiterUnavailable, match="unprocessed"),
+        ):
+            await repo.purge_namespace(ns_id)
+
+        reverse = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
+                "SK": {"S": schema.sk_nsid(ns_id)},
+            },
+        )
+        assert len(calls) == 3  # the first send and two retries
+        assert reverse["Item"]["status"]["S"] == "purging"
+        assert await self._gsi4_items(repo, ns_id) != []

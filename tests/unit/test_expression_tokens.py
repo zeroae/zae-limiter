@@ -26,6 +26,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_GC,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_WA,
+    STAMP_EXPIRED,
     bucket_attr,
     pk_bucket,
 )
@@ -193,6 +194,40 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "#opid" in update["UpdateExpression"].split("REMOVE", 1)[1]
 
+    def test_normal_owner_stamp_with_its_parent_generation(self) -> None:
+        """ADR-150: the owner stamp carries `pgen` and is pinned on it."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            owner=(True, "org-1"),
+            owner_pgen=3,
+            owner_pinc="abc123",
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#opg <= :opg" in update["ConditionExpression"]
+        assert "#opi = :opi" in update["ConditionExpression"]  # same incarnation only
+
+    def test_normal_owner_stamp_with_a_generation_but_no_incarnation(self) -> None:
+        """A backend that tracks no incarnation keeps the generation-only pin."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            owner=(True, "org-1"),
+            owner_pgen=3,
+        )["Update"]
+        assert_expression_safe(update)
+        assert "(attribute_not_exists(#opg) OR #opg <= :opg)" in update["ConditionExpression"]
+        assert "#opi" not in update["ExpressionAttributeNames"]
+        assert update["ExpressionAttributeValues"][":opg"] == {"N": "3"}
+
     def test_normal_removing_ttl_and_vu(self) -> None:
         update = _repo().build_composite_normal(
             "user-1",
@@ -309,6 +344,62 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "#pinsc <= :pinsc" in update["ConditionExpression"]
 
+    def test_normal_clearing_top_ups(self) -> None:
+        """ADR-149: a reset or roll removes `b_{name}_tu` on positional `#tu*`."""
+        update = _repo().build_composite_normal(
+            entity_id="e",
+            resource="r",
+            consumed={DOTTED: 0, HYPHENATED: 0},
+            refill_amounts={},
+            now_ms=2,
+            expected_rf=1,
+            grant_counts={DOTTED: 1, HYPHENATED: 1},
+            pin_shard_count=1,
+            cleared_top_ups=[DOTTED, HYPHENATED],
+        )["Update"]
+        assert_expression_safe(update)
+        assert update["UpdateExpression"].endswith("REMOVE #tu0, #tu1")
+
+    @pytest.mark.parametrize("stored", [True, False])
+    def test_bucket_operation(self, stored: bool) -> None:
+        """ADR-149: a reset or top-up's write, every clause at once."""
+        from zae_limiter.bucket_ops import ShardWrite
+
+        write = ShardWrite(
+            shard_id=1,
+            shard_count=2,
+            shard_count_stored=stored,
+            expected_rf=1,
+            written_rf=2,
+            deltas={DOTTED: 5, HYPHENATED: -5},
+            grant_counts={DOTTED: 2, HYPHENATED: 2},
+            windows={DOTTED: (1, 60)},
+            applied_windows={DOTTED: 1},
+            top_ups={HYPHENATED: 7},
+            cleared_top_ups={DOTTED},
+            cleared_window_marks={DOTTED},
+            reset_numbers={DOTTED, HYPHENATED},
+        )
+        update = _repo().build_bucket_operation("e", "r", write)["Update"]
+        assert_expression_safe(update)
+        assert "#on0 :on0" in update["UpdateExpression"]
+        update = _repo().build_bucket_operation("e", "r", write, ttl=123)["Update"]
+        assert_expression_safe(update)
+        assert "#ottl = :ottl" in update["UpdateExpression"]
+        update = _repo().build_bucket_operation("e", "r", write, remove_ttl=True)["Update"]
+        assert_expression_safe(update)
+        assert update["UpdateExpression"].endswith("#ottl")
+
+    def test_bucket_operation_with_nothing_but_the_lock(self) -> None:
+        from zae_limiter.bucket_ops import ShardWrite
+
+        write = ShardWrite(
+            shard_id=0, shard_count=1, shard_count_stored=True, expected_rf=1, written_rf=2
+        )
+        update = _repo().build_bucket_operation("e", "r", write)["Update"]
+        assert_expression_safe(update)
+        assert update["UpdateExpression"] == "SET #rf = :rf, #vu = :vu"
+
     def test_retry_with_seeds(self) -> None:
         seeds = self._seed_states()
         update = _repo().build_composite_retry(
@@ -340,11 +431,164 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "ConditionExpression" not in update
 
+    def test_normal_with_soft_stamps_and_floors(self) -> None:
+        """#467: soft floors OR the item's live stamp, a trusted soft limit has
+        no floor, and the re-stamp reuses a floor's alias rather than declaring
+        a second one for the same attribute. Each stamp is a deadline, pinned
+        on the one read (ADR-151 decisions 4 and 8)."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 5000, HYPHENATED: 5000, "rpm": 3000},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            soft_stamps={DOTTED: None, HYPHENATED: 9_000, "rpm": 9_000},
+            soft_reads={DOTTED: 1_500, HYPHENATED: None, "rpm": STAMP_EXPIRED},
+            soft_trusted=frozenset({HYPHENATED}),
+        )["Update"]
+        assert_expression_safe(update)
+        names = update["ExpressionAttributeNames"]
+        values = update["ExpressionAttributeValues"]
+        condition = update["ConditionExpression"]
+        soft_attrs = [v for v in names.values() if v.endswith("_soft")]
+        assert len(soft_attrs) == len(set(soft_attrs)) == 3
+        assert "(#bo0 > :bnow OR #bt0 >= :bf0)" in condition
+        assert values[":bnow"] == {"N": "2000"}
+        assert "#bt1 >=" not in condition
+        assert {"N": "9000"} in values.values()
+        # Restamps go in name order: req-min (#bs0), rpm (#bo2), then the dotted one (#bo0).
+        assert "attribute_not_exists(#bs0)" in condition
+        assert "#bo2 = :bsr1" in condition and values[":bsr1"] == {"BOOL": True}
+        assert "#bo0 = :bsr2" in condition and values[":bsr2"] == {"N": "1500"}
+
+    @pytest.mark.parametrize(
+        "deadline, read",
+        [(9_000, None), (None, 3_000), (9_000, 3_000), (None, STAMP_EXPIRED)],
+    )
+    def test_normal_setting_or_removing_the_bypass_stamp(self, deadline, read) -> None:
+        """#311, ADR-151 decisions 4 and 8: the stamp follows config, as a
+        deadline, pinned on the deadline read (a pre-release BOOL as itself)."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            bypass_stamp=(deadline, read),
+        )["Update"]
+        assert_expression_safe(update)
+        expression = update["UpdateExpression"]
+        values = update["ExpressionAttributeValues"]
+        assert ("#byp = :byp" in expression) is (deadline is not None)
+        assert ("REMOVE #byp" in expression) is (deadline is None)
+        if deadline is not None:
+            assert values[":byp"] == {"N": str(deadline)}
+        if read is None:
+            assert "attribute_not_exists(#byp)" in update["ConditionExpression"]
+        else:
+            assert "#byp = :bypr" in update["ConditionExpression"]
+            expected = {"BOOL": True} if read == STAMP_EXPIRED else {"N": str(read)}
+            assert values[":bypr"] == expected
+
+    def test_normal_with_a_soft_seed(self) -> None:
+        from zae_limiter.models import BucketState
+
+        seed = BucketState.from_limit(
+            "user-1", "api", Limit.per_minute(HYPHENATED, 10, soft=True), 2_000
+        )
+        seed.soft_until_ms = 9_000
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            seeds={HYPHENATED: seed},
+        )["Update"]
+        assert_expression_safe(update)
+        assert update["ExpressionAttributeValues"][":so0"] == {"N": "9000"}
+
+    def test_retry_with_soft_limits(self) -> None:
+        from zae_limiter.models import BucketState
+
+        seed = BucketState.from_limit(
+            "user-1", "api", Limit.per_minute("sess.v1", 10, soft=True), 2_000
+        )
+        update = _repo().build_composite_retry(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000, HYPHENATED: 2000, "sess.v1": 3000},
+            seeds={"sess.v1": seed},
+            soft_trusted=frozenset({HYPHENATED}),
+        )["Update"]
+        assert_expression_safe(update)
+        condition = update["ConditionExpression"]
+        # The stamp waives the balance only beside `cp` and `tk`, and a
+        # trusted soft limit is debited only where the item carries it (#771).
+        assert condition == (
+            "(#bt0 >= :bf0 OR (#bo0 > :bnow AND attribute_exists(#be0) AND attribute_exists(#bt0)))"
+            " AND (attribute_exists(#be1) AND attribute_exists(#bt1))"
+        )
+
     def test_adjust(self) -> None:
         update = _repo().build_composite_adjust(
             "user-1", "api", deltas={DOTTED: 1000, "rpm": 0, HYPHENATED: -2000}
         )["Update"]
         assert_expression_safe(update)
+
+    def test_adjust_counters_or_tokens_only(self) -> None:
+        """#311: a bypassed lease writes `tc` only; a bypass refund writes `tk` only."""
+        deltas = {DOTTED: 1000, HYPHENATED: -2000}
+        tc_only = _repo().build_composite_adjust("user-1", "api", deltas, tokens=False)["Update"]
+        tk_only = _repo().build_composite_adjust("user-1", "api", deltas, counter=False)["Update"]
+        for update in (tc_only, tk_only):
+            assert_expression_safe(update)
+        assert all(v.endswith("_tc") for v in tc_only["ExpressionAttributeNames"].values())
+        assert all(v.endswith("_tk") for v in tk_only["ExpressionAttributeNames"].values())
+
+    def test_bypass_consume(self) -> None:
+        update = _repo().build_bypass_consume(
+            "user-1", "api", {DOTTED: 1000, HYPHENATED: 2000}, shard_id=2, bypass_until_ms=9_000
+        )["Update"]
+        assert_expression_safe(update)
+        # Any deadline: this is the renewal (ADR-151 decision 8).
+        assert "attribute_exists(#byp)" in update["ConditionExpression"]
+        assert update["ExpressionAttributeValues"][":byp"] == {"N": "9000"}
+
+    def test_bypass_consume_with_nothing_declared(self) -> None:
+        update = _repo().build_bypass_consume("user-1", "api", {}, bypass_until_ms=9_000)["Update"]
+        assert_expression_safe(update)
+        assert update["UpdateExpression"] == "SET #byp = :byp"
+
+    @pytest.mark.parametrize(
+        "bypass, soft",
+        [
+            # Renew a pre-release stamp, set a missing one, remove a stale one.
+            ((9_000, STAMP_EXPIRED), {DOTTED: (9_000, None), HYPHENATED: (None, 5)}),
+            ((None, 5), None),  # remove only: no values but the pin
+            (None, {DOTTED: (None, None)}),  # nothing read, nothing set
+            (None, {HYPHENATED: (9_000, 5)}),
+        ],
+    )
+    def test_stamp_fix(self, bypass, soft) -> None:
+        """Review E1: a rejected pass's stamp-only correction, pinned as read."""
+        update = _repo().build_stamp_fix("user-1", "api", 2, bypass=bypass, soft=soft)["Update"]
+        assert_expression_safe(update)
+        assert update["ConditionExpression"].startswith("attribute_exists(PK)")
+        written = set(update["ExpressionAttributeNames"].values())
+        assert all(name == "bypass" or name.endswith("_soft") for name in written)
+
+    @pytest.mark.parametrize(
+        "exists, pgen, pinc",
+        [(False, None, None), (True, 0, "-"), (True, 0, "2026-01-01T00:00:00Z"), (True, 7, "a1")],
+    )
+    def test_owner_check(self, exists, pgen, pinc) -> None:
+        """ADR-150: the ConditionCheck pinning a bucket create to its owner's META."""
+        check = _repo().build_owner_check("user-1", exists=exists, pgen=pgen, pinc=pinc)
+        assert_expression_safe(check["ConditionCheck"])
 
     def test_self_trimming_credit(self) -> None:
         """#721: each credited limit with a ceiling is conditioned on staying under it."""
@@ -383,6 +627,50 @@ class TestCompositeBuilders:
                 pin=(2, None, (None, None, None)),
             )["Update"]
             assert_expression_safe(update)
+
+    def test_quota_top_up_pin(self) -> None:
+        """ADR-149: a quota credit pins its top-up, present (`=`) or absent."""
+        from zae_limiter.models import QuotaPeriodPin
+
+        period = QuotaPeriodPin(9, None, ("1m0h0", None, None))
+        update = _repo().build_composite_adjust(
+            "user-1",
+            "api",
+            deltas={DOTTED: -1000, HYPHENATED: -2000},
+            ceilings={
+                DOTTED: CreditCeiling(
+                    5000, 10_000, 2, (None, None), True, period, topped_up_milli=3000
+                ),
+                HYPHENATED: CreditCeiling(9000, 9000, 1, (None, "1m0h0"), True, period),
+            },
+            pin=(2, None, (None, None, None)),
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#bu0 = :bu0" in update["ConditionExpression"]
+        assert "attribute_not_exists(#bu1)" in update["ConditionExpression"]
+
+    def test_quota_reset_number_pin(self) -> None:
+        """ADR-149 (F1): a calendar quota credit pins its operator reset count."""
+        from zae_limiter.models import QuotaPeriodPin
+
+        sched = ("1m0h0", None, None)
+        update = _repo().build_composite_adjust(
+            "user-1",
+            "api",
+            deltas={DOTTED: -1000, HYPHENATED: -2000},
+            ceilings={
+                DOTTED: CreditCeiling(
+                    5000, 10_000, 2, (None, None), True, QuotaPeriodPin(9, None, sched, 3)
+                ),
+                HYPHENATED: CreditCeiling(
+                    9000, 9000, 1, (None, "1m0h0"), True, QuotaPeriodPin(9, None, sched)
+                ),
+            },
+            pin=(2, None, (None, None, None)),
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#bqn0 = :bqn0" in update["ConditionExpression"]
+        assert "attribute_not_exists(#bqn1)" in update["ConditionExpression"]
 
     def test_trimmed_credit(self) -> None:
         """#721: the fallback re-issues the credit with ``vu = 0`` in the same write."""
@@ -659,6 +947,25 @@ class TestClientWritesThroughMoto:
         with patch.object(client, "update_item", spy.forward):
             await repo._speculative_consume_single("user-1", "api", {DOTTED: 1, HYPHENATED: 2})
         assert_expression_safe(spy.call_args.kwargs)
+        # An expired bypass stamp fails the enforce shape (ADR-151 decision 8).
+        condition = spy.call_args.kwargs["ConditionExpression"]
+        assert "(attribute_not_exists(#byp) OR #byp > :vu_now)" in condition
+
+    async def test_fast_path_bypass_shape(self, limiter: RateLimiter) -> None:
+        """#311: `tc` and `wcu` only, conditioned on the stamp, no `vu` guard."""
+        repo = limiter._repository
+        client = await repo._get_client()
+        spy = await self._spy(repo)
+        repo._bypass_cache.add((repo._namespace_id, "user-1", "api"))
+        with patch.object(client, "update_item", spy.forward):
+            await repo._speculative_consume_single(
+                "user-1", "api", {DOTTED: 1, HYPHENATED: 2}, ttl_seconds=60
+            )
+        bypass_write = spy.call_args_list[0].kwargs
+        assert_expression_safe(bypass_write)
+        # Only a live stamp admits (ADR-151 decision 8).
+        assert "#byp > :vu_now" in bypass_write["ConditionExpression"]
+        assert "#vu" not in bypass_write["ConditionExpression"]
 
     async def test_fast_path_with_ttl(self, limiter: RateLimiter) -> None:
         repo = limiter._repository
@@ -698,7 +1005,8 @@ class TestClientWritesThroughMoto:
             with patch("zae_limiter.repository.random.randrange", return_value=1):
                 async with limiter.acquire("user-1", "api", consume={DOTTED: 1}):
                     pass
-        assert [next(iter(item)) for item in sent] == ["Put", "Update"]
+        # The create, its donor debit, and the owner's META check (ADR-150).
+        assert [next(iter(item)) for item in sent] == ["Put", "Update", "ConditionCheck"]
         for item in sent:
             assert_expression_safe(next(iter(item.values())))
 
@@ -712,7 +1020,22 @@ class TestClientWritesThroughMoto:
         pk = pk_bucket(repo._namespace_id, "user-1", "api", 0)
         with patch.object(client, "update_item", spy.forward):
             await repo._stamp_bucket_disabled(pk, True)
+            await repo._stamp_bucket_disabled(pk, "bypass", 9_000)
             await repo._stamp_bucket_disabled(pk, False)
+        for call in spy.call_args_list:
+            assert_expression_safe(call.kwargs)
+
+    async def test_soft_fan_out(self, limiter: RateLimiter) -> None:
+        """#467: the resource/system soft restamp, SET and REMOVE together."""
+        repo = limiter._repository
+        client = await repo._get_client()
+        spy = await self._spy(repo)
+        pk = pk_bucket(repo._namespace_id, "user-1", "api", 0)
+        with patch.object(client, "update_item", spy.forward):
+            await repo._stamp_bucket_soft(pk, {DOTTED: True, HYPHENATED: False})
+            await repo._stamp_bucket_soft(pk, {DOTTED: False})
+            await repo._stamp_bucket_soft(pk, {DOTTED: True})
+        assert spy.call_count == 3
         for call in spy.call_args_list:
             assert_expression_safe(call.kwargs)
 
@@ -728,6 +1051,23 @@ class TestClientWritesThroughMoto:
         with patch.object(client, "update_item", spy.forward):
             await repo._stamp_bucket_cascade(pk, True, "org-1")
             await repo._stamp_bucket_cascade(pk, False, None)
+            await repo._stamp_bucket_cascade(pk, True, "org-1", 1)  # ADR-150
+            await repo._stamp_bucket_cascade(pk, False, None, 2)
+            await repo._stamp_bucket_cascade(pk, True, "org-1", 3, "abc123")  # incarnation
+        assert spy.call_count == 5
+        for call in spy.call_args_list:
+            assert_expression_safe(call.kwargs)
+
+    async def test_parent_move_meta_write(self, limiter: RateLimiter) -> None:
+        """ADR-150: the META write, to a parent and to no parent."""
+        repo = limiter._repository
+        await repo.create_entity("org-1")
+        await repo.create_entity("user-1", parent_id="org-1")
+        client = await repo._get_client()
+        spy = await self._spy(repo)
+        with patch.object(client, "update_item", spy.forward):
+            await repo._write_parent("user-1", None)
+            await repo._write_parent("user-1", "org-1")
         assert spy.call_count == 2
         for call in spy.call_args_list:
             assert_expression_safe(call.kwargs)

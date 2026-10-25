@@ -1,5 +1,6 @@
 """DynamoDB schema definitions and key builders."""
 
+import random
 from typing import TYPE_CHECKING, Any
 
 from .schedule import cycle_seconds, encode, encode_reset, entry_params, parse_cron
@@ -153,6 +154,43 @@ BUCKET_FIELD_WTC = "wtc"  # b_{name}_wtc — tc at the fan-out, millitokens
 # `shard_count` (owner decision, design §9).
 BUCKET_FIELD_GC = "gc"  # b_{name}_gc — grant count, per limit, per shard
 
+# `b_{name}_tu` (ADR-149): allowance an operator topped this quota shard up by
+# this period, in millitokens — every token of its portion, not only what lands
+# above the grant, since what `tk` held at the time says nothing about what will
+# be spent. Raises the shard's ceiling to `C // gc + tu` so a purchase is not
+# clamped away by the next materialising pass. Written only by
+# `Repository.top_up` (`tu += portion`, behind the 0.17.0 version gate);
+# removed by every reset, window roll and opener, client and aggregator,
+# because it belongs to the period it was bought in. Never read or written by
+# the fast path.
+BUCKET_FIELD_TU = "tu"  # b_{name}_tu — topped-up allowance, millitokens
+
+# `b_{name}_rn` (ADR-149): how many operator resets this calendar quota shard
+# has taken, a counter `Repository.reset_bucket` ADDs 1 to. A reset starts a new
+# period without crossing a cron edge, so the period guard of a refund (`rf`
+# before the next edge, #721) cannot see it; every calendar quota refund also
+# pins this counter and is dropped when it moved, exactly like a refund across
+# an edge. Absent until the first reset. A session quota needs none: its reset
+# moves `ws` / `wa`, which its refunds already pin.
+BUCKET_FIELD_RN = "rn"  # b_{name}_rn — operator reset count, calendar quotas
+
+# The operation record of a reset or top-up (ADR-149): one item per call, in the
+# shard-0 bucket's partition (`PK = pk_bucket(..., 0)`, `SK = #OP#{id}`), Put
+# under `attribute_not_exists(PK)` in the same transaction as the shard writes.
+# Exactly one transaction carrying a given id can ever commit, and after an
+# unclear failure the record says whether this call landed. It stores the
+# call's result so a retry with the same id returns it. Expires after
+# `OPERATION_RECORD_TTL_SECONDS`; carries no GSI1-3 keys, so no bucket reader
+# sees it, and the GSI4 keys so `purge_namespace` removes it.
+SK_OPERATION_PREFIX = "#OP#"
+OPERATION_RECORD_TTL_SECONDS = 3 * 86_400
+
+
+def sk_operation(operation_id: str) -> str:
+    """Sort key of a reset or top-up's operation record (ADR-149)."""
+    return f"{SK_OPERATION_PREFIX}{operation_id}"
+
+
 # The explicit spelling of "this limit has no schedule of its own" (#541).
 #
 # Absence of a `b_{name}_sched` still means "inherit the item default" — that is
@@ -170,12 +208,104 @@ BUCKET_FIELD_GC = "gc"  # b_{name}_gc — grant count, per limit, per shard
 # unscheduled bucket grows no schedule attributes at all.
 BUCKET_SCHED_NONE = "-"
 
+# Soft limits (#467, ADR-151). `b_{name}_soft = BOOL true` on a bucket item
+# marks the limit as metered but never enforced; absent means hard. The
+# speculative write tests it server-side (`attribute_exists(soft) OR tk >= c`),
+# so the fast path needs no knowledge of which limits are soft. Invisible to
+# pre-0.17 readers, which discover limits by the `_tk`/`_cp` pair only.
+BUCKET_FIELD_SOFT = "soft"  # b_{name}_soft
+
+# Usage-snapshot counter `{limit}#od` (#467): stream records in the window
+# where a soft limit was debited and its shard's balance ended below zero.
+# Written by the aggregator in the same snapshot `UpdateItem`; `#` cannot occur
+# in a limit name, so it cannot collide with a consumption counter.
+OVERDRAWN_COUNTER_SUFFIX = "#od"
+
 # Disable flag (ADR-125). Tri-state on config items: absent = inherit,
 # True/False = explicit. On bucket items the attribute is present only
 # when the bucket is effectively disabled, so the speculative guard can
 # stay `attribute_not_exists(disabled)`.
 CONFIG_FIELD_DISABLED = "disabled"
 BUCKET_FIELD_DISABLED = "disabled"
+
+# Bypass (#311, ADR-151): the fourth value of the ADR-125 `disabled` config
+# attribute, stored as `S "bypass"` beside `BOOL true` (disabled) and
+# `BOOL false` (explicit enforce), so one walk and one precedence decide all
+# three. A pre-0.17 reader decodes the string as explicit `false` and enforces.
+# Buckets are stamped with a separate `bypass` attribute, never `disabled`,
+# which every client since v0.12 rejects on: an old client simply ignores it
+# and enforces.
+DISABLED_BYPASS = "bypass"
+BUCKET_FIELD_BYPASS = "bypass"
+
+# Stamps expire (ADR-151 decision 8). A `bypass` or `b_{name}_soft` stamp holds
+# a deadline, `N` epoch milliseconds, at most T (the writer's `stamp_ttl`) after
+# the config read that justified it, and means something only before it. A
+# fan-out can miss a bucket (a create landing after it, an aggregator clone of
+# an older image, a partial failure), and a stamp the fast path honoured
+# forever would then admit without limit forever (review D1). Past the deadline
+# the fast path sends the request to the slow path, which renews the stamp or
+# removes it from config read uncached. Only a write built from a fresh config
+# read sets or extends one; the aggregator only ever copies them.
+DEFAULT_STAMP_TTL_SECONDS = 60
+# The smallest T a writer accepts: every stamped bucket pays one slow pass per
+# shard per T, so a T of a few seconds would demote it to the slow path.
+MIN_STAMP_TTL_SECONDS = 10
+# A stamp written as `BOOL true` by a pre-release build: present, and already
+# expired. `BOOL > N` is false on DynamoDB (mismatched types compare false), so
+# the fast path sends it to the slow path, which replaces or removes it.
+STAMP_EXPIRED = -1
+_STAMP_RNG = random.Random()
+
+
+def validate_stamp_ttl(seconds: float) -> float:
+    """Check a writer's ``stamp_ttl`` (ADR-151 decision 8) and return it.
+
+    Raises:
+        ValueError: Below :data:`MIN_STAMP_TTL_SECONDS`: every bypassed or soft
+            bucket renews its stamp through a slow pass once per shard per T,
+            so a T of a few seconds would demote it to the slow path.
+    """
+    if seconds < MIN_STAMP_TTL_SECONDS:
+        raise ValueError(
+            f"stamp_ttl must be at least {MIN_STAMP_TTL_SECONDS} seconds, got {seconds!r}: "
+            "every bypassed or soft bucket renews its stamp through a slow pass once per "
+            "shard per stamp_ttl"
+        )
+    return seconds
+
+
+def decode_stamp(attr: dict[str, Any] | None) -> int | None:
+    """A stamp's deadline (epoch ms) from its attribute, or None when absent.
+
+    Anything but a number (a pre-release ``BOOL true``) reads as present and
+    expired, :data:`STAMP_EXPIRED`.
+    """
+    if attr is None:
+        return None
+    raw = attr.get("N")
+    if raw is None:
+        return STAMP_EXPIRED
+    return int(raw)
+
+
+def stamp_value(deadline_ms: int) -> dict[str, Any]:
+    """The attribute a stamp read as ``deadline_ms`` holds, for a pin on it."""
+    if deadline_ms == STAMP_EXPIRED:
+        return {"BOOL": True}
+    return {"N": str(deadline_ms)}
+
+
+def stamp_deadline(now_ms: int, ttl_seconds: float, *, rng: random.Random | None = None) -> int:
+    """A stamp's deadline: ``now_ms + T × U(0.8, 1.0)`` (ADR-151 decision 8).
+
+    ``now_ms`` must be no later than the config read that justifies the stamp.
+    The jitter only shortens, so stamps written together are renewed spread
+    out rather than all at once.
+    """
+    draw = (rng or _STAMP_RNG).uniform(0.8, 1.0)
+    return now_ms + int(ttl_seconds * 1000 * draw)
+
 
 # Cascade policy (ADR-146). Tri-state on resource and entity config items:
 # absent = inherit, True/False = explicit; resolved by the ADR-125 walk and,
@@ -184,6 +314,33 @@ BUCKET_FIELD_DISABLED = "disabled"
 # policy for that (entity, resource).
 CONFIG_FIELD_CASCADE = "cascade"
 
+# Parent generation (ADR-150). A number on an entity's META, set to the
+# creation instant (epoch ms) by `create_entity` so a recreated entity is never
+# below a bucket its predecessor left, incremented by every move to a new
+# parent (absent = 0, an entity created before v0.17), and on its bucket items beside the
+# `cascade` / `parent_id` owner stamp: every writer of that stamp carries the
+# generation it read and is conditioned on not lowering it, so a writer that
+# read META before a move can lose but never undo it. A bucket item carrying
+# `pgen` is authoritative for both `cascade` and `parent_id`, with or without
+# a `parent_id`.
+ENTITY_FIELD_PGEN = "pgen"
+BUCKET_FIELD_PGEN = "pgen"
+
+# Incarnation (ADR-150). A random token `create_entity` writes on META, and
+# every owner stamp copies onto the bucket beside `pgen`. A generation is only
+# comparable within one incarnation: a bucket outliving its entity can carry a
+# higher `pgen` than the recreated entity (two clocks a few seconds apart), and
+# would then win every pinned write forever. So an owner-stamp pin passes when
+# the stored stamp belongs to another incarnation, whatever its generation:
+# `attribute_not_exists(pinc) OR pinc <> :inc OR attribute_not_exists(pgen) OR
+# pgen <= :pg`. An entity created before v0.17 has no `pinc`; it reads as its
+# `created_at`, which a recreate changes, and only an entity with neither reads
+# as the legacy incarnation below. #677 (`create_entity`) owns the write side;
+# every reader of an entity's incarnation goes through `entity_incarnation`.
+ENTITY_FIELD_PINC = "pinc"
+BUCKET_FIELD_PINC = "pinc"
+LEGACY_INCARNATION = "-"
+
 # Infrastructure limit: DynamoDB partition write capacity ceiling (GHSA-76rv)
 # Auto-injected on every bucket to track per-partition write pressure.
 # When exhausted, the client doubles shard_count to spread writes.
@@ -191,11 +348,6 @@ WCU_LIMIT_NAME = "wcu"
 WCU_LIMIT_CAPACITY = 1000  # DynamoDB per-partition WCU/sec limit
 WCU_LIMIT_REFILL_AMOUNT = 1000  # Refills to full capacity each second
 WCU_LIMIT_REFILL_PERIOD_SECONDS = 1
-# Log warning when shard count exceeds this (GHSA-76rv). Consumed only by the
-# aggregator's proactive doubling, which is not bound by MAX_SHARD_COUNT; the
-# client refuses to double at MAX_SHARD_COUNT and warns there instead, so a
-# client-side check against this equal-valued threshold is unreachable (#439).
-WCU_SHARD_WARN_THRESHOLD = 32
 # Hard cap on shard_count (ADR-133). Bounds how small a per-shard share can get
 # (capacity // shard_count) and how far an exhausted shard can drive doubling
 # without the aggregator. Surfaced as a metric in #475.
@@ -218,6 +370,10 @@ LIMIT_FIELD_RP = "rp"  # refill_period_seconds
 LIMIT_FIELD_SCHED = "sched"  # compact-encoded schedule (#222 §4.1)
 LIMIT_FIELD_RSCHED = "rsched"  # compact-encoded reset schedule (#222 §4.1)
 LIMIT_FIELD_RSA = "rsa"  # w_{name}_rsa — duration window length, seconds (ADR-142)
+# `l_{name}_soft` (or `w_…`) = BOOL true: the limit is soft (#467, ADR-151).
+# Two-state, part of the limit's definition: absent = hard. Ignored by
+# pre-0.17 readers, which discover a limit by its `_cp` attribute.
+LIMIT_FIELD_SOFT = "soft"
 
 # IANA timezone name for every schedule on the item, hoisted out of the
 # individual entries (#222 §4.1). One attribute per item, not per limit: it is
@@ -230,31 +386,117 @@ LIMIT_FIELD_RSA = "rsa"  # w_{name}_rsa — duration window length, seconds (ADR
 CONFIG_FIELD_SCHED_TZ = "sched_tz"
 
 
-def encode_disabled(value: bool | None) -> dict[str, Any] | None:
-    """Encode a tri-state disabled value as a DynamoDB attribute.
+def entity_incarnation(meta_item: dict[str, Any]) -> str:
+    """An entity's incarnation, read off its META item (ADR-150).
+
+    ``pinc`` when present (#677 writes it in ``create_entity``); else the
+    entity's ``created_at``, which differs between an entity created before
+    incarnations existed and one recreated in its place; else
+    ``LEGACY_INCARNATION``. Accepts both the low-level client's typed values
+    (``{"S": ...}``) and the boto3 ``Table`` resource's native ones (the
+    aggregator), so every reader shares one rule. Shared with #720 under the
+    same name and signature.
+    """
+    for field in (ENTITY_FIELD_PINC, "created_at"):
+        value = meta_item.get(field)
+        if isinstance(value, dict):
+            value = value.get("S")
+        if isinstance(value, str) and value:
+            return value
+    return LEGACY_INCARNATION
+
+
+def owner_meta_condition(
+    *, exists: bool | None, pgen: int | None, pinc: str | None
+) -> tuple[str, dict[str, str], dict[str, int | str]]:
+    """The condition a bucket create pins on its owner's META item (ADR-150).
+
+    A create stamps the owner's ``cascade`` / ``parent_id`` from a META read,
+    and a ``Put`` has no stored stamp to pin against. So the create's
+    transaction carries a ``ConditionCheck`` on the owner's META asserting it
+    still holds what was read: a move (``pgen`` + 1) or a delete and recreate
+    (a new incarnation) between the read and the create cancels it.
 
     Args:
-        value: True, False, or None (meaning "inherit from the level above").
+        exists: True when the read found META, False when it found none
+            (``attribute_not_exists(PK)``: an entity created since cancels
+            it), None when the reader cannot tell (an aggregator image with no
+            generation stamp): no term on ``PK``.
+        pgen: The parent generation read, or None for none stamped. 0 is also
+            what a META without ``pgen`` reads as, so 0 accepts either.
+        pinc: The incarnation read (:func:`entity_incarnation`), or None for
+            none stamped. Matched by the same rule: ``pinc``, else
+            ``created_at``, else the legacy incarnation.
 
     Returns:
-        A DynamoDB BOOL attribute, or None when the value is "inherit"
-        (the caller should omit the attribute entirely).
+        ``(expression, names, values)``, values native (``int`` / ``str``) for
+        the caller to serialise; only the tokens the expression uses.
+    """
+    if exists is False:
+        return "attribute_not_exists(PK)", {}, {}
+    parts: list[str] = []
+    names: dict[str, str] = {}
+    values: dict[str, int | str] = {}
+    if exists:
+        parts.append("attribute_exists(PK)")
+    names["#opg"] = ENTITY_FIELD_PGEN
+    if pgen is None:
+        parts.append("attribute_not_exists(#opg)")
+    else:
+        values[":opg"] = pgen
+        parts.append("(attribute_not_exists(#opg) OR #opg = :opg)" if pgen == 0 else "#opg = :opg")
+    names["#opi"] = ENTITY_FIELD_PINC
+    if pinc is None:
+        parts.append("attribute_not_exists(#opi)")
+    else:
+        names["#oca"] = "created_at"
+        values[":opi"] = pinc
+        created = "#oca = :opi"
+        if pinc == LEGACY_INCARNATION:
+            created = f"({created} OR attribute_not_exists(#oca))"
+        parts.append(f"(#opi = :opi OR (attribute_not_exists(#opi) AND {created}))")
+    return " AND ".join(parts), names, values
+
+
+def encode_disabled(value: bool | str | None) -> dict[str, Any] | None:
+    """Encode a ``disabled`` config value as a DynamoDB attribute.
+
+    Args:
+        value: True (disabled), False (explicit enforce), ``"bypass"``
+            (#311), or None (meaning "inherit from the level above").
+
+    Returns:
+        A DynamoDB attribute (``BOOL``, or ``S "bypass"``), or None when the
+        value is "inherit" (the caller should omit the attribute entirely).
+
+    Raises:
+        ValueError: any other string.
     """
     if value is None:
         return None
+    if isinstance(value, str):
+        if value != DISABLED_BYPASS:
+            raise ValueError(
+                f"disabled must be True, False, None or {DISABLED_BYPASS!r}, got {value!r}"
+            )
+        return {"S": value}
     return {"BOOL": value}
 
 
-def decode_disabled(item: dict[str, Any]) -> bool | None:
-    """Decode the tri-state disabled attribute from a DynamoDB item.
+def decode_disabled(item: dict[str, Any]) -> bool | str | None:
+    """Decode the ``disabled`` attribute from a DynamoDB item.
 
     Returns:
-        True or False when explicitly set, None when the attribute is
-        absent (meaning "inherit from the level above").
+        True or False when explicitly set, ``"bypass"`` for a bypass (#311),
+        None when the attribute is absent (meaning "inherit from the level
+        above"). A string this build does not know reads as explicit False,
+        the way a pre-0.17 reader reads ``"bypass"``: it enforces.
     """
     attr = item.get(CONFIG_FIELD_DISABLED)
     if not attr:
         return None
+    if attr.get("S") == DISABLED_BYPASS:
+        return DISABLED_BYPASS
     return bool(attr.get("BOOL", False))
 
 

@@ -338,6 +338,14 @@ except RateLimitExceeded as e:
     print(e.as_dict())
 ```
 
+A rejection can also mean "contended, retry shortly": when concurrent DynamoDB
+transactions keep colliding with the request's write, `acquire()` raises
+`RateLimitExceeded` with `e.contended == True`, nothing debited, no limit marked
+exceeded and a `retry_after_seconds` of about 0.1 s. Its `violations` list is
+therefore **empty**: never index `e.violations[0]`. Check `e.contended` first, or use
+`e.primary_violation` and `e.retry_after_seconds`, which are set on every
+rejection. See [`contended`](../api/exceptions.md#contended-retry-shortly).
+
 Each entry in `as_dict()`'s `limits` array carries a `kind` — `"rate"`, which reports
 `refill_amount` and `refill_period_seconds`, or `"quota"`, which reports `resets_at_ms` and no
 drip fields at all. Read `kind` rather than inferring the shape from the fields present. See
@@ -408,6 +416,31 @@ wins regardless of which level supplies the limits. System-level disable is
 not supported; disabling always targets a specific resource, or an entity's
 access to one.
 
+The same setting has a third value, **bypass**: admit every request without
+debiting any limit, while still counting consumption — see
+[Soft Limits and Bypass](soft-limits-and-bypass.md#bypass). To meter one limit
+without enforcing it, make it [soft](soft-limits-and-bypass.md#soft-limits).
+
+## Hard vs Soft Limits
+
+Every limit is **hard** by default: a request that does not fit is rejected with
+`RateLimitExceeded`. A **soft** limit (`soft=True` on any `Limit` factory, `--soft NAME`
+on the CLI, `soft: true` in a manifest) is metered exactly the same way — its tokens are
+debited and the bucket may go into debt — but it never rejects a request. Use one for a
+billing-style `tpm` beside a hard `rpm`, or to roll a new limit out in shadow mode:
+
+```{.python .lint-only}
+await repo.set_resource_defaults("gpt-4", [
+    Limit.per_minute("rpm", 500),                # hard: rejects
+    Limit.per_minute("tpm", 50_000, soft=True),  # soft: metered only
+])
+```
+
+A soft limit is reported as `soft` in every `LimitStatus` and never appears among a
+rejection's `violations`; `lease.overdrawn` names the ones a request drove into debt. A
+cascading child's soft limit does not relax its parent: each entity resolves its own
+limits. See [Soft Limits and Bypass](soft-limits-and-bypass.md) for the details.
+
 ## Config Cache
 
 zae-limiter caches config data (system defaults, resource defaults, entity limits) to reduce DynamoDB reads. The cache has a 60-second TTL by default.
@@ -428,7 +461,9 @@ limiter = RateLimiter(repository=repo)
 
 `Repository.open()` also takes `rejection_cache_ttl` (seconds, default `1.0`, `0` disables) and
 `rejection_cache_size` (default `10_000`) for the rejection cache; see
-[Speculative Writes](#speculative-writes).
+[Speculative Writes](#speculative-writes). `stamp_ttl` (seconds, default `60`, at least `10`)
+bounds how long a soft or bypass stamp stands before it is renewed from configuration; see
+[Stamps expire](soft-limits-and-bypass.md#stamps-expire).
 
 ### Automatic Cache Eviction
 

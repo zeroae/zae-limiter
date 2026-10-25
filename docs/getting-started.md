@@ -161,6 +161,16 @@ limiter = RateLimiter(repository=repo)
 
 Stack defaults to the `ZAEL_STACK` environment variable or `"zae-limiter"`. Namespace defaults to `ZAEL_NAMESPACE` or `"default"`.
 
+!!! note "Applications with only the acquire policy use `connect()`"
+    `open()` sets things up the first time it runs (it registers the namespace and
+    writes the version record) and updates the Lambdas when they are older than the
+    client. Since v0.17.0 the acquire policies (`AcquireOnlyPolicy`,
+    `NamespaceAcquirePolicy`) allow writes to rate-limit buckets only, so those steps
+    are refused for an application role that holds only one of them. Do the setup
+    with an operator role (`zae-limiter deploy`, `zae-limiter namespace register`)
+    and open the application with `Repository.connect()`, which only reads. See
+    [Choosing an Entry Point](api/repository.md#choosing-an-entry-point).
+
 !!! warning "Declarative State Management"
     Builder methods declare the desired infrastructure state. If multiple applications
     use the same limiter name with **different** settings, CloudFormation will update

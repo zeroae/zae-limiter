@@ -309,6 +309,10 @@ class Limit:
             opens a fresh window. The alternative spelling of
             ``reset_schedule``, never a companion to it — setting both is
             rejected at construction.
+        soft: Meter this limit without enforcing it (#467, ADR-151). A soft
+            limit is debited on every admitted request and may go into
+            debt, but never causes ``RateLimitExceeded``; other, hard limits
+            on the same request still gate it. Defaults to ``False``.
 
     A limit **drips or resets, never both and never neither** (ADR-137): a
     positive ``refill_amount`` alongside a ``reset_schedule`` would return the
@@ -341,6 +345,11 @@ class Limit:
     # manifests and CloudFormation all spell it `..._seconds` and take an int,
     # because a bare scalar there cannot carry a type.
     reset_after: timedelta | None = None
+    # A soft limit is metered exactly like a hard one -- debited, allowed into
+    # debt -- but never rejects (#467, ADR-151). It is part of the limit's
+    # definition, so it resolves with the limit (override, not merge) and an
+    # entity that redefines `tpm` redefines its soft-ness too.
+    soft: bool = False
 
     def __post_init__(self) -> None:
         validate_name(self.name, "name")
@@ -468,6 +477,8 @@ class Limit:
         name: str,
         rate: int,
         burst: int | None = None,
+        *,
+        soft: bool = False,
     ) -> "Limit":
         """Create a limit that refills ``rate`` tokens per second.
 
@@ -477,6 +488,7 @@ class Limit:
             burst: Optional burst ceiling. When set, ``capacity`` is
                 ``burst`` and ``refill_amount`` is ``rate``, allowing
                 temporary spikes above the sustained rate.
+            soft: Meter without enforcing (#467): debited, never rejects.
         """
         capacity = burst if burst is not None else rate
         return cls(
@@ -484,6 +496,7 @@ class Limit:
             capacity=capacity,
             refill_amount=rate,
             refill_period_seconds=1,
+            soft=soft,
         )
 
     @classmethod
@@ -492,6 +505,8 @@ class Limit:
         name: str,
         rate: int,
         burst: int | None = None,
+        *,
+        soft: bool = False,
     ) -> "Limit":
         """Create a limit that refills ``rate`` tokens per minute.
 
@@ -501,6 +516,7 @@ class Limit:
             burst: Optional burst ceiling. When set, ``capacity`` is
                 ``burst`` and ``refill_amount`` is ``rate``, allowing
                 temporary spikes above the sustained rate.
+            soft: Meter without enforcing (#467): debited, never rejects.
         """
         capacity = burst if burst is not None else rate
         return cls(
@@ -508,6 +524,7 @@ class Limit:
             capacity=capacity,
             refill_amount=rate,
             refill_period_seconds=60,
+            soft=soft,
         )
 
     @classmethod
@@ -516,6 +533,8 @@ class Limit:
         name: str,
         rate: int,
         burst: int | None = None,
+        *,
+        soft: bool = False,
     ) -> "Limit":
         """Create a limit that refills ``rate`` tokens per hour.
 
@@ -525,6 +544,7 @@ class Limit:
             burst: Optional burst ceiling. When set, ``capacity`` is
                 ``burst`` and ``refill_amount`` is ``rate``, allowing
                 temporary spikes above the sustained rate.
+            soft: Meter without enforcing (#467): debited, never rejects.
         """
         capacity = burst if burst is not None else rate
         return cls(
@@ -532,6 +552,7 @@ class Limit:
             capacity=capacity,
             refill_amount=rate,
             refill_period_seconds=3600,
+            soft=soft,
         )
 
     @classmethod
@@ -540,6 +561,8 @@ class Limit:
         name: str,
         rate: int,
         burst: int | None = None,
+        *,
+        soft: bool = False,
     ) -> "Limit":
         """Create a limit that refills ``rate`` tokens per day.
 
@@ -549,6 +572,7 @@ class Limit:
             burst: Optional burst ceiling. When set, ``capacity`` is
                 ``burst`` and ``refill_amount`` is ``rate``, allowing
                 temporary spikes above the sustained rate.
+            soft: Meter without enforcing (#467): debited, never rejects.
         """
         capacity = burst if burst is not None else rate
         return cls(
@@ -556,6 +580,7 @@ class Limit:
             capacity=capacity,
             refill_amount=rate,
             refill_period_seconds=86400,
+            soft=soft,
         )
 
     @classmethod
@@ -567,6 +592,7 @@ class Limit:
         cron: str | None = None,
         tz: str = "UTC",
         reset_after: timedelta | None = None,
+        soft: bool = False,
     ) -> "Limit":
         """An allowance of ``amount`` per window, restored in one lump.
 
@@ -598,6 +624,9 @@ class Limit:
             tz: IANA timezone ``cron`` is read in. Ignored with ``reset_after``.
             reset_after: Window length, anchored to first use. Mutually
                 exclusive with ``cron``.
+            soft: Meter without enforcing (#467): the quota is debited and
+                may go into debt within the period, never rejects, and the
+                reset restores the allowance and forgives the debt (ADR-151).
 
         Example: 10,000 a day, back to 10,000 at New York midnight
             Limit.quota("rpd", 10_000, cron="0 0 * * *",
@@ -620,6 +649,7 @@ class Limit:
             refill_period_seconds=_QUOTA_REFILL_PERIOD_SECONDS,
             reset_schedule=((ScheduleEntry.reset(cron=cron, tz=tz),) if cron is not None else ()),
             reset_after=reset_after,
+            soft=soft,
         )
 
     @classmethod
@@ -629,6 +659,8 @@ class Limit:
         capacity: int,
         refill_amount: int,
         refill_period_seconds: int,
+        *,
+        soft: bool = False,
     ) -> "Limit":
         """
         Create a custom limit with explicit refill rate.
@@ -642,6 +674,7 @@ class Limit:
             capacity=capacity,
             refill_amount=refill_amount,
             refill_period_seconds=refill_period_seconds,
+            soft=soft,
         )
 
     @property
@@ -749,6 +782,9 @@ class Limit:
         # audit events included — are byte-identical.
         if self.reset_after is not None:
             result["reset_after_seconds"] = self.reset_after_seconds
+        # Omitted when hard, so every existing payload is byte-identical.
+        if self.soft:
+            result["soft"] = True
         return result
 
     @classmethod
@@ -770,6 +806,7 @@ class Limit:
             reset_after=(
                 timedelta(seconds=reset_after_seconds) if reset_after_seconds is not None else None
             ),
+            soft=bool(data.get("soft", False)),
         )
 
     @classmethod
@@ -844,9 +881,10 @@ class Limit:
             schedule=state.sched,
             reset_schedule=state.reset_sched if is_quota else (),
             reset_after=reset_after,
+            soft=state.soft,
         )
 
-    def per_shard(self, shard_count: int, now_ms: int) -> "Limit":
+    def per_shard(self, shard_count: int, now_ms: int, topped_up_milli: int = 0) -> "Limit":
         """This limit as a single shard of ``shard_count`` sees it at ``now_ms``.
 
         Two narrowings happen here, and the order matters (#222 §2.1): the
@@ -900,8 +938,12 @@ class Limit:
         predicate would be the wrong one here — it is also true of a dripping
         limit whose share has floored away, and zeroing *that* limit's rate
         would report a recovering limit as one that never recovers.
+
+        ``topped_up_milli`` is the drawn shard's ``b_{name}_tu`` (ADR-149): a
+        quota shard topped up above its grant reports ``C // gc + tu``, the
+        ceiling it really holds, so a purchase is not hidden from a 429.
         """
-        if shard_count <= 1 and not self.schedule:
+        if shard_count <= 1 and not self.schedule and not topped_up_milli:
             return self
         # Milli-units, so this floors exactly where `BucketState` does: a
         # status built from a config `Limit` and one built from the bucket
@@ -916,7 +958,7 @@ class Limit:
         divisor = max(1, shard_count)
         return replace(
             self,
-            capacity=max(1, (cp_milli // divisor) // 1000),
+            capacity=max(1, (cp_milli // divisor + topped_up_milli) // 1000),
             refill_amount=(0 if self.is_quota else max(1, (ra_milli // divisor) // 1000)),
             refill_period_seconds=max(1, rp_ms // 1000),
             schedule=(),
@@ -943,6 +985,8 @@ class Limit:
         object.__setattr__(obj, "schedule", ())
         object.__setattr__(obj, "reset_schedule", ())
         object.__setattr__(obj, "reset_after", None)
+        # `wcu` protects the partition, not the tenant: it is always hard.
+        object.__setattr__(obj, "soft", False)
         return obj
 
 
@@ -965,6 +1009,23 @@ class Entity:
     cascade: bool = False
     metadata: dict[str, str] = field(default_factory=dict)
     created_at: str | None = None
+    parent_generation: int = field(default=0, compare=False)
+    """The entity's parent generation (ADR-150): raised by every move to a new parent.
+
+    Starts at the creation instant in epoch ms, so a recreated entity is never
+    below a bucket its predecessor left behind; 0 for an entity created before
+    v0.17. Every bucket write of the entity's ``parent_id`` carries it, so a
+    writer that read an older generation can never put a previous parent back.
+    Not part of equality: two reads of one entity are equal across a move's
+    generation only through ``parent_id``.
+    """
+    incarnation: str = field(default="-", compare=False)
+    """A random token naming this creation of the entity (ADR-150).
+
+    A generation is comparable only within one incarnation, so a bucket left
+    behind by a deleted predecessor never outranks the recreated entity. ``"-"``
+    for an entity created before v0.17, which had none.
+    """
 
     @property
     def is_parent(self) -> bool:
@@ -1038,7 +1099,23 @@ class LimitStatus:
     @property
     def deficit(self) -> int:
         """How many tokens short we are (0 if not exceeded)."""
+        if self.soft:
+            return 0
         return max(0, self.requested - self.available)
+
+    @property
+    def soft(self) -> bool:
+        """Whether the limit is soft: metered, never a reason to reject (#467).
+
+        A soft status is never ``exceeded`` and its ``retry_after_seconds`` is
+        0.0; inside ``RateLimitExceeded`` it is always among ``passed``.
+        """
+        return self.limit.soft
+
+    @property
+    def overdrawn(self) -> bool:
+        """A soft limit running in debt: ``soft and available < 0`` (#467)."""
+        return self.limit.soft and self.available < 0
 
 
 @dataclass(frozen=True)
@@ -1076,6 +1153,10 @@ class Availability:
     checked_at_ms: int
     # One entry per resolved limit, in resolution order
     statuses: list[LimitStatus]
+    # Whether the bucket read carries a live bypass stamp (#311): every request
+    # is admitted and nothing is debited, so no status is exceeded and
+    # `allowed` is True whatever the balances (review D12).
+    bypassed: bool = False
 
     def status(self, limit_name: str) -> LimitStatus | None:
         """The status for one limit, or None if it was not resolved."""
@@ -1188,6 +1269,13 @@ class BucketState:
     # grant was sized at. `None` for a rate limit and for a quota item written
     # before ADR-145 (read as `shard_count`, see `grant_shard_count`).
     grant_count: int | None = None
+    # `b_{name}_tu` (ADR-149): allowance topped up above this quota shard's
+    # grant this period, millitokens. `None` when the item carries none. Raises
+    # the ceiling (`ceiling_milli`) until the next reset or roll clears it.
+    topped_up_milli: int | None = None
+    # `b_{name}_rn` (ADR-149): operator resets this calendar quota shard has
+    # taken; `None` before the first. A refund pins it to stay in its period.
+    reset_number: int | None = None
     # The item's `vu` as this state was read, epoch ms; `None` when the item
     # carries none (or the state was not read off an item). The slow path's
     # rf-locked write pins it whenever it sets or removes `vu`, so a `vu = 0` a
@@ -1195,6 +1283,31 @@ class BucketState:
     stored_vu_ms: int | None = None
     # True only for a state read off an item, where `stored_vu_ms` is known.
     stored_vu_read: bool = False
+    # The item's `bypass` stamp (#311, ADR-151): item-level, copied onto each
+    # state read off it. True when the stamp is **present**, live or not; its
+    # deadline is `bypass_until_ms`. `try_consume` admits a bypassed state, so
+    # no image of a bypassed bucket is ever read as a rejection (an expired
+    # stamp is routed to the slow path before any image is judged); the slow
+    # path clears it on a state whose (uncached) config no longer says bypass.
+    bypass: bool = False
+    # The `bypass` stamp's deadline as read, epoch ms (ADR-151 decision 8), or
+    # None when the item carries none. `schema.STAMP_EXPIRED` for a stamp a
+    # pre-release build wrote as `BOOL true`. The slow path pins its own stamp
+    # write on this value; for a state it creates, the deadline it stamps.
+    bypass_until_ms: int | None = None
+    # `b_{name}_soft` (#467, ADR-151): the limit is metered but never rejects.
+    # Read off the item on every image (speculative, rejection cache, slow
+    # path) as "stamp present", live or not; its deadline is `soft_until_ms`.
+    # The slow path overrides it with the soft-ness it decides, from config
+    # read fresh or, when the item carries a stamp, read uncached — never from
+    # the stamp itself (decision 8). `try_consume` admits a soft state
+    # unconditionally.
+    soft: bool = False
+    # The `b_{name}_soft` stamp's deadline as read, epoch ms (ADR-151 decision
+    # 8), or None when absent; `schema.STAMP_EXPIRED` for a pre-release `BOOL`.
+    # The slow path pins its own stamp write on it. On a state the slow path
+    # creates or seeds: the deadline it stamps (None stamps nothing).
+    soft_until_ms: int | None = None
     # The raw schedule strings on the item as this state was read (#721), or
     # `None` when the state was not read off an item. Item level: (`sched`,
     # `rsched`, `sched_tz`); this limit's own overrides: (`b_{name}_sched`,
@@ -1251,6 +1364,14 @@ class BucketState:
         """
         return self.grant_shard_count if self.is_quota_state else self.shard_count
 
+    @property
+    def report_top_up_milli(self) -> int:
+        """The ``tu`` a reported per-shard limit adds to its capacity (ADR-149).
+
+        Only a quota carries one; a stray one on anything else is ignored.
+        """
+        return (self.topped_up_milli or 0) if self.is_quota_state else 0
+
     def reset_target_milli(self, now_ms: int) -> int:
         """The balance a reset or window roll sets: this shard's share at ``now_ms``.
 
@@ -1261,6 +1382,18 @@ class BucketState:
         cp, _ra, _rp = self._scheduled_params(now_ms)
         return cp // self.shard_count
 
+    def fast_path_short(self, amount: int) -> bool:
+        """Whether this image fails the fast path's balance term for ``amount`` tokens.
+
+        The speculative condition's per-limit term, read off a failure image:
+        ``tk >= amount``, waived for a soft limit (#467) or a bypassed bucket
+        (#311), whose stamps admit it. A stamp seen here is live: an expired
+        one is classified first, as a closed window. One predicate for the
+        repository's failure classification and the limiter's "failed only
+        on its stamp" test (#741), so the two cannot disagree.
+        """
+        return not self.soft and not self.bypass and self.tokens_milli < amount * 1000
+
     def ceiling_milli(self, now_ms: int) -> int:
         """The most this shard may hold at ``now_ms`` — the refill clamp (ADR-145).
 
@@ -1268,10 +1401,15 @@ class BucketState:
         covers, so its ceiling is ``C // gc``; trimming it to ``C // S`` would
         discard allowance no other shard holds (#637). A dripping limit keeps
         ``C // S``: its shards' ceilings must sum to the capacity.
+
+        A quota shard an operator topped up above its grant this period
+        (ADR-149) holds that allowance too: ``C // gc + tu``. A dripping limit
+        never carries ``tu``.
         """
         cp, _ra, _rp = self._scheduled_params(now_ms)
-        divisor = self.grant_shard_count if self.is_quota_state else self.shard_count
-        return cp // divisor
+        if self.is_quota_state:
+            return cp // self.grant_shard_count + (self.topped_up_milli or 0)
+        return cp // self.shard_count
 
     def effective_refill_amount_milli(self, now_ms: int) -> int:
         """This shard's share of the refill in force at ``now_ms``.
@@ -1485,6 +1623,7 @@ class BucketState:
             # inherits the entity's existing `ws` from a sibling (Task 8) —
             # a new shard joins the window in progress rather than opening one.
             window_start_ms=(now_ms if limit.reset_after is not None else None),
+            soft=limit.soft,
         )
         # Start at full capacity *as of now* — the scheduled share, not the
         # base one. A bucket born inside a `0.5x` window that started at the
@@ -1521,6 +1660,9 @@ class UsageSnapshot:
         window_type: Window granularity ("hourly", "daily")
         counters: Consumption by limit name (e.g., {"tpm": 5000, "rpm": 10})
         total_events: Number of consumption events in this window
+        overdrawn: Soft limits only (#467): limit name -> number of stream
+            records in the window where the limit was debited and left its
+            shard in debt. Empty when no soft limit was overdrawn.
     """
 
     entity_id: str
@@ -1530,6 +1672,7 @@ class UsageSnapshot:
     window_type: str  # "hourly", "daily"
     counters: dict[str, int]  # limit_name -> total consumed
     total_events: int
+    overdrawn: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -2079,6 +2222,30 @@ class AuditAction:
     ENTITY_DELETED = "entity_deleted"
     LIMITS_SET = "limits_set"
     LIMITS_DELETED = "limits_deleted"
+    ENTITY_PARENT_CHANGED = "entity_parent_changed"
+    BUCKET_RESET = "bucket_reset"
+    BUCKET_TOPPED_UP = "bucket_topped_up"
+
+
+@dataclass(frozen=True)
+class BucketOperationResult:
+    """What ``Repository.reset_bucket`` or ``Repository.top_up`` did (ADR-149).
+
+    Attributes:
+        entity_id: The entity operated on.
+        resource: The resource operated on.
+        shards: Bucket items written (0 when there was nothing to write, such as
+            a reset of an entity that has never acquired).
+        amounts: Per named limit, in whole tokens. For a top-up, what was
+            granted: exactly what was asked for a quota, at most the free room
+            below the ceiling for a dripping limit. For a reset, what was
+            restored across every shard.
+    """
+
+    entity_id: str
+    resource: str
+    shards: int
+    amounts: dict[str, int]
 
 
 @dataclass
@@ -2150,6 +2317,13 @@ class ConfigAccess:
     disabled_level: str | None
     cascade: bool | None
     cascade_level: str | None
+    # The walk's first explicit value was `"bypass"` (#311, ADR-151): every
+    # request is admitted, nothing debits a limit's balance, consumption is
+    # still counted. Never true together with `disabled`.
+    bypass: bool = False
+    # Each resolved limit's soft-ness, read in the same uncached batch, or None
+    # when the caller did not ask for it (#467, ADR-151 §6.2).
+    limit_soft: dict[str, bool] | None = None
 
 
 def effective_cascade(policy: bool | None, entity: Entity | None) -> bool:
@@ -2198,7 +2372,9 @@ class CreditCeiling:
     own schedule overrides (``b_{name}_sched``, ``b_{name}_rsched``, each
     ``None`` = absent; a schedule-only change). ``sched_raw`` is ``None`` when
     the state was not read off the item: then nothing can be pinned and the
-    credit is trimmed outright.
+    credit is trimmed outright. A quota also pins its top-up
+    (``b_{name}_tu``, ADR-149; ``None`` = absent), part of its ceiling: an
+    operator reset removes it and moves nothing else a credit pins.
     """
 
     ceiling_milli: int
@@ -2211,6 +2387,7 @@ class CreditCeiling:
     # credit is dropped rather than land in a period that did not spend it.
     quota: bool = False
     quota_period: "QuotaPeriodPin | None" = None
+    topped_up_milli: int | None = None
 
 
 @dataclass(frozen=True)
@@ -2228,12 +2405,15 @@ class QuotaPeriodPin:
     item's ``rsched`` and ``sched_tz`` and the limit's ``b_{name}_rsched`` —
     each ``None`` when absent. A reset-schedule change under an open lease can
     fire a reset before the old edge; it moves one of these, and the credit is
-    dropped.
+    dropped. An operator reset (ADR-149) starts a period with no edge at all,
+    so a calendar quota also pins ``reset_number`` (``b_{name}_rn``, ``None``
+    when absent), which every such reset increments.
     """
 
     reset_edge_ms: int | None = None
     window: tuple[int | None, int | None] | None = None
     reset_sched_raw: tuple[str | None, str | None, str | None] | None = None
+    reset_number: int | None = None
 
 
 #: (``shard_count``, ``vu``, (``sched``, ``rsched``, ``sched_tz``)) of a bucket
@@ -2248,8 +2428,9 @@ class CreditLimitImage:
 
     What a self-trimming credit pins for that limit: the stored base capacity
     (``b_{name}_cp``), the quota grant count (``b_{name}_gc``), the schedule
-    overrides (``b_{name}_sched``, ``b_{name}_rsched``) and the session window
-    (``b_{name}_ws``, ``b_{name}_wa``), each ``None`` when absent.
+    overrides (``b_{name}_sched``, ``b_{name}_rsched``), the session window
+    (``b_{name}_ws``, ``b_{name}_wa``), and the quota top-up and reset count
+    (``b_{name}_tu``, ``b_{name}_rn``, ADR-149), each ``None`` when absent.
     """
 
     capacity_milli: int
@@ -2257,6 +2438,8 @@ class CreditLimitImage:
     sched_raw: tuple[str | None, str | None]
     window_start_ms: int | None = None
     window_applied_ms: int | None = None
+    topped_up_milli: int | None = None
+    reset_number: int | None = None
 
 
 @dataclass(frozen=True)

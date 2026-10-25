@@ -10,7 +10,7 @@ import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
 
 from zae_limiter.schedule import ScheduleEntry, decode, decode_reset
-from zae_limiter.schema import BUCKET_SCHED_NONE
+from zae_limiter.schema import BUCKET_SCHED_NONE, MAX_SHARD_COUNT
 from zae_limiter_aggregator.processor import (
     BucketRefillState,
     ConsumptionDelta,
@@ -1144,6 +1144,67 @@ class TestTryRefillBucket:
         assert "ADD" in call_kwargs["UpdateExpression"]
         assert "SET rf = :new_rf" in call_kwargs["UpdateExpression"]
 
+    @staticmethod
+    def _wcu(tk_milli: int) -> LimitRefillInfo:
+        # `tc_delta=0` isolates the refill credit: a batch's real wcu
+        # `tc_delta` (at most 100 writes) never beats its projection either.
+        return LimitRefillInfo(
+            tc_delta=0, tk_milli=tk_milli, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=1000
+        )
+
+    def test_a_refill_that_moves_rf_credits_wcu(self) -> None:
+        """`wcu` rides along on a write that moves `rf`, or it forfeits its accrual.
+
+        Left out, its stored balance drained one token per write for good and
+        read as a hot partition after ~800 writes, at any rate.
+        """
+        mock_table = MagicMock()
+        state = self._make_state(
+            rf_ms=1704067195000,  # 5s ago
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=20000000,
+                    tk_milli=5000000,
+                    cp_milli=100000000,
+                    ra_milli=100000000,
+                    rp_ms=60000,
+                ),
+                "wcu": self._wcu(150_000),
+            },
+        )
+
+        assert try_refill_bucket(mock_table, state, 1704067200000) is True
+
+        kwargs = mock_table.update_item.call_args[1]
+        names, values = kwargs["ExpressionAttributeNames"], kwargs["ExpressionAttributeValues"]
+        alias = next(a for a, attr in names.items() if attr == "b_wcu_tk")
+        idx = alias.removeprefix("#rt")
+        assert f"{alias} :rd{idx}" in kwargs["UpdateExpression"]
+        assert values[f":rd{idx}"] == 1_000_000 - 150_000  # refilled to capacity
+        # Pinned on the balance read, like every raise (#730).
+        assert f"{alias} <= :rk{idx}" in kwargs["ConditionExpression"]
+        assert values[f":rk{idx}"] == 150_000
+
+    def test_wcu_alone_never_causes_a_write(self) -> None:
+        """A `wcu`-only refill is skipped: `rf` does not move, so nothing is forfeited."""
+        mock_table = MagicMock()
+        state = self._make_state(
+            rf_ms=1704067195000,
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=1000000,
+                    tk_milli=100000000,  # full
+                    cp_milli=100000000,
+                    ra_milli=100000000,
+                    rp_ms=60000,
+                ),
+                "wcu": self._wcu(150_000),
+            },
+        )
+
+        assert try_refill_bucket(mock_table, state, 1704067200000) is False
+        mock_table.update_item.assert_not_called()
+
     def test_refill_skipped_when_tokens_sufficient(self) -> None:
         """Skips refill when projected tokens >= consumption."""
         mock_table = MagicMock()
@@ -2033,18 +2094,85 @@ class TestTryProactiveShard:
         call_kwargs = mock_table.update_item.call_args[1]
         assert call_kwargs["ExpressionAttributeValues"][":new"] == 4
 
-    def test_warns_above_threshold(self, capsys) -> None:
-        """Proactive sharding logs warning when new count exceeds threshold."""
+    def test_never_doubles_at_max_shard_count(self) -> None:
+        """At MAX_SHARD_COUNT the aggregator stops, exactly as the client does.
+
+        It used to double to 64 here and keep going: its own write is a MODIFY
+        of shard 0 still carrying the low wcu balance, so every invocation
+        doubled again, without bound.
+        """
         mock_table = MagicMock()
-        state = self._make_state(shard_id=0, shard_count=32)
+        state = self._make_state(shard_count=MAX_SHARD_COUNT)
+
+        result = try_proactive_shard(mock_table, state, 0, 1_000_000)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+    def test_never_doubles_a_count_already_past_the_cap(self) -> None:
+        """An item a runaway left at 2048 is not doubled again."""
+        mock_table = MagicMock()
+        state = self._make_state(shard_count=2048)
+
+        assert try_proactive_shard(mock_table, state, 0, 1_000_000) is False
+        mock_table.update_item.assert_not_called()
+
+    def test_warns_on_reaching_max_shard_count(self, capsys) -> None:
+        """The doubling that lands on the cap is written and warned about."""
+        mock_table = MagicMock()
+        state = self._make_state(shard_id=0, shard_count=MAX_SHARD_COUNT // 2)
 
         result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
 
         assert result is True
+        call_kwargs = mock_table.update_item.call_args[1]
+        assert call_kwargs["ExpressionAttributeValues"][":new"] == MAX_SHARD_COUNT
         captured = capsys.readouterr().out
         assert '"level": "WARNING"' in captured
-        assert "High shard count" in captured
-        assert '"shard_count": 64' in captured
+        assert "MAX_SHARD_COUNT" in captured
+        assert f'"shard_count": {MAX_SHARD_COUNT}' in captured
+
+    def test_projects_the_stored_balance_to_now(self) -> None:
+        """A low stored wcu balance whose refill has restored it is not hot.
+
+        Nobody refills wcu on the fast path, so the stored value counts writes
+        since the last materialising pass, not writes per second. The client
+        projects it before doubling (`_shard_after_wcu_exhaustion`); so must
+        the aggregator.
+        """
+        mock_table = MagicMock()
+        state = self._make_state()  # rf_ms = 1704067200000
+
+        result = try_proactive_shard(
+            mock_table,
+            state,
+            100_000,
+            1_000_000,
+            wcu_refill_amount_milli=1_000_000,
+            wcu_refill_period_ms=1000,
+            now_ms=state.rf_ms + 2000,
+        )
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+    def test_projection_still_doubles_under_sustained_pressure(self) -> None:
+        """Projected to an instant with too little refill, the balance is still low."""
+        mock_table = MagicMock()
+        state = self._make_state()
+
+        result = try_proactive_shard(
+            mock_table,
+            state,
+            0,
+            1_000_000,
+            wcu_refill_amount_milli=1_000_000,
+            wcu_refill_period_ms=1000,
+            now_ms=state.rf_ms + 100,  # +100 tokens of refill: 10%
+        )
+
+        assert result is True
+        assert mock_table.update_item.call_args[1]["ExpressionAttributeValues"][":new"] == 2
 
     def test_batch_size_independent(self) -> None:
         """Token level is invariant to BatchSize (unlike tc_delta)."""
@@ -2056,6 +2184,188 @@ class TestTryProactiveShard:
         result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
 
         assert result is True  # 10% remaining < 20% threshold
+
+
+def _clone_items(table: MagicMock) -> list[dict]:
+    """The items Path 2 cloned: each clone is its own transaction (ADR-150)."""
+    return [
+        item["Put"]["Item"]
+        for call in table.meta.client.transact_write_items.call_args_list
+        for item in call.kwargs["TransactItems"]
+        if "Put" in item
+    ]
+
+
+def _cancelled(*codes: str) -> ClientError:
+    """A cancelled clone transaction, with these per-item reasons."""
+    return ClientError(
+        {
+            "Error": {"Code": "TransactionCanceledException", "Message": ""},
+            "CancellationReasons": [{"Code": code} for code in codes],
+        },
+        "TransactWriteItems",
+    )
+
+
+class TestProactiveShardingFeedback:
+    """The aggregator's own doubling write must not drive the next doubling.
+
+    `SET shard_count` on shard 0 is a MODIFY that still carries the low stored
+    wcu balance, so each invocation used to read its own write and double
+    again — 2048 and far beyond in production. Real bucket items on moto, the
+    aggregator fed the stream records its own writes produce.
+    """
+
+    TABLE = "test-rate-limits"
+
+    def _shard0_after_traffic(self, sync_repository):
+        import boto3
+
+        from zae_limiter import Limit, SyncRateLimiter
+
+        limiter = SyncRateLimiter(repository=sync_repository)
+        limiter.create_entity("user-1")
+        limiter.set_limits("user-1", [Limit.per_minute("rpm", 1_000_000)], resource="api")
+        with limiter.acquire("user-1", "api", {"rpm": 1}):
+            pass
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(self.TABLE)
+        key = {"PK": "", "SK": "#STATE"}
+        key["PK"] = next(
+            i["PK"] for i in table.scan()["Items"] if i["PK"].endswith("BUCKET#user-1#api#0")
+        )
+        # 850 fast-path writes since the last materialising pass: each ADDs -1
+        # to wcu and nothing refills it, however long they took.
+        table.update_item(
+            Key=key,
+            UpdateExpression="ADD b_wcu_tk :d",
+            ExpressionAttributeValues={":d": -850_000},
+        )
+        return table, key
+
+    @staticmethod
+    def _record(old: dict, new: dict) -> dict:
+        from boto3.dynamodb.types import TypeSerializer
+
+        ser = TypeSerializer()
+        return {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "OldImage": {k: ser.serialize(v) for k, v in old.items()},
+                "NewImage": {k: ser.serialize(v) for k, v in new.items()},
+            },
+        }
+
+    def _run(self, table, key, now_s: float, invocations: int) -> list[int]:
+        counts = []
+        prev = table.get_item(Key=key)["Item"]
+        rec = self._record(prev, prev)
+        clock = MagicMock()
+        clock.time.return_value = now_s
+        clock.perf_counter.return_value = 0.0
+        with patch("zae_limiter_aggregator.processor.time_module", clock):
+            for _ in range(invocations):
+                process_stream_records([rec], self.TABLE, windows=[])
+                cur = table.get_item(Key=key)["Item"]
+                counts.append(int(cur.get("shard_count", 1)))
+                rec = self._record(prev, cur)
+                prev = cur
+        return counts
+
+    def test_self_fed_doubling_stops_at_max_shard_count(self, sync_repository) -> None:
+        table, key = self._shard0_after_traffic(sync_repository)
+        rf_s = int(table.get_item(Key=key)["Item"]["rf"]) / 1000
+
+        # Clock frozen at `rf`: the projection restores nothing, so only the
+        # cap can stop it.
+        counts = self._run(table, key, now_s=rf_s, invocations=8)
+
+        assert counts == [2, 4, 8, 16, 32, 32, 32, 32]
+        items = [i for i in table.scan()["Items"] if "BUCKET#user-1#api#" in i["PK"]]
+        assert len(items) == MAX_SHARD_COUNT
+        assert all(int(i["shard_count"]) == MAX_SHARD_COUNT for i in items)
+
+    def test_a_stale_low_balance_does_not_double_at_all(self, sync_repository) -> None:
+        table, key = self._shard0_after_traffic(sync_repository)
+        rf_s = int(table.get_item(Key=key)["Item"]["rf"]) / 1000
+
+        # Two seconds after the last materialising pass, wcu (1000/s) is full.
+        counts = self._run(table, key, now_s=rf_s + 2, invocations=3)
+
+        assert counts == [1, 1, 1]
+
+
+class TestRefillAtTheBatchsLatestShardCount:
+    """A batch carrying a doubling refills shard 0 toward its new share.
+
+    `aggregate_bucket_states` kept the first record's `shard_count` for a
+    bucket and ignored a later record in the same batch that doubled it, so the
+    refill topped shard 0 up to the whole capacity while shard 1 was created
+    holding its own share: 765 + 500 = 1265 against a limit of 1000 until the
+    next pass trimmed it. Real items on moto, the batch built from them.
+    """
+
+    TABLE = "test-rate-limits"
+
+    @staticmethod
+    def _record(old: dict, new: dict) -> dict:
+        from boto3.dynamodb.types import TypeSerializer
+
+        ser = TypeSerializer()
+        return {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "OldImage": {k: ser.serialize(v) for k, v in old.items()},
+                "NewImage": {k: ser.serialize(v) for k, v in new.items()},
+            },
+        }
+
+    def test_shards_never_exceed_the_limit_after_a_doubling_batch(self, sync_repository) -> None:
+        import boto3
+
+        from zae_limiter import Limit, SyncRateLimiter
+
+        limiter = SyncRateLimiter(repository=sync_repository)
+        limiter.create_entity("user-1")
+        limiter.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="api")
+        with limiter.acquire("user-1", "api", {"rpm": 1}):
+            pass
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(self.TABLE)
+        pk = next(i["PK"] for i in table.scan()["Items"] if i["PK"].endswith("BUCKET#user-1#api#0"))
+        key = {"PK": pk, "SK": "#STATE"}
+        item0 = table.get_item(Key=key)["Item"]
+
+        # Record 1: 899 more tokens spent on shard 0 (tk 100, 900 consumed).
+        table.update_item(
+            Key=key,
+            UpdateExpression="ADD b_rpm_tk :d, b_rpm_tc :c",
+            ExpressionAttributeValues={":d": -899_000, ":c": 899_000},
+        )
+        item1 = table.get_item(Key=key)["Item"]
+        # Record 2: a client doubles shard 0 to 2 (no `rf`, no `tk` change).
+        table.update_item(
+            Key=key,
+            UpdateExpression="SET shard_count = :n",
+            ExpressionAttributeValues={":n": 2},
+        )
+        item2 = table.get_item(Key=key)["Item"]
+
+        # 40 s after `rf`: 666 tokens of refill, short of the 900 consumed, so
+        # the refill is written.
+        clock = MagicMock()
+        clock.time.return_value = int(item2["rf"]) / 1000 + 40
+        clock.perf_counter.return_value = 0.0
+        with patch("zae_limiter_aggregator.processor.time_module", clock):
+            result = process_stream_records(
+                [self._record(item0, item1), self._record(item1, item2)],
+                self.TABLE,
+                windows=[],
+            )
+        assert result.errors == []
+
+        shards = [i for i in table.scan()["Items"] if "BUCKET#user-1#api#" in i["PK"]]
+        assert len(shards) == 2  # shard 1 created by the propagation
+        total_milli = sum(int(i["b_rpm_tk"]) for i in shards)
+        assert total_milli <= 1000 * 1000, total_milli
 
 
 class TestPropagateShardsCount:
@@ -2104,9 +2414,34 @@ class TestPropagateShardsCount:
         assert "ns1/BUCKET#user-1#gpt-4#1" in update_pks
         assert "ns1/BUCKET#user-1#gpt-4#0" not in update_pks
         # New shards 2, 3 created via PutItem
-        put_pks = {c.kwargs["Item"]["PK"] for c in mock_table.put_item.call_args_list}
+        put_pks = {item["PK"] for item in _clone_items(mock_table)}
         assert "ns1/BUCKET#user-1#gpt-4#2" in put_pks
         assert "ns1/BUCKET#user-1#gpt-4#3" in put_pks
+
+    def test_a_count_above_max_shard_count_is_not_propagated(self) -> None:
+        """A runaway count is never propagated: Path 1 and Path 2 write once per
+        shard, so 2048 -> 4096 is ~4000 writes in one invocation, and past a few
+        thousand the invocation times out and stalls the event source."""
+        mock_table = MagicMock()
+        record = self._make_shard_change_record(
+            old_shard_count=MAX_SHARD_COUNT,
+            new_shard_count=MAX_SHARD_COUNT * 2,
+        )
+
+        assert propagate_shard_count(mock_table, record) == 0
+        mock_table.update_item.assert_not_called()
+        mock_table.meta.client.transact_write_items.assert_not_called()
+        mock_table.get_item.assert_not_called()
+
+    def test_a_doubling_onto_max_shard_count_is_propagated(self) -> None:
+        """The cap itself is a legal count."""
+        mock_table = MagicMock()
+        record = self._make_shard_change_record(
+            old_shard_count=MAX_SHARD_COUNT // 2,
+            new_shard_count=MAX_SHARD_COUNT,
+        )
+
+        assert propagate_shard_count(mock_table, record) == MAX_SHARD_COUNT - 1
 
     def test_no_change_no_propagation(self) -> None:
         """No propagation when shard_count unchanged."""
@@ -2129,7 +2464,9 @@ class TestPropagateShardsCount:
         )
         mock_table = MagicMock()
         mock_table.update_item.side_effect = conditional_error
-        mock_table.put_item.side_effect = conditional_error
+        mock_table.meta.client.transact_write_items.side_effect = _cancelled(
+            "ConditionalCheckFailed", "None"
+        )
         record = self._make_shard_change_record(
             old_shard_count=2,
             new_shard_count=4,
@@ -2206,20 +2543,19 @@ class TestPropagateShardsCount:
 
         # Shard 1 is EXISTING (update only), shards 2 and 3 are NEW (put)
         update_calls = mock_table.update_item.call_args_list
-        put_calls = mock_table.put_item.call_args_list
+        clones = _clone_items(mock_table)
 
         assert len(update_calls) == 1  # shard 1
         assert "shard_count < :new" in update_calls[0].kwargs["ConditionExpression"]
 
-        assert len(put_calls) == 2  # shards 2 and 3
-        for put_call in put_calls:
-            item = put_call.kwargs["Item"]
+        assert len(clones) == 2  # shards 2 and 3
+        for item in clones:
             assert "GSI3PK" in item
             assert "GSI2PK" in item
             assert "b_rpm_tk" in item
             assert "b_wcu_tk" in item
 
-        new_pks = {c.kwargs["Item"]["PK"] for c in put_calls}
+        new_pks = {item["PK"] for item in clones}
         assert "ns1/BUCKET#user-1#gpt-4#2" in new_pks
         assert "ns1/BUCKET#user-1#gpt-4#3" in new_pks
 
@@ -2257,15 +2593,14 @@ class TestPropagateShardsCount:
         update_pks = {c.kwargs["Key"]["PK"] for c in mock_table.update_item.call_args_list}
         assert "ns1/BUCKET#user-1#gpt-4#1" in update_pks
 
-        put_pks = {c.kwargs["Item"]["PK"] for c in mock_table.put_item.call_args_list}
+        put_pks = {item["PK"] for item in _clone_items(mock_table)}
         assert "ns1/BUCKET#user-1#gpt-4#1" not in put_pks
 
     def test_new_shard_skips_if_client_created(self) -> None:
-        """PutItem with attribute_not_exists(PK) skips client-created shards."""
+        """The Put's attribute_not_exists(PK) skips client-created shards."""
         mock_table = MagicMock()
-        mock_table.put_item.side_effect = ClientError(
-            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
-            "PutItem",
+        mock_table.meta.client.transact_write_items.side_effect = _cancelled(
+            "ConditionalCheckFailed", "None"
         )
         record = {
             "eventName": "MODIFY",
@@ -2327,9 +2662,9 @@ class TestPropagateShardsCount:
         mock_table = MagicMock()
         propagate_shard_count(mock_table, record)
 
-        put_calls = mock_table.put_item.call_args_list
-        assert len(put_calls) == 1  # shard 1 is new
-        item = put_calls[0].kwargs["Item"]
+        clones = _clone_items(mock_table)
+        assert len(clones) == 1  # shard 1 is new
+        item = clones[0]
 
         # rpm tokens = effective capacity = 100000000 // 2 = 50000000
         assert item["b_rpm_tk"] == 50000000
@@ -2803,7 +3138,7 @@ class TestShardCloneRespectsSchedule:
         `vu`, which is in the future, so the fast path would spend it."""
         table = MagicMock()
         assert propagate_shard_count(table, self._record(sched=BUSINESS_COMPACT), TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
+        item = _clone_items(table)[-1]
         assert item["b_rpm_tk"] == 250_000  # (1_000_000 * 0.5) // 2
         assert item["b_wcu_tk"] == 1_000_000  # per-partition, never divided or scaled
 
@@ -2811,20 +3146,20 @@ class TestShardCloneRespectsSchedule:
         """Discriminates the test above."""
         table = MagicMock()
         assert propagate_shard_count(table, self._record(sched=None), TUE_1400) == 1
-        assert table.put_item.call_args.kwargs["Item"]["b_rpm_tk"] == 500_000
+        assert _clone_items(table)[-1]["b_rpm_tk"] == 500_000
 
     def test_per_limit_override_is_honoured(self) -> None:
         table = MagicMock()
         record = self._record(sched=BUSINESS_COMPACT, limit_sched={"rpm": HOUR_14_COMPACT})
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        assert table.put_item.call_args.kwargs["Item"]["b_rpm_tk"] == 125_000
+        assert _clone_items(table)[-1]["b_rpm_tk"] == 125_000
 
     def test_undecodable_schedule_creates_no_shard(self) -> None:
         """A shard created at the wrong ceiling is worse than no shard: the
         client creates it on its slow path, where §6 applies."""
         table = MagicMock()
         assert propagate_shard_count(table, self._record(sched="not-a-schedule"), TUE_1400) == 0
-        table.put_item.assert_not_called()
+        table.meta.client.transact_write_items.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -3412,7 +3747,7 @@ class TestAnUnscheduledLimitOnAScheduledItem:
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
+        item = _clone_items(table)[-1]
         assert item["b_rpm_tk"] == 250_000  # (1_000_000 * 0.5) // 2
         assert item["b_tpm_tk"] == 500_000  # 1_000_000 // 2, unscaled
 
@@ -3676,7 +4011,8 @@ class TestQuotaShardCloneIsAMove:
     def test_clone_takes_its_share_from_its_parent_in_one_transaction(self, mock_dynamodb) -> None:
         """Shard 0 holds the whole 1000 at gc 1; count 1 -> 2. Shard 1 is
         created with 500 and shard 0 is left with 500, by one
-        ``transact_write_items`` call carrying the Put and the donor Update."""
+        ``transact_write_items`` call carrying the Put, the donor Update and
+        the owner's META check."""
         table = _moto_table()
         _put_quota_shard(table, 0, tk=1_000_000, shard_count=2, b_rpd_gc=1)
         real = table.meta.client.transact_write_items
@@ -3684,7 +4020,8 @@ class TestQuotaShardCloneIsAMove:
             assert propagate_shard_count(table, _doubling_record(table, 1), TUE_1400) == 1
         assert transact.call_count == 1
         (items,) = [c.kwargs["TransactItems"] for c in transact.call_args_list]
-        assert [next(iter(item)) for item in items] == ["Put", "Update"]
+        # The clone, its donor debit, and the owner's META check (ADR-150).
+        assert [next(iter(item)) for item in items] == ["Put", "Update", "ConditionCheck"]
         clone = _stored(table, 1)
         assert clone is not None
         assert clone["b_rpd_tk"] == 500_000
@@ -3729,7 +4066,7 @@ class TestQuotaShardCloneIsAMove:
         (cancelled,) = [e for e in logged if e["message"].startswith("Clone transaction cancelled")]
         assert cancelled["resource"] == MOVE_RESOURCE
         assert cancelled["shard_id"] == 1
-        assert cancelled["reasons"] == ["None", "ConditionalCheckFailed"]
+        assert cancelled["reasons"] == ["None", "ConditionalCheckFailed", "None"]
         assert "entity_id" not in cancelled
 
     def test_a_record_overtaken_by_a_later_doubling_clones_no_quota(
@@ -3773,12 +4110,14 @@ class TestQuotaShardCloneIsAMove:
     def test_a_spent_parent_funds_nothing(self, mock_dynamodb) -> None:
         """#587 itself, under ADR-145: the parent's grant covers the clone's
         slot, so the clone gets what the parent holds, never a fresh share —
-        and a parent holding nothing moves nothing, so no transaction."""
+        and a parent holding nothing moves nothing, so no donor debit."""
         table = _moto_table()
         _put_quota_shard(table, 0, tk=0, shard_count=2, b_rpd_gc=1)
-        with patch.object(table.meta.client, "transact_write_items") as transact:
+        real = table.meta.client.transact_write_items
+        with patch.object(table.meta.client, "transact_write_items", side_effect=real) as transact:
             assert propagate_shard_count(table, _doubling_record(table, 1), TUE_1400) == 1
-        transact.assert_not_called()
+        (items,) = [c.kwargs["TransactItems"] for c in transact.call_args_list]
+        assert [next(iter(item)) for item in items] == ["Put", "ConditionCheck"]
         clone = _stored(table, 1)
         assert clone is not None
         assert clone["b_rpd_tk"] == 0
@@ -3840,9 +4179,13 @@ class TestQuotaShardCloneIsAMove:
         stale_rf = TUE_2300 - 86_400_000
         _put_quota_shard(table, 0, tk=400_000, shard_count=4, b_rpd_gc=2, rf=stale_rf)
         _put_quota_shard(table, 1, tk=500_000, shard_count=2, b_rpd_gc=2)
-        with patch.object(table.meta.client, "transact_write_items") as transact:
+        real = table.meta.client.transact_write_items
+        with patch.object(table.meta.client, "transact_write_items", side_effect=real) as transact:
             assert propagate_shard_count(table, _doubling_record(table, 2), TUE_1400) == 2
-        transact.assert_not_called()
+        # Only clone 2, with no donor debit: no write for slot 3 at all.
+        (items,) = [c.kwargs["TransactItems"] for c in transact.call_args_list]
+        assert [next(iter(item)) for item in items] == ["Put", "ConditionCheck"]
+        assert items[0]["Put"]["Item"]["PK"].endswith("#2")
         assert _stored(table, 3) is None, "the client creates slot 3 lazily"
         assert _must(table, 1)["b_rpd_tk"] == 500_000, "no debit"
         clone = _must(table, 2)
@@ -3895,7 +4238,7 @@ class TestQuotaShardCloneIsAMove:
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
+        item = _clone_items(table)[-1]
         assert item["b_rpm_tk"] == 500_000
         assert "b_rpm_gc" not in item, "a rate limit never carries a grant count"
 
@@ -3909,7 +4252,7 @@ class TestQuotaShardCloneIsAMove:
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
+        item = _clone_items(table)[-1]
         assert item["b_rpd_tk"] == 5_000_000
         assert "b_rpd_gc" not in item
         table.get_item.assert_not_called()
@@ -3926,7 +4269,7 @@ class TestQuotaShardCloneIsAMove:
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
+        item = _clone_items(table)[-1]
         assert item["b_rpd_tk"] == 5_000_000
         assert "b_rpd_gc" not in item
 
@@ -3941,7 +4284,7 @@ class TestQuotaShardCloneIsAMove:
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
+        item = _clone_items(table)[-1]
         assert item["b_rpd_tk"] == 5_000_000
         assert item["b_rpd_gc"] == 2
 
@@ -3957,7 +4300,7 @@ class TestQuotaShardCloneIsAMove:
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 0
-        table.put_item.assert_not_called()
+        table.meta.client.transact_write_items.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -4108,7 +4451,8 @@ class TestIsQuotaLimitRecognisesADurationWindow:
         with patch.object(table.meta.client, "transact_write_items", side_effect=real) as transact:
             assert propagate_shard_count(table, _doubling_record(table, 1), WS + 1_000) == 1
         (items,) = [c.kwargs["TransactItems"] for c in transact.call_args_list]
-        assert [next(iter(item)) for item in items] == ["Put", "Update"]
+        # The clone, its donor debit, and the owner's META check (ADR-150).
+        assert [next(iter(item)) for item in items] == ["Put", "Update", "ConditionCheck"]
         clone = _must(table, 1)
         assert (clone["b_session_tk"], clone["b_rpd_tk"]) == (2_000, 2_000)
         assert (clone["b_session_gc"], clone["b_rpd_gc"]) == (2, 2)
@@ -4261,7 +4605,7 @@ class TestAggregatorRollsAWindow:
         state = _window_state(_session_record(rf_ms=WS - 1, shard_count=4, vu_ms=0))
         assert try_refill_bucket(table, state, now_ms=WS + 1) is True
         assert table.update_item.call_count == 1
-        table.put_item.assert_not_called()
+        table.meta.client.transact_write_items.assert_not_called()
         write = self._write(table)
         assert write["Key"]["PK"] == "ns123/BUCKET#user-1#gpt-4#0"
         assert "_ws" not in write["UpdateExpression"]
@@ -4931,3 +5275,56 @@ class TestNoReopeningAboveTheCeiling:
         wrote, item = self._on_a_real_table(self._calendar(quota_tk=90_000), credit_milli=None)
         assert wrote is True
         assert int(item["vu"]["N"]) > TUE_1400
+
+
+class TestAggregatorKeepsTopUps:
+    """ADR-149: the aggregator reads ``b_{name}_tu``, keeps it in a quota's
+    ceiling, removes it with a reset or roll, and never clones it."""
+
+    def test_parse_bucket_record_reads_tu(self) -> None:
+        record = TestNewBucketPKParsing()._make_new_pk_record(limits={"rpd": (0, 1000)})
+        record["dynamodb"]["NewImage"]["b_rpd_tu"] = {"N": "3000"}
+        parsed = _parse_bucket_record(record)
+        assert parsed is not None
+        assert parsed.limits["rpd"].topped_up_milli == 3000
+
+    def test_a_reset_removes_the_top_up(self) -> None:
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET)
+        state.limits["rpd"].topped_up_milli = 5_000
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert kwargs["UpdateExpression"].endswith(" REMOVE #tq0")
+        assert kwargs["ExpressionAttributeNames"]["#tq0"] == "b_rpd_tu"
+
+    def test_a_reset_without_a_top_up_removes_nothing(self) -> None:
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        assert "REMOVE" not in table.update_item.call_args.kwargs["UpdateExpression"]
+
+    def test_a_purchase_above_the_grant_is_not_held_over_the_ceiling(self) -> None:
+        """An expired `vu` is re-stamped only while every quota sits within its
+        ceiling (#679); a purchase lifts that ceiling by `tu`."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, rf_ms=WED_0030 - 60_000)
+        state.vu_ms = WED_0030 - 1
+        state.limits["rpd"].tk_milli = 12_000_000  # 2,000 above C // 1
+        state.limits["rpm"] = LimitRefillInfo(
+            tc_delta=5_000_000, tk_milli=0, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=60_000
+        )
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        assert ":new_vu" not in table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        state.limits["rpd"].topped_up_milli = 2_000_000
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":vq0"] == 12_000_000
+
+    def test_a_clone_does_not_copy_the_top_up(self, mock_dynamodb) -> None:
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=1_300_000, shard_count=2, b_rpd_gc=1, b_rpd_tu=300_000)
+        assert propagate_shard_count(table, _doubling_record(table, 1), TUE_1400) == 1
+        clone = _must(table, 1)
+        assert "b_rpd_tu" not in clone
+        assert clone["b_rpd_tk"] == 500_000, "a move of at most one share"
+        assert _must(table, 0)["b_rpd_tu"] == 300_000, "the purchase stays with its shard"

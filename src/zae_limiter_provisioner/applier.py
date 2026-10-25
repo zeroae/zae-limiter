@@ -25,10 +25,13 @@ from zae_limiter.schema import (
     LIMIT_FIELD_RSA,
     LIMIT_FIELD_RSCHED,
     LIMIT_FIELD_SCHED,
+    LIMIT_FIELD_SOFT,
     RESERVED_NAMESPACE,
+    config_limit_names,
     decode_cascade,
     decode_disabled,
     encode_cascade,
+    encode_disabled,
     limit_attr,
     parse_limit_attr,
     pk_entity,
@@ -39,8 +42,10 @@ from zae_limiter.schema import (
 )
 from zae_limiter.version import (
     MIN_READER_VERSION_FOR_CASCADE_POLICY,
+    MIN_READER_VERSION_FOR_NON_ENFORCING,
     MIN_READER_VERSION_FOR_RESET_AFTER,
     cascade_policy_refusal,
+    non_enforcing_refusal,
     ratcheted_client_min_version,
     reads_reset_after,
     reset_after_refusal,
@@ -77,6 +82,10 @@ class ApplyResult:
     # Entity changes whose stored limits it changed (#481). Only these need
     # their buckets' params synced.
     limits_changed: list[Change] = field(default_factory=list)
+    # (level, target, names) of every system- or resource-level change whose
+    # limits' soft-ness it changed (#467). Those levels reach buckets only at
+    # TTL otherwise, so these are restamped by a change-only fan-out.
+    soft_changed: list[tuple[str, str | None, list[str]]] = field(default_factory=list)
 
 
 def _build_limit_item(
@@ -138,6 +147,9 @@ def _build_limit_item(
         reset_after_seconds = decl.get("reset_after_seconds")
         if reset_after_seconds is not None:
             item[attr(LIMIT_FIELD_RSA)] = {"N": str(reset_after_seconds)}
+        # #467: written only for a soft limit, like the client does.
+        if decl.get("soft"):
+            item[attr(LIMIT_FIELD_SOFT)] = {"BOOL": True}
 
     if hoisted_tz is not None:
         item[CONFIG_FIELD_SCHED_TZ] = {"S": hoisted_tz}
@@ -240,6 +252,31 @@ def require_cascade_policy_readers(
         return
     _require_readers(
         table_name, client, MIN_READER_VERSION_FOR_CASCADE_POLICY, cascade_policy_refusal
+    )
+
+
+def require_non_enforcing_readers(
+    changes: list[Change],
+    table_name: str,
+    client: Any | None = None,
+) -> None:
+    """Refuse an apply that stores a soft limit or a bypass the stack cannot keep.
+
+    The ``require_cascade_policy_readers`` contract for ADR-151 (#467, #311):
+    free unless a create/update change declares a ``soft`` limit or
+    ``disabled: bypass``, then the version check and ``client_min_version``
+    ratchet against 0.17.0. Mirrors ``Repository._require_non_enforcing_readers``.
+    """
+    declares = any(
+        (change.data or {}).get("disabled") == "bypass"
+        or any(decl.get("soft") for decl in ((change.data or {}).get("limits") or {}).values())
+        for change in changes
+        if change.action in ("create", "update")
+    )
+    if not declares:
+        return
+    _require_readers(
+        table_name, client, MIN_READER_VERSION_FOR_NON_ENFORCING, non_enforcing_refusal
     )
 
 
@@ -426,10 +463,12 @@ def apply_changes(
             if change.action == "delete":
                 old = _apply_delete(client, table_name, namespace_id, change)
                 _note_changes(result, change, old, {})
+                _note_soft_change(result, change, old)
                 result.deleted += 1
             elif change.action in ("create", "update"):
                 old, new = _apply_set(client, table_name, namespace_id, change)
                 _note_changes(result, change, old, new)
+                _note_soft_change(result, change, old)
                 if change.action == "create":
                     result.created += 1
                 else:
@@ -497,9 +536,9 @@ def _add_flags(extra: dict[str, Any], data: dict[str, Any]) -> None:
     Written only when the manifest declares them: the item is a full-replace
     `PutItem`, so leaving a flag out is how the manifest clears it.
     """
-    disabled = data.get("disabled")
-    if disabled is not None:
-        extra[CONFIG_FIELD_DISABLED] = {"BOOL": bool(disabled)}
+    disabled_attr = encode_disabled(data.get("disabled"))
+    if disabled_attr is not None:
+        extra[CONFIG_FIELD_DISABLED] = disabled_attr
     cascade_attr = encode_cascade(data.get("cascade"))
     if cascade_attr is not None:
         extra[CONFIG_FIELD_CASCADE] = cascade_attr
@@ -533,6 +572,43 @@ def _limit_attrs(item: dict[str, Any]) -> dict[str, Any]:
         for name, value in item.items()
         if name == CONFIG_FIELD_SCHED_TZ or parse_limit_attr(name) is not None
     }
+
+
+def _soft_names(item: dict[str, Any]) -> set[str]:
+    """The limits a stored config item marks soft (#467)."""
+    try:
+        stored = config_limit_names(item)
+    except ValueError:
+        # An unreadable old image errs toward restamping everything it names.
+        return {name for name in item if name.endswith(f"_{LIMIT_FIELD_SOFT}")}
+    return {
+        name
+        for name, windowed in stored.items()
+        if item.get(limit_attr(name, LIMIT_FIELD_SOFT, windowed=windowed), {}).get("BOOL")
+    }
+
+
+def _note_soft_change(result: ApplyResult, change: Change, old: dict[str, Any]) -> None:
+    """Record a system- or resource-level change that changed any limit's soft-ness.
+
+    Entity levels need none: the param sync restamps their buckets whenever
+    the level's limits changed, and soft-ness is one of them. The write's own
+    ``ALL_OLD`` image is the old side, at no extra read.
+    """
+    if change.level not in ("system", "resource"):
+        return
+    new = (
+        {
+            name
+            for name, decl in ((change.data or {}).get("limits") or {}).items()
+            if decl.get("soft")
+        }
+        if change.action != "delete"
+        else set()
+    )
+    changed = _soft_names(old) ^ new
+    if changed:
+        result.soft_changed.append((change.level, change.target, sorted(changed)))
 
 
 def _old_image(response: Any) -> dict[str, Any]:

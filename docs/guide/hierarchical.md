@@ -304,14 +304,63 @@ await limiter.set_limits(
 )
 ```
 
+## Moving an Entity to a New Parent
+
+Use `set_parent()` to move an entity under another parent, for example a user who changes
+organisation, or pass `None` to make it a root entity:
+
+```python
+await limiter.create_entity(entity_id="org-north")
+await limiter.create_entity(entity_id="org-south")
+await limiter.create_entity(entity_id="user-bob", parent_id="org-north", cascade=True)
+
+# Bob changes organisation: his calls now count against org-south
+await limiter.set_parent("user-bob", "org-south")
+
+# Bob no longer has a parent
+await limiter.set_parent("user-bob", None)
+```
+
+The move takes effect on the next acquire in every process:
+
+- **Its buckets are restamped at once.** `set_parent()` returns how many.
+- **Other processes learn it from the next call.** A process that still has the old parent
+  cached debits it once, sees the new parent on the entity's bucket, refunds the old parent and
+  debits the new one in the same call.
+- **A read of the entity from before the move is caught.** When a call's read of the entity is
+  older than its bucket's stamp, the call reads the entity again, strongly consistent, and
+  debits the new parent.
+- **A bucket created while the move lands cannot keep the old parent.** Creating a bucket is
+  one transaction that also checks the entity's record still names the parent it read; if a
+  move landed in between, the acquire re-reads the entity and retries once. This needs
+  `dynamodb:ConditionCheckItem` on the table for every principal that acquires: the policies
+  the CloudFormation template creates grant it, and custom IAM must add it.
+- **Nothing already debited moves.** Usage charged to the old parent stays there, including
+  usage from leases opened before the move: their adjustments and rollbacks land on the old
+  parent, where the tokens were taken.
+- **Cascade follows the policy, not the move.** The new parent is debited wherever the entity
+  cascades — its [cascade policy](#cascade-per-resource), or the `cascade` flag it was created
+  with. A root entity created with `cascade=False` and moved under a parent does not cascade
+  until you set a policy, for example `set_entity_cascade("user-123", True)`.
+
+`set_parent()` raises `EntityNotFoundError` when the entity or the new parent does not exist,
+and `ValidationError` when the move would make the entity its own ancestor. If restamping stops
+part-way it raises `FanoutIncomplete`; the move itself landed, and calling `set_parent()` again
+with the same arguments finishes it. It needs a stack whose Lambdas are 0.17.0 or later
+(`VersionMismatchError` otherwise; run `zae-limiter upgrade`). Restart every client after
+upgrading, before the first move: a process that opened the stack with an older version keeps
+debiting the old parent until it reopens it. Each move is recorded as an
+`entity_parent_changed` [audit event](../infra/auditing.md).
+
 ## Limitations
 
 - **Two levels only**: Parent → Child (no grandparents)
-- **Single parent**: Each entity can have at most one parent
+- **Single parent**: Each entity can have at most one parent at a time; [`set_parent()`](#moving-an-entity-to-a-new-parent) moves it
 - **Cascade defaults per entity**: Set `cascade=True` on `create_entity()` to enable it for every resource; a [cascade policy](#cascade-per-resource) can override it per resource
 
 ## Next Steps
 
+- [Per-Resource Limits and a Shared Budget](per-resource-budgets.md) - Users under organisations, cascade per resource and a per-user budget, end to end
 - [LLM Integration](llm-integration.md) - Token estimation patterns
 - [Unavailability Handling](unavailability.md) - Handling service outages
 - [API Reference](../api/limiter.md) - Complete API documentation
