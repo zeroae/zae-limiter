@@ -235,7 +235,7 @@ Other builder methods: `.stack()`, `.region()`, `.endpoint_url()`, `.namespace()
 
 **When to use `open()` vs `connect()` vs `builder()` vs CLI:**
 - **`open()`**: 90% of users. Application code, prototyping, LocalStack dev. Auto-provisions infrastructure if missing
-- **`connect()`**: Infrastructure managed externally (packaged CloudFormation, Terraform, CDK). Reads only — never provisions, registers, or updates anything
+- **`connect()`**: Infrastructure managed externally (packaged CloudFormation, Terraform, CDK). Reads only — never provisions, registers, or updates anything. Also the entry point for an application role holding **only an acquire policy** (#756): `open()`'s first-time setup (namespace registration, version record) and its Lambda auto-update write items outside `*/BUCKET#*` and are refused under `acq` / `ns-acq`; setup and upgrades run under `full` / `ns-full`
 - **`builder().build()`**: Enterprise deployments needing permission boundaries, custom Lambda config, IAM role naming
 - **CLI**: Strict infra/app separation, audit requirements, Terraform/CDK integration
 

@@ -214,7 +214,13 @@ async with limiter.acquire(
 When infrastructure is owned entirely by your own CloudFormation, Terraform, or
 CDK, use `Repository.connect()`. It reads only — it never creates a stack,
 registers a namespace, writes the version record, or updates the Lambda, so an
-application role needs no CloudFormation or Lambda permissions at all:
+application role needs no CloudFormation or Lambda permissions at all. It is also
+the entry point for an application role that holds **only an acquire policy**:
+since v0.17.0 those policies allow writes to rate-limit buckets only, so `open()`'s
+first-time setup (namespace registration, the version record) and its Lambda
+auto-update are refused for such a role. Run `deploy`, `upgrade` and
+`namespace register` with an operator role (`FullAccessPolicy` /
+`NamespaceFullAccessPolicy`) instead:
 
 ```python
 from zae_limiter import Repository, RateLimiter

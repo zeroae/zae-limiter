@@ -55,6 +55,7 @@ The stack creates three IAM managed policies by default:
 **Best practices:**
 
 - **Attach AcquireOnlyPolicy for applications** - Provides only the permissions needed for rate limiting
+- **Open acquire-only applications with `Repository.connect()`** - Since v0.17.0 the acquire policies write rate-limit buckets only, so `Repository.open()`'s first-time setup (namespace registration, version record) and its Lambda auto-update are refused under them. Run `zae-limiter deploy`, `upgrade` and `namespace register` with an operator role holding `FullAccessPolicy`
 - **Attach FullAccessPolicy for config management** - Separate from application credentials
 - **Attach ReadOnlyPolicy for observability** - Safe access for monitoring systems
 - **Disable with `--no-iam`** - When using existing IAM policies or cross-account access
