@@ -4218,7 +4218,7 @@ class SyncRepository:
             attr_names[soft_alias] = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_SOFT)
             attr_names[soft_cp_alias] = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_CP)
             condition_parts.append(
-                f"(#byp > :vu_now OR ({soft_alias} > :vu_now AND attribute_exists({soft_cp_alias})) OR {tk_alias} >= {thresh_val})"
+                f"(#byp > :vu_now OR ({soft_alias} > :vu_now AND attribute_exists({soft_cp_alias}) AND attribute_exists({tk_alias})) OR {tk_alias} >= {thresh_val})"
             )
             condition_parts.append(
                 f"(attribute_not_exists({soft_alias}) OR {soft_alias} > :vu_now)"

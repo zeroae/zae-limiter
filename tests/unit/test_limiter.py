@@ -11935,6 +11935,45 @@ class TestOverrideMaterialisesItemLimits:
         assert await _stored_tk(repo, "o", "r", "tpm") == 30_000
 
 
+class TestSoftStampNeedsTheBalance:
+    """The fast path admits on a soft stamp only beside the balance (#467, #633).
+
+    The entity-level param sync writes a new limit's `cp` and soft stamp onto
+    an existing bucket but never its `tk`, and stamps `vu = 0` so the next
+    acquire takes the slow pass that seeds it. Anything that clears that `vu`
+    (an `acquire(limits=...)` pass, #744) left the fast path admitting on the
+    stamp beside `cp` alone, and its ADD created a balance nothing granted.
+    """
+
+    async def test_a_soft_limit_with_no_balance_is_seeded_not_debited(self, limiter):
+        repo = limiter._repository
+        soft_daily = Limit.quota("q", 10, cron="0 0 * * *", soft=True)
+        await repo.set_limits("o", [_RPM_1000], resource="r")
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("o", "r", consume={"rpm": 1}):
+            pass
+        await repo.set_limits("o", [_RPM_1000, soft_daily], resource="r")
+        item = await _raw_bucket(repo, "o", "r")
+        assert bucket_attr("q", "cp") in item
+        assert bucket_attr("q", BUCKET_FIELD_TK) not in item
+
+        # What clearing the param sync's `vu = 0` leaves behind.
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={"PK": item["PK"], "SK": item["SK"]},
+            UpdateExpression="REMOVE #vu",
+            ExpressionAttributeNames={"#vu": BUCKET_FIELD_VU},
+        )
+
+        repo._now_ms = lambda: T0 + 1_000
+        async with limiter.acquire("o", "r", consume={"q": 3}):
+            pass
+        assert await _stored_tk(repo, "o", "r", "q") == 7_000
+        item = await _raw_bucket(repo, "o", "r")
+        assert int(item[bucket_attr("q", BUCKET_FIELD_GC)]["N"]) == 1, "seeded, ADR-145 I3"
+
+
 class TestWindowRolloverFansOut:
     """A rollover on one shard reaches the entity's other shards (ADR-140, #624).
 

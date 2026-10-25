@@ -9702,6 +9702,42 @@ class TestOverrideMaterialisesItemLimits:
         assert _stored_tk(repo, "o", "r", "tpm") == 30000
 
 
+class TestSoftStampNeedsTheBalance:
+    """The fast path admits on a soft stamp only beside the balance (#467, #633).
+
+    The entity-level param sync writes a new limit's `cp` and soft stamp onto
+    an existing bucket but never its `tk`, and stamps `vu = 0` so the next
+    acquire takes the slow pass that seeds it. Anything that clears that `vu`
+    (an `acquire(limits=...)` pass, #744) left the fast path admitting on the
+    stamp beside `cp` alone, and its ADD created a balance nothing granted.
+    """
+
+    def test_a_soft_limit_with_no_balance_is_seeded_not_debited(self, sync_limiter):
+        repo = sync_limiter._repository
+        soft_daily = Limit.quota("q", 10, cron="0 0 * * *", soft=True)
+        repo.set_limits("o", [_RPM_1000], resource="r")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("o", "r", consume={"rpm": 1}):
+            pass
+        repo.set_limits("o", [_RPM_1000, soft_daily], resource="r")
+        item = _raw_bucket(repo, "o", "r")
+        assert bucket_attr("q", "cp") in item
+        assert bucket_attr("q", BUCKET_FIELD_TK) not in item
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={"PK": item["PK"], "SK": item["SK"]},
+            UpdateExpression="REMOVE #vu",
+            ExpressionAttributeNames={"#vu": BUCKET_FIELD_VU},
+        )
+        repo._now_ms = lambda: T0 + 1000
+        with sync_limiter.acquire("o", "r", consume={"q": 3}):
+            pass
+        assert _stored_tk(repo, "o", "r", "q") == 7000
+        item = _raw_bucket(repo, "o", "r")
+        assert int(item[bucket_attr("q", BUCKET_FIELD_GC)]["N"]) == 1, "seeded, ADR-145 I3"
+
+
 class TestWindowRolloverFansOut:
     """A rollover on one shard reaches the entity's other shards (ADR-140, #624).
 

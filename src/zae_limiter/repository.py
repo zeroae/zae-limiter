@@ -4996,7 +4996,12 @@ class Repository:
             # the limit's `cp`, because a resource- or system-level soft
             # fan-out stamps every bucket, including one created before the
             # limit existed. On the stamp alone the ADD wrote a `tk` with no
-            # `cp` that no reader sees, and the seed never ran (review D3).
+            # `cp` that no reader sees, and the seed never ran (review D3). It
+            # also needs the balance itself: the entity-level param sync
+            # writes `cp` and the stamp but never `tk` (#633), so beside `cp`
+            # alone the ADD created a balance nothing granted — no seed, no
+            # ADR-145 `gc` — once anything cleared the sync's `vu = 0`
+            # (#744 review, an `acquire(limits=...)` pass).
             soft_alias = f"#o{i}"
             soft_cp_alias = f"#oc{i}"
             attr_names[soft_alias] = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_SOFT)
@@ -5006,7 +5011,8 @@ class Repository:
             # Either stamp admits only before its deadline (ADR-151 decision 8).
             condition_parts.append(
                 f"(#byp > :vu_now OR ({soft_alias} > :vu_now AND attribute_exists("
-                f"{soft_cp_alias})) OR {tk_alias} >= {thresh_val})"
+                f"{soft_cp_alias}) AND attribute_exists({tk_alias})) OR "
+                f"{tk_alias} >= {thresh_val})"
             )
             # An expired soft stamp is sent to the slow path to be renewed or
             # removed; without this, a limit with `tk >= c` would be debited
