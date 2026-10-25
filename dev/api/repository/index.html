@@ -12822,11 +12822,15 @@ therefore debited, never re-seeded.</p>
             <td>
               <div class="doc-md-description">
                 <p>As for :meth:<code>build_composite_normal</code> (#467): these
-soft limits carry no balance condition, and every other limit's
-condition admits on the item's own soft stamp while it is live
-at <code>now_ms</code>. A soft seed carries none either — its soft-ness
-came from config read uncached on this pass. The retry never
-writes a stamp, so an expired one admits nothing here.</p>
+soft limits carry no balance condition, only that the item
+carries their <code>cp</code> and <code>tk</code>; every other limit's condition
+admits on the item's own soft stamp while it is live at
+<code>now_ms</code> — and only beside the limit's <code>cp</code> and <code>tk</code>
+(#771). Either way a limit missing from the item is never
+debited onto a balance nothing granted. A soft seed carries none either —
+its soft-ness came from config read uncached on this pass. The
+retry never writes a stamp, so an expired one admits nothing
+here.</p>
               </div>
             </td>
             <td>
