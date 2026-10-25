@@ -105,14 +105,20 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
     manifest = LimitsManifest.from_dict(manifest_data)
     previous = _read_provisioner_state(table_name, namespace_id)
     # An apply cut short with too many levels to list ahead owes a full one.
-    full = event.get("full") is True or (action != "plan" and previous.get("full_pending", False))
+    # A plan reports it too: it previews what the next apply will do.
+    full = event.get("full") is True or previous.get("full_pending", False)
     declared, changes = _plan_changes(manifest, previous, table_name, namespace_id, full=full)
     unchanged = len(declared) - len(changes)
 
     change_dicts = [{"action": c.action, "level": c.level, "target": c.target} for c in changes]
 
     if action == "plan":
-        return {"status": "planned", "changes": change_dicts, "unchanged": unchanged}
+        return {
+            "status": "planned",
+            "changes": change_dicts,
+            "unchanged": unchanged,
+            "full": full,
+        }
 
     # Apply
     result = _apply_and_record(
@@ -133,6 +139,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "updated": result.updated,
         "deleted": result.deleted,
         "unchanged": unchanged,
+        "full": full,
         "errors": result.errors,
     }
 
@@ -191,6 +198,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "updated": result.updated,
         "deleted": result.deleted,
         "unchanged": unchanged,
+        "full": full,
         "errors": result.errors,
     }
 

@@ -2664,7 +2664,8 @@ class TestChangeOnlyApplyStaysSafe:
         assert sync.call_count == len(entities)
         assert self._record(counting)["full_pending"] is False
 
-    def test_a_plan_does_not_run_in_full(self, counting):
+    def test_a_plan_shows_the_full_apply_an_interrupted_one_left_owed(self, counting):
+        """A plan previews what the next apply does, and that apply runs in full."""
         from zae_limiter_provisioner.handler import _MAX_PENDING_AHEAD
 
         entities = tuple(f"user-{i}" for i in range(_MAX_PENDING_AHEAD + 1))
@@ -2674,8 +2675,24 @@ class TestChangeOnlyApplyStaysSafe:
         ):
             with pytest.raises(TimeoutError):
                 self._apply(self._manifest(entities=entities))
+        counting.calls.clear()
 
         result = self._apply(self._manifest(entities=entities), action="plan")
+
+        assert result["full"] is True
+        assert len(result["changes"]) == len(entities) + 1
+        assert result["unchanged"] == 0
+        # Still read-only: the flag stays for the apply that owes it.
+        assert counting.calls.get("put_item", 0) == counting.calls.get("update_item", 0) == 0
+        assert self._record(counting)["full_pending"] is True
+
+    def test_a_plan_with_nothing_owed_is_change_only(self, counting):
+        manifest = self._manifest()
+        self._apply(manifest)
+
+        result = self._apply(manifest, action="plan")
+
+        assert result["full"] is False
         assert result["changes"] == []
 
     def test_an_entity_carve_out_is_reasserted_too(self, counting):

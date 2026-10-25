@@ -1524,6 +1524,20 @@ class TestLimitsQuietAndUnchanged:
         assert result.exit_code == 0
         assert result.output == "Drift detected: 2 difference(s) (1177 unchanged)\n"
 
+    @pytest.mark.parametrize("command", ["plan", "diff"])
+    def test_a_preview_says_when_the_next_apply_runs_in_full(self, command):
+        """An interrupted apply left a full one owed (`full_pending`)."""
+        response = {**self._APPLIED, "status": "planned", "unchanged": 0, "full": True}
+        result = self._run(command, response, "-q")
+        assert result.exit_code == 0
+        assert "earlier apply was interrupted" in result.output
+        assert "every declared entry" in result.output
+
+    def test_a_preview_with_nothing_owed_says_nothing_more(self):
+        response = {**self._APPLIED, "status": "planned", "full": False}
+        result = self._run("plan", response, "-q")
+        assert result.output == "Plan: 2 change(s) (1177 unchanged)\n"
+
     def test_a_response_without_an_unchanged_count_prints_no_suffix(self):
         """A provisioner predating the count still renders cleanly."""
         response = {k: v for k, v in self._APPLIED.items() if k != "unchanged"}

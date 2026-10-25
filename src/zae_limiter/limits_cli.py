@@ -87,6 +87,7 @@ def limits_plan(
         return
 
     click.echo(f"Plan: {len(changes)} change(s){_unchanged_suffix(result)}")
+    _echo_full_pending(result)
     if quiet:
         return
     click.echo()
@@ -205,6 +206,7 @@ def limits_diff(
         return
 
     click.echo(f"Drift detected: {len(changes)} difference(s){_unchanged_suffix(result)}")
+    _echo_full_pending(result)
     if quiet:
         return
     click.echo()
@@ -418,6 +420,20 @@ def _cascade_warnings(manifest_data: dict[str, Any]) -> list[str]:
         for name, resource in (manifest_data.get("resources") or {}).items()
         if (resource or {}).get("cascade") is True and name not in covered
     ]
+
+
+def _echo_full_pending(result: dict[str, Any]) -> None:
+    """Say why a preview lists every entry: the next apply owes a full one.
+
+    An apply that changed too many levels to list its pending fan-outs
+    records ``full_pending`` instead; if it was interrupted, the next apply
+    rewrites and fans out every declared entry, and the preview shows that.
+    """
+    if result.get("full"):
+        click.echo(
+            "Note: an earlier apply was interrupted before its fan-outs finished, "
+            "so the next apply rewrites and fans out every declared entry."
+        )
 
 
 def _unchanged_suffix(result: dict[str, Any]) -> str:
