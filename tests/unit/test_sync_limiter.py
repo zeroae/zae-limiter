@@ -13807,6 +13807,44 @@ class TestRetryDebitsOnlyAGrantedBalance:
         assert _still_unseeded({key: {"q"}}, {other: seeded}) is False
         assert _still_unseeded({key: {"q"}}, {key: {}, other: seeded}) is True
 
+    def test_only_an_enforced_declared_limit_is_genuinely_short(self):
+        """A shortfall outranks a missing limit's re-plan only on a limit the
+        retry enforced: never the reserved ``wcu``, a trusted soft limit, or one
+        whose image carries a live soft stamp (ADR-151 decision 1)."""
+        from types import SimpleNamespace
+
+        from zae_limiter.sync_lease import _genuinely_short
+
+        def entry(name, *, declared=True, trusted=False):
+            return SimpleNamespace(
+                limit=SimpleNamespace(name=name),
+                consumed=3,
+                _declared=declared,
+                _soft_trusted=trusted,
+                _seed=False,
+                state=SimpleNamespace(soft=trusted),
+            )
+
+        key, now_ms = (("e", "r", 0), 1000)
+
+        def image(name, *, stamp=None):
+            item = {
+                bucket_attr(name, BUCKET_FIELD_CP): {"N": "10000"},
+                bucket_attr(name, BUCKET_FIELD_TK): {"N": "0"},
+            }
+            if stamp is not None:
+                item[bucket_attr(name, "soft")] = {"N": str(stamp)}
+            return item
+
+        def short(group, item):
+            return _genuinely_short([(key, group)], {key: item}, now_ms)
+
+        assert short([entry("rpm")], image("rpm")) is True
+        assert short([entry("wcu", declared=False)], image("wcu")) is False
+        assert short([entry("tpm", trusted=True)], image("tpm")) is False
+        assert short([entry("tpm")], image("tpm", stamp=now_ms + 1)) is False
+        assert short([entry("tpm")], image("tpm", stamp=now_ms)) is True
+
     def test_a_cascading_childs_seed_is_replanned(self, sync_limiter):
         """A cascade commits child and parent in one transaction: the child's
         lost lock rolls both back, its retry finds its soft quota missing, and
