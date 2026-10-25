@@ -490,14 +490,16 @@ class TestLimitsCfnTemplateFullApply:
 
     @patch("zae_limiter_provisioner.handler._apply_and_record")
     @patch("zae_limiter_provisioner.handler._plan_changes", return_value=([], []))
+    @patch("zae_limiter_provisioner.handler.read_pending", return_value=[])
+    @patch("zae_limiter_provisioner.handler.boto3")
     @patch("zae_limiter_provisioner.handler._read_provisioner_state", return_value={})
-    def test_the_provisioner_reads_it_as_a_full_apply(self, _state, plan, _apply):
+    def test_the_provisioner_reads_it_as_a_full_apply(self, _state, _boto3, _pending, plan, _a):
         from zae_limiter_provisioner.handler import on_event
 
         props = {**self._props("--full"), "NamespaceId": "ns123"}
         on_event({"RequestType": "Update", "ResourceProperties": props}, MagicMock())
 
-        assert plan.call_args.kwargs == {"full": True}
+        assert plan.call_args.kwargs["full"] is True
 
 
 class TestLimitsCfnTemplateCascade:

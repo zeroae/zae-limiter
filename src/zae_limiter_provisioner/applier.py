@@ -343,6 +343,8 @@ def drop_unchanged(
     table_name: str,
     namespace_id: str,
     client: Any | None = None,
+    *,
+    stored_out: dict[int, dict[str, Any]] | None = None,
 ) -> list[Change]:
     """The changes that would actually change the table.
 
@@ -368,6 +370,11 @@ def drop_unchanged(
     timezones on one item) or whose read fails is kept too, so
     ``apply_changes`` reports it or writes it as before: nothing is dropped
     without the stored item proving it redundant.
+
+    ``stored_out``, when given, receives the live item read for each change
+    (keyed by ``id(change)``, ``{}`` when absent), so the caller can tell
+    which fan-outs a kept change will need before writing it
+    (``fanouts_needed``). A change with no entry was not read.
     """
     candidates: list[tuple[int, tuple[str, str], dict[str, Any]]] = []
     for i, change in enumerate(changes):
@@ -395,7 +402,8 @@ def drop_unchanged(
             logger.warning("Could not read %s %s, writing it: %s", key[0], key[1], e)
             return None
         item = response.get("Item") if isinstance(response, dict) else None
-        return item if isinstance(item, dict) else None
+        # Absent is {}: a create, whose old side is known to be empty.
+        return item if isinstance(item, dict) else {}
 
     workers = min(_READ_WORKERS, len(candidates))
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -406,6 +414,10 @@ def drop_unchanged(
         for (i, _key, item), live in zip(candidates, stored, strict=True)
         if live is not None and _normalized(live) == _normalized(item)
     }
+    if stored_out is not None:
+        for (i, _key, _item), live in zip(candidates, stored, strict=True):
+            if live is not None:
+                stored_out[id(changes[i])] = live
     return [change for i, change in enumerate(changes) if i not in unchanged]
 
 
@@ -555,14 +567,49 @@ def _note_changes(
     a level whose own value is unchanged cannot change the answer. A level
     above or below that did change is its own change, with its own fan-out.
     """
-    if change.target is None:
-        return
-    if decode_cascade(old) != decode_cascade(new):
+    kinds = fanouts_for(change, old, new)
+    if "cascade" in kinds:
+        assert change.target is not None
         result.cascade_changed.append((change.level, change.target))
-    if decode_disabled(old) != decode_disabled(new):
+    if "disabled" in kinds:
         result.disabled_changed.append(change)
-    if change.level == "entity" and _limit_attrs(old) != _limit_attrs(new):
+    if "sync" in kinds:
         result.limits_changed.append(change)
+
+
+def fanouts_for(change: Change, old: dict[str, Any], new: dict[str, Any]) -> set[str]:
+    """The bucket fan-outs (``disabled``, ``cascade``, ``sync``) a write from ``old`` to
+    ``new`` makes necessary. System-level writes need none of the three."""
+    if change.target is None:
+        return set()
+    kinds: set[str] = set()
+    if decode_cascade(old) != decode_cascade(new):
+        kinds.add("cascade")
+    if decode_disabled(old) != decode_disabled(new):
+        kinds.add("disabled")
+    if change.level == "entity" and _limit_attrs(old) != _limit_attrs(new):
+        kinds.add("sync")
+    return kinds
+
+
+def fanouts_needed(namespace_id: str, change: Change, stored: dict[str, Any] | None) -> set[str]:
+    """The fan-outs a change will need, predicted before it is written.
+
+    From the live item ``drop_unchanged`` read (``stored``); with none — a
+    delete, an unread or unbuildable item — every fan-out the level can have,
+    since the old side is unknown. The write's own ``ALL_OLD`` image remains
+    the authority (``apply_changes``): this only decides what to record ahead.
+    """
+    if change.target is None:
+        return set()
+    every = {"disabled", "cascade"} | ({"sync"} if change.level == "entity" else set())
+    if stored is None or change.action not in ("create", "update"):
+        return every
+    try:
+        _pk, _sk, new = _build_change_item(namespace_id, change)
+    except Exception:
+        return every
+    return fanouts_for(change, stored, new)
 
 
 def _limit_attrs(item: dict[str, Any]) -> dict[str, Any]:
