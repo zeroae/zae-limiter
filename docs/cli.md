@@ -324,10 +324,21 @@ change.
 Pass `--quiet` / `-q` to `plan`, `apply` or `diff` to print only the summary line, without a
 line per changed entry. Errors are still printed.
 
-Entries that declare `disabled` (kill switches and carve-outs) are re-checked on every apply
-even when unchanged, so a bucket created while an earlier disable was being applied is still
-stamped. Limit changes are not re-checked: `limits apply --full` rewrites every declared entry
-and pushes its limits to existing buckets again, as every apply did before change-only applies.
+Entries that declare `disabled` (kill switches and carve-outs, `bypass` included) are
+re-checked on every apply even when unchanged, so a bucket created while an earlier disable was
+being applied is still stamped. Limit changes are not re-checked: a bucket whose limits were
+changed out of band while its config entry still matches the manifest is not repaired by a
+plain apply. `limits apply --full` rewrites every declared entry and pushes its limits to
+existing buckets again, as every apply did before change-only applies. A change to `soft` alone,
+or to `disabled: bypass` alone, is a change like any other: it is written and fanned out.
+
+When an apply that changes more than 100 entries is interrupted (a Lambda timeout), the next
+apply runs in full. `plan` and `diff` show that too, listing every declared entry under a note:
+
+```
+Plan: 1201 change(s)
+Note: an earlier apply was interrupted before its fan-outs finished, so the next apply rewrites and fans out every declared entry.
+```
 
 ### Detect Drift
 
@@ -359,6 +370,11 @@ aws cloudformation deploy \
 
 The generated template uses `Custom::ZaeLimiterLimits` backed by the provisioner Lambda. The Lambda ARN is imported from the main stack via `Fn::ImportValue`.
 
+A stack update applies only the entries that changed, like `limits apply`. Pass `--full` to emit
+`FullApply: true` on the resource, the stack's equivalent of `limits apply --full`.
+CloudFormation calls the resource only when a property changes, so adding `FullApply` is what
+runs the full apply; while it stays set, every update is a full one.
+
 ### Common Options
 
 | Option | Short | Description |
@@ -369,7 +385,7 @@ The generated template uses `Custom::ZaeLimiterLimits` backed by the provisioner
 | `--endpoint-url` | | Custom endpoint URL (e.g., LocalStack) |
 | `--namespace` | `-N` | Namespace (default: `"default"`) |
 | `--quiet` | `-q` | Print only the summary, not a line per changed entry (`plan`, `apply`, `diff`) |
-| `--full` | | Rewrite and fan out every declared entry, not only changed ones (`apply`) |
+| `--full` | | Rewrite and fan out every declared entry, not only changed ones (`apply`); emit `FullApply: true` (`cfn-template`) |
 
 ### Partial Failures
 

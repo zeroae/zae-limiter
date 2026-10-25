@@ -791,6 +791,18 @@ namespace, or update the Lambdas. They exit 1 when the stack or namespace is mis
 the stack's Lambdas are behind the client — run `zae-limiter upgrade -n my-app` first. `apply`
 registers a new namespace itself (see [Read-Only Commands](../cli.md#read-only-commands)).
 
+An apply writes only the entries whose stored config differs from the manifest, and fans out
+to live bucket items only what those writes changed, so a one-line edit to a large manifest
+costs one entry. Two consequences matter in operation:
+
+- A bucket item edited out of band while its config entry still matches is not repaired by a
+  plain apply. `limits apply --full` (or `FullApply: true` on the CloudFormation resource, below)
+  rewrites and fans out every declared entry.
+- An apply that changes more than 100 entries and is interrupted (a Lambda timeout) leaves the
+  next apply to run in full. `plan` and `diff` say so and list every entry.
+
+See [Declarative Limits](../cli.md#declarative-limits) for the details.
+
 The provisioner tracks which items it manages in a `#PROVISIONER` state record. When you remove an item from the manifest and re-apply, the provisioner deletes it from DynamoDB. Items created outside the manifest (via `set-defaults` or `set-limits` CLI commands) are not affected.
 
 ### Multi-Namespace
@@ -844,6 +856,13 @@ Resources:
 `Entities` entries; omitting one clears it, as in the manifest. A `Cascade` or `Disabled` under
 `System` fails the stack operation.
 
+A stack update applies only the entries that changed. Set `FullApply: true` on the resource
+(`limits cfn-template --full` emits it) for the equivalent of `limits apply --full`.
+CloudFormation calls a custom resource only when one of its properties changes, so re-running an
+unchanged stack update does nothing; adding `FullApply` is itself the change that triggers the
+full apply. While it stays set, every update is a full one. Any value other than `true` or
+`false` fails the stack operation before anything is written.
+
 This approach lets you manage limits alongside other infrastructure in CloudFormation, with full lifecycle support (Create, Update, Delete).
 
 !!! warning "A partial apply succeeds; it does not roll the stack back"
@@ -855,8 +874,9 @@ This approach lets you manage limits alongside other infrastructure in CloudForm
 
     A successful stack update is therefore not proof that every bucket was reached. Check
     `errors` in the response data, or the `{stack}-limits-provisioner` log group, which records
-    the same list. Every write is idempotent, so re-running the same stack update reconciles the
-    remainder. The `#PROVISIONER` record is written on both outcomes, so it always describes the
+    the same list. Every write is idempotent, and a failed fan-out is retried by the next
+    update; since an unchanged stack update never reaches the resource, add or toggle
+    `FullApply` to run one. The `#PROVISIONER` record is written on both outcomes, so it always describes the
     config that is actually in the table.
 
     A failure writing that record *is* reported as FAILED: it is the last step, nothing after
