@@ -16086,6 +16086,49 @@ class TestRetryDebitsOnlyAGrantedBalance:
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "7000"
         assert item[bucket_attr("q", BUCKET_FIELD_GC)]["N"] == "1"
 
+    async def test_a_trusted_soft_seed_still_carries_the_retrys_condition(self, limiter):
+        """The seeding pass reads config fresh, so its soft quota is trusted
+        (`_soft_trusted`), and a trusted soft limit carries no balance
+        condition in the retry at all. A seed is never handed over as trusted:
+        its debit gets the `cp`/`tk` waiver and fails, so the redo seeds it."""
+        from zae_limiter.lease import Lease
+
+        quota = Limit.quota("q", 10, cron="0 0 * * *", soft=True)
+        repo = await self._with_quota_added(limiter, "trust", quota)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        real_retry = repo.build_composite_retry
+        calls: list[frozenset[str]] = []
+
+        def spy(*args, **kwargs):
+            calls.append(kwargs.get("soft_trusted", frozenset()))
+            return real_retry(*args, **kwargs)
+
+        real_commit = Lease._commit_initial
+        trusted_seeds: list[bool] = []
+
+        async def commit(lease):
+            trusted_seeds.extend(
+                e._soft_trusted for e in lease.entries if e._seed and e.limit.name == "q"
+            )
+            return await real_commit(lease)
+
+        raced, undo = await self._lose_the_rf_lock(repo, "trust")
+        try:
+            with (
+                patch.object(repo, "build_composite_retry", spy),
+                patch.object(Lease, "_commit_initial", commit),
+            ):
+                async with slow.acquire("trust", "r", {"rpm": 1, "q": 3}):
+                    pass
+        finally:
+            undo()
+        assert raced == [1]
+        assert trusted_seeds and trusted_seeds[0] is True, "the seed was trusted soft"
+        assert calls and all("q" not in trusted for trusted in calls)
+        item = await _raw_bucket(repo, "trust", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "7000"
+        assert item[bucket_attr("q", BUCKET_FIELD_GC)]["N"] == "1"
+
     async def test_a_hard_quota_is_seeded_not_rejected(self, limiter):
         quota = Limit.quota("q", 10, cron="0 0 * * *")
         repo = await self._with_quota_added(limiter, "hard", quota)
