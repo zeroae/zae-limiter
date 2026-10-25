@@ -6149,7 +6149,13 @@ class TestSpeculativeAcquire:
             pass
 
     async def test_speculative_config_changed_fallback(self, limiter):
-        """Falls back to slow path when limit is missing from bucket (config change)."""
+        """Falls back to slow path when limit is missing from bucket (config change).
+
+        The clock is frozen before anything is written (#769): the mocked
+        failure image below is stamped with the same instant every later read
+        and write observes, however long a loaded host takes between them.
+        """
+        freeze_clock(limiter._repository)
         await limiter.create_entity("entity-1")
         # Set both rpm and tpm so slow path can resolve them
         await limiter.set_system_defaults(
@@ -6161,7 +6167,7 @@ class TestSpeculativeAcquire:
             pass
 
         limiter._speculative_writes = True
-        now_ms = int(__import__("time").time() * 1000)
+        now_ms = limiter._repository._now_ms()
 
         # Mock: old_buckets only has "rpm" but request also needs "tpm"
         old_bucket_rpm_only = BucketState(
