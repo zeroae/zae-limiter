@@ -2688,3 +2688,141 @@ class TestChangeOnlyApplyStaysSafe:
         self._apply(manifest)
 
         assert "disabled" not in self._bucket(counting, "user-0")
+
+
+class TestChangeOnlyApplyNonEnforcing:
+    """Soft limits and `disabled: bypass` (ADR-151) under the change-only apply."""
+
+    TABLE = "prov-change-only-non-enforcing"
+
+    @pytest.fixture
+    def counting(self, mock_dynamodb):
+        import boto3
+
+        from zae_limiter.sync_repository import SyncRepository
+
+        setup = SyncRepository(name=self.TABLE, region="us-east-1", _skip_deprecation_warning=True)
+        setup.create_table()
+        setup.close()
+        client = _CountingClient(boto3.client("dynamodb", region_name="us-east-1"))
+        with (
+            patch("boto3.client", return_value=client),
+            # The 0.17.0 gate needs a version record; its own tests cover it.
+            patch("zae_limiter_provisioner.handler.require_non_enforcing_readers"),
+        ):
+            yield client
+
+    def _apply(self, manifest, action="apply"):
+        return on_event(
+            {
+                "action": action,
+                "table_name": self.TABLE,
+                "namespace_id": "ns123",
+                "manifest": manifest,
+            },
+            MagicMock(),
+        )
+
+    @staticmethod
+    def _manifest(*, resource_soft=False, entity_soft=False, resource_disabled=None):
+        resource: dict = {"limits": {"rpm": {"capacity": 1000, "soft": resource_soft}}}
+        if resource_disabled is not None:
+            resource["disabled"] = resource_disabled
+        entity = {"limits": {"rpm": {"capacity": 10, "soft": entity_soft}}}
+        return {
+            "namespace": "test-ns",
+            "resources": {"gpt-4": resource},
+            "entities": {"user-0": {"resources": {"gpt-4": entity}}},
+        }
+
+    def _put_bucket(self, client, entity_id, **extra):
+        from zae_limiter.schema import gsi2_pk_resource, gsi2_sk_bucket, gsi3_pk_entity
+
+        item = {
+            "PK": {"S": f"ns123/BUCKET#{entity_id}#gpt-4#0"},
+            "SK": {"S": "#STATE"},
+            "GSI2PK": {"S": gsi2_pk_resource("ns123", "gpt-4")},
+            "GSI2SK": {"S": gsi2_sk_bucket(entity_id, 0)},
+            "GSI3PK": {"S": gsi3_pk_entity("ns123", entity_id)},
+            "GSI3SK": {"S": "BUCKET#gpt-4#0"},
+            "b_rpm_cp": {"N": "10000"},
+            "b_rpm_ra": {"N": "10000"},
+            "b_rpm_rp": {"N": "60"},
+            "b_rpm_tk": {"N": "10000"},
+            "rf": {"N": "1"},
+            **extra,
+        }
+        client.put_item(TableName=self.TABLE, Item=item)
+
+    def _bucket(self, client, entity_id):
+        return client.get_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": f"ns123/BUCKET#{entity_id}#gpt-4#0"}, "SK": {"S": "#STATE"}},
+        )["Item"]
+
+    def test_a_resource_change_of_only_soft_is_applied_and_fanned_out(self, counting):
+        self._apply(self._manifest())
+
+        with patch("zae_limiter_provisioner.handler.fanout_soft") as fanout:
+            result = self._apply(self._manifest(resource_soft=True))
+
+        assert result["changes"] == [{"action": "update", "level": "resource", "target": "gpt-4"}]
+        fanout.assert_called_once()
+        assert fanout.call_args.args[3:] == ("gpt-4", {"rpm"})
+
+    def test_an_entity_change_of_only_soft_restamps_its_buckets(self, counting):
+        self._apply(self._manifest())
+        self._put_bucket(counting, "user-0")
+
+        result = self._apply(self._manifest(entity_soft=True))
+
+        assert result["changes"] == [
+            {"action": "update", "level": "entity", "target": "user-0/gpt-4"}
+        ]
+        assert "N" in self._bucket(counting, "user-0")["b_rpm_soft"]
+
+    def test_an_unchanged_soft_level_fans_out_nothing(self, counting):
+        self._apply(self._manifest(resource_soft=True, entity_soft=True))
+        counting.calls.clear()
+
+        with patch("zae_limiter_provisioner.handler.fanout_soft") as fanout:
+            result = self._apply(self._manifest(resource_soft=True, entity_soft=True))
+
+        assert result["changes"] == []
+        fanout.assert_not_called()
+        assert counting.calls.get("query", 0) == 0
+
+    def test_a_change_to_bypass_alone_restamps_the_buckets(self, counting):
+        self._apply(self._manifest(resource_disabled=True))
+        self._put_bucket(counting, "user-0", disabled={"BOOL": True})
+
+        result = self._apply(self._manifest(resource_disabled="bypass"))
+
+        assert result["changes"] == [{"action": "update", "level": "resource", "target": "gpt-4"}]
+        bucket = self._bucket(counting, "user-0")
+        assert "disabled" not in bucket
+        assert "N" in bucket["bypass"]
+
+    def test_a_reasserted_bypass_stamps_only_a_missed_bucket(self, counting):
+        manifest = self._manifest(resource_disabled="bypass")
+        self._apply(manifest)
+        self._put_bucket(counting, "user-0", bypass={"N": "1"})  # stamped, even if expired
+        self._put_bucket(counting, "user-1")  # missed by the fan-out's discovery
+        counting.calls.clear()
+
+        result = self._apply(manifest)
+
+        assert result["changes"] == []
+        assert self._bucket(counting, "user-0")["bypass"] == {"N": "1"}
+        assert "N" in self._bucket(counting, "user-1")["bypass"]
+        assert counting.calls.get("update_item", 0) == 1
+
+    def test_the_non_enforcing_gate_sees_unchanged_entries(self, counting):
+        manifest = self._manifest(resource_soft=True)
+        self._apply(manifest)
+
+        with patch("zae_limiter_provisioner.handler.require_non_enforcing_readers") as gate:
+            result = self._apply(manifest)
+
+        assert result["changes"] == []
+        assert {c.target for c in gate.call_args.args[0]} == {"gpt-4", "user-0/gpt-4"}

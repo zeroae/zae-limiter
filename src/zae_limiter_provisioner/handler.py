@@ -475,6 +475,13 @@ def _fanout_soft_changes(
     Change-only, from each write's own ``ALL_OLD`` image (``ApplyResult.soft_changed``),
     so a routine apply writes no bucket. Mirrors ``Repository._fanout_soft``;
     failures are returned, like the disable fan-out's.
+
+    Unlike the disable fan-out it is not written ahead into ``fanout_pending``,
+    and a failure is not retried: a soft stamp carries a deadline (ADR-151
+    decision 8). A stamp a lost fan-out failed to remove waives its limit for at
+    most ``STAMP_TTL_SECONDS``, and a stamp it failed to set is set by the next
+    slow pass that reads the config fresh. A missing ``disabled`` stamp has no
+    such deadline, which is why that fan-out is written ahead.
     """
     errors: list[str] = []
     if not changed:
