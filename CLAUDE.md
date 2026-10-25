@@ -2005,7 +2005,11 @@ exact. User guide: `docs/guide/soft-limits-and-bypass.md`. Design:
   (`ADD tc` + `wcu`, condition `#byp > :now`, no `vu` guard); an enforce-shaped write
   on a bypassed item is admitted by the `#byp > :now` OR terms and refunded (a self-trimming
   `tk`-only credit, `lease.write_credit(counter=False)`, once per process per pair; a bypassed
-  lease's own `tc`-only adjustments carry no ceiling, since a counter credit admits nothing);
+  lease's own `tc`-only adjustments carry no ceiling, since a counter credit admits nothing;
+  **residual:** the `#byp` term does not test `tk`, so on an item holding a limit's `cp` but no
+  `tk` (the entity-level param sync's shape, #633) that write and its refund leave `tk = 0`
+  with no `gc`, and once bypass clears the limit reads as spent rather than seeded — a quota
+  under-admits until its next reset, never over);
   a cleared bypass fails the bypass shape and is
   re-written enforced. `wcu` is never bypassed (`_deserialize_composite_bucket` keeps it hard),
   so shard doubling works unchanged. Slow path: bypass needs uncached config **and** the item's
