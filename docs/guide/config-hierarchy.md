@@ -271,6 +271,9 @@ With this setup:
 | Enterprise | gpt-4 | 500 | 100,000 | Entity resource-specific |
 | Enterprise | gpt-3.5-turbo | 20 | 5,000 | Resource default |
 
+For plans that also carry a shared budget, and what upgrades, downgrades and purchases do
+mid-period, see [Per-Resource Limits and a Shared Budget](per-resource-budgets.md#plans).
+
 ## System Config: on_unavailable
 
 The `on_unavailable` setting controls behavior when DynamoDB is unreachable:

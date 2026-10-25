@@ -478,7 +478,7 @@ The stack creates three managed IAM policies by default for different access pat
 
 | Policy | Suffix | Use Case | DynamoDB Permissions |
 |--------|--------|----------|---------------------|
-| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, ConditionCheckItem, PutItem, UpdateItem |
+| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, ConditionCheckItem; PutItem, UpdateItem on bucket items only |
 | `FullAccessPolicy` | `-full` | Ops teams managing config | All of the above + DeleteItem, BatchWriteItem, Scan, DescribeTable |
 | `ReadOnlyPolicy` | `-read` | Monitoring and dashboards | GetItem, BatchGetItem, Query, Scan, DescribeTable |
 
@@ -509,6 +509,29 @@ The stack creates three managed IAM policies by default for different access pat
     (and refuses a change that would replace or remove a resource), so run it on each
     stack before rolling out v0.17.0 clients. Custom IAM modelled on the old policies
     must add both actions.
+
+!!! warning "The acquire policies write bucket items only, from v0.17.0"
+    `AcquireOnlyPolicy` and `NamespaceAcquirePolicy` grant `PutItem` and `UpdateItem`
+    only where the partition key is a bucket's (`dynamodb:LeadingKeys` `*/BUCKET#*`, and
+    `{namespace id}/BUCKET#*` for the namespace policy), because every write `acquire()`
+    makes is a bucket write (#756). A principal holding only an acquire policy can no
+    longer write config, entity records, audit events, the namespace registry or the
+    version record: `create_entity()`, `set_limits()`, `set_resource_defaults()`,
+    `reset_bucket()`, `top_up()` and a first-time `Repository.open()` (which registers the
+    namespace and writes the version record) are refused with `AccessDeniedException`.
+    Those are operator actions: give them `FullAccessPolicy` or
+    `NamespaceFullAccessPolicy`. It is least privilege, not a boundary: a principal that
+    may acquire can still raise its own buckets' balances with a direct write (ADR-149).
+
+!!! warning "`NamespaceFullAccessPolicy` gains `BatchWriteItem` in v0.17.0"
+    `delete_entity()` deletes with `BatchWriteItem`, which the policy did not grant, so a
+    principal holding only `NamespaceFullAccessPolicy` got `AccessDeniedException` from it
+    (#742). `dynamodb:LeadingKeys` is checked on every item of a `BatchWriteItem`
+    ([AWS docs](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/specifying-conditions.html)),
+    so it can put or delete only the items the policy's `PutItem` and `DeleteItem` already
+    reach: the namespace's own (`{id}/…`), the bare namespace ID, and the shared `_/` prefix
+    (the namespace registry). It adds no reach. Run `zae-limiter upgrade` on an existing
+    stack to apply it; custom IAM modelled on the policy must add the action.
 
 ### Enabling/Disabling IAM Resources
 

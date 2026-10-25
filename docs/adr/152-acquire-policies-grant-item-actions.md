@@ -2,7 +2,7 @@
 
 **Status:** Proposed (accepted at the v0.17.0 release)
 **Date:** 2026-10-20
-**Issue:** [#750](https://github.com/zeroae/zae-limiter/issues/750)
+**Issue:** [#750](https://github.com/zeroae/zae-limiter/issues/750), [#756](https://github.com/zeroae/zae-limiter/issues/756)
 **Supersedes:** [ADR-124](124-policy-rename-clarity.md) on acceptance (its permission matrix only; the policy names stand)
 **Related:** [ADR-117](117-managed-policies-by-default.md), [ADR-150](150-move-entity-to-new-parent.md)
 
@@ -43,13 +43,17 @@ item actions (`GetItem`, `BatchGetItem`, `Query`, `ConditionCheckItem`, `PutItem
 | `Scan` | ✅ | ❌ | ✅ |
 | `DescribeTable` | ✅ | ❌ | ✅ |
 | `ConditionCheckItem` | ❌ | ✅ | ✅ |
-| `PutItem` | ❌ | ✅ | ✅ |
-| `UpdateItem` | ❌ | ✅ | ✅ |
+| `PutItem` | ❌ | ✅ bucket items | ✅ |
+| `UpdateItem` | ❌ | ✅ bucket items | ✅ |
 | `DeleteItem` | ❌ | ❌ | ✅ |
 | `BatchWriteItem` | ❌ | ❌ | ✅ |
 
 `-acq` gains `PutItem` and `UpdateItem`; `-ns-acq` gains `PutItem`. An acquire policy must grant
-every item action `acquire()` issues, whether alone or inside a transaction.
+every item action `acquire()` issues, whether alone or inside a transaction, and must grant
+`PutItem` and `UpdateItem` on bucket items only: `dynamodb:LeadingKeys` `*/BUCKET#*` (and
+`{namespace id}/BUCKET#*` for `-ns-acq`), with `Null` false on the key. Every write `acquire()`
+issues is a bucket item, whose partition key is `{ns}/BUCKET#…`; namespace and entity ids contain
+no `/` or `#`, so no other item matches.
 
 ## Consequences
 
@@ -59,11 +63,12 @@ every item action `acquire()` issues, whether alone or inside a transaction.
 - The matrix states what AWS actually evaluates, and a real-AWS test pins it.
 
 **Negative:**
-- `-acq` can now `PutItem` / `UpdateItem` any item in the table, not only buckets: IAM cannot
-  tell a bucket item from a config item. It still has no `DeleteItem`, `Scan` or
-  `BatchWriteItem`.
-- `-ns-acq` can likewise write any item in its own namespace; `LeadingKeys` still keeps it out
-  of other namespaces, and it still reads only from the reserved `_` prefix.
+- A principal holding only an acquire policy cannot create entities, set limits, reset or top
+  up a bucket, or register a namespace on a first `Repository.open()`: those write config,
+  entity, audit, registry or version items, which are operator actions (`-full`, `-ns-full`).
+  Breaking for an application that did them with an acquire policy alone.
+- Least privilege, not a boundary: a principal that may acquire still writes its own bucket
+  items, so it can raise their balances with a direct write (ADR-149).
 
 ## Alternatives Considered
 
@@ -71,9 +76,11 @@ every item action `acquire()` issues, whether alone or inside a transaction.
 Rejected because: a policy named for `acquire()` that cannot run `acquire()` is the misleading
 name ADR-124 set out to remove.
 
-### Restrict the new write actions to bucket items with a `LeadingKeys` pattern
-Rejected because: a bucket's partition key begins with the opaque namespace id, so a table-level
-pattern cannot single out buckets, and `LeadingKeys` matches only the partition key.
+### Grant the write actions on every item
+Rejected because: it lets an application role write config, entity records, audit events and
+the version record (#756). This ADR first rejected the bucket-only pattern on the belief that a
+table-level pattern cannot single out buckets; `*/BUCKET#*` does, since `LeadingKeys` patterns
+match across the namespace id.
 
 ### Route every `acquire()` write through `TransactWriteItems`
 Rejected because: AWS authorises a transaction's items by the same per-item actions, so it would

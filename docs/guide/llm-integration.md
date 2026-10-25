@@ -271,5 +271,6 @@ async def smart_retry_llm_call(entity_id: str, messages: list):
 
 ## Next Steps
 
+- [Per-Resource Limits and a Shared Budget](per-resource-budgets.md) - A worked example: per-model limits, one cost budget across models, plans and organisations
 - [Unavailability Handling](unavailability.md) - Handling service outages
 - [API Reference](../api/limiter.md) - Complete API documentation

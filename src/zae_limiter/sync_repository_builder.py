@@ -13,6 +13,7 @@ from .exceptions import NamespaceNotFoundError
 from .limiter import OnUnavailable as OnUnavailable
 from .naming import resolve_stack_name
 from .rejection_cache import DEFAULT_REJECTION_CACHE_SIZE, DEFAULT_REJECTION_CACHE_TTL
+from .schema import DEFAULT_STAMP_TTL_SECONDS, validate_stamp_ttl
 
 if TYPE_CHECKING:
     from .models import OnUnavailableAction, StackOptions
@@ -37,6 +38,7 @@ class SyncRepositoryBuilder:
         self._config_cache_ttl = 60
         self._rejection_cache_ttl: float = DEFAULT_REJECTION_CACHE_TTL
         self._rejection_cache_size = DEFAULT_REJECTION_CACHE_SIZE
+        self._stamp_ttl: float = DEFAULT_STAMP_TTL_SECONDS
         self._auto_update = True
         self._bucket_ttl_multiplier = 7
         self._on_unavailable: OnUnavailableAction | None = None
@@ -85,6 +87,20 @@ class SyncRepositoryBuilder:
     def rejection_cache_size(self, entries: int) -> "SyncRepositoryBuilder":
         """Set the maximum number of cached bucket states (default: 10,000)."""
         self._rejection_cache_size = entries
+        return self
+
+    def stamp_ttl(self, seconds: float) -> "SyncRepositoryBuilder":
+        """Set how long a ``bypass`` or soft stamp this repository writes stands.
+
+        Default 60 seconds, at least 10 (ADR-151 decision 8). A stamp a
+        fan-out missed keeps its old meaning for at most this long after the
+        config read that justified it; the price is one slow pass per
+        bypassed or soft bucket shard per ``stamp_ttl`` to renew it.
+
+        Raises:
+            ValueError: ``seconds`` is below 10.
+        """
+        self._stamp_ttl = validate_stamp_ttl(seconds)
         return self
 
     def auto_update(self, enabled: bool) -> "SyncRepositoryBuilder":
@@ -276,6 +292,7 @@ class SyncRepositoryBuilder:
             config_cache_ttl=self._config_cache_ttl,
             rejection_cache_ttl=self._rejection_cache_ttl,
             rejection_cache_size=self._rejection_cache_size,
+            stamp_ttl=self._stamp_ttl,
             _skip_deprecation_warning=True,
             parallel_mode=self._parallel_mode,
         )

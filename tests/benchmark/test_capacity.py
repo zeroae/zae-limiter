@@ -728,6 +728,91 @@ class TestSpeculativeCapacity:
         assert capacity_counter.put_item == 0, "Should not use PutItem"
         assert len(capacity_counter.transact_write_items) == 0, "Should not use TransactWriteItems"
 
+    def test_soft_limit_in_debt_is_still_one_write_and_no_reads(
+        self, sync_limiter, capacity_counter
+    ):
+        """#467: an exhausted soft limit is admitted by the same single write.
+
+        The server decides soft-ness from the item's own stamp, so the client
+        reads nothing to know it: 0 RCU + 1 WCU, exactly the hard success path.
+        The limit is stored config: only config stamps the bucket (ADR-151).
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000), Limit.per_minute("tpm", 100, soft=True)]
+        sync_limiter._repository.set_resource_defaults("api", limits)
+        with sync_limiter.acquire(
+            entity_id="spec-soft", resource="api", consume={"rpm": 1, "tpm": 100}
+        ):
+            pass
+        sync_limiter._speculative_writes = True
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="spec-soft", resource="api", consume={"rpm": 1, "tpm": 500}
+            ) as lease:
+                pass
+
+        assert lease.overdrawn == ["tpm"]
+        assert len(capacity_counter.batch_get_item) == 0
+        assert capacity_counter.update_item == 1
+        assert capacity_counter.put_item == 0
+        assert len(capacity_counter.transact_write_items) == 0
+
+    def test_a_soft_override_takes_the_slow_path_and_is_admitted(
+        self, sync_limiter, capacity_counter
+    ):
+        """Review D11: an `acquire(limits=...)` override stamps nothing (it is
+        not config), so the fast path would read its soft limit hard and
+        reject on it. The request skips the fast path: one slow pass, admitted
+        into debt."""
+        limits = [Limit.per_minute("rpm", 1_000_000), Limit.per_minute("tpm", 100, soft=True)]
+        with sync_limiter.acquire(
+            entity_id="spec-soft-o", resource="api", limits=limits, consume={"rpm": 1, "tpm": 100}
+        ):
+            pass
+        sync_limiter._speculative_writes = True
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="spec-soft-o",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1, "tpm": 500},
+            ) as lease:
+                pass
+
+        assert lease.overdrawn == ["tpm"]
+        # One write: the slow pass's commit (a one-item transaction is sent as
+        # a plain UpdateItem), and no failed fast-path write before it.
+        assert capacity_counter.update_item == 1
+        assert len(capacity_counter.transact_write_items) == 0
+        assert len(capacity_counter.batch_get_item) >= 1  # the slow pass read
+
+
+class TestBypassCapacity:
+    """#311: a bypassed bucket costs what any acquire does, warm."""
+
+    def test_a_warm_bypassed_acquire_is_one_write_and_no_reads(
+        self, sync_limiter, capacity_counter
+    ):
+        repo = sync_limiter._repository
+        sync_limiter.set_resource_defaults("api", [Limit.per_minute("rpm", 1)])
+        repo.bypass_resource("api")
+        for _ in range(2):  # create; then the one refund that teaches the process
+            with sync_limiter.acquire("byp", "api", consume={"rpm": 1}):
+                pass
+        sync_limiter._speculative_writes = True
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            with sync_limiter.acquire("byp", "api", consume={"rpm": 1}) as lease:
+                pass
+        assert lease.bypassed
+        assert len(capacity_counter.batch_get_item) == 0
+        assert capacity_counter.update_item == 1
+        assert capacity_counter.put_item == 0
+        assert len(capacity_counter.transact_write_items) == 0
+
 
 class TestScheduledFastPathCapacity:
     """The load-bearing claim of #222: a schedule costs the fast path nothing.
@@ -1228,6 +1313,25 @@ class TestMultiResourceCapacity:
         assert capacity_counter.query == 0
         assert capacity_counter.put_item == 0
         assert capacity_counter.transact_write_items == []
+
+    def test_the_exit_reconcile_is_one_write_per_item(self, sync_limiter, capacity_counter):
+        """Case 2: adjusting every resource on exit is 3 independent UpdateItems
+        (ADR-148 D7), no transaction: 3 to admit + 3 to reconcile."""
+        self._setup(sync_limiter)
+        for _ in range(2):
+            self._acquire(sync_limiter)
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                "user", "search", {"rpm": 1}, also={"budget": {"weekly": 1}}
+            ) as lease:
+                lease.adjust(rpm=1)
+                lease.resource("budget").adjust(weekly=1)
+
+        assert capacity_counter.update_item == 6
+        assert capacity_counter.transact_write_items == []
+        assert capacity_counter.batch_get_item == []
 
     def test_a_resource_the_rejection_cache_knows_is_short_costs_nothing(
         self, sync_limiter, capacity_counter

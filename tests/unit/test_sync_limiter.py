@@ -4645,7 +4645,13 @@ class TestSpeculativeAcquire:
             pass
 
     def test_speculative_config_changed_fallback(self, sync_limiter):
-        """Falls back to slow path when limit is missing from bucket (config change)."""
+        """Falls back to slow path when limit is missing from bucket (config change).
+
+        The clock is frozen before anything is written (#769): the mocked
+        failure image below is stamped with the same instant every later read
+        and write observes, however long a loaded host takes between them.
+        """
+        freeze_clock(sync_limiter._repository)
         sync_limiter.create_entity("entity-1")
         sync_limiter.set_system_defaults(
             [Limit.per_minute("rpm", 1000), Limit.per_minute("tpm", 100000)]
@@ -4653,7 +4659,7 @@ class TestSpeculativeAcquire:
         with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1, "tpm": 1}):
             pass
         sync_limiter._speculative_writes = True
-        now_ms = int(__import__("time").time() * 1000)
+        now_ms = sync_limiter._repository._now_ms()
         old_bucket_rpm_only = BucketState(
             entity_id="entity-1",
             resource="gpt-4",
@@ -5645,9 +5651,9 @@ class TestCascadeEntityCache:
         compensated_entity_ids: list[str] = []
         original_compensate = sync_limiter._compensate_speculative
 
-        def tracking_compensate(entity_id, resource, consume, shard_id, buckets=None):
+        def tracking_compensate(entity_id, resource, consume, shard_id, *args, **kwargs):
             compensated_entity_ids.append(entity_id)
-            return original_compensate(entity_id, resource, consume, shard_id, buckets)
+            return original_compensate(entity_id, resource, consume, shard_id, *args, **kwargs)
 
         def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None):
             if entity_id == "child-1":
@@ -8185,6 +8191,239 @@ class TestFanOutVuSelfClears:
         assert self._raw(repo, "vu-shards", shard=1)[BUCKET_FIELD_VU]["N"] == "0"
 
 
+class TestAStampedShardIsTrimmedWhereItIs:
+    """A `vu = 0` on one shard of a sharded bucket is cleared on that shard (#741).
+
+    The #680 clamp re-issues an above-ceiling credit with `vu = 0` on the one
+    shard it landed on, and a session-window fan-out stamps siblings one by
+    one: the stamp is per shard. Only a slow pass on that shard clamps it and
+    clears `vu`. When the fast path draws the stamped shard, the slow pass it
+    leads to must run there, or the stamp stays and every later draw of that
+    shard fails its write first (1 WCU and a round trip each time).
+    """
+
+    NOW = int(datetime(2026, 9, 15, 10, 5, tzinfo=UTC).timestamp() * 1000)
+    RPM = Limit.per_minute("rpm", 100)
+    SCHEDULED = Limit.per_minute("rpm", 100).with_schedule(
+        (ScheduleEntry(cron="0 0 1 1 *", scale=0.5),)
+    )
+    CEILING_MILLI = 50000
+
+    @staticmethod
+    def _raw(repo, entity_id, shard):
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response.get("Item")
+
+    @staticmethod
+    def _tk(item) -> int:
+        return int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"])
+
+    @staticmethod
+    def _set_tk(repo, entity_id, shard, tk_milli, *, stamp, limit_name="rpm"):
+        """Set shard ``shard``'s balance of a limit; with ``stamp``, also `vu = 0`.
+
+        With ``stamp`` this is what the #680 clamp leaves: a balance above the
+        shard's ceiling and the `vu = 0` its trimmed credit writes beside it.
+        """
+        client = repo._get_client()
+        names = {"#tk": bucket_attr(limit_name, BUCKET_FIELD_TK)}
+        values = {":tk": {"N": str(tk_milli)}}
+        expression = "SET #tk = :tk"
+        if stamp:
+            names["#vu"] = BUCKET_FIELD_VU
+            values[":zero"] = {"N": "0"}
+            expression += ", #vu = :zero"
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression=expression,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+
+    def _two_shards(self, sync_limiter, entity_id, limit=None, *, also=(), **create):
+        """`entity_id` with both of its two shards created, at a frozen clock.
+
+        ``also`` adds limits beside rpm; each acquire consumes 1 of every one.
+        """
+        repo = sync_limiter._repository
+        repo._now_ms = lambda: self.NOW
+        repo.create_entity(entity_id, **create)
+        limits = [limit or self.RPM, *also]
+        repo.set_limits(entity_id, limits, resource="gpt-4")
+        consume = {each.name: 1 for each in limits}
+        with sync_limiter.acquire(entity_id, "gpt-4", consume=consume):
+            pass
+        repo.bump_shard_count(entity_id, "gpt-4", 1)
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with sync_limiter.acquire(entity_id, "gpt-4", consume=consume):
+                pass
+        assert self._raw(repo, entity_id, 1) is not None
+
+    def test_a_released_credit_is_trimmed_on_the_shard_it_landed_on(self, sync_limiter):
+        """Non-cascade: the draw that hits the stamped shard runs the slow pass there."""
+        repo = sync_limiter._repository
+        self._two_shards(sync_limiter, "solo")
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with sync_limiter.acquire("solo", "gpt-4", consume={"rpm": 1}) as lease:
+                lease.release(rpm=50)
+        stamped = self._raw(repo, "solo", 1)
+        assert stamped[BUCKET_FIELD_VU]["N"] == "0"
+        assert self._tk(stamped) > self.CEILING_MILLI
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with sync_limiter.acquire("solo", "gpt-4", consume={"rpm": 1}):
+                pass
+        shard1 = self._raw(repo, "solo", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) <= self.CEILING_MILLI
+
+    def test_a_soft_limit_in_debt_does_not_hide_the_stamp(self, sync_limiter):
+        """A soft limit in debt beside the stamped hard one is still a stamp failure.
+
+        A live soft stamp admits the soft limit whatever its balance, so the
+        write failed only on `vu`. Judging the soft limit's debt as a short
+        balance (#741 review) sent the slow pass elsewhere and kept the stamp.
+        """
+        repo = sync_limiter._repository
+        soft_tpm = Limit.per_minute("tpm", 1000, soft=True)
+        self._two_shards(sync_limiter, "metered", also=(soft_tpm,))
+        self._set_tk(repo, "metered", 1, 98000, stamp=True)
+        self._set_tk(repo, "metered", 1, -5000, stamp=False, limit_name="tpm")
+        draws = iter([1, 0, 0, 0])
+        with patch("zae_limiter.sync_repository.random.randrange", lambda n: next(draws)):
+            with sync_limiter.acquire("metered", "gpt-4", consume={"rpm": 1, "tpm": 1}):
+                pass
+        shard1 = self._raw(repo, "metered", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) <= self.CEILING_MILLI
+
+    def test_a_probe_that_hits_the_stamped_shard_runs_the_slow_pass_there(self, sync_limiter):
+        """Non-cascade: shard 0 is drained, so the shard retry probes the stamped shard.
+
+        Before #741 the probe's stamp failure read as exhausted: with two
+        shards nothing was left to probe, so the acquire was rejected on shard
+        0's balance while shard 1 held room, and the stamp stayed.
+        """
+        repo = sync_limiter._repository
+        self._two_shards(sync_limiter, "probe")
+        self._set_tk(repo, "probe", 1, 98000, stamp=True)
+        self._set_tk(repo, "probe", 0, 0, stamp=False)
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=0):
+            with sync_limiter.acquire("probe", "gpt-4", consume={"rpm": 1}):
+                pass
+        shard1 = self._raw(repo, "probe", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) == self.CEILING_MILLI - 1000
+        assert self._tk(self._raw(repo, "probe", 0)) == 0
+
+    def test_a_cascading_child_is_trimmed_on_its_stamped_shard(self, sync_limiter):
+        repo = sync_limiter._repository
+        repo._now_ms = lambda: self.NOW
+        repo.create_entity("org")
+        repo.set_limits("org", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        self._two_shards(sync_limiter, "child", parent_id="org", cascade=True)
+        self._set_tk(repo, "child", 1, 98000, stamp=True)
+        draws = iter([1, 0, 0, 0])
+        with patch("zae_limiter.sync_repository.random.randrange", lambda n: next(draws)):
+            with sync_limiter.acquire("child", "gpt-4", consume={"rpm": 1}):
+                pass
+        shard1 = self._raw(repo, "child", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) <= self.CEILING_MILLI
+
+    def _sharded_parent(self, sync_limiter, limit):
+        """`kid` (one shard, cascading) under `boss` (two shards, 1 stamped)."""
+        repo = sync_limiter._repository
+        self._two_shards(sync_limiter, "boss", limit=limit)
+        repo.create_entity("kid", parent_id="boss", cascade=True)
+        repo.set_limits("kid", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=0):
+            with sync_limiter.acquire("kid", "gpt-4", consume={"rpm": 1}):
+                pass
+        self._set_tk(repo, "boss", 1, 98000, stamp=True)
+
+    def _acquire_drawing_parent_shard_1_first(self, sync_limiter):
+        slow = []
+        real_slow_acquire = sync_limiter._slow_acquire
+
+        def slow_acquire(*args, **kwargs):
+            slow.append(True)
+            return real_slow_acquire(*args, **kwargs)
+
+        with (
+            patch("zae_limiter.sync_repository.random.randrange", lambda n: 0 if slow else 1),
+            patch.object(sync_limiter, "_slow_acquire", slow_acquire),
+        ):
+            with sync_limiter.acquire("kid", "gpt-4", consume={"rpm": 1}):
+                pass
+
+    def test_a_cascade_parent_is_trimmed_on_its_stamped_shard(self, sync_limiter):
+        """A trim-only `vu = 0` on the parent's drawn shard."""
+        repo = sync_limiter._repository
+        self._sharded_parent(sync_limiter, self.RPM)
+        self._acquire_drawing_parent_shard_1_first(sync_limiter)
+        shard1 = self._raw(repo, "boss", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) <= self.CEILING_MILLI
+
+    def test_a_stamped_parent_shard_is_pinned_when_the_child_goes_slow(self, sync_limiter):
+        """The warm parallel path: the child must take the slow path as well.
+
+        Child and parent are written at once; the child's write fails on a
+        drained balance a refill will restore, and the parent's on its stamp
+        only. No parent-only attempt runs, so the full slow path must be
+        pinned to the stamped parent shard, not re-draw it.
+        """
+        repo = sync_limiter._repository
+        self._sharded_parent(sync_limiter, self.RPM)
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=0):
+            with sync_limiter.acquire("kid", "gpt-4", consume={"rpm": 1}):
+                pass
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "kid", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #tk = :zero, #rf = :rf",
+            ExpressionAttributeNames={
+                "#tk": bucket_attr("rpm", BUCKET_FIELD_TK),
+                "#rf": BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={":zero": {"N": "0"}, ":rf": {"N": str(self.NOW - 60000)}},
+        )
+        self._acquire_drawing_parent_shard_1_first(sync_limiter)
+        shard1 = self._raw(repo, "boss", 1)
+        assert BUCKET_FIELD_VU not in shard1
+        assert self._tk(shard1) == self.CEILING_MILLI - 1000
+
+    def test_a_scheduled_cascade_parent_is_materialised_on_its_stamped_shard(self, sync_limiter):
+        """A `vu = 0` on a scheduled parent shard reads as a closed window.
+
+        Before #741 the parent's SCHEDULE_BOUNDARY left its shard unpinned
+        ("every shard crosses the boundary at once"): true for a cron boundary,
+        not for a per-shard stamp. The slow path re-drew shard 0, and shard 1
+        kept `vu = 0` and its balance above the ceiling.
+        """
+        repo = sync_limiter._repository
+        self._sharded_parent(sync_limiter, self.SCHEDULED)
+        self._acquire_drawing_parent_shard_1_first(sync_limiter)
+        shard1 = self._raw(repo, "boss", 1)
+        assert int(shard1[BUCKET_FIELD_VU]["N"]) > self.NOW
+        assert self._tk(shard1) <= self.CEILING_MILLI
+
+
 RESET_NY = ZoneInfo("America/New_York")
 
 
@@ -9273,6 +9512,269 @@ class TestWindowRollThroughAcquire:
         assert lease is not None
         assert _stored_ws(repo, "parent", "gpt-4", "session") == now
         assert _stored_tk(repo, "parent", "gpt-4", "session") == 6000
+
+
+_UTC_MIDNIGHT = int(datetime(2026, 9, 16, tzinfo=UTC).timestamp() * 1000)
+_RPM_1000 = Limit.per_minute("rpm", 1000)
+_DAILY_10 = Limit.quota("q", 10, cron="0 0 * * *")
+
+
+class TestOverrideMaterialisesItemLimits:
+    """An `acquire(limits=[...])` pass advances the shared `rf` (#744).
+
+    The override replaces the configured limits for this request only, so the
+    pass resolves none of the item's other limits — yet its rf-locked write
+    stamps the item-level `rf`. Each configured limit on the item that the
+    override does not name is carried through the write exactly as a pass
+    without the override materialises an undeclared limit — its schedules
+    from config, its state from the item: a pending reset or window roll is
+    applied, refill is credited, and its next boundary votes into `vu`.
+    Without that, the reset the pass stepped over was lost for a whole period.
+    """
+
+    @staticmethod
+    def _drain(sync_limiter, entity_id, resource, name):
+        """Acquire one `name` at a time until rejected; return the count."""
+        admitted = 0
+        for _ in range(50):
+            try:
+                with sync_limiter.acquire(entity_id, resource, consume={name: 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                return admitted
+        return admitted
+
+    def test_an_override_pass_applies_a_pending_calendar_reset(self, sync_limiter):
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("o", [_RPM_1000, _DAILY_10], resource="r")
+        repo._now_ms = lambda: _UTC_MIDNIGHT - 60000
+        with sync_limiter.acquire("o", "r", consume={"q": 4, "rpm": 1}):
+            pass
+        repo._now_ms = lambda: _UTC_MIDNIGHT + 1000
+        with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+            pass
+        item = _raw_bucket(repo, "o", "r")
+        assert int(item[bucket_attr("q", BUCKET_FIELD_TK)]["N"]) == 10000
+        assert int(item[bucket_attr("q", BUCKET_FIELD_GC)]["N"]) == 1, "ADR-145 I3"
+        assert int(item[BUCKET_FIELD_VU]["N"]) == _UTC_MIDNIGHT + 86400000
+        assert self._drain(sync_limiter, "o", "r", "q") == 10
+
+    def test_a_carried_quota_resets_on_the_configured_schedule(self, sync_limiter):
+        """A resource-level change never reaches the bucket (#271/#296), so the
+        item still says daily after config moved to monthly. The carrier takes
+        the reset schedule from config, as a pass without the override does:
+        reading it off the item admitted 31 in three days against 10."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        monthly = Limit.quota("q", 10, cron="0 0 1 * *")
+        repo.set_resource_defaults("r", [_RPM_1000, _DAILY_10])
+        repo._now_ms = lambda: _UTC_MIDNIGHT - 60000
+        with sync_limiter.acquire("o", "r", consume={"q": 1, "rpm": 1}):
+            pass
+        repo.set_resource_defaults("r", [_RPM_1000, monthly])
+        repo.invalidate_config_cache()
+        admitted = 1
+        for day in range(3):
+            t = _UTC_MIDNIGHT + day * 86400000 + 1000
+            repo._now_ms = lambda t=t: t
+            with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+                pass
+            repo._now_ms = lambda t=t: t + 1000
+            admitted += self._drain(sync_limiter, "o", "r", "q")
+        assert admitted == 10
+
+    def test_a_limit_config_no_longer_has_is_not_carried(self, sync_limiter):
+        """A pass without the override leaves such a limit alone; so does this."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_resource_defaults("r", [_RPM_1000, _DAILY_10])
+        repo._now_ms = lambda: _UTC_MIDNIGHT - 60000
+        with sync_limiter.acquire("o", "r", consume={"q": 4, "rpm": 1}):
+            pass
+        repo.set_resource_defaults("r", [_RPM_1000])
+        repo.invalidate_config_cache()
+        repo._now_ms = lambda: _UTC_MIDNIGHT + 1000
+        with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+            pass
+        assert _stored_tk(repo, "o", "r", "q") == 6000
+
+    @pytest.mark.parametrize("stripped", [False, True], ids=["ended", "never-opened"])
+    def test_a_rejected_move_commit_does_not_anchor_a_carried_window(self, sync_limiter, stripped):
+        """A rejected override pass that seeds a quota by an ADR-145 move still
+        commits the move, carriers included. A request that never named the
+        session quota, and was rejected, must not open its window, and must
+        leave `vu` at or before now so the next pass does. `never-opened`: an
+        item carrying no `ws` yet, which votes no window end of its own."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        q2 = Limit.quota("q2", 10, cron="0 0 * * *")
+        repo.set_limits("o", [_RPM_1000, SESSION_10], resource="r")
+        repo._now_ms = lambda: T0
+        with slow.acquire("o", "r", consume={"session": 1, "rpm": 1}):
+            pass
+        with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000, q2]):
+            pass
+        repo.bump_shard_count("o", "r", 1)
+        with patch.object(repo, "select_shard", lambda *a, **k: (1, 2)):
+            repo._now_ms = lambda: T0 + 1000
+            with slow.acquire("o", "r", consume={"rpm": 1}):
+                pass
+            if stripped:
+                _strip_window(repo, "o", "r", "session", shard=1)
+            ws = _stored_ws(repo, "o", "r", "session", shard=1)
+            now = T0 + FIVE_HOURS_MS + 10000
+            repo._now_ms = lambda: now
+            with pytest.raises(RateLimitExceeded):
+                with slow.acquire("o", "r", consume={"q2": 9}, limits=[_RPM_1000, q2]):
+                    pass
+            assert _stored_tk(repo, "o", "r", "q2", shard=1) == 5000, "the move landed"
+            assert _stored_ws(repo, "o", "r", "session", shard=1) == ws
+            item = _raw_bucket(repo, "o", "r", shard=1)
+            assert int(item[BUCKET_FIELD_VU]["N"]) <= now
+            with slow.acquire("o", "r", consume={"rpm": 1}):
+                pass
+            assert _stored_ws(repo, "o", "r", "session", shard=1) == now
+
+    def test_a_limit_waiting_to_be_seeded_survives_an_override_pass(self, sync_limiter):
+        """A limit configured after the item existed is seeded by the next pass
+        without the override (#633). The override pass clears the param sync's
+        `vu = 0`; a soft quota's stamp must still not admit fast-path debits
+        onto a balance that was never granted (no `tk`, no `gc`)."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        soft_daily = Limit.quota("q", 10, cron="0 0 * * *", soft=True)
+        repo.set_limits("o", [_RPM_1000], resource="r")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("o", "r", consume={"rpm": 1}):
+            pass
+        repo.set_limits("o", [_RPM_1000, soft_daily], resource="r")
+        repo._now_ms = lambda: T0 + 1000
+        with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+            pass
+        repo._now_ms = lambda: T0 + 2000
+        with sync_limiter.acquire("o", "r", consume={"q": 3}):
+            pass
+        assert _stored_tk(repo, "o", "r", "q") == 7000
+        item = _raw_bucket(repo, "o", "r")
+        assert int(item[bucket_attr("q", BUCKET_FIELD_GC)]["N"]) == 1
+
+    def test_an_item_with_only_the_override_limits_reads_no_config(self, sync_limiter):
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("o", [_RPM_1000], resource="r")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("o", "r", consume={"rpm": 1}):
+            pass
+        repo._now_ms = lambda: T0 + 1000
+        with patch.object(repo, "resolve_limits", wraps=repo.resolve_limits) as config_read:
+            with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+                pass
+        assert config_read.call_count == 0
+
+    def test_override_traffic_returns_to_the_fast_path(self, sync_limiter):
+        """A resource-level limit added after the bucket existed never reaches
+        it (#271/#296) and only a pass without the override seeds it. Holding
+        `vu` at now for it kept every later override acquire on the slow path,
+        forever under override-only traffic (20 of 20, against 0 on main)."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_resource_defaults("r", [_RPM_1000])
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("o", "r", consume={"rpm": 1}):
+            pass
+        repo.set_resource_defaults("r", [_RPM_1000, Limit.per_minute("tpm", 1000)])
+        repo.invalidate_config_cache()
+        repo._now_ms = lambda: T0 + 1000
+        with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+            pass
+        with patch.object(sync_limiter, "_do_acquire", wraps=sync_limiter._do_acquire) as slow_pass:
+            for _ in range(20):
+                with sync_limiter.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+                    pass
+        assert slow_pass.call_count == 0
+
+    def test_the_carried_reset_is_pinned_on_the_shard_count(self, sync_limiter):
+        """ADR-145 I4: the grant the carrier stamps rides the `shard_count` pin."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("o", [_RPM_1000, _DAILY_10], resource="r")
+        repo._now_ms = lambda: _UTC_MIDNIGHT - 60000
+        with sync_limiter.acquire("o", "r", consume={"q": 4, "rpm": 1}):
+            pass
+        repo._now_ms = lambda: _UTC_MIDNIGHT + 1000
+        with patch.object(repo, "build_composite_normal", wraps=repo.build_composite_normal) as spy:
+            with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+                pass
+        assert spy.call_args.kwargs["grant_counts"] == {"q": 1}
+        assert spy.call_args.kwargs["pin_shard_count"] == 1
+        assert spy.call_args.kwargs["clear_vu"] is False
+
+    def test_an_override_pass_applies_a_pending_window_roll(self, sync_limiter):
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("o", [_RPM_1000, SESSION_10], resource="r")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("o", "r", consume={"session": 4, "rpm": 1}):
+            pass
+        now = T0 + FIVE_HOURS_MS + 1000
+        repo._now_ms = lambda: now
+        with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+            pass
+        assert _stored_ws(repo, "o", "r", "session") == now
+        assert _stored_tk(repo, "o", "r", "session") == 10000
+        assert self._drain(sync_limiter, "o", "r", "session") == 10
+
+    def test_an_override_pass_keeps_another_limits_refill(self, sync_limiter):
+        """The same seam for a dripping limit: the refill accrued since `rf`
+        is credited, not skipped by the `rf` the override's write stamps."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        tpm = Limit.per_minute("tpm", 60)
+        repo.set_limits("o", [_RPM_1000, tpm], resource="r")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("o", "r", consume={"tpm": 60, "rpm": 1}):
+            pass
+        repo._now_ms = lambda: T0 + 30000
+        with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+            pass
+        assert _stored_tk(repo, "o", "r", "tpm") == 30000
+
+
+class TestSoftStampNeedsTheBalance:
+    """The fast path admits on a soft stamp only beside the balance (#467, #633).
+
+    The entity-level param sync writes a new limit's `cp` and soft stamp onto
+    an existing bucket but never its `tk`, and stamps `vu = 0` so the next
+    acquire takes the slow pass that seeds it. Anything that clears that `vu`
+    (an `acquire(limits=...)` pass, #744) left the fast path admitting on the
+    stamp beside `cp` alone, and its ADD created a balance nothing granted.
+    """
+
+    def test_a_soft_limit_with_no_balance_is_seeded_not_debited(self, sync_limiter):
+        repo = sync_limiter._repository
+        soft_daily = Limit.quota("q", 10, cron="0 0 * * *", soft=True)
+        repo.set_limits("o", [_RPM_1000], resource="r")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("o", "r", consume={"rpm": 1}):
+            pass
+        repo.set_limits("o", [_RPM_1000, soft_daily], resource="r")
+        item = _raw_bucket(repo, "o", "r")
+        assert bucket_attr("q", "cp") in item
+        assert bucket_attr("q", BUCKET_FIELD_TK) not in item
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={"PK": item["PK"], "SK": item["SK"]},
+            UpdateExpression="REMOVE #vu",
+            ExpressionAttributeNames={"#vu": BUCKET_FIELD_VU},
+        )
+        repo._now_ms = lambda: T0 + 1000
+        with sync_limiter.acquire("o", "r", consume={"q": 3}):
+            pass
+        assert _stored_tk(repo, "o", "r", "q") == 7000
+        item = _raw_bucket(repo, "o", "r")
+        assert int(item[bucket_attr("q", BUCKET_FIELD_GC)]["N"]) == 1, "seeded, ADR-145 I3"
 
 
 class TestWindowRolloverFansOut:
@@ -11718,6 +12220,90 @@ class TestAdjustmentCommitFailure:
                 self._fail_writes_to(repo, "user")
         assert self._consumed(repo, "user") == 10
         assert self._consumed(repo, "org") == 15
+
+
+class TestBypass:
+    """Bypass admits, debits nothing and keeps counting (#311); sync twin generated."""
+
+    def test_bypass_admits_without_debiting(self, sync_limiter):
+        repo = sync_limiter._repository
+        sync_limiter.set_resource_defaults("llm", [Limit.per_minute("rpm", 1)])
+        repo.bypass_resource("llm")
+        for _ in range(4):
+            with sync_limiter.acquire("user-1", "llm", {"rpm": 1}) as lease:
+                assert lease.bypassed
+        (bucket,) = [b for b in repo.get_buckets("user-1", "llm") if b.limit_name == "rpm"]
+        assert bucket.tokens_milli == 1000
+        assert bucket.total_consumed_milli == 4000
+        repo.clear_resource_disabled("llm")
+        with sync_limiter.acquire("user-1", "llm", {"rpm": 1}) as lease:
+            assert not lease.bypassed
+        with pytest.raises(RateLimitExceeded):
+            with sync_limiter.acquire("user-1", "llm", {"rpm": 1}):
+                pass
+
+
+class TestSoftLimits:
+    """Soft limits are metered, never enforced (#467, ADR-151); sync twin generated."""
+
+    def test_soft_limit_admits_into_debt_on_both_paths(self, sync_limiter):
+        sync_limiter.set_resource_defaults(
+            "llm", [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 1000, soft=True)]
+        )
+        for _ in range(2):
+            with sync_limiter.acquire("user-1", "llm", {"rpm": 1, "tpm": 800}) as lease:
+                pass
+        assert lease.overdrawn == ["tpm"]
+        (status,) = [
+            s
+            for s in sync_limiter.check_availability("user-1", "llm").statuses
+            if s.limit_name == "tpm"
+        ]
+        assert status.soft and status.overdrawn
+
+    def test_hard_limit_still_rejects_beside_a_soft_one(self, sync_limiter):
+        sync_limiter.set_resource_defaults(
+            "llm", [Limit.per_minute("rpm", 1), Limit.per_minute("tpm", 10, soft=True)]
+        )
+        with sync_limiter.acquire("user-1", "llm", {"rpm": 1, "tpm": 50}):
+            pass
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with sync_limiter.acquire("user-1", "llm", {"rpm": 1, "tpm": 50}):
+                pass
+        assert [s.limit_name for s in exc_info.value.violations] == ["rpm"]
+        assert [s.limit_name for s in exc_info.value.passed] == ["tpm"]
+
+    def test_a_soft_limit_in_debt_sets_no_wait(self, sync_limiter):
+        """#467 AC7: the wait comes from the hard limit alone, never from a
+        soft limit's debt (here ~1000 tokens behind at 10/day)."""
+        sync_limiter.set_resource_defaults(
+            "llm", [Limit.per_minute("rpm", 1), Limit.per_day("tpd", 10, soft=True)]
+        )
+        with sync_limiter.acquire("user-1", "llm", {"rpm": 1, "tpd": 1000}):
+            pass
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with sync_limiter.acquire("user-1", "llm", {"rpm": 1, "tpd": 1}):
+                pass
+        assert exc_info.value.retry_after_seconds <= 61
+
+    def test_a_cascade_parent_soft_limit_never_rejects(self, sync_limiter):
+        """#467 AC3, cascade: the parent's own soft limit goes into debt on the
+        cold and warm paths; each entity resolves its own limits, so the same
+        limit hard on the parent still rejects."""
+        sync_limiter.create_entity(entity_id="org")
+        sync_limiter.create_entity(entity_id="u", parent_id="org", cascade=True)
+        sync_limiter.set_limits("u", [Limit.per_minute("tpm", 10000)], resource="llm")
+        sync_limiter.set_limits("org", [Limit.per_minute("tpm", 10, soft=True)], resource="llm")
+        for _ in range(3):
+            with sync_limiter.acquire("u", "llm", {"tpm": 8}):
+                pass
+        parent = sync_limiter.check_availability("org", "llm")
+        assert parent.available["tpm"] < 0
+        sync_limiter.set_limits("org", [Limit.per_minute("tpm", 10)], resource="llm")
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with sync_limiter.acquire("u", "llm", {"tpm": 8}):
+                pass
+        assert [s.entity_id for s in exc_info.value.violations] == ["org"]
 
 
 def _transaction_conflict() -> ClientError:

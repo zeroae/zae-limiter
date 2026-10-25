@@ -327,6 +327,9 @@ The move takes effect on the next acquire in every process:
 - **Other processes learn it from the next call.** A process that still has the old parent
   cached debits it once, sees the new parent on the entity's bucket, refunds the old parent and
   debits the new one in the same call.
+- **A read of the entity from before the move is caught.** When a call's read of the entity is
+  older than its bucket's stamp, the call reads the entity again, strongly consistent, and
+  debits the new parent.
 - **A bucket created while the move lands cannot keep the old parent.** Creating a bucket is
   one transaction that also checks the entity's record still names the parent it read; if a
   move landed in between, the acquire re-reads the entity and retries once. This needs
@@ -357,6 +360,7 @@ debiting the old parent until it reopens it. Each move is recorded as an
 
 ## Next Steps
 
+- [Per-Resource Limits and a Shared Budget](per-resource-budgets.md) - Users under organisations, cascade per resource and a per-user budget, end to end
 - [LLM Integration](llm-integration.md) - Token estimation patterns
 - [Unavailability Handling](unavailability.md) - Handling service outages
 - [API Reference](../api/limiter.md) - Complete API documentation

@@ -18,6 +18,7 @@ millitokens and milliseconds. Everything crossing over is multiplied by 1000.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
@@ -32,12 +33,14 @@ from zae_limiter.schema import (
     BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
+    BUCKET_FIELD_SOFT,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
     BUCKET_SCHED_NONE,
     CONFIG_FIELD_SCHED_TZ,
     DEFAULT_RESOURCE,
+    DEFAULT_STAMP_TTL_SECONDS,
     GSI3_NAME,
     LIMIT_ATTR_PREFIX,
     LIMIT_FIELD_CP,
@@ -46,6 +49,7 @@ from zae_limiter.schema import (
     LIMIT_FIELD_RSA,
     LIMIT_FIELD_RSCHED,
     LIMIT_FIELD_SCHED,
+    LIMIT_FIELD_SOFT,
     WINDOW_LIMIT_ATTR_PREFIX,
     bucket_attr,
     calculate_bucket_ttl_seconds,
@@ -59,6 +63,7 @@ from zae_limiter.schema import (
     pk_system,
     sk_config,
     sk_state,
+    stamp_deadline,
 )
 
 from .manifest import entries_from_manifest
@@ -130,7 +135,19 @@ _STALE_FIELDS = (
     # restores a balance on a calendar nobody configured.
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_RSCHED,
+    # And its soft stamp (#467), for the same reason.
+    BUCKET_FIELD_SOFT,
 )
+
+
+#: T for the stamps this provisioner writes (ADR-151 decision 8): a `bypass` or
+#: soft stamp stands at most this long after the config read that justified it.
+STAMP_TTL_SECONDS = DEFAULT_STAMP_TTL_SECONDS
+
+
+def read_clock_ms() -> int:
+    """Wall-clock epoch milliseconds, taken just before a resolution is read."""
+    return int(time.time() * 1000)
 
 
 def _encode_one_tuple(
@@ -199,7 +216,7 @@ def build_bucket_param_update(
     ttl_multiplier: int | None,
     stale_limit_names: set[str] | None,
     now_ms: int,
-) -> tuple[str, dict[str, str], dict[str, dict[str, str]]]:
+) -> tuple[str, dict[str, str], dict[str, dict[str, Any]]]:
     """Build the SET/REMOVE UpdateExpression for one bucket shard.
 
     Args:
@@ -210,7 +227,9 @@ def build_bucket_param_update(
         ttl_multiplier: None leaves ``ttl`` alone; 0 REMOVEs it (entity has
             custom limits, so the bucket must persist); >0 SETs it.
         stale_limit_names: Limit names to strip from the bucket entirely.
-        now_ms: Current time, epoch milliseconds.
+        now_ms: Current time, epoch milliseconds, taken no later than the
+            config these limits came from: a soft stamp's deadline counts from
+            it (ADR-151 decision 8).
 
     Returns:
         ``(update_expr, expr_names, expr_values)``.
@@ -221,7 +240,7 @@ def build_bucket_param_update(
     set_parts: list[str] = []
     remove_parts: list[str] = []
     expr_names: dict[str, str] = {}
-    expr_values: dict[str, dict[str, str]] = {}
+    expr_values: dict[str, dict[str, Any]] = {}
 
     # Numeric indices for expression names: limit names may contain hyphens,
     # dots, slashes and colons, none of which are legal in an alias.
@@ -258,6 +277,19 @@ def build_bucket_param_update(
             expr_values[f":{rsa_alias[1:]}"] = {"N": str(reset_after_seconds)}
         else:
             remove_parts.append(rsa_alias)
+
+        # Soft-ness travels with the limit (#467), mirroring
+        # `Repository._build_bucket_param_update`: SET when soft, REMOVE when hard.
+        # SET as a deadline at most T after `now_ms` (ADR-151 decision 8).
+        soft_alias = f"#sft{i}"
+        expr_names[soft_alias] = bucket_attr(name, BUCKET_FIELD_SOFT)
+        if decl.get("soft"):
+            set_parts.append(f"{soft_alias} = :{soft_alias[1:]}")
+            expr_values[f":{soft_alias[1:]}"] = {
+                "N": str(stamp_deadline(now_ms, STAMP_TTL_SECONDS))
+            }
+        else:
+            remove_parts.append(soft_alias)
 
     # Re-stamp both schedules (#222 §2.2, §3.6). Manifests learned to express
     # schedules in #543, which is what lifts this mirror's old exemption: a
@@ -508,6 +540,9 @@ def sync_bucket_params(
                 synced.add(pk)
                 _ns, _eid, bucket_resource, _shard = parse_bucket_pk(pk)
                 if bucket_resource not in plans:
+                    # Timed from just before this resolution's own read, not
+                    # the caller's `now_ms`: a soft stamp's deadline counts
+                    # from the read behind it (ADR-151 decision 8, review E4).
                     plans[bucket_resource] = _resolved_plan(
                         client,
                         table_name,
@@ -516,7 +551,7 @@ def sync_bucket_params(
                         bucket_resource,
                         limits,
                         stale_limit_names,
-                        now_ms,
+                        read_clock_ms(),
                     )
                 plan = plans[bucket_resource]
                 if plan is None:
@@ -576,6 +611,8 @@ def _decode_limits(item: dict[str, Any]) -> dict[str, dict[str, Any]]:
             partial.setdefault(name, {})[_MANIFEST_SCHEDULE_KEY[field]] = decoder(
                 value["S"], sched_tz
             )
+        elif field == LIMIT_FIELD_SOFT and value.get("BOOL"):
+            partial.setdefault(name, {})["soft"] = True
     return {name: decl for name, decl in partial.items() if _REQUIRED_MANIFEST_KEYS <= decl.keys()}
 
 
@@ -583,10 +620,17 @@ def _walk(
     client: Any,
     table_name: str,
     levels: list[tuple[str, str, str]],
+    *,
+    consistent_read: bool = False,
 ) -> tuple[dict[str, dict[str, Any]], str | None]:
     """Return the first level that defines any limits, and which one it was."""
     for level, pk, sk in levels:
-        response = client.get_item(TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}})
+        kwargs: dict[str, Any] = {}
+        if consistent_read:
+            kwargs["ConsistentRead"] = True
+        response = client.get_item(
+            TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}}, **kwargs
+        )
         item = response.get("Item")
         if not item:
             continue
@@ -637,6 +681,8 @@ def resolve_bucket_limits(
     namespace_id: str,
     entity_id: str,
     resource: str,
+    *,
+    consistent_read: bool = False,
 ) -> tuple[dict[str, dict[str, Any]], str | None]:
     """Full-precedence walk for one existing bucket, and the level that won.
 
@@ -651,4 +697,4 @@ def resolve_bucket_limits(
         ("entity", pk_entity(namespace_id, entity_id), sk_config(resource))
     ]
     levels.extend(_fallback_levels(namespace_id, entity_id, resource))
-    return _walk(client, table_name, levels)
+    return _walk(client, table_name, levels, consistent_read=consistent_read)

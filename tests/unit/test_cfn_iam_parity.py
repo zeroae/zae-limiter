@@ -272,9 +272,8 @@ class TestNamespaceScopedPolicies:
 
     def test_namespace_acquire_policy_actions(self) -> None:
         """ns-acq: Put/Update on namespace prefix, read-only on shared prefix."""
-        # Statement 1: namespace prefix — read + write, and the META pin a
-        # bucket create carries (ADR-150). PutItem authorises the bucket create
-        # inside the create's transaction (ADR-152, #750).
+        # Statement 1: namespace prefix — reads, and the META pin a bucket
+        # create carries (ADR-150).
         ns_actions = _extract_statement_actions(
             self.template, "NamespaceAcquirePolicy", "NamespaceAcquireAccess"
         )
@@ -282,10 +281,14 @@ class TestNamespaceScopedPolicies:
             "dynamodb:GetItem",
             "dynamodb:BatchGetItem",
             "dynamodb:Query",
-            "dynamodb:PutItem",
-            "dynamodb:UpdateItem",
             "dynamodb:ConditionCheckItem",
         }
+        # PutItem authorises the bucket create inside the create's transaction
+        # (ADR-152, #750), on the namespace's bucket items only (#756).
+        writes = _extract_statement_actions(
+            self.template, "NamespaceAcquirePolicy", "NamespaceBucketWrites"
+        )
+        assert writes == {"dynamodb:PutItem", "dynamodb:UpdateItem"}
 
         # Statement 2: shared prefix — read-only
         shared_actions = _extract_statement_actions(
@@ -309,6 +312,8 @@ class TestNamespaceScopedPolicies:
             "dynamodb:PutItem",
             "dynamodb:UpdateItem",
             "dynamodb:DeleteItem",
+            # delete_entity deletes with BatchWriteItem (#742)
+            "dynamodb:BatchWriteItem",
             "dynamodb:ConditionCheckItem",
         }
 
@@ -323,6 +328,36 @@ class TestNamespaceScopedPolicies:
             "dynamodb:Query",
         }
 
+    def test_the_acquire_policies_write_bucket_items_only(self) -> None:
+        """#756: `acq` and `ns-acq` grant PutItem / UpdateItem only where every
+        leading key is a bucket's (`{ns}/BUCKET#…`), and only when one is
+        present, so an application role cannot write config, entity META,
+        audit events, the namespace registry or the version record."""
+        for policy, sid, pattern in (
+            ("AcquireOnlyPolicy", "BucketWrites", "*/BUCKET#*"),
+            (
+                "NamespaceAcquirePolicy",
+                "NamespaceBucketWrites",
+                "${aws:PrincipalTag/zael_namespace_id}/BUCKET#*",
+            ),
+        ):
+            statement = next(
+                s
+                for s in self.template["Resources"][policy]["Properties"]["PolicyDocument"][
+                    "Statement"
+                ]
+                if s.get("Sid") == sid
+            )
+            assert _extract_leading_keys(self.template, policy, sid) == [pattern], policy
+            assert statement["Condition"]["Null"] == {"dynamodb:LeadingKeys": "false"}, policy
+            for other in self.template["Resources"][policy]["Properties"]["PolicyDocument"][
+                "Statement"
+            ]:
+                if other is not statement:
+                    actions = other["Action"]
+                    assert "dynamodb:PutItem" not in actions, (policy, other.get("Sid"))
+                    assert "dynamodb:UpdateItem" not in actions, (policy, other.get("Sid"))
+
     def test_namespace_acquire_leading_keys(self) -> None:
         """ns-acq: namespace prefix uses PrincipalTag, shared prefix uses _/*."""
         ns_keys = _extract_leading_keys(
@@ -336,11 +371,18 @@ class TestNamespaceScopedPolicies:
         assert shared_keys == ["_/*"]
 
     def test_namespace_full_access_leading_keys(self) -> None:
-        """ns-full: both namespace and shared prefix in one statement."""
+        """ns-full: namespace prefix, the namespace's own GSI4 partition key,
+        and the shared prefix, in one statement. The bare id is what a
+        system-level soft fan-out queries (review D4): without it the config
+        write landed and the fan-out was denied."""
         keys = _extract_leading_keys(
             self.template, "NamespaceFullAccessPolicy", "NamespaceFullAccess"
         )
-        assert keys == ["${aws:PrincipalTag/zael_namespace_id}/*", "_/*"]
+        assert keys == [
+            "${aws:PrincipalTag/zael_namespace_id}/*",
+            "${aws:PrincipalTag/zael_namespace_id}",
+            "_/*",
+        ]
 
     def test_namespace_readonly_leading_keys(self) -> None:
         """ns-read: both namespace and shared prefix in one statement."""

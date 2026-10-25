@@ -141,7 +141,14 @@ def try_consume(
     requested_milli = requested * 1000
     available = current_tokens_milli // 1000
 
-    if current_tokens_milli >= requested_milli:
+    # A soft limit (#467, ADR-151) is debited like any other and may go into
+    # debt, but it is never a reason to reject. Deciding it here covers every
+    # admission and reporting path at once: the slow path's `_admit_limit`,
+    # `Lease.consume`, the speculative failure classifier and the rejection
+    # cache (`would_refill_satisfy`), and every `LimitStatus` built from it.
+    # A bypassed bucket (#311) is admitted the same way; its writes never
+    # debit `tk`, so the "new" balance here is in-memory only.
+    if current_tokens_milli >= requested_milli or state.soft or state.bypass:
         # Success - consume the tokens
         return ConsumeResult(
             success=True,

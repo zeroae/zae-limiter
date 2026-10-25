@@ -2216,6 +2216,44 @@ class TestE2EAWSResetAndTopUp:
         finally:
             await repo.close()
 
+    async def _shard0_items(self, entity_id: str, repo: Repository) -> tuple[list, list]:
+        """The entity's shard-0 bucket on RESOURCE and the operation records
+        beside it, read strongly consistently from the base table."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        pk = schema.pk_bucket(repo._namespace_id, entity_id, self.RESOURCE, 0)
+        response = await client.query(
+            TableName=repo.table_name,
+            KeyConditionExpression="PK = :pk",
+            ExpressionAttributeValues={":pk": {"S": pk}},
+            ConsistentRead=True,
+        )
+        items = response["Items"]
+        buckets = [i for i in items if i["SK"]["S"] == schema.sk_state()]
+        records = [i for i in items if i["SK"]["S"].startswith(schema.SK_OPERATION_PREFIX)]
+        return buckets, records
+
+    async def _system_soft(self, stack: str, namespace: str) -> None:
+        """A system-level soft change reaches a bucket on system defaults.
+
+        Its fan-out discovers the namespace's buckets on GSI4, whose partition
+        key is the bare namespace id: a namespace-scoped grant matching only
+        ``{id}/*`` let the config write land and then denied the query
+        (review D4).
+        """
+        repo = await TestE2EAWSAcquirePolicies._connect(stack, namespace)
+        try:
+            await repo.set_system_defaults([Limit.per_minute("rpm", 5)])
+            limiter = RateLimiter(repository=repo)
+            async with limiter.acquire("solo", "other", consume={"rpm": 1}):
+                pass
+            await repo.set_system_defaults([Limit.per_minute("rpm", 5, soft=True)])
+            (state,) = await repo.get_buckets("solo", "other")
+            assert state.limit_name == "rpm" and state.soft
+        finally:
+            await repo.close()
+
     @pytest.mark.asyncio(loop_scope="class")
     async def test_admin_role_with_full_can_reset_and_top_up(
         self, reset_policy_stack, unique_name_class, monkeypatch
@@ -2280,6 +2318,20 @@ class TestE2EAWSResetAndTopUp:
                 monkeypatch, TestE2EAWSAcquirePolicies._assume(role_arn)
             )
             await self._exercise(unique_name_class, namespace)
+            await self._system_soft(unique_name_class, namespace)
+
+            # delete_entity deletes with BatchWriteItem, which ns-full lacked
+            # before #742: the entity, its bucket and its operation records.
+            # "fresh" holds a bucket on RESOURCE and the keyed top-up's record.
+            repo = await TestE2EAWSAcquirePolicies._connect(unique_name_class, namespace)
+            try:
+                buckets, records = await self._shard0_items("fresh", repo)
+                assert buckets and records, "nothing for the delete to prove"
+                await repo.delete_entity("fresh")
+                assert await repo.get_entity("fresh", consistent_read=True) is None
+                assert await self._shard0_items("fresh", repo) == ([], [])
+            finally:
+                await repo.close()
         finally:
             try:
                 iam.detach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
@@ -2287,24 +2339,33 @@ class TestE2EAWSResetAndTopUp:
                 iam.delete_role(RoleName=role_name)
 
     @pytest.mark.asyncio(loop_scope="class")
-    async def test_app_role_with_acq_can_also_reset_and_top_up(
+    async def test_app_role_with_acq_cannot_reset_or_top_up(
         self, reset_policy_stack, unique_name_class, monkeypatch
     ):
-        """The stack's app role (AcquireOnlyPolicy only) is not refused either.
+        """The stack's app role (AcquireOnlyPolicy only) acquires, but cannot
+        reset or top up (#756): the acquire policies write bucket items only,
+        so the operation's audit ``Put`` and its record are refused, and the
+        whole transaction with them."""
+        from zae_limiter.limiter import _access_denied_in
 
-        DynamoDB IAM cannot tell a top-up's ``UpdateItem`` from an acquire's on
-        the same item, so a principal that may acquire may also reset and top
-        up (ADR-149: operator actions by contract). Pinned so a change is
-        noticed: a bucket-only write rule for the acquire policies would keep
-        an app role out of these calls (the audit ``Put`` would be refused), and
-        this test would then expect ``PermissionDenied``.
-        """
         namespace = "acq-policy"
         await self._seed(reset_policy_stack, namespace)
         role_arn = TestE2EAWSAcquirePolicies._outputs(unique_name_class)["AppRoleArn"]
 
         TestE2EAWSAcquirePolicies._become(monkeypatch, TestE2EAWSAcquirePolicies._assume(role_arn))
-        await self._exercise(unique_name_class, namespace)
+        repo = await TestE2EAWSAcquirePolicies._connect(unique_name_class, namespace)
+        try:
+            limiter = RateLimiter(repository=repo)
+            assert await self._admitted(limiter, "solo", self.RESOURCE) == 10
+            for operation in (
+                repo.reset_bucket("solo", self.RESOURCE),
+                repo.top_up("solo", self.RESOURCE, {"cal": 5}),
+            ):
+                with pytest.raises(Exception) as refused:
+                    await operation
+                assert _access_denied_in(refused.value) is not None, refused.value
+        finally:
+            await repo.close()
 
 
 class TestE2EAWSUpgradeAppliesTemplate:

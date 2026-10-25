@@ -476,7 +476,10 @@ class TestStaleWriters:
 
         with patch.object(repo, "batch_get_entity_and_buckets", read_then_move):
             async with slow.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
-                assert {e.entity_id for e in lease.entries} == {"user", "org-a"}
+                # Its owner pin is lost to the move's newer generation, so it
+                # re-plans from a strongly consistent read and debits the new
+                # parent (review P1), where it used to debit the old one.
+                assert {e.entity_id for e in lease.entries} == {"user", "org-b"}
 
         assert moved == [2]
         assert _stamp(await _item(repo, "user", "gpt-4")) == (True, "org-b", 1)
@@ -1771,6 +1774,103 @@ class TestTheDisabledLookAcrossResources:
                 ):
                     pytest.fail("a disabled parent must not admit")
         assert (raised.value.entity_id, raised.value.resource) == ("org-b", "code")
+
+
+class TestMetaWritesRetryAConflict:
+    """Review P2: every bucket create holds a `ConditionCheck` on its owner's
+    META in a transaction (ADR-150), so a META write on a busy entity can meet
+    a `TransactionConflictException`. It did not apply; it is re-sent rather
+    than surfaced raw."""
+
+    @staticmethod
+    def _conflict_once(real):
+        from botocore.exceptions import ClientError
+
+        calls: list[int] = []
+
+        async def flaky(**kwargs):
+            on_meta = kwargs.get("Key", kwargs.get("Item", {})).get("SK") == {"S": schema.sk_meta()}
+            if not on_meta:
+                return await real(**kwargs)
+            calls.append(1)
+            if len(calls) == 1:
+                raise ClientError(
+                    {"Error": {"Code": "TransactionConflictException", "Message": "busy"}},
+                    "Write",
+                )
+            return await real(**kwargs)
+
+        return flaky, calls
+
+    async def test_set_parent_retries(self, limiter):
+        await _hierarchy(limiter)
+        repo = limiter._repository
+        client = await repo._get_client()
+        flaky, calls = self._conflict_once(client.update_item)
+        with patch.object(client, "update_item", side_effect=flaky):
+            await repo.set_parent("user", "org-b")
+        assert len(calls) == 2  # the conflict, then the write that landed
+        assert (await repo.get_entity("user", consistent_read=True)).parent_id == "org-b"
+
+    async def test_create_entity_retries(self, repo):
+        client = await repo._get_client()
+        flaky, calls = self._conflict_once(client.put_item)
+        with patch.object(client, "put_item", side_effect=flaky):
+            await repo.create_entity("fresh")
+        assert len(calls) == 2
+        assert await repo.get_entity("fresh", consistent_read=True) is not None
+
+    async def test_a_conflict_past_the_retries_propagates(self, repo):
+        from botocore.exceptions import ClientError
+
+        from zae_limiter.repository import _ITEM_CONFLICT_MAX_RETRIES
+
+        conflict = ClientError(
+            {"Error": {"Code": "TransactionConflictException", "Message": "busy"}}, "PutItem"
+        )
+        client = await repo._get_client()
+        with (
+            patch.object(client, "put_item", side_effect=conflict) as put,
+            pytest.raises(ClientError),
+        ):
+            await repo._put_item_retrying_conflict(client, TableName=TABLE, Item={})
+        assert put.call_count == _ITEM_CONFLICT_MAX_RETRIES + 1
+
+
+def test_a_move_counts_as_lost_without_cancellation_reasons():
+    """Review M2: with no per-item reasons, nothing says the move survived."""
+    from zae_limiter.lease import _move_items_failed
+
+    assert _move_items_failed(RuntimeError("no reasons"), [], 0) is True
+
+
+class TestAStaleSlowPassAfterAMove:
+    """Review P1 (#677 review): a slow pass whose eventually consistent META
+    read predates a move lost its rf-locked owner pin — the bucket already
+    carries the move's newer generation — and the consumption-only retry then
+    debited the old parent, never the new one, in every process while META
+    reads lagged. It now re-plans once from a strongly consistent read."""
+
+    async def test_the_new_parent_is_debited(self, limiter, other):
+        await _hierarchy(limiter)
+        repo = limiter._repository
+        stale = await repo.get_entity("user", consistent_read=True)
+        await repo.set_parent("user", "org-b")
+        other_repo = other._repository
+        real = other_repo.batch_get_entity_and_buckets
+
+        async def stale_meta(entity_id, bucket_keys):
+            entity, buckets = await real(entity_id, bucket_keys)
+            return (stale if entity_id == "user" else entity), buckets
+
+        before = {org: await _consumed(repo, org) for org in ("org-a", "org-b")}
+        slow = RateLimiter(repository=other_repo, speculative_writes=False)
+        with patch.object(other_repo, "batch_get_entity_and_buckets", stale_meta):
+            async with slow.acquire("user", "gpt-4", consume={"rpm": 5}):
+                pass
+        assert await _consumed(repo, "org-b") - before["org-b"] == 5
+        assert await _consumed(repo, "org-a") == before["org-a"]
+        assert _stamp(await _item(repo, "user", "gpt-4"))[1] == "org-b"
 
 
 class TestAnOlderStampNeverMovesTheCacheBack:

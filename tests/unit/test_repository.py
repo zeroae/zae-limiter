@@ -38,15 +38,18 @@ from zae_limiter.schema import (
     CONFIG_FIELD_SCHED_TZ,
     LIMIT_FIELD_RSA,
     LIMIT_FIELD_RSCHED,
+    SK_OPERATION_PREFIX,
     WCU_LIMIT_NAME,
     bucket_attr,
     calculate_bucket_ttl,
     calculate_bucket_ttl_seconds,
+    gsi3_pk_entity,
     limit_attr,
     parse_bucket_attr,
     parse_bucket_sk,
     parse_limit_attr,
     pk_bucket,
+    pk_entity,
     sk_config,
     sk_state,
 )
@@ -3716,6 +3719,300 @@ class TestRepositoryEntityDuplicates:
         assert entity is None
 
 
+async def _entity_with_many_items(repo, entity_id, *, usage=30, resources=("gpt-4", "gpt-3.5")):
+    """An entity whose items span pages and BatchWriteItem chunks (#742).
+
+    META, ``usage`` usage-snapshot stand-ins under the entity's PK (more than
+    one 25-item chunk), and one bucket per resource, found through GSI3.
+    Returns the number of items ``delete_entity`` must delete.
+    """
+    await repo.create_entity(entity_id, name=entity_id)
+    client = await repo._get_client()
+    pk = pk_entity(repo._namespace_id, entity_id)
+    for i in range(usage):
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={"PK": {"S": pk}, "SK": {"S": f"#USAGE#r#{i:04d}"}},
+        )
+    now_ms = int(time.time() * 1000)
+    for resource in resources:
+        states = [BucketState.from_limit(entity_id, resource, Limit.per_minute("rpm", 100), now_ms)]
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, resource, states, now_ms)]
+        )
+    return 1 + usage + len(resources)
+
+
+async def _entity_items_left(repo, entity_id):
+    """Items still under the entity's PK plus buckets still indexed in GSI3."""
+    client = await repo._get_client()
+    base = await client.query(
+        TableName=repo.table_name,
+        KeyConditionExpression="PK = :pk",
+        ExpressionAttributeValues={":pk": {"S": pk_entity(repo._namespace_id, entity_id)}},
+        ConsistentRead=True,
+    )
+    buckets = await client.query(
+        TableName=repo.table_name,
+        IndexName="GSI3",
+        KeyConditionExpression="GSI3PK = :pk",
+        ExpressionAttributeValues={
+            ":pk": {"S": gsi3_pk_entity(repo._namespace_id, entity_id)},
+        },
+    )
+    return base["Items"] + buckets["Items"]
+
+
+class TestDeleteEntityIsComplete:
+    """``delete_entity`` deletes everything or raises (#742).
+
+    BatchWriteItem returns throttled deletes in ``UnprocessedItems`` without
+    raising, and a Query returns at most 1 MB per page. Ignoring either left
+    an entity partly deleted with no error: a leftover ``#META`` keeps the
+    entity looking alive, leftover buckets keep their balances.
+
+    The retry constants are patched with ``create=True`` so that, run against a
+    build without them, each test fails on the behaviour it pins rather than on
+    the patch.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unprocessed_items_are_resent(self, repo):
+        expected = await _entity_with_many_items(repo, "e")
+        client = await repo._get_client()
+        real_batch_write = client.batch_write_item
+        calls = []
+
+        async def partly_applied(**params):
+            # The first request applies its first half and hands back the rest.
+            requests = params["RequestItems"][repo.table_name]
+            calls.append(len(requests))
+            if len(calls) > 1:
+                return await real_batch_write(**params)
+            half = len(requests) // 2
+            await real_batch_write(RequestItems={repo.table_name: requests[:half]})
+            return {"UnprocessedItems": {repo.table_name: requests[half:]}}
+
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch.object(client, "batch_write_item", side_effect=partly_applied),
+        ):
+            await repo.delete_entity("e")
+
+        assert await _entity_items_left(repo, "e") == []
+        assert calls[1] == calls[0] - calls[0] // 2  # only the remainder is resent
+        events = await repo.get_audit_events("e")
+        assert events[0].action == AuditAction.ENTITY_DELETED
+        assert events[0].details["records_deleted"] == expected
+
+    @pytest.mark.asyncio
+    async def test_every_query_page_is_deleted(self, repo):
+        """Both the base-table and the GSI3 query follow LastEvaluatedKey."""
+        expected = await _entity_with_many_items(repo, "e", usage=5, resources=("a", "b", "c"))
+        client = await repo._get_client()
+        real_query = client.query
+        paged = []
+
+        async def two_per_page(**params):
+            # A 1 MB page, scaled down: moto pages a Query that sets Limit.
+            response = await real_query(**{"Limit": 2, **params})
+            if "LastEvaluatedKey" in response:
+                paged.append(params.get("IndexName", "base"))
+            return response
+
+        with patch.object(client, "query", side_effect=two_per_page):
+            await repo.delete_entity("e")
+
+        assert {"base", "GSI3"} <= set(paged)
+        assert await _entity_items_left(repo, "e") == []
+        events = await repo.get_audit_events("e")
+        assert events[0].details["records_deleted"] == expected
+
+    @pytest.mark.asyncio
+    async def test_raises_when_items_stay_unprocessed(self, repo):
+        await _entity_with_many_items(repo, "e", usage=3)
+        client = await repo._get_client()
+        calls = []
+
+        async def throttled(**params):
+            requests = params["RequestItems"][repo.table_name]
+            calls.append(len(requests))
+            return {"UnprocessedItems": {repo.table_name: requests}}
+
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch("zae_limiter.repository._BATCH_WRITE_MAX_RETRIES", 2, create=True),
+            patch.object(client, "batch_write_item", side_effect=throttled),
+            pytest.raises(RateLimiterUnavailable, match="unprocessed") as exc_info,
+        ):
+            await repo.delete_entity("e")
+
+        assert exc_info.value.entity_id == "e"
+        assert len(calls) == 3  # the first send and two retries
+        # Nothing was deleted, and no deletion was audited.
+        assert await repo.get_entity("e") is not None
+        events = await repo.get_audit_events("e")
+        assert AuditAction.ENTITY_DELETED not in {e.action for e in events}
+
+
+async def _with_operation_records(repo, entity_id, resources, per_resource):
+    """Operation-record stand-ins (ADR-149) in each resource's shard-0 partition."""
+    client = await repo._get_client()
+    for resource in resources:
+        for j in range(per_resource):
+            await client.put_item(
+                TableName=repo.table_name,
+                Item={
+                    "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, 0)},
+                    "SK": {"S": f"{SK_OPERATION_PREFIX}op-{j}"},
+                },
+            )
+    return len(resources) * per_resource
+
+
+async def _operation_records_left(repo, entity_id, resources):
+    client = await repo._get_client()
+    left = []
+    for resource in resources:
+        response = await client.query(
+            TableName=repo.table_name,
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :op)",
+            ExpressionAttributeValues={
+                ":pk": {"S": pk_bucket(repo._namespace_id, entity_id, resource, 0)},
+                ":op": {"S": SK_OPERATION_PREFIX},
+            },
+        )
+        left.extend(response["Items"])
+    return left
+
+
+def _throttle_requests_naming(client, table, sk_test):
+    """Never process a delete whose SK matches; process the rest of its request.
+
+    What DynamoDB does to a partly throttled request: the other deletes in it
+    land, the matching ones come back in ``UnprocessedItems``, every time.
+    """
+    real_batch_write = client.batch_write_item
+
+    async def throttled(**params):
+        requests = params["RequestItems"][table]
+        held = [r for r in requests if sk_test(r["DeleteRequest"]["Key"]["SK"]["S"])]
+        if not held:
+            return await real_batch_write(**params)
+        served = [r for r in requests if r not in held]
+        if served:
+            await real_batch_write(RequestItems={table: served})
+        return {"UnprocessedItems": {table: held}}
+
+    return patch.object(client, "batch_write_item", side_effect=throttled)
+
+
+class TestDeleteEntityStopsFindably:
+    """A delete that stops part-way can be finished, and is audited (#742 review).
+
+    The deletes run in an order that keeps what is left findable by a second
+    call: operation records (found only through their shard-0 bucket), then
+    buckets, then the entity's own items with ``#META`` last. Every call that
+    deleted anything writes an ``entity_deleted`` event saying how many items
+    it deleted and whether the entity is gone.
+    """
+
+    RESOURCES = ("gpt-4", "gpt-3.5")
+
+    @pytest.mark.asyncio
+    async def test_a_stopped_delete_is_audited_and_finished(self, repo):
+        expected = await _entity_with_many_items(repo, "e", resources=self.RESOURCES)
+        expected += await _with_operation_records(repo, "e", self.RESOURCES, 2)
+        client = await repo._get_client()
+
+        # The request holding #META never lands: it is the last one sent.
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch("zae_limiter.repository._BATCH_WRITE_MAX_RETRIES", 2, create=True),
+            _throttle_requests_naming(client, repo.table_name, lambda sk: sk == "#META"),
+            pytest.raises(RateLimiterUnavailable, match="unprocessed"),
+        ):
+            await repo.delete_entity("e", principal="admin")
+
+        # Everything before the entity's last request is gone; the entity is not.
+        assert await _operation_records_left(repo, "e", self.RESOURCES) == []
+        assert await repo.get_entity("e", consistent_read=True) is not None
+        [stopped] = [
+            e for e in await repo.get_audit_events("e") if e.action == AuditAction.ENTITY_DELETED
+        ]
+        assert stopped.principal == "admin"
+        assert stopped.details["complete"] is False
+        assert 0 < stopped.details["records_deleted"] < expected
+
+        # A second call finds what is left, finishes, and audits the rest.
+        await repo.delete_entity("e", principal="admin")
+
+        assert await _entity_items_left(repo, "e") == []
+        events = [
+            e for e in await repo.get_audit_events("e") if e.action == AuditAction.ENTITY_DELETED
+        ]
+        assert sorted(e.details["complete"] for e in events) == [False, True]
+        [first] = [e for e in events if not e.details["complete"]]
+        [finished] = [e for e in events if e.details["complete"]]
+        assert first.details == stopped.details
+        assert finished.details["complete"] is True
+        assert first.details["records_deleted"] + finished.details["records_deleted"] == expected
+
+    @pytest.mark.asyncio
+    async def test_operation_records_go_before_their_bucket(self, repo):
+        """A bucket deleted before its records would hide them from a second
+        call, which finds records only through the shard-0 bucket."""
+        await _entity_with_many_items(repo, "e", usage=0, resources=self.RESOURCES)
+        await _with_operation_records(repo, "e", self.RESOURCES, 1)
+        client = await repo._get_client()
+
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch("zae_limiter.repository._BATCH_WRITE_MAX_RETRIES", 2, create=True),
+            _throttle_requests_naming(
+                client, repo.table_name, lambda sk: sk.startswith(SK_OPERATION_PREFIX)
+            ),
+            pytest.raises(RateLimiterUnavailable),
+        ):
+            await repo.delete_entity("e")
+
+        # Nothing after the records was touched, and nothing was deleted to audit.
+        assert len(await _entity_items_left(repo, "e")) == 1 + len(self.RESOURCES)
+        assert len(await _operation_records_left(repo, "e", self.RESOURCES)) == 2
+        assert AuditAction.ENTITY_DELETED not in {
+            e.action for e in await repo.get_audit_events("e")
+        }
+
+        await repo.delete_entity("e")
+        assert await _entity_items_left(repo, "e") == []
+        assert await _operation_records_left(repo, "e", self.RESOURCES) == []
+
+    @pytest.mark.asyncio
+    async def test_an_audit_failure_does_not_hide_the_stopped_delete(self, repo):
+        await _entity_with_many_items(repo, "e", usage=3, resources=self.RESOURCES)
+        client = await repo._get_client()
+
+        with (
+            patch("zae_limiter.repository._BATCH_WRITE_RETRY_BASE_DELAY", 0, create=True),
+            patch("zae_limiter.repository._BATCH_WRITE_MAX_RETRIES", 2, create=True),
+            _throttle_requests_naming(client, repo.table_name, lambda sk: sk == "#META"),
+            patch.object(repo, "_log_audit_event", side_effect=RuntimeError("audit down")),
+            pytest.raises(RateLimiterUnavailable),
+        ):
+            await repo.delete_entity("e")
+
+    @pytest.mark.asyncio
+    async def test_an_audit_failure_after_a_complete_delete_raises(self, repo):
+        """Passes before #742 too: the audit error was never swallowed."""
+        await _entity_with_many_items(repo, "e", usage=3, resources=self.RESOURCES)
+
+        with (
+            patch.object(repo, "_log_audit_event", side_effect=RuntimeError("audit down")),
+            pytest.raises(RuntimeError, match="audit down"),
+        ):
+            await repo.delete_entity("e")
+
+
 class TestRepositoryTableOperations:
     """Tests for table-level operations."""
 
@@ -4218,7 +4515,9 @@ class TestScheduleBoundaryFastPathCost:
         # changed: the SET/ADD expression is untouched.
         condition = captured[0]["ConditionExpression"]
         assert condition.count("#vu") == 2, condition  # attribute_not_exists(#vu) OR #vu > :vu_now
-        assert condition.count(":vu_now") == 1, condition
+        assert condition.count("#vu > :vu_now") == 1, condition
+        # The same bound instant judges the stamp deadlines (ADR-151 decision 8).
+        assert set(captured[0]["ExpressionAttributeValues"]) >= {":vu_now"}
         assert "#vu" not in captured[0]["UpdateExpression"]
 
     async def test_vu_clause_costs_no_extra_call_when_present(self, repo):
@@ -5696,7 +5995,7 @@ class TestStaleLimitAliasesAreExpressionSafe:
         assert removed == {
             bucket_attr(name, field)
             for name in ("req-min", "tok.sec")
-            for field in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched")
+            for field in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched", "soft")
         } | {
             "sched",
             "rsched",
@@ -5704,6 +6003,8 @@ class TestStaleLimitAliasesAreExpressionSafe:
             bucket_attr("rpm", "sched"),
             bucket_attr("rpm", "rsched"),
             bucket_attr("rpm", "rsa"),
+            # A hard limit's soft stamp is REMOVEd, like its `rsa` (#467).
+            bucket_attr("rpm", "soft"),
         }
 
     @pytest.mark.asyncio

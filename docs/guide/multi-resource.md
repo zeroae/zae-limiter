@@ -121,7 +121,7 @@ user — on warm caches:
 | Exit reconcile, every resource adjusted | 1 | 0 | 3 |
 | Rejected, and the [rejection cache](../performance.md) already knows | 0 | 0 | 0 |
 | `budget` rejected, cache cold | 2 | 0 | 3 + 2 refunds |
-| First acquire of the entity (every resource on the slow path) | ≈4 | ≈2.5 | 12 (one 5-item transaction + 2 failed writes) |
+| First acquire of the entity (every resource on the slow path) | ≈4 | ≈10 (about 20 keys of config, access and bucket reads, user and organisation) | 12 (one 5-item transaction + 2 failed writes) |
 
 A cold rejection costs more than two hand-ordered acquires would, because the writes went out
 together and the ones that landed are refunded. Repeat rejections within the rejection cache's
@@ -132,4 +132,6 @@ window cost nothing.
     it is refunded. That can only make them reject a little early; it never admits anything
     extra.
 
-See [ADR-148](../adr/148-multi-resource-acquire.md) for the full design.
+See [ADR-148](../adr/148-multi-resource-acquire.md) for the full design, and
+[Per-Resource Limits and a Shared Budget](per-resource-budgets.md) for a worked example with
+plans and organisations.

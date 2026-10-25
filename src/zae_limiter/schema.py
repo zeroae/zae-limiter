@@ -1,5 +1,6 @@
 """DynamoDB schema definitions and key builders."""
 
+import random
 from typing import TYPE_CHECKING, Any
 
 from .schedule import cycle_seconds, encode, encode_reset, entry_params, parse_cron
@@ -207,12 +208,104 @@ def sk_operation(operation_id: str) -> str:
 # unscheduled bucket grows no schedule attributes at all.
 BUCKET_SCHED_NONE = "-"
 
+# Soft limits (#467, ADR-151). `b_{name}_soft = BOOL true` on a bucket item
+# marks the limit as metered but never enforced; absent means hard. The
+# speculative write tests it server-side (`attribute_exists(soft) OR tk >= c`),
+# so the fast path needs no knowledge of which limits are soft. Invisible to
+# pre-0.17 readers, which discover limits by the `_tk`/`_cp` pair only.
+BUCKET_FIELD_SOFT = "soft"  # b_{name}_soft
+
+# Usage-snapshot counter `{limit}#od` (#467): stream records in the window
+# where a soft limit was debited and its shard's balance ended below zero.
+# Written by the aggregator in the same snapshot `UpdateItem`; `#` cannot occur
+# in a limit name, so it cannot collide with a consumption counter.
+OVERDRAWN_COUNTER_SUFFIX = "#od"
+
 # Disable flag (ADR-125). Tri-state on config items: absent = inherit,
 # True/False = explicit. On bucket items the attribute is present only
 # when the bucket is effectively disabled, so the speculative guard can
 # stay `attribute_not_exists(disabled)`.
 CONFIG_FIELD_DISABLED = "disabled"
 BUCKET_FIELD_DISABLED = "disabled"
+
+# Bypass (#311, ADR-151): the fourth value of the ADR-125 `disabled` config
+# attribute, stored as `S "bypass"` beside `BOOL true` (disabled) and
+# `BOOL false` (explicit enforce), so one walk and one precedence decide all
+# three. A pre-0.17 reader decodes the string as explicit `false` and enforces.
+# Buckets are stamped with a separate `bypass` attribute, never `disabled`,
+# which every client since v0.12 rejects on: an old client simply ignores it
+# and enforces.
+DISABLED_BYPASS = "bypass"
+BUCKET_FIELD_BYPASS = "bypass"
+
+# Stamps expire (ADR-151 decision 8). A `bypass` or `b_{name}_soft` stamp holds
+# a deadline, `N` epoch milliseconds, at most T (the writer's `stamp_ttl`) after
+# the config read that justified it, and means something only before it. A
+# fan-out can miss a bucket (a create landing after it, an aggregator clone of
+# an older image, a partial failure), and a stamp the fast path honoured
+# forever would then admit without limit forever (review D1). Past the deadline
+# the fast path sends the request to the slow path, which renews the stamp or
+# removes it from config read uncached. Only a write built from a fresh config
+# read sets or extends one; the aggregator only ever copies them.
+DEFAULT_STAMP_TTL_SECONDS = 60
+# The smallest T a writer accepts: every stamped bucket pays one slow pass per
+# shard per T, so a T of a few seconds would demote it to the slow path.
+MIN_STAMP_TTL_SECONDS = 10
+# A stamp written as `BOOL true` by a pre-release build: present, and already
+# expired. `BOOL > N` is false on DynamoDB (mismatched types compare false), so
+# the fast path sends it to the slow path, which replaces or removes it.
+STAMP_EXPIRED = -1
+_STAMP_RNG = random.Random()
+
+
+def validate_stamp_ttl(seconds: float) -> float:
+    """Check a writer's ``stamp_ttl`` (ADR-151 decision 8) and return it.
+
+    Raises:
+        ValueError: Below :data:`MIN_STAMP_TTL_SECONDS`: every bypassed or soft
+            bucket renews its stamp through a slow pass once per shard per T,
+            so a T of a few seconds would demote it to the slow path.
+    """
+    if seconds < MIN_STAMP_TTL_SECONDS:
+        raise ValueError(
+            f"stamp_ttl must be at least {MIN_STAMP_TTL_SECONDS} seconds, got {seconds!r}: "
+            "every bypassed or soft bucket renews its stamp through a slow pass once per "
+            "shard per stamp_ttl"
+        )
+    return seconds
+
+
+def decode_stamp(attr: dict[str, Any] | None) -> int | None:
+    """A stamp's deadline (epoch ms) from its attribute, or None when absent.
+
+    Anything but a number (a pre-release ``BOOL true``) reads as present and
+    expired, :data:`STAMP_EXPIRED`.
+    """
+    if attr is None:
+        return None
+    raw = attr.get("N")
+    if raw is None:
+        return STAMP_EXPIRED
+    return int(raw)
+
+
+def stamp_value(deadline_ms: int) -> dict[str, Any]:
+    """The attribute a stamp read as ``deadline_ms`` holds, for a pin on it."""
+    if deadline_ms == STAMP_EXPIRED:
+        return {"BOOL": True}
+    return {"N": str(deadline_ms)}
+
+
+def stamp_deadline(now_ms: int, ttl_seconds: float, *, rng: random.Random | None = None) -> int:
+    """A stamp's deadline: ``now_ms + T × U(0.8, 1.0)`` (ADR-151 decision 8).
+
+    ``now_ms`` must be no later than the config read that justifies the stamp.
+    The jitter only shortens, so stamps written together are renewed spread
+    out rather than all at once.
+    """
+    draw = (rng or _STAMP_RNG).uniform(0.8, 1.0)
+    return now_ms + int(ttl_seconds * 1000 * draw)
+
 
 # Cascade policy (ADR-146). Tri-state on resource and entity config items:
 # absent = inherit, True/False = explicit; resolved by the ADR-125 walk and,
@@ -277,6 +370,10 @@ LIMIT_FIELD_RP = "rp"  # refill_period_seconds
 LIMIT_FIELD_SCHED = "sched"  # compact-encoded schedule (#222 §4.1)
 LIMIT_FIELD_RSCHED = "rsched"  # compact-encoded reset schedule (#222 §4.1)
 LIMIT_FIELD_RSA = "rsa"  # w_{name}_rsa — duration window length, seconds (ADR-142)
+# `l_{name}_soft` (or `w_…`) = BOOL true: the limit is soft (#467, ADR-151).
+# Two-state, part of the limit's definition: absent = hard. Ignored by
+# pre-0.17 readers, which discover a limit by its `_cp` attribute.
+LIMIT_FIELD_SOFT = "soft"
 
 # IANA timezone name for every schedule on the item, hoisted out of the
 # individual entries (#222 §4.1). One attribute per item, not per limit: it is
@@ -361,31 +458,45 @@ def owner_meta_condition(
     return " AND ".join(parts), names, values
 
 
-def encode_disabled(value: bool | None) -> dict[str, Any] | None:
-    """Encode a tri-state disabled value as a DynamoDB attribute.
+def encode_disabled(value: bool | str | None) -> dict[str, Any] | None:
+    """Encode a ``disabled`` config value as a DynamoDB attribute.
 
     Args:
-        value: True, False, or None (meaning "inherit from the level above").
+        value: True (disabled), False (explicit enforce), ``"bypass"``
+            (#311), or None (meaning "inherit from the level above").
 
     Returns:
-        A DynamoDB BOOL attribute, or None when the value is "inherit"
-        (the caller should omit the attribute entirely).
+        A DynamoDB attribute (``BOOL``, or ``S "bypass"``), or None when the
+        value is "inherit" (the caller should omit the attribute entirely).
+
+    Raises:
+        ValueError: any other string.
     """
     if value is None:
         return None
+    if isinstance(value, str):
+        if value != DISABLED_BYPASS:
+            raise ValueError(
+                f"disabled must be True, False, None or {DISABLED_BYPASS!r}, got {value!r}"
+            )
+        return {"S": value}
     return {"BOOL": value}
 
 
-def decode_disabled(item: dict[str, Any]) -> bool | None:
-    """Decode the tri-state disabled attribute from a DynamoDB item.
+def decode_disabled(item: dict[str, Any]) -> bool | str | None:
+    """Decode the ``disabled`` attribute from a DynamoDB item.
 
     Returns:
-        True or False when explicitly set, None when the attribute is
-        absent (meaning "inherit from the level above").
+        True or False when explicitly set, ``"bypass"`` for a bypass (#311),
+        None when the attribute is absent (meaning "inherit from the level
+        above"). A string this build does not know reads as explicit False,
+        the way a pre-0.17 reader reads ``"bypass"``: it enforces.
     """
     attr = item.get(CONFIG_FIELD_DISABLED)
     if not attr:
         return None
+    if attr.get("S") == DISABLED_BYPASS:
+        return DISABLED_BYPASS
     return bool(attr.get("BOOL", False))
 
 

@@ -537,17 +537,30 @@ Resources:
               - dynamodb:GetItem
               - dynamodb:BatchGetItem
               - dynamodb:Query
-              # Each Put / Update inside TransactWriteItems is authorised by
-              # PutItem / UpdateItem (IAM defines no TransactWriteItems
-              # action), and the fast path, adjustments and rollbacks are
-              # plain UpdateItems (ADR-152)
-              - dynamodb:PutItem
-              - dynamodb:UpdateItem
               # A bucket create is pinned to its owner's META (ADR-150)
               - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt RateLimitsTable.Arn
               - !Sub ${RateLimitsTable.Arn}/index/*
+          # Each Put / Update inside TransactWriteItems is authorised by
+          # PutItem / UpdateItem (IAM defines no TransactWriteItems action),
+          # and the fast path, adjustments and rollbacks are plain UpdateItems
+          # (ADR-152). Every acquire() write is a bucket item, `{ns}/BUCKET#…`,
+          # so these two are granted on bucket items only (#756): no config,
+          # entity, audit, registry or version write.
+          - Sid: BucketWrites
+            Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+            Condition:
+              ForAllValues:StringLike:
+                dynamodb:LeadingKeys:
+                  - "*/BUCKET#*"
+              "Null":
+                dynamodb:LeadingKeys: "false"
 
   # FullAccessPolicy: Full access for apps and ops - all operations
   FullAccessPolicy:
@@ -627,10 +640,6 @@ Resources:
               - dynamodb:GetItem
               - dynamodb:BatchGetItem
               - dynamodb:Query
-              # A bucket create is a Put, authorised by PutItem even inside
-              # TransactWriteItems (ADR-152)
-              - dynamodb:PutItem
-              - dynamodb:UpdateItem
               # A bucket create is pinned to its owner's META (ADR-150)
               - dynamodb:ConditionCheckItem
             Resource:
@@ -640,6 +649,22 @@ Resources:
               ForAllValues:StringLike:
                 dynamodb:LeadingKeys:
                   - "${aws:PrincipalTag/zael_namespace_id}/*"
+          # A bucket create is a Put, authorised by PutItem even inside
+          # TransactWriteItems (ADR-152); writes are granted on the
+          # namespace's bucket items only (#756).
+          - Sid: NamespaceBucketWrites
+            Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+            Condition:
+              ForAllValues:StringLike:
+                dynamodb:LeadingKeys:
+                  - "${aws:PrincipalTag/zael_namespace_id}/BUCKET#*"
+              "Null":
+                dynamodb:LeadingKeys: "false"
           - Sid: SharedReadAccess
             Effect: Allow
             Action:
@@ -676,6 +701,10 @@ Resources:
               - dynamodb:PutItem
               - dynamodb:UpdateItem
               - dynamodb:DeleteItem
+              # delete_entity deletes with BatchWriteItem (#742). LeadingKeys
+              # is checked on every item it puts or deletes, so it reaches
+              # exactly the keys below, as PutItem and DeleteItem already do.
+              - dynamodb:BatchWriteItem
               - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt RateLimitsTable.Arn
@@ -684,6 +713,10 @@ Resources:
               ForAllValues:StringLike:
                 dynamodb:LeadingKeys:
                   - "${aws:PrincipalTag/zael_namespace_id}/*"
+                  # The bare id is the namespace's GSI4 partition key: a
+                  # system-level soft change discovers its buckets there
+                  # (ADR-151, #467). No table item has it as its PK.
+                  - "${aws:PrincipalTag/zael_namespace_id}"
                   - "_/*"
 
   # NamespaceReadOnlyPolicy: Read-only access scoped to namespace + shared prefix

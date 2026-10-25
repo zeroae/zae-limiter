@@ -411,7 +411,8 @@ class TestProvisionerHandler:
         on_event(disable_event, MagicMock())
         mock_client.update_item.assert_called_once()
         assert (
-            mock_client.update_item.call_args.kwargs["UpdateExpression"] == "SET #disabled = :true"
+            mock_client.update_item.call_args.kwargs["UpdateExpression"]
+            == "SET #disabled = :true REMOVE #byp"
         )
 
         mock_client.update_item.reset_mock()
@@ -434,7 +435,9 @@ class TestProvisionerHandler:
         on_event(reenable_event, MagicMock())
 
         mock_client.update_item.assert_called_once()
-        assert mock_client.update_item.call_args.kwargs["UpdateExpression"] == "REMOVE #disabled"
+        assert (
+            mock_client.update_item.call_args.kwargs["UpdateExpression"] == "REMOVE #disabled, #byp"
+        )
 
     def test_apply_disabled_resource_and_entity_fans_out_resource_first(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
@@ -505,9 +508,9 @@ class TestProvisionerHandler:
         assert len(stamps) == 2
         first_call, second_call = stamps
         assert first_call.kwargs["Key"]["PK"] == {"S": "ns123/BUCKET#user-1#gpt-4#0"}
-        assert first_call.kwargs["UpdateExpression"] == "SET #disabled = :true"
+        assert first_call.kwargs["UpdateExpression"] == "SET #disabled = :true REMOVE #byp"
         assert second_call.kwargs["Key"]["PK"] == {"S": "ns123/BUCKET#vip-1#gpt-4#0"}
-        assert second_call.kwargs["UpdateExpression"] == "REMOVE #disabled"
+        assert second_call.kwargs["UpdateExpression"] == "REMOVE #disabled, #byp"
 
     def test_entity_wide_default_directive_fans_out_unscoped_across_resources(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
@@ -617,7 +620,7 @@ class TestProvisionerHandler:
         assert query_kwargs["ExpressionAttributeValues"][":pk"] == {"S": "ns123/RESOURCE#gpt-4"}
         mock_client.update_item.assert_called_once()
         update_expr = mock_client.update_item.call_args.kwargs["UpdateExpression"]
-        assert update_expr == "SET #disabled = :true"
+        assert update_expr == "SET #disabled = :true REMOVE #byp"
 
     def test_cfn_create_with_disabled_absent_key_still_fans_out_as_not_disabled(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
@@ -818,6 +821,24 @@ class TestSyncBucketParamChanges:
         ):
             _sync_bucket_param_changes("tbl", "ns123", changes)
         sync.assert_not_called()
+
+    def test_each_change_is_timed_on_its_own(self, mock_handler_boto3):
+        """Review E4: one instant for a whole apply stamped soft deadlines
+        already expired on a long one; each change's sync is timed just
+        before it runs (ADR-151 decision 8)."""
+        limits = {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}
+        changes = [
+            Change(
+                action="update", level="entity", target=f"user-{i}/gpt-4", data={"limits": limits}
+            )
+            for i in (1, 2)
+        ]
+        with (
+            patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync,
+            patch("zae_limiter_provisioner.handler.time.time", side_effect=[1.0, 51.0]),
+        ):
+            _sync_bucket_param_changes("tbl", "ns123", changes)
+        assert [c.kwargs["now_ms"] for c in sync.call_args_list] == [1_000, 51_000]
 
 
 class TestCfnPropertiesToManifestSchedules:
@@ -1520,7 +1541,7 @@ class TestCfnScalarCoercionEndToEnd:
         assert result["status"] == "applied"
 
         stamps = _disable_stamps(mock_client)
-        assert [c.kwargs["UpdateExpression"] for c in stamps] == ["REMOVE #disabled"]
+        assert [c.kwargs["UpdateExpression"] for c in stamps] == ["REMOVE #disabled, #byp"]
 
     def test_stringified_true_still_stamps(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
@@ -1550,7 +1571,9 @@ class TestCfnScalarCoercionEndToEnd:
         }
         assert on_event(event, MagicMock())["status"] == "applied"
         stamps = _disable_stamps(mock_client)
-        assert [c.kwargs["UpdateExpression"] for c in stamps] == ["SET #disabled = :true"]
+        assert [c.kwargs["UpdateExpression"] for c in stamps] == [
+            "SET #disabled = :true REMOVE #byp"
+        ]
 
     def test_stringified_numeric_limits_apply_without_a_type_error(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
