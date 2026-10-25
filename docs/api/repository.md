@@ -29,7 +29,22 @@ See [ADR-108](../adr/108-repository-protocol.md) for the design rationale.
 |-------------|---------------------------|----------|
 | `Repository.open()` | Yes — deploys the stack, registers namespaces, updates the Lambda | Application code, prototyping, LocalStack dev |
 | `Repository.builder().build()` | Yes — with custom options (permission boundaries, IAM naming, Lambda config) | Enterprise deployments |
-| `Repository.connect()` | **No** — reads only, raises when anything is missing | Infrastructure owned by your own CloudFormation, Terraform, or CDK |
+| `Repository.connect()` | **No** — reads only, raises when anything is missing | Infrastructure owned by your own CloudFormation, Terraform, or CDK, or an application role that may only acquire |
+
+!!! warning "An acquire-only role cannot set up a stack (v0.17.0)"
+    Since v0.17.0 the acquire policies (`AcquireOnlyPolicy`, `NamespaceAcquirePolicy`)
+    allow writes to rate-limit **buckets** only (ADR-152). `open()` writes more than that
+    when there is something to set up: the first time it meets a stack or namespace
+    (registering the namespace, writing the version record), and whenever the stack's
+    Lambdas are older than the client (`auto_update`). Under an acquire-only role those
+    writes fail with an access error.
+
+    - **Set up and upgrade with an operator role** holding `FullAccessPolicy` /
+      `NamespaceFullAccessPolicy`: `zae-limiter deploy`, `zae-limiter upgrade`,
+      `zae-limiter namespace register`, or one `open()` run under that role.
+    - **Have acquire-only applications call `connect()`**, which only reads. Once
+      setup is done, `open()` also only reads, but it would try to update the Lambdas
+      again after the next client upgrade.
 
 ### `Repository.connect()`
 
