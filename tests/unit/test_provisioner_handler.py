@@ -742,6 +742,24 @@ class TestSyncBucketParamChanges:
         assert kwargs["ttl_multiplier"] == 0
         assert kwargs["stale_limit_names"] is None
 
+    def test_a_change_with_nothing_to_sync_is_still_reported_done(self, mock_handler_boto3):
+        """Its pending item must go: nothing is left to sync for it."""
+        done = MagicMock()
+        changes = [
+            Change(action="update", level="entity", target="u1/gpt-4", data={"limits": {}}),
+            Change(action="delete", level="entity", target="u2/gpt-4"),
+        ]
+        with (
+            patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync,
+            patch("zae_limiter_provisioner.handler.resolve_effective_limits", return_value={}),
+        ):
+            _sync_bucket_param_changes("tbl", "ns123", changes, on_done=done)
+        sync.assert_not_called()
+        assert [c.args for c in done.call_args_list] == [
+            ("sync", "entity", "u1/gpt-4"),
+            ("sync", "entity", "u2/gpt-4"),
+        ]
+
     def test_entity_delete_reconciles_to_defaults_with_ttl(self, mock_handler_boto3):
         changes = [
             Change(
@@ -2492,6 +2510,39 @@ class TestPendingItems:
 
         release(client, self.TABLE, "ns", "tok-b", key)
         assert read_pending(client, self.TABLE, "ns") == []
+
+    def test_the_read_follows_every_page(self):
+        from zae_limiter_provisioner.pending import Pending, read_pending
+
+        def item(target):
+            return {
+                "kind": {"S": "sync"},
+                "level": {"S": "entity"},
+                "target": {"S": target},
+                "token": {"S": "t"},
+            }
+
+        client = MagicMock()
+        client.query.side_effect = [
+            {"Items": [item("u1/a"), {"SK": {"S": "malformed"}}], "LastEvaluatedKey": {"k": 1}},
+            {"Items": [item("u2/a")]},
+        ]
+
+        assert read_pending(client, "t", "ns") == [
+            Pending("sync", "entity", "u1/a", "t"),
+            Pending("sync", "entity", "u2/a", "t"),
+        ]
+        assert client.query.call_args_list[1].kwargs["ExclusiveStartKey"] == {"k": 1}
+
+    def test_a_failed_release_is_logged_not_raised(self, client):
+        """The fan-out landed; a leftover item only costs the next apply a retry."""
+        from zae_limiter_provisioner.pending import release
+
+        failing = MagicMock()
+        failing.exceptions = client.exceptions
+        failing.delete_item.side_effect = RuntimeError("throttled")
+
+        release(failing, self.TABLE, "ns", "tok", ("sync", "entity", "u1/gpt-4"))
 
     def test_a_claim_takes_only_what_it_read(self, client):
         from zae_limiter_provisioner.pending import Pending, claim, read_pending, write_ahead
