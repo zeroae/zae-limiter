@@ -332,12 +332,15 @@ plain apply. `limits apply --full` rewrites every declared entry and pushes its 
 existing buckets again, as every apply did before change-only applies. A change to `soft` alone,
 or to `disabled: bypass` alone, is a change like any other: it is written and fanned out.
 
-When an apply that changes more than 100 entries is interrupted (a Lambda timeout), the next
-apply runs in full. `plan` and `diff` show that too, listing every declared entry under a note:
+An apply records every bucket fan-out it owes before it writes any config, and removes each one
+as soon as it lands. An apply that is interrupted (a Lambda timeout) or whose fan-out fails
+leaves only the unfinished ones, and the next apply retries exactly those, even when no entry
+changed. An interrupted `--full` apply therefore resumes where it stopped instead of starting
+again. `plan` and `diff` report them:
 
 ```
-Plan: 1201 change(s)
-Note: an earlier apply was interrupted before its fan-outs finished, so the next apply rewrites and fans out every declared entry.
+No changes. Infrastructure is up-to-date.
+Note: 3 bucket fan-out(s) an earlier apply did not finish; the next apply retries them.
 ```
 
 ### Detect Drift
@@ -400,12 +403,12 @@ Errors (1):
   - bucket param sync entity user-123: <reason>
 ```
 
-Every write is idempotent, so re-running the same manifest reconciles the remainder. A fan-out
-that failed is recorded in the `#PROVISIONER` record and retried by the next apply even when the
-manifest has not changed (unchanged entries are otherwise skipped). The entries an apply is about
-to change are recorded **before** it writes them, so an apply that is interrupted (a Lambda
-timeout) is finished by the next one. The record is written either
-way, so it always describes the config that is actually in the table.
+Every write is idempotent, so re-running the same manifest reconciles the remainder. Each
+fan-out an apply owes is recorded as its own pending item **before** the config is written, and
+removed only once it lands, so one that failed or was cut short by a Lambda timeout is retried by
+the next apply even when the manifest has not changed (unchanged entries are otherwise skipped).
+Two applies running at once cannot erase each other's pending work. The `#PROVISIONER` record is
+written either way, so it always describes the config that is actually in the table.
 
 !!! note "Provisioner Lambda"
     The `plan`, `apply`, and `diff` subcommands invoke the `{name}-limits-provisioner` Lambda function. This function must be deployed as part of the main stack before using these commands. It is deployed by default; `zae-limiter deploy --no-provisioner` (or `--no-iam`, which leaves no role for it) skips it.
