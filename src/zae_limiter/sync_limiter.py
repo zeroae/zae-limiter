@@ -70,6 +70,7 @@ from .sync_lease import (
     OwnerStampLostError,
     PeriodNotAppliedError,
     QuotaMoveLostError,
+    SeedNotAppliedError,
     SyncLease,
     _contention_rejection,
     _is_transaction_conflict,
@@ -2352,7 +2353,7 @@ class SyncRateLimiter:
                     if disable_bypass:
                         raise AssertionError("an enforced plan carries no bypass write") from None
                     disable_bypass = True
-                except PeriodNotAppliedError:
+                except (PeriodNotAppliedError, SeedNotAppliedError):
                     if period_redone:
                         raise
                     period_redone = True
@@ -2612,7 +2613,7 @@ class SyncRateLimiter:
                 if grown == enforced:
                     raise AssertionError("an enforced part carries no bypass write") from None
                 return plan_and_commit(disable_moves, moves_contended, redone, reread, grown)
-            except PeriodNotAppliedError:
+            except (PeriodNotAppliedError, SeedNotAppliedError):
                 if redone:
                     raise
                 return plan_and_commit(disable_moves, moves_contended, True, reread, enforced)

@@ -826,12 +826,17 @@ class TestAcceptance:
                 )
             return await real(items)
 
+        # The pinned seed loses; the retry cannot seed a quota and finds it
+        # still missing, so the acquire re-plans from a fresh read (#771),
+        # which sees the doubled count and seeds shard 0 at the half share.
         admitted = 0
         with patch.object(repo, "transact_write", doubling_lands_first):
-            with pytest.raises(RateLimitExceeded):
-                async with slow.acquire(eid, RESOURCE, consume={"rpd": 1}):
-                    admitted += 1
-        assert "b_rpd_tk" not in await _item(repo, eid, 0), "the pinned seed lost"
+            async with slow.acquire(eid, RESOURCE, consume={"rpd": 1}):
+                admitted += 1
+        assert raced == [1]
+        shard0 = await _item(repo, eid, 0)
+        assert shard0["b_rpd_tk"]["N"] == "499000", "seeded at the doubled count"
+        assert shard0["b_rpd_gc"]["N"] == "2"
 
         repo._entity_cache[(ns, eid)] = (False, None, {RESOURCE: 2})
         repo._now_ms = lambda: T0 + 2_000

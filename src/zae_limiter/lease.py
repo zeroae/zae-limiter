@@ -534,6 +534,25 @@ class PeriodNotAppliedError(RateLimitExceeded):
     """
 
 
+class SeedNotAppliedError(RateLimitExceeded):
+    """The consumption-only retry found a limit the item does not carry yet (#771).
+
+    The slow pass was to seed it (#633) on its rf-locked write, which lost its
+    lock to a writer that does not seed; the retry cannot seed a quota,
+    session window or schedule (it stamps no ``vu``), and must not debit a
+    balance nothing granted — a ``tk`` with no ADR-145 ``gc``, which every
+    later pass would read as present and never seed. Nothing was written, so
+    the acquire re-plans once from a fresh read (`RateLimiter._slow_acquire`),
+    whose rf-locked write seeds it. Raised as the contended 429 (#724): the
+    request was not short of anything, it lost two writes in a row to other
+    writers, so a second loss stands as "retry shortly" — never a rejection on
+    a soft limit's own balance (ADR-151 decision 1).
+    """
+
+    def __init__(self, statuses: list[LimitStatus]) -> None:
+        super().__init__(statuses, contended=True)
+
+
 class BypassLostError(Exception):
     """A bypass-shaped slow-path write found the bucket's stamp gone (internal, #311).
 
@@ -1595,6 +1614,9 @@ class Lease:
 
             # Quotas whose reset, roll or open the lost write carried (#743).
             retry_guards: dict[tuple[str, str, int], dict[str, tuple[int | None, int | None]]] = {}
+            # Limits the lost write was to seed and the retry cannot (#771).
+            retry_unseeded: dict[tuple[str, str, int], set[str]] = {}
+            retry_maybe_missing: set[tuple[str, str, int]] = set()
 
             def _consumption_only(
                 entity_id: str, resource: str, shard_id: int, group_entries: list[LeaseEntry]
@@ -1639,6 +1661,24 @@ class Lease:
                 }
                 if not consumed:
                     return None
+                # Every limit this retry debits without seeding it: one the
+                # failed item turns out not to carry fails the write rather
+                # than land on nothing (#771), and the pass is re-planned. A
+                # limit to seed that this retry cannot (a quota, window or
+                # schedule); every limit of a create that lost its race, since
+                # the winner's item may not carry it (a stale config, or a
+                # clone of a pre-seed image) and the create's plan is no seed
+                # plan; and one gone since the read (a swept item, a param-sync
+                # REMOVE), which would otherwise be reported exceeded from
+                # memory — on a soft limit, a rejection ADR-151 decision 1
+                # forbids.
+                unseeded = {name for name in consumed if name not in seeds}
+                # Without an image only a limit the pass already knew might be
+                # missing (one to seed, or a lost create's) is worth a re-plan.
+                if any((e._seed or e._is_new) and e.limit.name in unseeded for e in group_entries):
+                    retry_maybe_missing.add((entity_id, resource, shard_id))
+                if unseeded:
+                    retry_unseeded[(entity_id, resource, shard_id)] = unseeded
                 guards = _period_guards(group_entries, now_ms)
                 if guards:
                     retry_guards[(entity_id, resource, shard_id)] = guards
@@ -1748,6 +1788,12 @@ class Lease:
                         images = _retry_failure_images(
                             retry_exc, [key for key, _group in retry_groups]
                         )
+                        if _still_unseeded(
+                            retry_unseeded, images, bool(retry_maybe_missing)
+                        ) and not _genuinely_short(retry_groups, images, now_ms):
+                            raise SeedNotAppliedError(
+                                _contention_rejection(self.entries, now_ms).statuses
+                            ) from retry_exc
                         unapplied = _unapplied_periods(retry_guards, images, now_ms)
                         if unapplied:
                             raise PeriodNotAppliedError(
@@ -2749,6 +2795,74 @@ def _unapplied_periods(
             ):
                 unapplied.add((key, name))
     return unapplied
+
+
+def _still_unseeded(
+    unseeded: dict[tuple[str, str, int], set[str]],
+    images: dict[tuple[str, str, int], dict[str, Any]],
+    maybe_missing: bool = True,
+) -> bool:
+    """A failed retry's item lacks a limit the retry debited without seeding (#771).
+
+    Read off each failed write's ``ALL_OLD`` image: the limit's ``cp`` or
+    ``tk`` is absent. A transaction returns an image only for the items whose
+    condition failed, so an item with none passed its condition and is not
+    the cause. With no image at all (a backend that returns none) nothing can
+    be told: the pass is re-planned when ``maybe_missing`` — it was to seed a
+    limit, or its create lost its race, so the retry's debit may have had no
+    balance to land on and a fresh read either seeds it or finds the real
+    shortfall. Otherwise the rejection stands, as before.
+    """
+    if not images:
+        return maybe_missing and bool(unseeded)
+    return any(
+        (item := images.get(key)) is not None
+        and any(
+            bucket_attr(name, field) not in item
+            for name in names
+            for field in (BUCKET_FIELD_CP, BUCKET_FIELD_TK)
+        )
+        for key, names in unseeded.items()
+    )
+
+
+def _genuinely_short(
+    groups: list[tuple[tuple[str, str, int], list[LeaseEntry]]],
+    images: dict[tuple[str, str, int], dict[str, Any]],
+    now_ms: int,
+) -> bool:
+    """A failed retry's image shows a limit the item carries short of its debit.
+
+    A real rejection outranks a missing limit's re-plan (#771 review): the
+    redo would only find the same shortfall, a round trip later — or, on a
+    second loss, report it as the contended 429. Only an enforced limit
+    counts: a trusted soft one carries no balance condition, and one whose
+    image stamp is live is waived (ADR-151 decision 1). Only a declared one:
+    the reserved ``wcu`` is never a reason to reject (a short one doubles the
+    shard count on the fast path).
+    """
+    for key, group in groups:
+        item = images.get(key)
+        if not item:
+            continue
+        trusted = _soft_trusted(group)
+        for entry in group:
+            name = entry.limit.name
+            raw_tk = item.get(bucket_attr(name, BUCKET_FIELD_TK), {}).get("N")
+            if (
+                entry.consumed <= 0
+                or not entry._declared
+                or name in trusted
+                or raw_tk is None
+                or bucket_attr(name, BUCKET_FIELD_CP) not in item
+            ):
+                continue
+            soft_until = decode_stamp(item.get(bucket_attr(name, BUCKET_FIELD_SOFT)))
+            if soft_until is not None and soft_until > now_ms:
+                continue
+            if int(raw_tk) < entry.consumed * 1000:
+                return True
+    return False
 
 
 def _period_statuses(
