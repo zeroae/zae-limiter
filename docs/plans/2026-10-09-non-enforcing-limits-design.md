@@ -94,7 +94,7 @@ attribute_not_exists(disabled) AND (attribute_not_exists(vu) OR vu > now)`.
 Each declared limit's term becomes
 
 ```
-(#byp > :now OR (#o{i} > :now AND attribute_exists(#oc{i})) OR #t{i} >= :h{i})
+(#byp > :now OR (#o{i} > :now AND attribute_exists(#oc{i}) AND attribute_exists(#t{i})) OR #t{i} >= :h{i})
                                                     -- #o{i} -> b_{name}_soft, #oc{i} -> b_{name}_cp
 AND (attribute_not_exists(#o{i}) OR #o{i} > :now)   -- an expired stamp is renewed first
 ```
@@ -102,7 +102,10 @@ AND (attribute_not_exists(#o{i}) OR #o{i} > :now)   -- an expired stamp is renew
 The stamp admits only beside the limit's `cp`: a resource- or system-level soft fan-out stamps
 every bucket, including one created before the limit existed, and on the stamp alone the `ADD`
 wrote a `tk` with no `cp` that no reader sees, so the #633 seed never ran (review D3). Without
-the limit, both halves fail and the slow path seeds it.
+the limit, both halves fail and the slow path seeds it. It needs the balance too (#744 review):
+the entity-level param sync writes `cp` and the stamp but never `tk`, and only its `vu = 0`
+kept the fast path off such an item; once that was cleared, the `ADD` beside `cp` alone created
+a balance nothing granted.
 
 `:now` is the bound `now_ms` the fast path already sends as `:vu_now` (#430). The stamp is a
 deadline (§6.3): a stamp past it admits nothing, and the second term sends the request to the
@@ -269,7 +272,7 @@ its Path 2 clone copies the base item verbatim, deadline included, and never ext
 
 | Write | Stamp terms |
 |---|---|
-| Fast path, enforce shape | per declared limit `(#byp > :now OR (#o{i} > :now AND attribute_exists(#oc{i})) OR #t{i} >= :h{i})` and `(attribute_not_exists(#o{i}) OR #o{i} > :now)`; once `(attribute_not_exists(#byp) OR #byp > :now)` and `(#byp > :now OR attribute_not_exists(#vu) OR #vu > :now)` |
+| Fast path, enforce shape | per declared limit `(#byp > :now OR (#o{i} > :now AND attribute_exists(#oc{i}) AND attribute_exists(#t{i})) OR #t{i} >= :h{i})` and `(attribute_not_exists(#o{i}) OR #o{i} > :now)`; once `(attribute_not_exists(#byp) OR #byp > :now)` and `(#byp > :now OR attribute_not_exists(#vu) OR #vu > :now)` |
 | Fast path, bypass shape | `#byp > :now` |
 | Slow path, bypassed existing item (`build_bypass_consume`) | `ADD tc`, `SET bypass = :deadline`; condition `attribute_exists(#byp)` (any deadline: only a pass that read bypass config uncached builds it, so it is the renewal) |
 | Slow path, rf-locked normal write | `SET b_{n}_soft = :deadline` / `REMOVE`, `SET bypass = :deadline` / `REMOVE`, each pinned on the stamp as read; each balance floor `(#bo{i} > :now OR tk >= floor)` |
