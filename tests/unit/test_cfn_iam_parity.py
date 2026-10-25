@@ -312,6 +312,8 @@ class TestNamespaceScopedPolicies:
             "dynamodb:PutItem",
             "dynamodb:UpdateItem",
             "dynamodb:DeleteItem",
+            # delete_entity deletes with BatchWriteItem (#742)
+            "dynamodb:BatchWriteItem",
             "dynamodb:ConditionCheckItem",
         }
 

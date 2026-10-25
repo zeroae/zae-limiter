@@ -701,6 +701,10 @@ Resources:
               - dynamodb:PutItem
               - dynamodb:UpdateItem
               - dynamodb:DeleteItem
+              # delete_entity deletes with BatchWriteItem (#742). LeadingKeys
+              # is checked on every item it puts or deletes, so it reaches
+              # exactly the keys below, as PutItem and DeleteItem already do.
+              - dynamodb:BatchWriteItem
               - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt RateLimitsTable.Arn

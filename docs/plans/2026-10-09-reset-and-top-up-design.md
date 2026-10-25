@@ -231,9 +231,12 @@ Per shard, one `Update` with the same shape as `build_composite_normal`, at cons
   `delete_entity` could not find, above) therefore matches an entity recreated within the
   same second, and a top-up with the same key returns the old result and grants 0. It ends
   once #716 merges, because #716 writes a random `pinc` on every create.
-- **Known, out of scope (pre-existing in `delete_entity`):** `BatchWriteItem`'s
-  `UnprocessedItems` is ignored, its META and GSI3 queries are not paginated, and the ns-full
-  policy lacks `BatchWriteItem`. None is introduced by #470; each predates it.
+- **Known, out of scope (pre-existing in `delete_entity`), since fixed by #742:**
+  `BatchWriteItem`'s `UnprocessedItems` was ignored, its META and GSI3 queries were not
+  paginated, and the ns-full policy lacked `BatchWriteItem`. None was introduced by #470. Since
+  #742 the deletes are resent with backoff and every query page is read; a delete that still
+  stops part-way raises, and deletes operation records before their shard-0 bucket so a second
+  call can still find them.
 - **Caller idempotency key.** `reset_bucket` / `top_up(..., idempotency_key=...)` (CLI
   `--idempotency-key`) uses the caller's key as the id: a retry within three days returns the
   first call's result and writes nothing (+1 RCU to read the record first). A key reused for the
