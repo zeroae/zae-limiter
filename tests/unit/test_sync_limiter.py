@@ -13592,6 +13592,157 @@ class TestRetryDebitsOnlyAGrantedBalance:
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "7000"
         assert item[bucket_attr("q", BUCKET_FIELD_GC)]["N"] == "1"
 
+    @pytest.mark.parametrize(
+        ("soft", "wcu_spent"),
+        [(True, False), (False, False), (True, True)],
+        ids=["soft", "hard", "soft-wcu-spent"],
+    )
+    def test_a_lost_create_race_to_an_item_without_the_quota_is_replanned(
+        self, sync_limiter, soft, wcu_spent
+    ):
+        """The second door (#771 review): this pass creates the bucket, and
+        another writer (a process with a stale config, or an aggregator clone
+        of a pre-seed image) creates it first carrying ``rpm`` only. The lost
+        ``Put`` is downgraded to the consumption-only retry, whose quota is
+        trusted soft (config read fresh on a create) — no condition at all —
+        so its ``ADD`` landed on the winner's item: ``tk = -3000`` with no
+        ``cp`` or ``gc``, then seeded at 7000, forgiving the 3 (13 admitted
+        against 10). A hard one was a 429 marking ``q`` exceeded although it
+        held its whole allowance. Either way the pass now re-plans and seeds.
+        A winner whose reserved ``wcu`` is spent is no real shortfall: it must
+        not stand in for one and turn the re-plan into a 429."""
+        repo = sync_limiter._repository
+        quota = Limit.quota("q", 10, cron="0 0 * * *", soft=soft)
+        repo.set_limits("race", [self.RPM, quota], resource="r")
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        original = repo.transact_write
+        raced: list[int] = []
+
+        def winner_first(items):
+            if not raced and "Put" in repr(items):
+                raced.append(1)
+                now_ms = repo._now_ms()
+                state = BucketState.from_limit("race", "r", self.RPM, now_ms)
+                original([repo.build_composite_create("race", "r", [state], now_ms)])
+                if wcu_spent:
+                    client = repo._get_client()
+                    client.update_item(
+                        TableName=repo.table_name,
+                        Key={
+                            "PK": {"S": pk_bucket(repo._namespace_id, "race", "r", 0)},
+                            "SK": {"S": sk_state()},
+                        },
+                        UpdateExpression="SET #w = :zero",
+                        ExpressionAttributeNames={"#w": bucket_attr("wcu", BUCKET_FIELD_TK)},
+                        ExpressionAttributeValues={":zero": {"N": "0"}},
+                    )
+            return original(items)
+
+        repo.transact_write = winner_first
+        try:
+            with slow.acquire("race", "r", {"rpm": 1, "q": 3}):
+                pass
+        finally:
+            repo.transact_write = original
+        assert raced == [1]
+        item = _raw_bucket(repo, "race", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "7000"
+        assert item[bucket_attr("q", BUCKET_FIELD_GC)]["N"] == "1"
+        assert bucket_attr("q", BUCKET_FIELD_CP) in item
+
+    def test_a_soft_limit_removed_from_the_item_mid_flight_is_replanned(self, sync_limiter):
+        """A soft quota the item carried when read is gone by the retry (a
+        swept item or a param-sync REMOVE, here its attributes removed by the
+        writer that took the lock). The retry fails on it; before, the failure
+        was a 429 marking the soft limit exceeded from memory, which ADR-151
+        decision 1 forbids. It now re-plans, and the fresh pass seeds it."""
+        quota = Limit.quota("q", 10, cron="0 0 * * *", soft=True)
+        repo = self._with_quota_added(sync_limiter, "gone", quota)
+        with sync_limiter.acquire("gone", "r", {"rpm": 1, "q": 1}):
+            pass
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        client = repo._get_client()
+        original = repo.transact_write
+        raced: list[int] = []
+
+        def remove_q_first(items):
+            if not raced and ":expected_rf" in repr(items):
+                raced.append(1)
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": pk_bucket(repo._namespace_id, "gone", "r", 0)},
+                        "SK": {"S": sk_state()},
+                    },
+                    UpdateExpression="REMOVE #tk, #cp, #gc ADD rf :one",
+                    ExpressionAttributeNames={
+                        "#tk": bucket_attr("q", BUCKET_FIELD_TK),
+                        "#cp": bucket_attr("q", BUCKET_FIELD_CP),
+                        "#gc": bucket_attr("q", BUCKET_FIELD_GC),
+                    },
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            return original(items)
+
+        repo.transact_write = remove_q_first
+        try:
+            with slow.acquire("gone", "r", {"rpm": 1, "q": 3}):
+                pass
+        finally:
+            repo.transact_write = original
+        assert raced == [1]
+        item = _raw_bucket(repo, "gone", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "7000"
+        assert item[bucket_attr("q", BUCKET_FIELD_GC)]["N"] == "1"
+
+    def test_a_real_shortfall_outranks_the_missing_limits_replan(self, sync_limiter):
+        """The lock is lost to a writer that also spent ``rpm``: the retry's
+        image shows the quota still missing **and** ``rpm`` genuinely short.
+        The rejection is the real one, ``rpm`` exceeded — not a re-plan that
+        would only find the same shortfall, nor a contended 429."""
+        quota = Limit.quota("q", 10, cron="0 0 * * *")
+        repo = self._with_quota_added(sync_limiter, "short", quota)
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        client = repo._get_client()
+        original = repo.transact_write
+        raced: list[int] = []
+
+        def spend_rpm_first(items):
+            if not raced and ":expected_rf" in repr(items):
+                raced.append(1)
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": pk_bucket(repo._namespace_id, "short", "r", 0)},
+                        "SK": {"S": sk_state()},
+                    },
+                    UpdateExpression="SET #tk = :zero ADD rf :one",
+                    ExpressionAttributeNames={"#tk": bucket_attr("rpm", BUCKET_FIELD_TK)},
+                    ExpressionAttributeValues={":zero": {"N": "0"}, ":one": {"N": "1"}},
+                )
+            return original(items)
+
+        repo.transact_write = spend_rpm_first
+        fetches: list[int] = []
+        real_fetch = slow._fetch_entity_and_buckets
+
+        def counting(*args, **kwargs):
+            fetches.append(1)
+            return real_fetch(*args, **kwargs)
+
+        try:
+            with patch.object(slow, "_fetch_entity_and_buckets", counting):
+                with pytest.raises(RateLimitExceeded) as exc_info:
+                    with slow.acquire("short", "r", {"rpm": 1, "q": 3}):
+                        pass
+        finally:
+            repo.transact_write = original
+        assert raced == [1]
+        assert len(fetches) == 1, "not re-planned"
+        rejection = exc_info.value
+        assert rejection.contended is False
+        assert any(s.limit_name == "rpm" and s.exceeded for s in rejection.statuses)
+
     def test_a_hard_quota_is_seeded_not_rejected(self, sync_limiter):
         quota = Limit.quota("q", 10, cron="0 0 * * *")
         repo = self._with_quota_added(sync_limiter, "hard", quota)
@@ -13647,6 +13798,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
 
         key, other = (("e", "r", 0), ("p", "r", 0))
         assert _still_unseeded({key: {"q"}}, {}) is True
+        assert _still_unseeded({key: {"q"}}, {}, maybe_missing=False) is False
         seeded = {
             bucket_attr("q", BUCKET_FIELD_CP): {"N": "10000"},
             bucket_attr("q", BUCKET_FIELD_TK): {"N": "1000"},

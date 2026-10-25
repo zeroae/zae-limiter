@@ -4082,11 +4082,12 @@ class Repository:
                 as ``if_not_exists``. A limit another writer seeded first is
                 therefore debited, never re-seeded.
             soft_trusted: As for :meth:`build_composite_normal` (#467): these
-                soft limits carry no balance condition, and every other limit's
-                condition admits on the item's own soft stamp while it is live
-                at ``now_ms`` — and only beside the limit's ``cp`` and ``tk``
-                (#771), so a limit missing from the item is never debited onto
-                a balance nothing granted. A soft seed carries none either —
+                soft limits carry no balance condition, only that the item
+                carries their ``cp`` and ``tk``; every other limit's condition
+                admits on the item's own soft stamp while it is live at
+                ``now_ms`` — and only beside the limit's ``cp`` and ``tk``
+                (#771). Either way a limit missing from the item is never
+                debited onto a balance nothing granted. A soft seed carries none either —
                 its soft-ness came from config read uncached on this pass. The
                 retry never writes a stamp, so an expired one admits nothing
                 here.
@@ -4135,14 +4136,21 @@ class Repository:
             # stamp waives it otherwise. A soft limit is never a reason to
             # reject (ADR-151 decision 1).
             waiver = ""
+            cp_alias = f"#be{i}"
+            attr_names[cp_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
             if name in soft_trusted:
                 del attr_values[tk_threshold]
                 edge, window_start = None, None
+                # No balance condition, but never onto a limit the item does
+                # not carry: a lost create's ADD lands on the winner's item,
+                # which may lack it (#771 review). The write fails instead
+                # and the acquire re-plans.
+                condition_parts.append(
+                    f"(attribute_exists({cp_alias}) AND attribute_exists({tk_alias}))"
+                )
             else:
                 soft_alias = f"#bo{i}"
-                cp_alias = f"#be{i}"
                 attr_names[soft_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
-                attr_names[cp_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
                 attr_values[":bnow"] = {"N": str(stamp_now)}
                 # The stamp waives the balance only beside the limit's `cp`
                 # and `tk`, as on the fast path (#744): a limit the item does

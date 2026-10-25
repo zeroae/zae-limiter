@@ -1220,6 +1220,7 @@ class SyncLease:
             )
             retry_guards: dict[tuple[str, str, int], dict[str, tuple[int | None, int | None]]] = {}
             retry_unseeded: dict[tuple[str, str, int], set[str]] = {}
+            retry_maybe_missing: set[tuple[str, str, int]] = set()
 
             def _consumption_only(
                 entity_id: str, resource: str, shard_id: int, group_entries: list[LeaseEntry]
@@ -1250,11 +1251,9 @@ class SyncLease:
                 }
                 if not consumed:
                     return None
-                unseeded = {
-                    e.limit.name
-                    for e in group_entries
-                    if e._seed and e.limit.name in consumed and (e.limit.name not in seeds)
-                }
+                unseeded = {name for name in consumed if name not in seeds}
+                if any((e._seed or e._is_new) and e.limit.name in unseeded for e in group_entries):
+                    retry_maybe_missing.add((entity_id, resource, shard_id))
                 if unseeded:
                     retry_unseeded[entity_id, resource, shard_id] = unseeded
                 guards = _period_guards(group_entries, now_ms)
@@ -1349,7 +1348,9 @@ class SyncLease:
                         images = _retry_failure_images(
                             retry_exc, [key for key, _group in retry_groups]
                         )
-                        if _still_unseeded(retry_unseeded, images):
+                        if _still_unseeded(retry_unseeded, images, bool(retry_maybe_missing)) and (
+                            not _genuinely_short(retry_groups, images, now_ms)
+                        ):
                             raise SeedNotAppliedError(
                                 _contention_rejection(self.entries, now_ms).statuses
                             ) from retry_exc
@@ -2293,19 +2294,21 @@ def _unapplied_periods(
 def _still_unseeded(
     unseeded: dict[tuple[str, str, int], set[str]],
     images: dict[tuple[str, str, int], dict[str, Any]],
+    maybe_missing: bool = True,
 ) -> bool:
-    """A failed retry's item still lacks a limit it was to seed and could not (#771).
+    """A failed retry's item lacks a limit the retry debited without seeding (#771).
 
     Read off each failed write's ``ALL_OLD`` image: the limit's ``cp`` or
     ``tk`` is absent. A transaction returns an image only for the items whose
     condition failed, so an item with none passed its condition and is not
     the cause. With no image at all (a backend that returns none) nothing can
-    be told, and the pass is re-planned as if it were: the retry's debit of
-    that limit could not have landed, and a fresh read either seeds it or
-    finds the real shortfall.
+    be told: the pass is re-planned when ``maybe_missing`` — it was to seed a
+    limit, or its create lost its race, so the retry's debit may have had no
+    balance to land on and a fresh read either seeds it or finds the real
+    shortfall. Otherwise the rejection stands, as before.
     """
     if not images:
-        return bool(unseeded)
+        return maybe_missing and bool(unseeded)
     return any(
         (
             (item := images.get(key)) is not None
@@ -2319,6 +2322,45 @@ def _still_unseeded(
             for key, names in unseeded.items()
         )
     )
+
+
+def _genuinely_short(
+    groups: list[tuple[tuple[str, str, int], list[LeaseEntry]]],
+    images: dict[tuple[str, str, int], dict[str, Any]],
+    now_ms: int,
+) -> bool:
+    """A failed retry's image shows a limit the item carries short of its debit.
+
+    A real rejection outranks a missing limit's re-plan (#771 review): the
+    redo would only find the same shortfall, a round trip later — or, on a
+    second loss, report it as the contended 429. Only an enforced limit
+    counts: a trusted soft one carries no balance condition, and one whose
+    image stamp is live is waived (ADR-151 decision 1). Only a declared one:
+    the reserved ``wcu`` is never a reason to reject (a short one doubles the
+    shard count on the fast path).
+    """
+    for key, group in groups:
+        item = images.get(key)
+        if not item:
+            continue
+        trusted = _soft_trusted(group)
+        for entry in group:
+            name = entry.limit.name
+            raw_tk = item.get(bucket_attr(name, BUCKET_FIELD_TK), {}).get("N")
+            if (
+                entry.consumed <= 0
+                or not entry._declared
+                or name in trusted
+                or (raw_tk is None)
+                or (bucket_attr(name, BUCKET_FIELD_CP) not in item)
+            ):
+                continue
+            soft_until = decode_stamp(item.get(bucket_attr(name, BUCKET_FIELD_SOFT)))
+            if soft_until is not None and soft_until > now_ms:
+                continue
+            if int(raw_tk) < entry.consumed * 1000:
+                return True
+    return False
 
 
 def _period_statuses(

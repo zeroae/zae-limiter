@@ -526,9 +526,11 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
         condition = update["ConditionExpression"]
-        # The stamp waives the balance only beside `cp` and `tk` (#771).
+        # The stamp waives the balance only beside `cp` and `tk`, and a
+        # trusted soft limit is debited only where the item carries it (#771).
         assert condition == (
             "(#bt0 >= :bf0 OR (#bo0 > :bnow AND attribute_exists(#be0) AND attribute_exists(#bt0)))"
+            " AND (attribute_exists(#be1) AND attribute_exists(#bt1))"
         )
 
     def test_adjust(self) -> None:
