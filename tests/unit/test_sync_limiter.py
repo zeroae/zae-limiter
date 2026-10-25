@@ -13792,6 +13792,58 @@ class TestRetryDebitsOnlyAGrantedBalance:
         assert q_status.available == 10
         assert rejection.retry_after_seconds == rejection.violations[0].retry_after_seconds
 
+    @pytest.mark.parametrize(
+        "soft_limit",
+        [Limit.per_minute("s", 5, soft=True), Limit.quota("s", 5, cron="0 0 * * *", soft=True)],
+        ids=["soft-rate", "soft-quota"],
+    )
+    def test_a_soft_limit_the_item_carries_is_never_reported_exceeded(
+        self, sync_limiter, soft_limit
+    ):
+        """The retry's rejection stands on ``rpm``. The soft limit is on the
+        item and is driven past its balance by this request, which is
+        admitted on a soft limit (ADR-151 decision 1). Its status came from
+        the image's ``tk`` against the debit alone, so it was listed in
+        ``violations`` beside ``rpm`` (review of #776)."""
+        entity_id = f"soft-on-item-{soft_limit.is_quota}"
+        repo = sync_limiter._repository
+        repo.set_limits(entity_id, [self.RPM, soft_limit], resource="r")
+        with sync_limiter.acquire(entity_id, "r", {"rpm": 1, "s": 1}):
+            pass
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        client = repo._get_client()
+        original = repo.transact_write
+        raced: list[int] = []
+
+        def spend_rpm_first(items):
+            if not raced and ":expected_rf" in repr(items):
+                raced.append(1)
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "r", 0)},
+                        "SK": {"S": sk_state()},
+                    },
+                    UpdateExpression="SET #tk = :zero ADD rf :one",
+                    ExpressionAttributeNames={"#tk": bucket_attr("rpm", BUCKET_FIELD_TK)},
+                    ExpressionAttributeValues={":zero": {"N": "0"}, ":one": {"N": "1"}},
+                )
+            return original(items)
+
+        repo.transact_write = spend_rpm_first
+        try:
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with slow.acquire(entity_id, "r", {"rpm": 1, "s": 10}):
+                    pass
+        finally:
+            repo.transact_write = original
+        assert raced == [1]
+        rejection = exc_info.value
+        assert [s.limit_name for s in rejection.violations] == ["rpm"]
+        s_status = next(s for s in rejection.statuses if s.limit_name == "s")
+        assert s_status.exceeded is False
+        assert s_status in rejection.passed
+
     def test_a_hard_quota_is_seeded_not_rejected(self, sync_limiter):
         quota = Limit.quota("q", 10, cron="0 0 * * *")
         repo = self._with_quota_added(sync_limiter, "hard", quota)

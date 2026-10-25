@@ -2576,7 +2576,11 @@ def _retry_statuses(
                 last_refill_ms=int(item.get(BUCKET_FIELD_RF, {}).get("N", now_ms)),
             )
             result = try_consume(real, entry.consumed, now_ms)
-            exceeded = entry.consumed > 0 and int(raw_tk) < entry.consumed * 1000
+            soft_until = decode_stamp(item.get(bucket_attr(entry.limit.name, BUCKET_FIELD_SOFT)))
+            waived = bool(_soft_trusted([entry])) or (
+                soft_until is not None and soft_until > now_ms
+            )
+            exceeded = not waived and entry.consumed > 0 and (int(raw_tk) < entry.consumed * 1000)
             statuses.append(
                 LimitStatus(
                     entity_id=entry.entity_id,
