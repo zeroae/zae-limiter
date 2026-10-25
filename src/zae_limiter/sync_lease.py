@@ -2557,7 +2557,10 @@ def _retry_statuses(
     images: dict[tuple[str, str, int], dict[str, Any]] | None,
 ) -> list[LimitStatus]:
     """One status per declared entry: from its image where there is one, else
-    from the in-memory state (see :func:`_build_retry_failure_statuses`)."""
+    from the in-memory state (see :func:`_build_retry_failure_statuses`).
+
+    A limit an image exists for but does not carry is never exceeded (#775).
+    """
     statuses: list[LimitStatus] = []
     for entry in entries:
         if not entry._declared:
@@ -2589,6 +2592,23 @@ def _retry_statuses(
                     if exceeded
                     else result.retry_after_seconds,
                     resets_at_ms=window_end_in_force(entry.limit, real, now_ms),
+                )
+            )
+            continue
+        if item is not None:
+            statuses.append(
+                LimitStatus(
+                    entity_id=entry.entity_id,
+                    resource=entry.resource,
+                    limit_name=entry.limit.name,
+                    limit=entry.limit.per_shard(
+                        entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                    ),
+                    available=(entry.state.tokens_milli + entry.consumed * 1000) // 1000,
+                    requested=entry.consumed,
+                    exceeded=False,
+                    retry_after_seconds=0.0,
+                    resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
                 )
             )
             continue

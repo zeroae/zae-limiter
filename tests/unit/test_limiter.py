@@ -16280,6 +16280,55 @@ class TestRetryDebitsOnlyAGrantedBalance:
         assert rejection.contended is False
         assert any(s.limit_name == "rpm" and s.exceeded for s in rejection.statuses)
 
+    @pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
+    async def test_a_limit_missing_from_the_failed_item_is_not_reported_exceeded(
+        self, limiter, soft
+    ):
+        """The rejection above stands on ``rpm``; the quota the item does not
+        carry yet is no part of it (#775). Its report came from memory, which
+        marked every debited limit exceeded: a soft one listed in
+        ``violations`` (ADR-151 decision 1 forbids it) and a hard one holding
+        its whole allowance quoted as short."""
+        quota = Limit.quota("q", 10, cron="0 0 * * *", soft=soft)
+        entity_id = f"short-{soft}"
+        repo = await self._with_quota_added(limiter, entity_id, quota)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        client = await repo._get_client()
+        original = repo.transact_write
+        raced: list[int] = []
+
+        async def spend_rpm_first(items):
+            if not raced and ":expected_rf" in repr(items):
+                raced.append(1)
+                await client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "r", 0)},
+                        "SK": {"S": sk_state()},
+                    },
+                    UpdateExpression="SET #tk = :zero ADD rf :one",
+                    ExpressionAttributeNames={"#tk": bucket_attr("rpm", BUCKET_FIELD_TK)},
+                    ExpressionAttributeValues={":zero": {"N": "0"}, ":one": {"N": "1"}},
+                )
+            return await original(items)
+
+        repo.transact_write = spend_rpm_first
+        try:
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with slow.acquire(entity_id, "r", {"rpm": 1, "q": 3}):
+                    pass
+        finally:
+            repo.transact_write = original
+        assert raced == [1]
+        rejection = exc_info.value
+        assert [s.limit_name for s in rejection.violations] == ["rpm"]
+        assert rejection.violations[0].retry_after_seconds > 0
+        q_status = next(s for s in rejection.statuses if s.limit_name == "q")
+        assert q_status.exceeded is False
+        assert q_status.retry_after_seconds == 0.0
+        assert q_status.available == 10
+        assert rejection.retry_after_seconds == rejection.violations[0].retry_after_seconds
+
     async def test_a_hard_quota_is_seeded_not_rejected(self, limiter):
         quota = Limit.quota("q", 10, cron="0 0 * * *")
         repo = await self._with_quota_added(limiter, "hard", quota)

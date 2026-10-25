@@ -3067,7 +3067,10 @@ def _retry_statuses(
     images: dict[tuple[str, str, int], dict[str, Any]] | None,
 ) -> list[LimitStatus]:
     """One status per declared entry: from its image where there is one, else
-    from the in-memory state (see :func:`_build_retry_failure_statuses`)."""
+    from the in-memory state (see :func:`_build_retry_failure_statuses`).
+
+    A limit an image exists for but does not carry is never exceeded (#775).
+    """
     statuses: list[LimitStatus] = []
     for entry in entries:
         if not entry._declared:
@@ -3101,6 +3104,32 @@ def _retry_statuses(
                         else result.retry_after_seconds
                     ),
                     resets_at_ms=window_end_in_force(entry.limit, real, now_ms),
+                )
+            )
+            continue
+        if item is not None:
+            # The failed item does not carry this limit (#775): one being
+            # seeded (#633), or removed mid-flight. Its absence is no
+            # shortfall — the retry re-plans for it unless another limit is
+            # genuinely short (`_genuinely_short`), and that limit is the
+            # rejection. Nothing was spent from it, so it holds the balance
+            # this pass planned before its in-memory debit, and it carries no
+            # wait of its own. From memory it was marked exceeded, which
+            # listed a soft limit in `violations` (ADR-151 decision 1) and
+            # quoted a hard quota holding its whole allowance as short.
+            statuses.append(
+                LimitStatus(
+                    entity_id=entry.entity_id,
+                    resource=entry.resource,
+                    limit_name=entry.limit.name,
+                    limit=entry.limit.per_shard(
+                        entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                    ),
+                    available=(entry.state.tokens_milli + entry.consumed * 1000) // 1000,
+                    requested=entry.consumed,
+                    exceeded=False,
+                    retry_after_seconds=0.0,
+                    resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
                 )
             )
             continue
