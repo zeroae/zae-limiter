@@ -492,7 +492,7 @@ def apply_changes(
     return result
 
 
-def _config_key(namespace_id: str, change: Change) -> tuple[str, str]:
+def config_key(namespace_id: str, change: Change) -> tuple[str, str]:
     """The (PK, SK) of the config item a change writes or deletes."""
     if change.level == "system":
         return pk_system(namespace_id), sk_config()
@@ -510,7 +510,7 @@ def _build_change_item(namespace_id: str, change: Change) -> tuple[str, str, dic
     """The full config item a create or update writes, with its key."""
     data = change.data or {}
     limits = data.get("limits", {})
-    pk, sk = _config_key(namespace_id, change)
+    pk, sk = config_key(namespace_id, change)
 
     extra: dict[str, Any] = {}
     if change.level == "system":
@@ -671,7 +671,7 @@ def _apply_delete(
     change: Change,
 ) -> dict[str, Any]:
     """Apply a delete change (DeleteItem); return the deleted item, or {}."""
-    pk, sk = _config_key(namespace_id, change)
+    pk, sk = config_key(namespace_id, change)
     response = client.delete_item(
         TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}}, ReturnValues="ALL_OLD"
     )

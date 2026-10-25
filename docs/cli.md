@@ -335,7 +335,8 @@ or to `disabled: bypass` alone, is a change like any other: it is written and fa
 An apply records every bucket fan-out it owes before it writes any config, and removes each one
 as soon as it lands. An apply that is interrupted (a Lambda timeout) or whose fan-out fails
 leaves only the unfinished ones, and the next apply retries exactly those, even when no entry
-changed. An interrupted `--full` apply therefore resumes where it stopped instead of starting
+changed. A retry fans out what the table holds for that entry now, not what the manifest being
+applied says, so a stale manifest cannot undo a newer apply's change. An interrupted `--full` apply therefore resumes where it stopped instead of starting
 again. `plan` and `diff` report them:
 
 ```

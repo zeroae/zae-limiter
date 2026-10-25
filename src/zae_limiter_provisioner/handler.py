@@ -24,6 +24,8 @@ from zae_limiter.schema import (
     DEFAULT_RESOURCE,
     DISABLED_BYPASS,
     RESERVED_NAMESPACE,
+    decode_cascade,
+    decode_disabled,
     pk_system,
     sk_namespace,
     sk_provisioner,
@@ -32,6 +34,7 @@ from zae_limiter.schema import (
 from .applier import (
     ApplyResult,
     apply_changes,
+    config_key,
     drop_unchanged,
     fanouts_needed,
     require_cascade_policy_readers,
@@ -39,6 +42,7 @@ from .applier import (
     require_reset_after_readers,
 )
 from .bucket_sync import DEFAULT_TTL_MULTIPLIER, resolve_effective_limits, sync_bucket_params
+from .bucket_sync import _decode_limits as decode_limits
 from .differ import Change, compute_diff
 from .fanout import (
     fanout_cascade,
@@ -48,7 +52,7 @@ from .fanout import (
     resolve_disabled,
 )
 from .manifest import LimitsManifest
-from .pending import Pending, claim, new_token, read_pending, release, write_ahead
+from .pending import KINDS, Pending, claim, new_token, read_pending, release, write_ahead
 
 logger = logging.getLogger(__name__)
 
@@ -364,34 +368,42 @@ def _apply_and_record(
     for key in sorted(held - needed):
         _done(*key)
 
-    retried_entries = [{"kind": k, "level": lv, "target": t} for k, lv, t in retried]
-    disabled_targets = _with_pending(manifest, result.disabled_changed, retried_entries, "disabled")
-    reasserted = _reasserted_disabled(manifest, disabled_targets)
+    # This apply's own fan-outs. A retried level this apply also changed is
+    # covered by them: its pending item is released by their `on_done`.
+    own = {
+        "disabled": {(c.level, c.target or "") for c in result.disabled_changed},
+        "cascade": set(result.cascade_changed),
+        "sync": {(c.level, c.target or "") for c in result.limits_changed},
+    }
+    retries = [key for key in dict.fromkeys(retried) if (key[1], key[2]) not in own[key[0]]]
+    reasserted = _reasserted_disabled(
+        manifest,
+        [
+            *result.disabled_changed,
+            *(Change("update", lv, t) for k, lv, t in retries if k == "disabled"),
+        ],
+    )
     disabled_errors, _ = _fanout_disabled_changes(
         table_name,
         namespace_id,
-        [*disabled_targets, *reasserted],
+        [*result.disabled_changed, *reasserted],
         reasserted=reasserted,
         on_done=_done,
     )
     result.errors.extend(disabled_errors)
     result.errors.extend(_fanout_soft_changes(table_name, result.soft_changed, namespace_id))
-    cascade_targets: list[tuple[str, str]] = list(
-        dict.fromkeys(
-            [*((lv, t) for k, lv, t in retried if k == "cascade"), *result.cascade_changed]
-        )
-    )
     cascade_errors, _ = _fanout_cascade_changes(
-        table_name, namespace_id, cascade_targets, on_done=_done
+        table_name, namespace_id, list(dict.fromkeys(result.cascade_changed)), on_done=_done
     )
     result.errors.extend(cascade_errors)
     sync_errors, _ = _sync_bucket_param_changes(
-        table_name,
-        namespace_id,
-        _with_pending(manifest, result.limits_changed, retried_entries, "sync"),
-        on_done=_done,
+        table_name, namespace_id, result.limits_changed, on_done=_done
     )
     result.errors.extend(sync_errors)
+
+    # Then what earlier applies left, each from its level's live config.
+    for key in sorted(retries, key=lambda k: (KINDS.index(k[0]), k[1] != "resource")):
+        result.errors.extend(_retry_from_table(client, table_name, namespace_id, key, _done))
 
     manifest_hash = hashlib.sha256(
         json.dumps(manifest.to_dict(), sort_keys=True).encode()
@@ -432,43 +444,85 @@ def _reasserted_disabled(manifest: LimitsManifest, fanned: list[Change]) -> list
     return reasserted
 
 
-def _with_pending(
-    manifest: LimitsManifest,
-    changed: list[Change],
-    pending: list[dict[str, str]],
-    kind: str,
-) -> list[Change]:
-    """This apply's changes for one fan-out, plus the ones an earlier apply left.
+# A retried level whose config moved while its fan-out ran is fanned out
+# again, at most this many times in one apply; past that its item is kept.
+_RETRY_ROUNDS = 3
 
-    A pending level is retried against what the manifest now says about it: its
-    current declaration when it still declares one, otherwise a delete — both
-    fan-outs then resolve what applies from the table, exactly as they do for a
-    delete this apply made. A level this apply changed is fanned out once, from
-    this apply's change.
+
+def _retry_from_table(
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    key: tuple[str, str, str],
+    done: Callable[[str, str, str], None],
+) -> list[str]:
+    """Retry one fan-out an earlier apply left, from the level's live config item.
+
+    Never from this apply's manifest (#739 review, finding 1). The apply that
+    left the item may have written a newer config than this manifest declares,
+    and may still be running: fanning out from a stale manifest re-synced a
+    bucket another apply had just moved from 10 to 20 back to 10, and turned a
+    level the manifest no longer declares into a delete that stamped
+    ``disabled=False`` over a config still saying disabled (finding 4).
+
+    The level's config item is read strongly consistently before the fan-out
+    and again after it. If it changed in between, another apply wrote it while
+    this one was fanning out, possibly after the read this one fanned out
+    from, so the fan-out runs again from the new read. Once two reads agree,
+    the fan-out reflects what the table holds: any later config write is
+    followed by that writer's own fan-out. Only then is the pending item
+    released. A missing item is a deleted level, retried as a delete, which
+    every fan-out already resolves from the table. A read or fan-out that
+    fails keeps the item for the next apply and returns the error.
     """
-    seen = {(c.level, c.target) for c in changed}
-    retried: list[Change] = []
-    for entry in pending:
-        if entry.get("kind") != kind:
-            continue
-        level, target = entry["level"], entry["target"]
-        if (level, target) in seen:
-            continue
-        seen.add((level, target))
-        retried.append(_manifest_change(manifest, level, target))
-    return [*retried, *changed]
+    kind, level, target = key
+    pk, sk = config_key(namespace_id, Change("update", level, target))
+
+    def _read() -> dict[str, Any]:
+        response = client.get_item(
+            TableName=table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": sk}},
+            ConsistentRead=True,
+        )
+        item = response.get("Item")
+        return item if isinstance(item, dict) else {}
+
+    try:
+        before = _read()
+        for _round in range(_RETRY_ROUNDS):
+            change = _change_from_item(level, target, before)
+            if kind == "disabled":
+                errors, _ = _fanout_disabled_changes(table_name, namespace_id, [change])
+            elif kind == "cascade":
+                errors, _ = _fanout_cascade_changes(table_name, namespace_id, [(level, target)])
+            else:
+                errors, _ = _sync_bucket_param_changes(table_name, namespace_id, [change])
+            if errors:
+                return errors
+            after = _read()
+            if after == before:
+                done(kind, level, target)
+                return []
+            before = after
+    except Exception as e:
+        logger.warning("Retry of %s %s %s failed: %s", kind, level, target, e)
+        return [f"retry {kind} {level} {target}: {e} (retried on the next apply)"]
+    logger.warning("Config of %s %s kept moving; %s fan-out left pending", level, target, kind)
+    return []
 
 
-def _manifest_change(manifest: LimitsManifest, level: str, target: str) -> Change:
-    """The change re-asserting what the manifest declares for one level."""
-    if level == "resource" and target in manifest.resources:
-        return Change("update", level, target, manifest.resources[target].to_dict())
-    if level == "entity":
-        entity_id, resource = target.split("/", 1)
-        entity = manifest.entities.get(entity_id)
-        if entity is not None and resource in entity.resources:
-            return Change("update", level, target, entity.resources[resource].to_dict())
-    return Change("delete", level, target)
+def _change_from_item(level: str, target: str, item: dict[str, Any]) -> Change:
+    """The change re-asserting what a level's live config item holds."""
+    if not item:
+        return Change("delete", level, target)
+    data: dict[str, Any] = {"limits": decode_limits(item)}
+    disabled = decode_disabled(item)
+    if disabled is not None:
+        data["disabled"] = disabled
+    cascade = decode_cascade(item)
+    if cascade is not None:
+        data["cascade"] = cascade
+    return Change("update", level, target, data)
 
 
 def _fanout_soft_changes(

@@ -2138,12 +2138,12 @@ class TestCascadeFanoutChanges:
         )
 
         mock_gate.assert_called_once_with(changes, "t")
-        # Pending first, then this apply's changes, without duplicates.
-        assert mock_fanout.call_args.args == (
-            "t",
-            "ns",
-            [("entity", "old/gpt-4"), ("resource", "llm"), ("entity", "u1/llm")],
-        )
+        # This apply's changes, then each leftover it did not cover, on its own
+        # (`resource llm` is both, so it is fanned out once).
+        assert [c.args for c in mock_fanout.call_args_list] == [
+            ("t", "ns", [("resource", "llm"), ("entity", "u1/llm")]),
+            ("t", "ns", [("entity", "old/gpt-4")]),
+        ]
         assert "err" in result.errors
         # The legacy entries become pending items before anything is written,
         # so a failure (or a crash) leaves them for the next apply; the
@@ -2564,42 +2564,133 @@ class TestPendingItems:
         assert len(read_pending(client, self.TABLE, "ns")) == 2
 
 
-class TestWithPending:
-    """Pending fan-outs are retried against what the manifest now declares."""
+class TestRetryFromTable:
+    """A leftover fan-out is retried from its level's live config (finding 1)."""
 
-    MANIFEST = {
-        "namespace": "test-ns",
-        "resources": {"gpt-4": {"disabled": True, "limits": {"rpm": {"capacity": 10}}}},
-        "entities": {"u1": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 5}}}}}},
-    }
+    TABLE = "prov-retry-from-table"
 
-    def _with_pending(self, changed, pending, kind):
-        from zae_limiter_provisioner.handler import _with_pending
-        from zae_limiter_provisioner.manifest import LimitsManifest
+    @pytest.fixture
+    def client(self, mock_dynamodb):
+        import boto3
 
-        return _with_pending(LimitsManifest.from_dict(self.MANIFEST), changed, pending, kind)
+        from zae_limiter.sync_repository import SyncRepository
+        from zae_limiter_provisioner.applier import apply_changes
 
-    def test_a_declared_level_is_retried_from_its_declaration(self):
-        pending = [
-            {"kind": "sync", "level": "entity", "target": "u1/gpt-4"},
-            {"kind": "disabled", "level": "resource", "target": "gpt-4"},
-        ]
-        (retried,) = self._with_pending([], pending, "sync")
-        assert (retried.action, retried.target) == ("update", "u1/gpt-4")
-        assert retried.data["limits"]["rpm"]["capacity"] == 5
+        repo = SyncRepository(name=self.TABLE, region="us-east-1", _skip_deprecation_warning=True)
+        repo.create_table()
+        repo.close()
+        client = _CountingClient(boto3.client("dynamodb", region_name="us-east-1"))
+        apply_changes(
+            [
+                Change(
+                    "create",
+                    "resource",
+                    "gpt-4",
+                    {"disabled": True, "cascade": False, "limits": _limits(10)},
+                ),
+                Change("create", "entity", "u1/gpt-4", {"limits": _limits(5)}),
+            ],
+            self.TABLE,
+            "ns",
+            client=client,
+        )
+        client.calls.clear()
+        return client
 
-    def test_a_dropped_level_is_retried_as_a_delete(self):
-        pending = [{"kind": "sync", "level": "entity", "target": "gone/gpt-4"}]
-        (retried,) = self._with_pending([], pending, "sync")
-        assert (retried.action, retried.data) == ("delete", None)
+    def _retry(self, client, key):
+        from zae_limiter_provisioner.handler import _retry_from_table
 
-    def test_a_level_this_apply_changed_is_fanned_out_once(self):
-        changed = [Change("update", "resource", "gpt-4", {"disabled": False})]
-        pending = [
-            {"kind": "disabled", "level": "resource", "target": "gpt-4"},
-            {"kind": "disabled", "level": "resource", "target": "gpt-4"},
-        ]
-        assert self._with_pending(changed, pending, "disabled") == changed
+        done = MagicMock()
+        errors = _retry_from_table(client, self.TABLE, "ns", key, done)
+        return errors, done
+
+    def test_a_sync_is_retried_from_the_live_limits(self, client):
+        with patch("zae_limiter_provisioner.handler._sync_bucket_param_changes") as sync:
+            sync.return_value = ([], [])
+            errors, done = self._retry(client, ("sync", "entity", "u1/gpt-4"))
+        assert errors == []
+        (change,) = sync.call_args.args[2]
+        assert (change.action, change.data) == ("update", {"limits": _limits(5)})
+        done.assert_called_once_with("sync", "entity", "u1/gpt-4")
+        # Read before and after the fan-out, both strongly consistent.
+        assert client.calls == {"get_item": 2}
+
+    def test_a_disabled_retry_carries_the_live_flags(self, client):
+        with patch("zae_limiter_provisioner.handler._fanout_disabled_changes") as fanout:
+            fanout.return_value = ([], [])
+            self._retry(client, ("disabled", "resource", "gpt-4"))
+        (change,) = fanout.call_args.args[2]
+        assert (change.data["disabled"], change.data["cascade"]) == (True, False)
+
+    def test_a_level_whose_item_is_gone_is_retried_as_a_delete(self, client):
+        with patch("zae_limiter_provisioner.handler._sync_bucket_param_changes") as sync:
+            sync.return_value = ([], [])
+            self._retry(client, ("sync", "entity", "gone/gpt-4"))
+        (change,) = sync.call_args.args[2]
+        assert (change.action, change.data) == ("delete", None)
+
+    def test_a_config_written_meanwhile_is_fanned_out_again(self, client):
+        """Another apply moved the level after the read this fan-out came from."""
+        from zae_limiter_provisioner.applier import apply_changes
+
+        seen = []
+
+        def sync(_table, _ns, changes, **_kw):
+            seen.append(changes[0].data["limits"]["rpm"]["capacity"])
+            if len(seen) == 1:
+                apply_changes(
+                    [Change("update", "entity", "u1/gpt-4", {"limits": _limits(20)})],
+                    self.TABLE,
+                    "ns",
+                    client=client,
+                )
+            return [], []
+
+        with patch("zae_limiter_provisioner.handler._sync_bucket_param_changes", side_effect=sync):
+            errors, done = self._retry(client, ("sync", "entity", "u1/gpt-4"))
+        assert (errors, seen) == ([], [5, 20])
+        done.assert_called_once()
+
+    def test_a_level_that_keeps_moving_is_left_pending(self, client):
+        from zae_limiter_provisioner.applier import apply_changes
+
+        def sync(_table, _ns, changes, **_kw):
+            capacity = changes[0].data["limits"]["rpm"]["capacity"] + 1
+            apply_changes(
+                [Change("update", "entity", "u1/gpt-4", {"limits": _limits(capacity)})],
+                self.TABLE,
+                "ns",
+                client=client,
+            )
+            return [], []
+
+        with patch("zae_limiter_provisioner.handler._sync_bucket_param_changes", side_effect=sync):
+            errors, done = self._retry(client, ("sync", "entity", "u1/gpt-4"))
+        assert errors == []
+        done.assert_not_called()
+
+    def test_a_failure_keeps_the_item_and_is_reported(self, client):
+        with patch(
+            "zae_limiter_provisioner.handler._fanout_cascade_changes",
+            return_value=(["cascade fan-out entity u1/gpt-4: boom"], [("entity", "u1/gpt-4")]),
+        ):
+            errors, done = self._retry(client, ("cascade", "entity", "u1/gpt-4"))
+        assert errors == ["cascade fan-out entity u1/gpt-4: boom"]
+        done.assert_not_called()
+
+    def test_an_unreadable_level_keeps_the_item_and_is_reported(self, client):
+        from zae_limiter_provisioner.handler import _retry_from_table
+
+        failing = MagicMock()
+        failing.get_item.side_effect = RuntimeError("throttled")
+        done = MagicMock()
+        errors = _retry_from_table(failing, self.TABLE, "ns", ("sync", "entity", "u1/x"), done)
+        assert errors == ["retry sync entity u1/x: throttled (retried on the next apply)"]
+        done.assert_not_called()
+
+
+def _limits(capacity: int) -> dict:
+    return {"rpm": {"capacity": capacity, "refill_amount": capacity, "refill_period": 60}}
 
 
 class TestChangeOnlyApplyStaysSafe:
@@ -2911,6 +3002,79 @@ class TestChangeOnlyApplyStaysSafe:
 
         assert len(synced) == len(entities)
         assert set(synced) == set(entities)
+        assert self._pending(counting) == []
+
+    def test_a_retry_syncs_what_the_table_holds_not_the_stale_manifest(self, counting):
+        """Review finding 1: a stale no-op re-apply claims another apply's sync.
+
+        Apply A is moving user-0 from 10 to 20: it has written its sync ahead
+        (token B) and, while the stale apply runs, writes its config and syncs
+        the bucket to 20 — but its release fails, the stale apply having
+        claimed the item. The stale apply's retry must not sync the bucket
+        back to its own manifest's 10.
+        """
+        from zae_limiter_provisioner import handler
+        from zae_limiter_provisioner.applier import apply_changes
+        from zae_limiter_provisioner.manifest import LimitsManifest
+        from zae_limiter_provisioner.pending import new_token, release, write_ahead
+
+        table = self.TABLE
+        self._apply(self._manifest(capacity=10))
+        self._put_bucket(counting, "user-0", capacity=10)
+        key = ("sync", "entity", "user-0/gpt-4")
+        tok_b = new_token()
+        write_ahead(counting, table, "ns123", tok_b, [key])
+        real = handler._sync_bucket_param_changes
+
+        def a_sync(*args, **kwargs):
+            manifest = LimitsManifest.from_dict(self._manifest(capacity=20))
+            new = manifest.entities["user-0"].resources["gpt-4"].to_dict()
+            res = apply_changes([Change("update", "entity", "user-0/gpt-4", new)], table, "ns123")
+            real(
+                table,
+                "ns123",
+                res.limits_changed,
+                on_done=lambda *k: release(counting, table, "ns123", tok_b, k),
+            )
+            return real(*args, **kwargs)
+
+        with patch.object(handler, "_sync_bucket_param_changes", side_effect=a_sync):
+            self._apply(self._manifest(capacity=10))
+        self._apply(self._manifest(capacity=20))
+
+        assert self._pending(counting) == []
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
+
+    def test_a_retried_level_the_manifest_dropped_keeps_its_live_disabled(self, counting):
+        """Review finding 4: a retry is not a synthetic delete stamping `disabled=False`.
+
+        An apply disables a resource and dies after its config write. The
+        next apply's manifest does not declare the resource (and, the dead
+        apply having recorded nothing, does not delete it either): the config
+        still says disabled, so its buckets must be stamped disabled.
+        """
+        disabled = {
+            "namespace": "test-ns",
+            "resources": {"gpt-4": {"disabled": True, "limits": {"rpm": {"capacity": 1000}}}},
+        }
+        self._put_bucket(counting, "user-0")
+        with patch(
+            "zae_limiter_provisioner.handler._fanout_disabled_changes", side_effect=_Killed()
+        ):
+            with pytest.raises(_Killed):
+                self._apply(disabled)
+        assert ("disabled", "resource", "gpt-4") in self._owed(counting)
+
+        self._apply(
+            {
+                "namespace": "test-ns",
+                "entities": {
+                    "user-0": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 10}}}}}
+                },
+            }
+        )
+
+        assert self._bucket(counting, "user-0")["disabled"] == {"BOOL": True}
         assert self._pending(counting) == []
 
     def _owed(self, client):
