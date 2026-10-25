@@ -9630,10 +9630,10 @@ class TestOverrideMaterialisesItemLimits:
                 pass
             assert _stored_ws(repo, "o", "r", "session", shard=1) == now
 
-    def test_an_override_pass_keeps_vu_for_a_limit_waiting_to_be_seeded(self, sync_limiter):
+    def test_a_limit_waiting_to_be_seeded_survives_an_override_pass(self, sync_limiter):
         """A limit configured after the item existed is seeded by the next pass
-        without the override (#633); the param sync's `vu = 0` routes the fast
-        path there. Clearing it let a soft quota's stamp admit fast-path debits
+        without the override (#633). The override pass clears the param sync's
+        `vu = 0`; a soft quota's stamp must still not admit fast-path debits
         onto a balance that was never granted (no `tk`, no `gc`)."""
         repo = sync_limiter._repository
         slow = SyncRateLimiter(repository=repo, speculative_writes=False)
@@ -9646,14 +9646,34 @@ class TestOverrideMaterialisesItemLimits:
         repo._now_ms = lambda: T0 + 1000
         with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
             pass
-        item = _raw_bucket(repo, "o", "r")
-        assert int(item[BUCKET_FIELD_VU]["N"]) <= T0 + 1000
         repo._now_ms = lambda: T0 + 2000
         with sync_limiter.acquire("o", "r", consume={"q": 3}):
             pass
         assert _stored_tk(repo, "o", "r", "q") == 7000
         item = _raw_bucket(repo, "o", "r")
         assert int(item[bucket_attr("q", BUCKET_FIELD_GC)]["N"]) == 1
+
+    def test_override_traffic_returns_to_the_fast_path(self, sync_limiter):
+        """A resource-level limit added after the bucket existed never reaches
+        it (#271/#296) and only a pass without the override seeds it. Holding
+        `vu` at now for it kept every later override acquire on the slow path,
+        forever under override-only traffic (20 of 20, against 0 on main)."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_resource_defaults("r", [_RPM_1000])
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("o", "r", consume={"rpm": 1}):
+            pass
+        repo.set_resource_defaults("r", [_RPM_1000, Limit.per_minute("tpm", 1000)])
+        repo.invalidate_config_cache()
+        repo._now_ms = lambda: T0 + 1000
+        with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+            pass
+        with patch.object(sync_limiter, "_do_acquire", wraps=sync_limiter._do_acquire) as slow_pass:
+            for _ in range(20):
+                with sync_limiter.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+                    pass
+        assert slow_pass.call_count == 0
 
     def test_the_carried_reset_is_pinned_on_the_shard_count(self, sync_limiter):
         """ADR-145 I4: the grant the carrier stamps rides the `shard_count` pin."""

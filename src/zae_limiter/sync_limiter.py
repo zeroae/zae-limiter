@@ -3207,15 +3207,6 @@ class SyncRateLimiter:
                 custom,
                 anchor=not violations,
             )
-            on_item = {state.limit_name for state in item_states}
-            if any(
-                limit.name not in override_names and limit.name not in on_item
-                for limit in configured or []
-            ):
-                group = [e for e in (*entries, *carriers) if e.entity_id == eid]
-                if group:
-                    held = group[0]._boundary_ms
-                    group[0]._boundary_ms = now_ms if held is None else min(held, now_ms)
         if violations:
             if any(entry._donor_debit is not None for entry in entries):
                 self._commit_rejected_moves(entries, carriers)
