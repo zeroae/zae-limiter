@@ -4325,6 +4325,17 @@ You only pay when the limiter is used (~$0.625/1M requests, rejections included)
 </span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
 </span></code></pre></div>
 <p>Stack defaults to the <code>ZAEL_STACK</code> environment variable or <code>"zae-limiter"</code>. Namespace defaults to <code>ZAEL_NAMESPACE</code> or <code>"default"</code>.</p>
+<div class="admonition note">
+<p class="admonition-title">Applications with only the acquire policy use <code>connect()</code></p>
+<p><code>open()</code> sets things up the first time it runs (it registers the namespace and
+writes the version record) and updates the Lambdas when they are older than the
+client. Since v0.17.0 the acquire policies (<code>AcquireOnlyPolicy</code>,
+<code>NamespaceAcquirePolicy</code>) allow writes to rate-limit buckets only, so those steps
+are refused for an application role that holds only one of them. Do the setup
+with an operator role (<code>zae-limiter deploy</code>, <code>zae-limiter namespace register</code>)
+and open the application with <code>Repository.connect()</code>, which only reads. See
+<a href="../api/repository/#choosing-an-entry-point">Choosing an Entry Point</a>.</p>
+</div>
 <div class="admonition warning">
 <p class="admonition-title">Declarative State Management</p>
 <p>Builder methods declare the desired infrastructure state. If multiple applications

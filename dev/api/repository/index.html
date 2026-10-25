@@ -8471,10 +8471,27 @@
 <tr>
 <td><code>Repository.connect()</code></td>
 <td><strong>No</strong> — reads only, raises when anything is missing</td>
-<td>Infrastructure owned by your own CloudFormation, Terraform, or CDK</td>
+<td>Infrastructure owned by your own CloudFormation, Terraform, or CDK, or an application role that may only acquire</td>
 </tr>
 </tbody>
 </table>
+<div class="admonition warning">
+<p class="admonition-title">An acquire-only role cannot set up a stack (v0.17.0)</p>
+<p>Since v0.17.0 the acquire policies (<code>AcquireOnlyPolicy</code>, <code>NamespaceAcquirePolicy</code>)
+allow writes to rate-limit <strong>buckets</strong> only (ADR-152). <code>open()</code> writes more than that
+when there is something to set up: the first time it meets a stack or namespace
+(registering the namespace, writing the version record), and whenever the stack's
+Lambdas are older than the client (<code>auto_update</code>). Under an acquire-only role those
+writes fail with an access error.</p>
+<ul>
+<li><strong>Set up and upgrade with an operator role</strong> holding <code>FullAccessPolicy</code> /
+  <code>NamespaceFullAccessPolicy</code>: <code>zae-limiter deploy</code>, <code>zae-limiter upgrade</code>,
+  <code>zae-limiter namespace register</code>, or one <code>open()</code> run under that role.</li>
+<li><strong>Have acquire-only applications call <code>connect()</code></strong>, which only reads. Once
+  setup is done, <code>open()</code> also only reads, but it would try to update the Lambdas
+  again after the next client upgrade.</li>
+</ul>
+</div>
 <h3 id="repositoryconnect"><code>Repository.connect()</code><a class="headerlink" href="#repositoryconnect" title="Permanent link">&para;</a></h3>
 <p><code>connect()</code> binds to infrastructure that already exists and never writes to it.
 It issues two reads — a namespace lookup and a version record read — and raises

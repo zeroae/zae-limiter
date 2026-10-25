@@ -4403,6 +4403,7 @@
 <p><strong>Best practices:</strong></p>
 <ul>
 <li><strong>Attach AcquireOnlyPolicy for applications</strong> - Provides only the permissions needed for rate limiting</li>
+<li><strong>Open acquire-only applications with <code>Repository.connect()</code></strong> - Since v0.17.0 the acquire policies write rate-limit buckets only, so <code>Repository.open()</code>'s first-time setup (namespace registration, version record) and its Lambda auto-update are refused under them. Run <code>zae-limiter deploy</code>, <code>upgrade</code> and <code>namespace register</code> with an operator role holding <code>FullAccessPolicy</code></li>
 <li><strong>Attach FullAccessPolicy for config management</strong> - Separate from application credentials</li>
 <li><strong>Attach ReadOnlyPolicy for observability</strong> - Safe access for monitoring systems</li>
 <li><strong>Disable with <code>--no-iam</code></strong> - When using existing IAM policies or cross-account access</li>

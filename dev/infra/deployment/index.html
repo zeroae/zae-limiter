@@ -5114,7 +5114,13 @@
 <p>When infrastructure is owned entirely by your own CloudFormation, Terraform, or
 CDK, use <code>Repository.connect()</code>. It reads only — it never creates a stack,
 registers a namespace, writes the version record, or updates the Lambda, so an
-application role needs no CloudFormation or Lambda permissions at all:</p>
+application role needs no CloudFormation or Lambda permissions at all. It is also
+the entry point for an application role that holds <strong>only an acquire policy</strong>:
+since v0.17.0 those policies allow writes to rate-limit buckets only, so <code>open()</code>'s
+first-time setup (namespace registration, the version record) and its Lambda
+auto-update are refused for such a role. Run <code>deploy</code>, <code>upgrade</code> and
+<code>namespace register</code> with an operator role (<code>FullAccessPolicy</code> /
+<code>NamespaceFullAccessPolicy</code>) instead:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span><span class="p">,</span> <span class="n">RateLimiter</span>
 </span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
 </span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="c1"># Raises rather than provisioning anything that's missing</span>
