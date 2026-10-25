@@ -11878,6 +11878,19 @@ class TestOverrideMaterialisesItemLimits:
         item = await _raw_bucket(repo, "o", "r")
         assert int(item[bucket_attr("q", BUCKET_FIELD_GC)]["N"]) == 1
 
+    async def test_an_item_with_only_the_override_limits_reads_no_config(self, limiter):
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("o", [_RPM_1000], resource="r")
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("o", "r", consume={"rpm": 1}):
+            pass
+        repo._now_ms = lambda: T0 + 1_000
+        with patch.object(repo, "resolve_limits", wraps=repo.resolve_limits) as config_read:
+            async with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
+                pass
+        assert config_read.call_count == 0
+
     async def test_override_traffic_returns_to_the_fast_path(self, limiter):
         """A resource-level limit added after the bucket existed never reaches
         it (#271/#296) and only a pass without the override seeds it. Holding

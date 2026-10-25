@@ -3180,7 +3180,10 @@ class SyncRateLimiter:
             if carrier is not None:
                 carriers.append(carrier)
             override_names = {limit.name for limit in entity_limits[eid]}
-            if limits_override is not None and item_states:
+            if limits_override is not None and any(
+                s.limit_name not in override_names and s.limit_name != WCU_LIMIT_NAME
+                for s in item_states
+            ):
                 to_carry.append(
                     (
                         eid,

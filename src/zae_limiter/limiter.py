@@ -4122,9 +4122,14 @@ class RateLimiter:
             if carrier is not None:
                 carriers.append(carrier)
             override_names = {limit.name for limit in entity_limits[eid]}
-            if limits_override is not None and item_states:
+            if limits_override is not None and any(
+                s.limit_name not in override_names and s.limit_name != WCU_LIMIT_NAME
+                for s in item_states
+            ):
                 # The override resolved none of the item's other limits, but
-                # this pass advances the item's `rf` all the same (#744).
+                # this pass advances the item's `rf` all the same (#744). An
+                # item carrying only the override's limits has nothing to
+                # carry, and pays no config read.
                 to_carry.append(
                     (
                         eid,
