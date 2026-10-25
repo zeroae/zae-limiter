@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792910364448,
+  "lastUpdate": 1792913355128,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -65015,6 +65015,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.23215346641290888",
             "extra": "mean: 4.505238564999999 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e6981c42084ec3275f44dbb2b04d05a52f4de605",
+          "message": "build(deps-dev): bump ruff from 0.17.0 to 0.17.1 in the dev-dependencies group (#760)\n\nBumps the dev-dependencies group with 1 update:\n[ruff](https://github.com/astral-sh/ruff).\n\nUpdates `ruff` from 0.17.0 to 0.17.1\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/astral-sh/ruff/releases\">ruff's\nreleases</a>.</em></p>\n<blockquote>\n<h2>0.17.1</h2>\n<h2>Release Notes</h2>\n<p>Released on 2026-10-15.</p>\n<h3>Preview features</h3>\n<ul>\n<li>[<code>pycodestyle</code>] Don't treat <code>None</code>,\n<code>True</code>, or <code>False</code> as keywords\n(<code>E271</code>-<code>E274</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29322\">#29322</a>)</li>\n</ul>\n<h3>Bug fixes</h3>\n<ul>\n<li>Fix dedent with multiple leading comments (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29382\">#29382</a>)</li>\n<li>[<code>flake8-pyi</code>] Detect legacy positional-only parameters\nin <code>__new__</code> methods (<code>PYI063</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28502\">#28502</a>)</li>\n<li>[<code>flake8-pyi</code>] Fix false positives on quoted annotations\n(<code>PYI036</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29274\">#29274</a>)</li>\n<li>[<code>perflint</code>] Avoid invalid comprehension suggestions\n(<code>PERF401</code>, <code>PERF403</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29366\">#29366</a>)</li>\n</ul>\n<h3>Rule changes</h3>\n<ul>\n<li>Treat more <code>collections</code> and <code>weakref</code>\ncontainers as mutable (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29213\">#29213</a>)</li>\n</ul>\n<h3>Documentation</h3>\n<ul>\n<li>[<code>flake8-import-conventions</code>] Update default and example\n<code>aliases</code> (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29333\">#29333</a>)</li>\n</ul>\n<h3>Contributors</h3>\n<ul>\n<li><a href=\"https://github.com/fixfon\"><code>@​fixfon</code></a></li>\n<li><a href=\"https://github.com/mmaxjr\"><code>@​mmaxjr</code></a></li>\n<li><a\nhref=\"https://github.com/joshuavetos\"><code>@​joshuavetos</code></a></li>\n<li><a\nhref=\"https://github.com/nekomario28\"><code>@​nekomario28</code></a></li>\n<li><a href=\"https://github.com/ntBre\"><code>@​ntBre</code></a></li>\n<li><a\nhref=\"https://github.com/shan3520\"><code>@​shan3520</code></a></li>\n</ul>\n<h2>Install ruff 0.17.1</h2>\n<h3>Install prebuilt binaries via shell script</h3>\n<pre lang=\"sh\"><code>curl --proto '=https' --tlsv1.2 -LsSf\nhttps://releases.astral.sh/github/ruff/releases/download/0.17.1/ruff-installer.sh\n| sh\n</code></pre>\n<h3>Install prebuilt binaries via powershell script</h3>\n<pre lang=\"sh\"><code>powershell -ExecutionPolicy Bypass -c &quot;irm\nhttps://releases.astral.sh/github/ruff/releases/download/0.17.1/ruff-installer.ps1\n| iex&quot;\n</code></pre>\n<h2>Download ruff 0.17.1</h2>\n<p>|  File  | Platform | Checksum |</p>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/astral-sh/ruff/blob/main/CHANGELOG.md\">ruff's\nchangelog</a>.</em></p>\n<blockquote>\n<h2>0.17.1</h2>\n<p>Released on 2026-10-15.</p>\n<h3>Preview features</h3>\n<ul>\n<li>[<code>pycodestyle</code>] Don't treat <code>None</code>,\n<code>True</code>, or <code>False</code> as keywords\n(<code>E271</code>-<code>E274</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29322\">#29322</a>)</li>\n</ul>\n<h3>Bug fixes</h3>\n<ul>\n<li>Fix dedent with multiple leading comments (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29382\">#29382</a>)</li>\n<li>[<code>flake8-pyi</code>] Detect legacy positional-only parameters\nin <code>__new__</code> methods (<code>PYI063</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28502\">#28502</a>)</li>\n<li>[<code>flake8-pyi</code>] Fix false positives on quoted annotations\n(<code>PYI036</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29274\">#29274</a>)</li>\n<li>[<code>perflint</code>] Avoid invalid comprehension suggestions\n(<code>PERF401</code>, <code>PERF403</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29366\">#29366</a>)</li>\n</ul>\n<h3>Rule changes</h3>\n<ul>\n<li>Treat more <code>collections</code> and <code>weakref</code>\ncontainers as mutable (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29213\">#29213</a>)</li>\n</ul>\n<h3>Documentation</h3>\n<ul>\n<li>[<code>flake8-import-conventions</code>] Update default and example\n<code>aliases</code> (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29333\">#29333</a>)</li>\n</ul>\n<h3>Contributors</h3>\n<ul>\n<li><a href=\"https://github.com/fixfon\"><code>@​fixfon</code></a></li>\n<li><a href=\"https://github.com/mmaxjr\"><code>@​mmaxjr</code></a></li>\n<li><a\nhref=\"https://github.com/joshuavetos\"><code>@​joshuavetos</code></a></li>\n<li><a\nhref=\"https://github.com/nekomario28\"><code>@​nekomario28</code></a></li>\n<li><a href=\"https://github.com/ntBre\"><code>@​ntBre</code></a></li>\n<li><a\nhref=\"https://github.com/shan3520\"><code>@​shan3520</code></a></li>\n</ul>\n</blockquote>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/4683270c69cbdaf6ad64d3f983fc458d5a43b41f\"><code>4683270</code></a>\nBump version to 0.17.1 (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29420\">#29420</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/3514027edb659bbc3c787d355be9d130e5587f15\"><code>3514027</code></a>\n[ty] Update typing conformance suite pin (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29417\">#29417</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/829455624d78f2e89669e4b4b14af2b96abdb1ae\"><code>8294556</code></a>\nUpdate referenced PR security-review workflow (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29237\">#29237</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/d1e1b1f69b511df4385f64b510eeec4da01c1a0e\"><code>d1e1b1f</code></a>\n[ty] Preserve recursive aliases when rebuilding intersections (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29057\">#29057</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/93526150df078af7dd8fc4226cdcc469539d2001\"><code>9352615</code></a>\n[<code>perflint</code>] Avoid invalid comprehension suggestions\n(<code>PERF401</code>, <code>PERF403</code>) (...</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/83a3afc3156d73ae4296f3fa74ede28e4c72bfcd\"><code>83a3afc</code></a>\nFix dedent with multiple leading comments (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29382\">#29382</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/b42a8734410230f4529151782cae951b99bed858\"><code>b42a873</code></a>\n[ty] Clarify object attribute write-contract rationale (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29384\">#29384</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/d01678ebf594c97a7767d4372061c1f80ae5b5bb\"><code>d01678e</code></a>\n[ty] Clarify object attribute write-contract rationale (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29384\">#29384</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/355b42a7719d8a555e3ee50c89848b42d8a11eb5\"><code>355b42a</code></a>\n[ty] Avoid writable override contracts from object (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29373\">#29373</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/e26e6d2a54ac2c5e1f5b1945042de3ff3885bf8e\"><code>e26e6d2</code></a>\n[ty] Collect intersection inference through constraint relations (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/28677\">#28677</a>)</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/astral-sh/ruff/compare/0.17.0...0.17.1\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=ruff&package-manager=pip&previous-version=0.17.0&new-version=0.17.1)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore <dependency name> major version` will close this\ngroup update PR and stop Dependabot creating any more for the specific\ndependency's major version (unless you unignore this specific\ndependency's major version or upgrade to it yourself)\n- `@dependabot ignore <dependency name> minor version` will close this\ngroup update PR and stop Dependabot creating any more for the specific\ndependency's minor version (unless you unignore this specific\ndependency's minor version or upgrade to it yourself)\n- `@dependabot ignore <dependency name>` will close this group update PR\nand stop Dependabot creating any more for the specific dependency\n(unless you unignore this specific dependency or upgrade to it yourself)\n- `@dependabot unignore <dependency name>` will remove all of the ignore\nconditions of the specified dependency\n- `@dependabot unignore <dependency name> <ignore condition>` will\nremove the ignore condition of the specified dependency and ignore\nconditions\n\n\n</details>",
+          "timestamp": "2026-10-25T03:27:16-04:00",
+          "tree_id": "1c25c49a4a04c316dc626d7150ff3d17eaae69b8",
+          "url": "https://github.com/zeroae/zae-limiter/commit/e6981c42084ec3275f44dbb2b04d05a52f4de605"
+        },
+        "date": 1792913353979,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 162.44159243336517,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00017462083706134776",
+            "extra": "mean: 6.156058833332405 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 128.24251583090185,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001616884029492561",
+            "extra": "mean: 7.797725999999727 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 76.80166176676964,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008616155951595938",
+            "extra": "mean: 13.020551600000374 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 140.88645381040448,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004491165737943001",
+            "extra": "mean: 7.097914476190399 msec\nrounds: 126"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 159.54363955009705,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002571118972632707",
+            "extra": "mean: 6.267877571427708 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 163.79786677999076,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009449516351113207",
+            "extra": "mean: 6.105085613496879 msec\nrounds: 163"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 79.10194825638872,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010652682644632616",
+            "extra": "mean: 12.641913657534147 msec\nrounds: 73"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 158.23872951770352,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003671819059690541",
+            "extra": "mean: 6.31956539999976 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 125.18286086401864,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003123579085084684",
+            "extra": "mean: 7.9883139999992645 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 77.69100469462875,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00051864878437536",
+            "extra": "mean: 12.871503000000928 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 164.5515443219561,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016125308959269612",
+            "extra": "mean: 6.077123153845539 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 130.26667007269606,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00019650939261600545",
+            "extra": "mean: 7.676560700000579 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 143.90614704763334,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00008269490670331988",
+            "extra": "mean: 6.948973483870687 msec\nrounds: 124"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 163.98180771252743,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002240424916578397",
+            "extra": "mean: 6.098237444443082 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 58.209146847091304,
+            "unit": "iter/sec",
+            "range": "stddev: 0.031048143365826033",
+            "extra": "mean: 17.17943062499927 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 75.08153704759968,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009017693003965584",
+            "extra": "mean: 13.31885360000058 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 77.19407563258132,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000856740303672602",
+            "extra": "mean: 12.954362000002106 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 150.26189099994377,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009138772324343977",
+            "extra": "mean: 6.655047353293153 msec\nrounds: 167"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 2.0093413241338873,
+            "unit": "iter/sec",
+            "range": "stddev: 0.026064740583600896",
+            "extra": "mean: 497.6755257999997 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 81.27855539568692,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00033008894754222955",
+            "extra": "mean: 12.303368276314929 msec\nrounds: 76"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 16.28062875501775,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008946831719812413",
+            "extra": "mean: 61.42268919999765 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 16.454086339869836,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011781132982765885",
+            "extra": "mean: 60.77517641176488 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 72.73099126450207,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00032290569134502063",
+            "extra": "mean: 13.749296999999387 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 81.69193988778065,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009692029742048153",
+            "extra": "mean: 12.24110972727162 msec\nrounds: 77"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 6.2895861758096245,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0028316663383698825",
+            "extra": "mean: 158.99297219999937 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 6.371969475865063,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014924144310000918",
+            "extra": "mean: 156.93734940000468 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 82.51572808645426,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00007706426134845746",
+            "extra": "mean: 12.118901731707068 msec\nrounds: 82"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 82.37722624277934,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000857074956235658",
+            "extra": "mean: 12.139277390244171 msec\nrounds: 82"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 4.583602002310616,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005345039282472563",
+            "extra": "mean: 218.1690293999992 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 0.41287695743008446,
+            "unit": "iter/sec",
+            "range": "stddev: 0.026830823445564856",
+            "extra": "mean: 2.422029086400002 sec\nrounds: 5"
           }
         ]
       }
