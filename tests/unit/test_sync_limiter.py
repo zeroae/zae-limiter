@@ -13479,3 +13479,180 @@ class TestZeroGrantedChildUnderABusyParent:
         assert parent_plans["n"] == 3
         assert rejection.contended is True
         assert rejection.retry_after_seconds == pytest.approx(0.1)
+
+
+class TestRetryDebitsOnlyAGrantedBalance:
+    """The consumption-only retry never debits a limit missing from the item (#771).
+
+    An entity-level ``set_limits`` adds a daily quota to an existing bucket:
+    the param sync writes its ``cp`` (and, when soft, its stamp) but no ``tk``,
+    and the next slow pass seeds it (#633) through the ADR-145 grant. When that
+    pass loses its ``rf`` lock to a writer that does not seed, the retry cannot
+    seed a quota (it stamps no ``vu``). Before the fix a soft quota was admitted
+    on the stamp alone and its ``ADD`` wrote ``tk = -3000`` with no ``gc``, a
+    balance nothing granted that every later pass read as present and so never
+    seeded; a hard one failed ``tk >= c`` on the missing attribute and the
+    request was rejected for a limit holding its whole allowance.
+    """
+
+    RPM = Limit.per_minute("rpm", 100)
+
+    def _with_quota_added(self, sync_limiter, entity_id, quota):
+        """A warm item carrying ``rpm`` only, then ``quota`` added at entity level."""
+        repo = sync_limiter._repository
+        repo.set_limits(entity_id, [self.RPM], resource="r")
+        with sync_limiter.acquire(entity_id, "r", {"rpm": 1}):
+            pass
+        repo.set_limits(entity_id, [self.RPM, quota], resource="r")
+        item = _raw_bucket(repo, entity_id, resource="r")
+        assert bucket_attr("q", BUCKET_FIELD_CP) in item
+        assert bucket_attr("q", BUCKET_FIELD_TK) not in item
+        return repo
+
+    @staticmethod
+    def _lose_the_rf_lock(repo, entity_id, times=1):
+        """The next ``times`` rf-locked commits lose their lock to a non-seeding writer."""
+        client = repo._get_client()
+        key = {
+            "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "r", 0)},
+            "SK": {"S": sk_state()},
+        }
+        original = repo.transact_write
+        raced: list[int] = []
+
+        def racing(items):
+            if len(raced) < times and ":expected_rf" in repr(items):
+                raced.append(1)
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key=key,
+                    UpdateExpression="ADD rf :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            return original(items)
+
+        repo.transact_write = racing
+        return (raced, lambda: setattr(repo, "transact_write", original))
+
+    def test_a_soft_quota_is_seeded_not_debited_onto_nothing(self, sync_limiter):
+        quota = Limit.quota("q", 10, cron="0 0 * * *", soft=True)
+        repo = self._with_quota_added(sync_limiter, "soft", quota)
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        raced, undo = self._lose_the_rf_lock(repo, "soft")
+        try:
+            with slow.acquire("soft", "r", {"rpm": 1, "q": 3}) as lease:
+                assert lease.consumed["q"] == 3
+        finally:
+            undo()
+        assert raced == [1]
+        item = _raw_bucket(repo, "soft", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "7000"
+        assert item[bucket_attr("q", BUCKET_FIELD_GC)]["N"] == "1"
+
+    def test_a_hard_quota_is_seeded_not_rejected(self, sync_limiter):
+        quota = Limit.quota("q", 10, cron="0 0 * * *")
+        repo = self._with_quota_added(sync_limiter, "hard", quota)
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        raced, undo = self._lose_the_rf_lock(repo, "hard")
+        try:
+            with slow.acquire("hard", "r", {"rpm": 1, "q": 3}):
+                pass
+        finally:
+            undo()
+        assert raced == [1]
+        item = _raw_bucket(repo, "hard", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "7000"
+        assert item[bucket_attr("q", BUCKET_FIELD_GC)]["N"] == "1"
+
+    @pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
+    def test_a_seed_lost_twice_is_a_contended_429_without_a_write(self, sync_limiter, soft):
+        """Two rf locks lost in a row to writers that do not seed: the redo is
+        spent, and the request is the contended 429 (#724) — retry shortly,
+        no limit marked exceeded. Never a rejection on a soft limit's own
+        balance (ADR-151 decision 1), and nothing is written. The next pass
+        seeds the quota."""
+        quota = Limit.quota("q", 10, cron="0 0 * * *", soft=soft)
+        repo = self._with_quota_added(sync_limiter, "twice", quota)
+        before = _raw_bucket(repo, "twice", resource="r")
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        raced, undo = self._lose_the_rf_lock(repo, "twice", times=2)
+        try:
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with slow.acquire("twice", "r", {"rpm": 1, "q": 3}):
+                    pass
+        finally:
+            undo()
+        assert raced == [1, 1]
+        rejection = exc_info.value
+        assert rejection.contended is True
+        assert not any(s.exceeded for s in rejection.statuses)
+        assert rejection.retry_after_seconds == pytest.approx(0.1)
+        item = _raw_bucket(repo, "twice", resource="r")
+        assert bucket_attr("q", BUCKET_FIELD_TK) not in item
+        rpm_tk = bucket_attr("rpm", BUCKET_FIELD_TK)
+        assert item[rpm_tk] == before[rpm_tk]
+        with slow.acquire("twice", "r", {"rpm": 1, "q": 3}):
+            pass
+        item = _raw_bucket(repo, "twice", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "7000"
+        assert item[bucket_attr("q", BUCKET_FIELD_GC)]["N"] == "1"
+
+    def test_a_failure_with_no_image_is_replanned(self):
+        """A backend whose failed retry returns no image: nothing tells whether
+        the missing limit was the cause, and a re-plan is the safe answer."""
+        from zae_limiter.sync_lease import _still_unseeded
+
+        key, other = (("e", "r", 0), ("p", "r", 0))
+        assert _still_unseeded({key: {"q"}}, {}) is True
+        seeded = {
+            bucket_attr("q", BUCKET_FIELD_CP): {"N": "10000"},
+            bucket_attr("q", BUCKET_FIELD_TK): {"N": "1000"},
+        }
+        assert _still_unseeded({key: {"q"}}, {key: seeded}) is False
+        assert _still_unseeded({key: {"q"}}, {other: seeded}) is False
+        assert _still_unseeded({key: {"q"}}, {key: {}, other: seeded}) is True
+
+    def test_a_cascading_childs_seed_is_replanned(self, sync_limiter):
+        """A cascade commits child and parent in one transaction: the child's
+        lost lock rolls both back, its retry finds its soft quota missing, and
+        the redo seeds it while debiting the parent once."""
+        repo = sync_limiter._repository
+        repo.create_entity("org")
+        repo.create_entity("kid", parent_id="org", cascade=True)
+        repo.set_limits("org", [self.RPM], resource="r")
+        repo.set_limits("kid", [self.RPM], resource="r")
+        with sync_limiter.acquire("kid", "r", {"rpm": 1}):
+            pass
+        quota = Limit.quota("q", 10, cron="0 0 * * *", soft=True)
+        repo.set_limits("kid", [self.RPM, quota], resource="r")
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        raced, undo = self._lose_the_rf_lock(repo, "kid")
+        try:
+            with slow.acquire("kid", "r", {"rpm": 1, "q": 3}):
+                pass
+        finally:
+            undo()
+        assert raced == [1]
+        kid = _raw_bucket(repo, "kid", resource="r")
+        assert kid[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "7000"
+        assert kid[bucket_attr("q", BUCKET_FIELD_GC)]["N"] == "1"
+        org = _raw_bucket(repo, "org", resource="r")
+        assert int(org[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) < 100000
+        assert int(org[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) >= 98000
+
+    def test_a_soft_session_quota_is_seeded_in_its_window(self, sync_limiter):
+        """A session window cannot be seeded by the retry either (no `vu`)."""
+        quota = Limit.quota("q", 10, reset_after=timedelta(hours=5), soft=True)
+        repo = self._with_quota_added(sync_limiter, "sess", quota)
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        raced, undo = self._lose_the_rf_lock(repo, "sess")
+        try:
+            with slow.acquire("sess", "r", {"rpm": 1, "q": 3}):
+                pass
+        finally:
+            undo()
+        assert raced == [1]
+        item = _raw_bucket(repo, "sess", resource="r")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "7000"
+        assert item[bucket_attr("q", BUCKET_FIELD_GC)]["N"] == "1"
+        assert bucket_attr("q", BUCKET_FIELD_WS) in item

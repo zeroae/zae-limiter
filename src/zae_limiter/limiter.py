@@ -42,6 +42,7 @@ from .lease import (
     OwnerStampLostError,
     PeriodNotAppliedError,
     QuotaMoveLostError,
+    SeedNotAppliedError,
     _contention_rejection,
     _is_transaction_conflict,
     _stamp_deadline,
@@ -2930,11 +2931,14 @@ class RateLimiter:
                     if disable_bypass:  # pragma: no cover
                         raise AssertionError("an enforced plan carries no bypass write") from None
                     disable_bypass = True
-                except PeriodNotAppliedError:
-                    # The retry found a quota period nobody has applied (#743):
-                    # redo the pass once from a fresh read, which applies it. A
-                    # second loss stands as the rejection it was raised as.
-                    # Never for a soft quota: its guard is waived (review D7).
+                except (PeriodNotAppliedError, SeedNotAppliedError):
+                    # The retry found a quota period nobody has applied (#743),
+                    # or a limit the item does not carry yet and the retry
+                    # cannot seed (#771): redo the pass once from a fresh read,
+                    # which applies or seeds it. A second loss stands as the
+                    # rejection it was raised as — for a seed the contended
+                    # 429. Never a period for a soft quota: its guard is waived
+                    # (review D7).
                     if period_redone:
                         raise
                     period_redone = True
@@ -3249,10 +3253,12 @@ class RateLimiter:
                 if grown == enforced:  # pragma: no cover
                     raise AssertionError("an enforced part carries no bypass write") from None
                 return await plan_and_commit(disable_moves, moves_contended, redone, reread, grown)
-            except PeriodNotAppliedError:
-                # The retry found a quota period nobody has applied (#743):
-                # redo the pass once from a fresh read, which applies it. A
-                # second loss stands as the rejection it was raised as.
+            except (PeriodNotAppliedError, SeedNotAppliedError):
+                # The retry found a quota period nobody has applied (#743),
+                # or a limit no part's item carries yet that the retry cannot
+                # seed (#771): redo the pass once from a fresh read, which
+                # applies or seeds it. A second loss stands as the rejection
+                # it was raised as.
                 if redone:
                     raise
                 return await plan_and_commit(disable_moves, moves_contended, True, reread, enforced)

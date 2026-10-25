@@ -419,6 +419,25 @@ class PeriodNotAppliedError(RateLimitExceeded):
     """
 
 
+class SeedNotAppliedError(RateLimitExceeded):
+    """The consumption-only retry found a limit the item does not carry yet (#771).
+
+    The slow pass was to seed it (#633) on its rf-locked write, which lost its
+    lock to a writer that does not seed; the retry cannot seed a quota,
+    session window or schedule (it stamps no ``vu``), and must not debit a
+    balance nothing granted — a ``tk`` with no ADR-145 ``gc``, which every
+    later pass would read as present and never seed. Nothing was written, so
+    the acquire re-plans once from a fresh read (`SyncRateLimiter._slow_acquire`),
+    whose rf-locked write seeds it. Raised as the contended 429 (#724): the
+    request was not short of anything, it lost two writes in a row to other
+    writers, so a second loss stands as "retry shortly" — never a rejection on
+    a soft limit's own balance (ADR-151 decision 1).
+    """
+
+    def __init__(self, statuses: list[LimitStatus]) -> None:
+        super().__init__(statuses, contended=True)
+
+
 class BypassLostError(Exception):
     """A bypass-shaped slow-path write found the bucket's stamp gone (internal, #311).
 
@@ -1200,6 +1219,7 @@ class SyncLease:
                 _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None
             )
             retry_guards: dict[tuple[str, str, int], dict[str, tuple[int | None, int | None]]] = {}
+            retry_unseeded: dict[tuple[str, str, int], set[str]] = {}
 
             def _consumption_only(
                 entity_id: str, resource: str, shard_id: int, group_entries: list[LeaseEntry]
@@ -1230,6 +1250,13 @@ class SyncLease:
                 }
                 if not consumed:
                     return None
+                unseeded = {
+                    e.limit.name
+                    for e in group_entries
+                    if e._seed and e.limit.name in consumed and (e.limit.name not in seeds)
+                }
+                if unseeded:
+                    retry_unseeded[entity_id, resource, shard_id] = unseeded
                 guards = _period_guards(group_entries, now_ms)
                 if guards:
                     retry_guards[entity_id, resource, shard_id] = guards
@@ -1322,6 +1349,10 @@ class SyncLease:
                         images = _retry_failure_images(
                             retry_exc, [key for key, _group in retry_groups]
                         )
+                        if _still_unseeded(retry_unseeded, images):
+                            raise SeedNotAppliedError(
+                                _contention_rejection(self.entries, now_ms).statuses
+                            ) from retry_exc
                         unapplied = _unapplied_periods(retry_guards, images, now_ms)
                         if unapplied:
                             raise PeriodNotAppliedError(
@@ -2257,6 +2288,37 @@ def _unapplied_periods(
             ):
                 unapplied.add((key, name))
     return unapplied
+
+
+def _still_unseeded(
+    unseeded: dict[tuple[str, str, int], set[str]],
+    images: dict[tuple[str, str, int], dict[str, Any]],
+) -> bool:
+    """A failed retry's item still lacks a limit it was to seed and could not (#771).
+
+    Read off each failed write's ``ALL_OLD`` image: the limit's ``cp`` or
+    ``tk`` is absent. A transaction returns an image only for the items whose
+    condition failed, so an item with none passed its condition and is not
+    the cause. With no image at all (a backend that returns none) nothing can
+    be told, and the pass is re-planned as if it were: the retry's debit of
+    that limit could not have landed, and a fresh read either seeds it or
+    finds the real shortfall.
+    """
+    if not images:
+        return bool(unseeded)
+    return any(
+        (
+            (item := images.get(key)) is not None
+            and any(
+                (
+                    bucket_attr(name, field) not in item
+                    for name in names
+                    for field in (BUCKET_FIELD_CP, BUCKET_FIELD_TK)
+                )
+            )
+            for key, names in unseeded.items()
+        )
+    )
 
 
 def _period_statuses(

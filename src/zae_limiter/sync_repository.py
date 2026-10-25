@@ -3431,9 +3431,12 @@ class SyncRepository:
             soft_trusted: As for :meth:`build_composite_normal` (#467): these
                 soft limits carry no balance condition, and every other limit's
                 condition admits on the item's own soft stamp while it is live
-                at ``now_ms``. A soft seed carries none either — its soft-ness
-                came from config read uncached on this pass. The retry never
-                writes a stamp, so an expired one admits nothing here.
+                at ``now_ms`` — and only beside the limit's ``cp`` and ``tk``
+                (#771), so a limit missing from the item is never debited onto
+                a balance nothing granted. A soft seed carries none either —
+                its soft-ness came from config read uncached on this pass. The
+                retry never writes a stamp, so an expired one admits nothing
+                here.
             now_ms: The instant a soft stamp's deadline is judged against
                 (ADR-151 decision 8); None reads the clock.
             period_guards: Limit name -> ``(reset_edge_ms, window_start_ms)``
@@ -3475,9 +3478,13 @@ class SyncRepository:
                 edge, window_start = (None, None)
             else:
                 soft_alias = f"#bo{i}"
+                cp_alias = f"#be{i}"
                 attr_names[soft_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
+                attr_names[cp_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
                 attr_values[":bnow"] = {"N": str(stamp_now)}
-                condition_parts.append(f"({soft_alias} > :bnow OR {tk_alias} >= {tk_threshold})")
+                condition_parts.append(
+                    f"({tk_alias} >= {tk_threshold} OR ({soft_alias} > :bnow AND attribute_exists({cp_alias}) AND attribute_exists({tk_alias})))"
+                )
                 waiver = f"{soft_alias} > :bnow OR "
                 edge, window_start = guards.get(name, (None, None))
             if edge is not None:

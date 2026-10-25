@@ -526,7 +526,10 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
         condition = update["ConditionExpression"]
-        assert condition == "(#bo0 > :bnow OR #bt0 >= :bf0)"
+        # The stamp waives the balance only beside `cp` and `tk` (#771).
+        assert condition == (
+            "(#bt0 >= :bf0 OR (#bo0 > :bnow AND attribute_exists(#be0) AND attribute_exists(#bt0)))"
+        )
 
     def test_adjust(self) -> None:
         update = _repo().build_composite_adjust(
