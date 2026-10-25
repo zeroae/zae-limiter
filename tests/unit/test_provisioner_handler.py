@@ -2689,6 +2689,66 @@ class TestChangeOnlyApplyStaysSafe:
 
         assert "disabled" not in self._bucket(counting, "user-0")
 
+    def _cfn(self, request_type="Update", **extra):
+        return on_event(
+            {
+                "RequestType": request_type,
+                "ResourceProperties": {
+                    "ServiceToken": "arn:aws:lambda:us-east-1:123:function:test",
+                    "TableName": self.TABLE,
+                    "Namespace": "test-ns",
+                    "NamespaceId": "ns123",
+                    "Resources": {"gpt-4": {"Limits": {"rpm": {"Capacity": "1000"}}}},
+                    "Entities": {
+                        "user-0": {"Resources": {"gpt-4": {"Limits": {"rpm": {"Capacity": "10"}}}}}
+                    },
+                    **extra,
+                },
+            },
+            MagicMock(),
+        )
+
+    def _drift(self, client):
+        """A bucket whose params drifted out of band; its config item still matches."""
+        self._cfn(request_type="Create")
+        self._put_bucket(client, "user-0", capacity=10)
+        client.update_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": "ns123/BUCKET#user-0#gpt-4#0"}, "SK": {"S": "#STATE"}},
+            UpdateExpression="SET b_rpm_cp = :c",
+            ExpressionAttributeValues={":c": {"N": "999000"}},
+        )
+
+    def test_a_change_only_cfn_update_leaves_a_drifted_bucket(self, counting):
+        """The residual `FullApply` exists for: nothing changed, so nothing syncs."""
+        self._drift(counting)
+
+        result = self._cfn()
+
+        assert result["changes"] == []
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "999000"}
+
+    def test_a_cfn_full_apply_repairs_a_drifted_bucket(self, counting):
+        self._drift(counting)
+
+        result = self._cfn(FullApply="true")
+
+        assert result["unchanged"] == 0
+        assert len(result["changes"]) == 2
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "10000"}
+
+    def test_cfn_full_apply_false_is_change_only(self, counting):
+        self._drift(counting)
+
+        result = self._cfn(FullApply="false")
+
+        assert result["changes"] == []
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "999000"}
+
+    def test_cfn_full_apply_must_be_a_boolean(self, counting):
+        with pytest.raises(ValueError, match="FullApply must be true or false"):
+            self._cfn(request_type="Create", FullApply="yes")
+
 
 class TestChangeOnlyApplyNonEnforcing:
     """Soft limits and `disabled: bypass` (ADR-151) under the change-only apply."""

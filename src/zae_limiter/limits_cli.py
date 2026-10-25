@@ -224,7 +224,15 @@ def limits_diff(
     type=click.Path(exists=True),
     help="YAML limits file.",
 )
-def limits_cfn_template(name: str, file_path: str) -> None:
+@click.option(
+    "--full",
+    is_flag=True,
+    help=(
+        "Emit FullApply: true, so every stack update applies in full, like "
+        "'limits apply --full'. Repairs bucket items an earlier fan-out missed."
+    ),
+)
+def limits_cfn_template(name: str, file_path: str, full: bool) -> None:
     """Generate a CloudFormation template from YAML file."""
     manifest_data = _load_yaml(file_path)
     namespace = manifest_data.get("namespace", "default")
@@ -234,6 +242,10 @@ def limits_cfn_template(name: str, file_path: str) -> None:
         "TableName": name,
         "Namespace": namespace,
     }
+    if full:
+        # CloudFormation invokes the resource only when a property changes, so
+        # adding (or removing) this one is itself what triggers the full apply.
+        properties["FullApply"] = True
 
     if "system" in manifest_data:
         system_props: dict[str, Any] = {}

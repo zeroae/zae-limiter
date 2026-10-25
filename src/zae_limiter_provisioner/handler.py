@@ -157,9 +157,18 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         # Create or Update: convert CFN properties to manifest format
         manifest_data = _cfn_properties_to_manifest(properties)
 
+    # `FullApply` is the CloudFormation spelling of `limits apply --full`: a
+    # change-only apply never repairs a bucket whose params drifted while its
+    # config item still matches, and a stack has no other way to ask for it.
+    # Ignored on Delete, which removes every managed level regardless.
+    requested_full = (
+        request_type != "Delete"
+        and "FullApply" in properties
+        and _coerce_bool(properties["FullApply"], "FullApply")
+    )
     manifest = LimitsManifest.from_dict(manifest_data)
     previous = _read_provisioner_state(table_name, namespace_id)
-    full = previous.get("full_pending", False)
+    full = requested_full or previous.get("full_pending", False)
     declared, changes = _plan_changes(manifest, previous, table_name, namespace_id, full=full)
     unchanged = len(declared) - len(changes)
 

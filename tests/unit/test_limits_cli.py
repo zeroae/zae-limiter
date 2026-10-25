@@ -463,6 +463,43 @@ class TestLimitsCfnTemplateDisabled:
         assert round_tripped["entities"]["vip-1"]["resources"]["gpt-4"]["disabled"] is False
 
 
+class TestLimitsCfnTemplateFullApply:
+    """`cfn-template --full` is `limits apply --full` for a stack: the `FullApply` property."""
+
+    MANIFEST = {
+        "namespace": "test-ns",
+        "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1}}}},
+    }
+
+    def _props(self, *extra: str) -> dict:
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump(self.MANIFEST, f)
+            f.flush()
+            result = CliRunner().invoke(
+                cli, ["limits", "cfn-template", "--name", "test-app", "-f", f.name, *extra]
+            )
+        assert result.exit_code == 0, result.output
+        props: dict = yaml.safe_load(result.output)["Resources"]["TenantLimits"]["Properties"]
+        return props
+
+    def test_full_emits_full_apply(self):
+        assert self._props("--full")["FullApply"] is True
+
+    def test_omitted_by_default(self):
+        assert "FullApply" not in self._props()
+
+    @patch("zae_limiter_provisioner.handler._apply_and_record")
+    @patch("zae_limiter_provisioner.handler._plan_changes", return_value=([], []))
+    @patch("zae_limiter_provisioner.handler._read_provisioner_state", return_value={})
+    def test_the_provisioner_reads_it_as_a_full_apply(self, _state, plan, _apply):
+        from zae_limiter_provisioner.handler import on_event
+
+        props = {**self._props("--full"), "NamespaceId": "ns123"}
+        on_event({"RequestType": "Update", "ResourceProperties": props}, MagicMock())
+
+        assert plan.call_args.kwargs == {"full": True}
+
+
 class TestLimitsCfnTemplateCascade:
     """The `cascade` policy (ADR-146) rides the same tri-state wire format as `disabled`."""
 
