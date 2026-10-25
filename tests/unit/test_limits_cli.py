@@ -1527,16 +1527,22 @@ class TestLimitsQuietAndUnchanged:
         assert result.output == "Drift detected: 2 difference(s) (1177 unchanged)\n"
 
     @pytest.mark.parametrize("command", ["plan", "diff"])
-    def test_a_preview_says_when_the_next_apply_runs_in_full(self, command):
-        """An interrupted apply left a full one owed (`full_pending`)."""
-        response = {**self._APPLIED, "status": "planned", "unchanged": 0, "full": True}
+    def test_a_preview_says_what_an_interrupted_apply_left(self, command):
+        """Fan-outs an earlier apply did not finish; the next apply retries them."""
+        response = {**self._APPLIED, "status": "planned", "pending": 3}
         result = self._run(command, response, "-q")
         assert result.exit_code == 0
-        assert "earlier apply was interrupted" in result.output
-        assert "every declared entry" in result.output
+        assert "3 bucket fan-out(s) an earlier apply did not finish" in result.output
+
+    @pytest.mark.parametrize("command", ["plan", "diff"])
+    def test_it_is_said_even_with_no_changes(self, command):
+        response = {"status": "planned", "changes": [], "unchanged": 5, "pending": 1}
+        result = self._run(command, response)
+        assert result.exit_code == 0
+        assert "1 bucket fan-out(s) an earlier apply did not finish" in result.output
 
     def test_a_preview_with_nothing_owed_says_nothing_more(self):
-        response = {**self._APPLIED, "status": "planned", "full": False}
+        response = {**self._APPLIED, "status": "planned", "pending": 0}
         result = self._run("plan", response, "-q")
         assert result.output == "Plan: 2 change(s) (1177 unchanged)\n"
 

@@ -84,10 +84,11 @@ def limits_plan(
     changes = result.get("changes", [])
     if not changes:
         click.echo("No changes. Infrastructure is up-to-date.")
+        _echo_pending(result)
         return
 
     click.echo(f"Plan: {len(changes)} change(s){_unchanged_suffix(result)}")
-    _echo_full_pending(result)
+    _echo_pending(result)
     if quiet:
         return
     click.echo()
@@ -203,10 +204,11 @@ def limits_diff(
     changes = result.get("changes", [])
     if not changes:
         click.echo("No drift detected. Live state matches YAML.")
+        _echo_pending(result)
         return
 
     click.echo(f"Drift detected: {len(changes)} difference(s){_unchanged_suffix(result)}")
-    _echo_full_pending(result)
+    _echo_pending(result)
     if quiet:
         return
     click.echo()
@@ -422,17 +424,18 @@ def _cascade_warnings(manifest_data: dict[str, Any]) -> list[str]:
     ]
 
 
-def _echo_full_pending(result: dict[str, Any]) -> None:
-    """Say why a preview lists every entry: the next apply owes a full one.
+def _echo_pending(result: dict[str, Any]) -> None:
+    """Say how many bucket fan-outs an earlier apply left for the next one.
 
-    An apply that changed too many levels to list its pending fan-outs
-    records ``full_pending`` instead; if it was interrupted, the next apply
-    rewrites and fans out every declared entry, and the preview shows that.
+    An apply records every fan-out it owes before writing config, and removes
+    each once it lands; one that was interrupted or failed leaves the rest,
+    which the next apply retries even when no entry has changed.
     """
-    if result.get("full"):
+    pending = result.get("pending") or 0
+    if pending:
         click.echo(
-            "Note: an earlier apply was interrupted before its fan-outs finished, "
-            "so the next apply rewrites and fans out every declared entry."
+            f"Note: {pending} bucket fan-out(s) an earlier apply did not finish; "
+            "the next apply retries them."
         )
 
 
