@@ -621,6 +621,75 @@ class TestAcquireCommit:
 
 
 # ---------------------------------------------------------------------------
+# Multi-resource acquire (also=, ADR-148)
+# ---------------------------------------------------------------------------
+
+
+class TestAcquireAlso:
+    """Verify that acquire() passes also= through as one lease and one event."""
+
+    @staticmethod
+    def _yield_lease(mock_limiter):
+        mock_lease = MagicMock()
+        mock_lease._has_adjustments = False
+
+        @contextmanager
+        def mock_acquire_ctx():
+            yield mock_lease
+
+        mock_limiter.acquire.return_value = mock_acquire_ctx()
+
+    def test_also_reaches_sync_limiter(self, session, mock_limiter, mock_event):
+        self._yield_lease(mock_limiter)
+        also = {"budget": {"weekly": 1}}
+
+        with session.acquire("user-1", "search", {"rpm": 1}, also=also):
+            pass
+
+        mock_limiter.acquire.assert_called_once_with(
+            entity_id="user-1",
+            resource="search",
+            consume={"rpm": 1},
+            also=also,
+        )
+
+    def test_also_defaults_to_none(self, session, mock_limiter, mock_event):
+        self._yield_lease(mock_limiter)
+
+        with session.acquire("user-1", "search", {"rpm": 1}):
+            pass
+
+        assert mock_limiter.acquire.call_args.kwargs["also"] is None
+
+    def test_event_name_is_primary_resource(self, session, mock_limiter, mock_event):
+        self._yield_lease(mock_limiter)
+
+        with session.acquire("user-1", "search", {"rpm": 1}, also={"budget": {"weekly": 1}}):
+            pass
+
+        # One lease is one ACQUIRE event, named for the primary resource
+        assert mock_event.fire.call_count == 1
+        call_kwargs = mock_event.fire.call_args.kwargs
+        assert call_kwargs["request_type"] == "ACQUIRE"
+        assert call_kwargs["name"] == "search"
+
+    def test_event_name_uses_name_when_given(self, session, mock_limiter, mock_event):
+        self._yield_lease(mock_limiter)
+
+        with session.acquire(
+            "user-1",
+            "search",
+            {"rpm": 1},
+            also={"budget": {"weekly": 1}},
+            name="search+budget",
+        ):
+            pass
+
+        assert mock_event.fire.call_count == 1
+        assert mock_event.fire.call_args.kwargs["name"] == "search+budget"
+
+
+# ---------------------------------------------------------------------------
 # Available
 # ---------------------------------------------------------------------------
 

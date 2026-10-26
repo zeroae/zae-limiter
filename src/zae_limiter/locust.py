@@ -119,6 +119,7 @@ class RateLimiterSession:
         resource: str,
         consume: dict[str, int],
         *,
+        also: dict[str, dict[str, int]] | None = None,
         name: str | None = None,
     ) -> Generator[Any, None, None]:
         """Acquire rate limit tokens, firing Locust events with timing.
@@ -128,11 +129,19 @@ class RateLimiterSession:
         - **ACQUIRE** — entering the rate limiter (read + consume).
         - **COMMIT** — exiting the context manager (only if adjustments were made).
 
+        A multi-resource acquire (``also=``, ADR-148) is still one lease, so it
+        fires one ACQUIRE event named for the primary ``resource``, not one per
+        resource.
+
         Args:
             entity_id: Entity to acquire for.
-            resource: Resource name.
+            resource: Primary resource name.
             consume: Dict of limit_name -> amount (e.g. {"rpm": 1, "tpm": 500}).
-            name: Locust stats name (defaults to resource).
+            also: Extra resources debited in the same acquire, as
+                resource -> {limit_name: amount}
+                (e.g. {"budget": {"weekly": 1}}). Passed to
+                ``SyncRateLimiter.acquire(also=...)``.
+            name: Locust stats name (defaults to the primary resource).
 
         Yields:
             The lease context from SyncRateLimiter.acquire().
@@ -146,6 +155,7 @@ class RateLimiterSession:
                 entity_id=entity_id,
                 resource=resource,
                 consume=consume,
+                also=also,
             ) as lease:
                 self._fire("ACQUIRE", stat_name, acquire_start)
                 acquired = True
