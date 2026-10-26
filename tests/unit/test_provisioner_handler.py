@@ -3934,6 +3934,31 @@ class TestChangeOnlyApplyStaysSafe:
         assert self._pending(counting) == []
         assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
 
+    def test_an_entity_update_with_no_limits_reconciles_its_buckets(self, counting):
+        """Re-review 3 (a), on main too: an update with no limits skipped the sync.
+
+        Its buckets kept the old entity limits and no TTL, as if the level
+        still declared them.
+        """
+        self._apply(self._manifest(capacity=10))
+        self._put_bucket(counting, "user-0", capacity=10)
+        manifest = self._manifest(capacity=10)
+        manifest["entities"]["user-0"]["resources"]["gpt-4"] = {"limits": {}, "disabled": False}
+
+        self._apply(manifest)
+
+        bucket = self._bucket(counting, "user-0")
+        assert bucket["b_rpm_cp"] == {"N": "1000000"}  # the resource default
+        assert "ttl" in bucket  # running on defaults again
+        assert self._pending(counting) == []
+
+    def test_an_undecodable_previous_item_strips_nothing(self):
+        from zae_limiter_provisioner.handler import _stored_limits
+
+        # One limit under both config prefixes is corrupt (ADR-142).
+        corrupt = {"l_rpm_cp": {"N": "1"}, "w_rpm_cp": {"N": "1"}, "w_rpm_rsa": {"N": "60"}}
+        assert _stored_limits(corrupt) == {}
+
     def test_deleting_an_entity_level_strips_limits_the_default_lacks(self, counting):
         """Re-review 2 #6 (pre-existing on main): a delete carried no limit names.
 

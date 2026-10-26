@@ -469,13 +469,14 @@ def _apply_and_record(
             client, table_name, namespace_id, token, image_only, lease, full=full or mark_full
         )
     soft_changed = {(lv, t or ""): names for lv, t, names in result.soft_changed}
-    # The limits each deleted entity level held, from the pre-read: the sync of
-    # a delete strips from its buckets those the level it falls back to lacks
-    # (#739 re-review 2 #6). A delete carries no data, so that set was empty.
-    deleted_limits = {
-        (c.level, c.target or ""): decode_limits(stored[id(c)])
+    # The limits each changed entity level held before this apply, from the
+    # pre-read: its sync strips from its buckets those the level no longer
+    # gives them (#739 re-review 2 #6, re-review 3 (a)/(b)). A change carries
+    # only the new side.
+    previous_limits = {
+        (c.level, c.target or ""): _stored_limits(stored[id(c)])
         for c in changes
-        if c.action == "delete" and c.level == "entity" and stored and stored.get(id(c))
+        if c.level == "entity" and stored and stored.get(id(c))
     }
 
     # Re-asserted `disabled` levels (the ADR-125 missed-bucket repair) hold no
@@ -501,7 +502,7 @@ def _apply_and_record(
                 key,
                 _done,
                 soft_names=soft_changed.get((key[1], key[2])),
-                deleted_limits=deleted_limits.get((key[1], key[2])),
+                previous_limits=previous_limits.get((key[1], key[2])),
             )
         )
 
@@ -584,7 +585,7 @@ def _retry_from_table(
     key: tuple[str, str, str],
     done: Callable[[str, str, str], None],
     soft_names: list[str] | None = None,
-    deleted_limits: dict[str, Any] | None = None,
+    previous_limits: dict[str, Any] | None = None,
 ) -> list[str]:
     """Run one owed fan-out from the level's live config item.
 
@@ -623,8 +624,9 @@ def _retry_from_table(
         before = _read()
         for _round in range(_RETRY_ROUNDS):
             change = _change_from_item(level, target, before)
-            if change.action == "delete" and deleted_limits:
-                change = Change("delete", level, target, {"limits": deleted_limits})
+            if previous_limits:
+                data = {**(change.data or {}), "previous_limits": previous_limits}
+                change = Change(change.action, level, target, data)
             if kind == "disabled":
                 errors, _ = _fanout_disabled_changes(table_name, namespace_id, [change])
             elif kind == "cascade":
@@ -651,6 +653,14 @@ def _retry_from_table(
         return [f"retry {kind} {level} {target}: {e} (retried on the next apply)"]
     logger.warning("Config of %s %s kept moving; %s fan-out left pending", level, target, kind)
     return []
+
+
+def _stored_limits(item: dict[str, Any]) -> dict[str, Any]:
+    """The limits a stored config item holds; none when it cannot be decoded."""
+    try:
+        return decode_limits(item)
+    except ValueError:
+        return {}
 
 
 def _change_from_item(level: str, target: str, item: dict[str, Any]) -> Change:
@@ -896,6 +906,8 @@ def _sync_bucket_param_changes(
             continue
         entity_id, resource = change.target.split("/", 1)
         declared = (change.data or {}).get("limits", {})
+        # What the level held before this apply, when its pre-read is known.
+        previous = (change.data or {}).get("previous_limits", {})
         # Per change, just before its resolution: a soft stamp's deadline
         # counts from the read behind it, and one instant for a whole apply
         # wrote stamps already expired on a long one (ADR-151 decision 8,
@@ -905,9 +917,12 @@ def _sync_bucket_param_changes(
         limits: dict[str, Any]
         stale_limit_names: set[str] | None
         try:
-            if change.action == "delete":
-                # Reconcile to whatever now applies, and strip the limits that
-                # the deleted config had but the new effective config does not.
+            if change.action == "delete" or not declared:
+                # The level gives its buckets no limits of its own: deleted, or
+                # updated to declare none (re-review 3 (a), which skipped the
+                # sync and left the old entity limits on the buckets, with no
+                # TTL). Reconcile to whatever now applies, and strip the limits
+                # the level had but the new effective config does not.
                 effective = resolve_effective_limits(
                     client, table_name, namespace_id, entity_id, resource
                 )
@@ -915,14 +930,10 @@ def _sync_bucket_param_changes(
                     if on_done is not None:
                         on_done("sync", change.level, change.target)
                     continue
-                stale = set(declared) - set(effective)
+                stale = (set(declared) | set(previous)) - set(effective)
                 limits, ttl_multiplier = effective, DEFAULT_TTL_MULTIPLIER
                 stale_limit_names = stale or None
             else:
-                if not declared:
-                    if on_done is not None:
-                        on_done("sync", change.level, change.target)
-                    continue
                 limits, ttl_multiplier = declared, 0
                 stale_limit_names = None
 
