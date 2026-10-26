@@ -1,6 +1,6 @@
 # ADR-139: Duration reset windows anchored to first use
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-149](149-reset-and-top-up.md): a session top-up opens a window; by [ADR-151](151-non-enforcing-limits.md): a bypassed request does not anchor one)
 **Date:** 2026-09-15
 **Issue:** [#597](https://github.com/zeroae/zae-limiter/issues/597)
 **Related:** ADR-137, ADR-138, [ADR-140](140-duration-window-shard-coherence.md), [ADR-141](141-reset-after-version-gate.md)

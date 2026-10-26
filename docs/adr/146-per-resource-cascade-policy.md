@@ -1,6 +1,6 @@
 # ADR-146: Per-resource cascade policy, resolved like `disabled`
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-150](150-move-entity-to-new-parent.md): an owner stamp older than the stored generation is not written)
 **Date:** 2026-10-05
 **Issue:** [#676](https://github.com/zeroae/zae-limiter/issues/676)
 **Supersedes:** [ADR-112](112-cascade-per-entity.md) in part (where the cascade decision comes from)

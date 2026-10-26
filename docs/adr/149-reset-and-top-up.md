@@ -1,9 +1,9 @@
 # ADR-149: Reset and top-up are in-place, rf-locked passes over every shard
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-09
 **Issue:** [#470](https://github.com/zeroae/zae-limiter/issues/470)
-**Amends:** [ADR-145](145-sharded-quota-conserves-allowance.md) (I1, I7, I8: a top-up is an operator grant above the plan)
+**Amends:** [ADR-145](145-sharded-quota-conserves-allowance.md) (I1, I7, I8: a top-up is an operator grant above the plan), [ADR-139](139-duration-reset-windows.md) (a session top-up with no live window opens one at the top-up instant: an operator action, not an admitted request, anchors it)
 **Related:** [ADR-125](125-resource-disable.md), [ADR-137](137-reset-replaces-drip.md), [ADR-139](139-duration-reset-windows.md), [ADR-140](140-duration-window-shard-coherence.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-147](147-client-side-rejection-cache.md), [#471](https://github.com/zeroae/zae-limiter/pull/471), [#674](https://github.com/zeroae/zae-limiter/issues/674)
 
 ## Context
@@ -61,6 +61,7 @@ topped up above its ceiling only through `b_{q}_tu`, which ends with the period 
   `UpdateItem` and a separate audit `PutItem` were 2), against one delete per shard in #471.
 - Without an idempotency key, an error from a reset or top-up leaves its outcome unknown to the
   caller; the operation record lives three days.
+- `reset_bucket` / `top_up` are required `RepositoryProtocol` members, not capability-gated (ADR-109), and their audit event rides in the same transaction, so a backend that implements them must also write audit events (ADR-108 lists audit as optional elsewhere). A top-up that creates the bucket takes its bypass and soft stamps from config read uncached (ADR-151 decision 4).
 - A record is tied to the entity's incarnation (#716's `pinc`), read before the write rather
   than checked inside it: an entity deleted and recreated during one call can see a key retry
   applied once more. Closing it would put a `ConditionCheck` on META in every reset and

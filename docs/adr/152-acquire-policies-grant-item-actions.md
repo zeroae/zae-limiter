@@ -1,9 +1,9 @@
 # ADR-152: Acquire policies grant the item actions they write with
 
-**Status:** Proposed (accepted at the v0.17.0 release)
+**Status:** Accepted
 **Date:** 2026-10-20
 **Issue:** [#750](https://github.com/zeroae/zae-limiter/issues/750), [#756](https://github.com/zeroae/zae-limiter/issues/756)
-**Supersedes:** [ADR-124](124-policy-rename-clarity.md) on acceptance (its permission matrix only; the policy names stand)
+**Supersedes:** [ADR-124](124-policy-rename-clarity.md) (its permission matrix only; the policy names stand)
 **Related:** [ADR-117](117-managed-policies-by-default.md), [ADR-150](150-move-entity-to-new-parent.md)
 
 ## Context
@@ -32,8 +32,10 @@ The policy names from ADR-124 are unchanged. The table-level permission matrix m
 following. Each namespace-scoped policy (`-ns-read`, `-ns-acq`, `-ns-full`) mirrors its
 table-level counterpart within its `dynamodb:LeadingKeys` condition: it must grant the same
 item actions (`GetItem`, `BatchGetItem`, `Query`, `ConditionCheckItem`, `PutItem`, `UpdateItem`,
-`DeleteItem`, as the row allows), and leaves out the table-wide ones (`Scan`, `DescribeTable`,
-`BatchWriteItem`). No policy lists `TransactWriteItems`, which IAM does not define.
+`DeleteItem`, as the row allows), and leaves out the table-wide ones (`Scan`, `DescribeTable`).
+`-ns-full` also grants `BatchWriteItem` (#742: `delete_entity` deletes with it); IAM checks
+`LeadingKeys` on every item of a batch, so it reaches only the keys `PutItem` and `DeleteItem`
+already reach. No policy lists `TransactWriteItems`, which IAM does not define.
 
 | Action | ReadOnly (`-read`) | AcquireOnly (`-acq`) | FullAccess (`-full`) |
 |--------|:--------:|:-----------:|:----------:|
@@ -53,7 +55,11 @@ every item action `acquire()` issues, whether alone or inside a transaction, and
 `PutItem` and `UpdateItem` on bucket items only: `dynamodb:LeadingKeys` `*/BUCKET#*` (and
 `{namespace id}/BUCKET#*` for `-ns-acq`), with `Null` false on the key. Every write `acquire()`
 issues is a bucket item, whose partition key is `{ns}/BUCKET#…`; namespace and entity ids contain
-no `/` or `#`, so no other item matches.
+no `/` or `#`, so the only other items the grant reaches are those sharing a bucket's partition:
+ADR-149's operation records (`SK=#OP#…`, in shard 0's partition). An acquire principal can
+therefore write such a record, which can only make a later reset or top-up reusing that key
+return the stored result instead of applying (an under-grant); it raises no balance it could not
+already raise (see Negative).
 
 ## Consequences
 

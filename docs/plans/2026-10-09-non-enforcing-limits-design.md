@@ -1,6 +1,6 @@
 # Soft limits and bypass: design
 
-**Decision record:** [ADR-151](../adr/151-non-enforcing-limits.md) (Proposed)
+**Decision record:** [ADR-151](../adr/151-non-enforcing-limits.md) (Accepted)
 **Issues:** [#467](https://github.com/zeroae/zae-limiter/issues/467) (soft limits),
 [#311](https://github.com/zeroae/zae-limiter/issues/311) (bypass; BLOCKED shipped as ADR-125)
 **Epic:** [#674](https://github.com/zeroae/zae-limiter/issues/674), milestone v0.17.0

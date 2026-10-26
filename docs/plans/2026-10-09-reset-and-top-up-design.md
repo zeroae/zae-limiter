@@ -1,6 +1,6 @@
 # Reset and top-up for an (entity, resource): design
 
-**Decision record:** [ADR-149](../adr/149-reset-and-top-up.md) (Proposed)
+**Decision record:** [ADR-149](../adr/149-reset-and-top-up.md) (Accepted)
 **Issue:** [#470](https://github.com/zeroae/zae-limiter/issues/470) (reshaped section, 2026-10-04)
 **Epic:** [#674](https://github.com/zeroae/zae-limiter/issues/674), row "Upgrade / buy more / reset session, immediately"
 **Prior work:** PR [#471](https://github.com/zeroae/zae-limiter/pull/471) (@mrohr, delete-based)

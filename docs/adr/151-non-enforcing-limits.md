@@ -1,9 +1,10 @@
 # ADR-151: Soft limits and bypass, decided on the bucket item
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-09
 **Issue:** [#467](https://github.com/zeroae/zae-limiter/issues/467), [#311](https://github.com/zeroae/zae-limiter/issues/311)
-**Related:** [ADR-100](100-centralized-config.md), [ADR-114](114-composite-bucket-items.md), [ADR-125](125-resource-disable.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-146](146-per-resource-cascade-policy.md), [ADR-147](147-client-side-rejection-cache.md), [#674](https://github.com/zeroae/zae-limiter/issues/674)
+**Amends:** [ADR-115](115-add-based-writes-lazy-refill.md) (a soft limit may go negative on admission, not only on adjust), [ADR-125](125-resource-disable.md) (`disabled` gains a fourth value, `bypass`), [ADR-139](139-duration-reset-windows.md) (a window opens on the first *enforced* admitted request; a bypassed one does not anchor it), [ADR-147](147-client-side-rejection-cache.md) (local rejection never rejects on a soft or bypassed limit)
+**Related:** [ADR-100](100-centralized-config.md), [ADR-114](114-composite-bucket-items.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-146](146-per-resource-cascade-policy.md), [#674](https://github.com/zeroae/zae-limiter/issues/674)
 **Design:** `docs/plans/2026-10-09-non-enforcing-limits-design.md`
 
 ## Context
@@ -81,8 +82,8 @@ the design document.
   discovers every bucket in the namespace.
 - A bypassed or soft bucket pays one slow pass per shard per T to renew its stamp, and a stamp
   a fan-out missed keeps its old meaning for up to T plus clock skew between processes.
-- A bucket created without a stamp (an old client, a clone of an older image)
-  enforces until the next fan-out or slow pass: under-admission, never over-admission.
+- A bucket created without a stamp (an old client, a clone of an older image) enforces until the next fan-out or slow pass: under-admission, never over-admission.
+- The new `RepositoryProtocol` members and keywords are required, not capability-gated (ADR-109): a custom backend must implement them.
 - A soft limit's debt is per shard: one shard can be overdrawn while siblings hold tokens.
 - Clients older than v0.15 ignore `client_min_version` and enforce soft and bypassed limits.
 
@@ -96,5 +97,4 @@ the design document.
 - **Decide bypass by server condition only**: the update expression cannot omit the `tk` debit conditionally.
 - **Propagate resource-level soft changes by bucket TTL**: a soft-to-hard change would admit without limit for up to seven reset periods.
 - **AuditEvent per overdraw**: one extra write per overdrawn request, on the hot path.
-- **Bound the stamp with `vu`**: writers that clear or re-stamp `vu` for other reasons (the slow
-  path's `clear_vu`, the aggregator's boundary re-stamp) would drop or extend it without reading config.
+- **Bound the stamp with `vu`**: writers that clear or re-stamp `vu` for other reasons (the slow path's `clear_vu`, the aggregator's boundary re-stamp) would drop or extend it without reading config.

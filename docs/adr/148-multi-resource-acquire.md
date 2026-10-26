@@ -1,9 +1,10 @@
 # ADR-148: One acquire may debit several resources, all or none
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-09
 **Issue:** [#675](https://github.com/zeroae/zae-limiter/issues/675)
-**Related:** [ADR-125](125-resource-disable.md), [ADR-133](133-client-shard-creation.md), [ADR-134](134-random-shard-selection.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-146](146-per-resource-cascade-policy.md), [ADR-147](147-client-side-rejection-cache.md), [#674](https://github.com/zeroae/zae-limiter/issues/674)
+**Amends:** [ADR-145](145-sharded-quota-conserves-allowance.md) (a covered slot whose move is dropped to fit one transaction is granted 0 this period: an under-admission, neither a move nor a fresh grant)
+**Related:** [ADR-125](125-resource-disable.md), [ADR-133](133-client-shard-creation.md), [ADR-134](134-random-shard-selection.md), [ADR-146](146-per-resource-cascade-policy.md), [ADR-147](147-client-side-rejection-cache.md), [#674](https://github.com/zeroae/zae-limiter/issues/674)
 **Design:** `docs/plans/2026-10-09-multi-resource-acquire-design.md`
 
 ## Context
@@ -39,24 +40,12 @@ the exception reaches the caller. Each resource must resolve its limits, `disabl
 cascade policy, shard and quota grants exactly as a single-resource acquire does; no
 resource may be named twice in one acquire.
 
-Before any write, the ADR-147 rejection cache must be consulted for every resource
-(and its parent, where it cascades), and a resource known short must reject the acquire
-with no DynamoDB call. Otherwise the fast-path writes for every resource must be issued
-concurrently. Resources the fast path admits keep their debit; resources it cannot settle
-go to the slow path, which must plan them and commit them, with their ADR-145 donor
-debits, in one `TransactWriteItems`; when that commit rejects, the fast-path debits are
-refunded. The planned transaction must never exceed 100 items: the number of resources is
-capped at the API boundary, and a plan whose donor debits would overflow must be re-planned
-without moves (an under-admission, never a failure). A rejected acquire whose slow-path
-plan holds a quota move must commit that move with nothing consumed, as ADR-145 requires
-of a single resource.
+Before any write, the ADR-147 rejection cache must be consulted for every resource (and its parent, where it cascades), and a resource known short on an enforced limit (never a soft or bypassed one, ADR-151) must reject the acquire with no DynamoDB call.
+Otherwise the fast-path writes for every resource must be issued concurrently. Resources the fast path admits keep their debit; resources it cannot settle go to the slow path, which must plan them and commit them, with their ADR-145 donor debits, in one `TransactWriteItems`; when that commit rejects, the fast-path debits are refunded.
+The planned transaction must never exceed 100 items: the number of resources is capped at the API boundary, and a plan whose donor debits would overflow must be re-planned without moves (an under-admission, never a failure). A rejected acquire whose slow-path plan holds a quota move must commit that move with nothing consumed, as ADR-145 requires of a single resource.
 
-`RateLimitExceeded` must carry a status for every declared limit of every resource the
-decision evaluated, each tagged with its resource; `ResourceDisabled` on any resource
-outranks `RateLimitExceeded` on another. Adjustments, consumption and releases must be
-addressable per resource without changing the meaning of the existing single-resource
-lease methods, and the exit reconcile must write one item per bucket touched. The sync
-twin must be generated from the async source (ADR-121).
+`RateLimitExceeded` must carry a status for every declared limit of every resource the decision evaluated, each tagged with its resource; `ResourceDisabled` on any resource outranks `RateLimitExceeded` on another, except when a local rejection (ADR-147) answers before that resource is read (see Negative).
+Adjustments, consumption and releases must be addressable per resource without changing the meaning of the existing single-resource lease methods, and the exit reconcile must write one item per bucket touched. The sync twin must be generated from the async source (ADR-121).
 
 ## Consequences
 

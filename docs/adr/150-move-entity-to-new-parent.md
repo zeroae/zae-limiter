@@ -1,9 +1,14 @@
 # ADR-150: Move an entity to a new parent
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-09
 **Issue:** [#677](https://github.com/zeroae/zae-limiter/issues/677)
-**Amends:** CLAUDE.md invariant 9 (`parent_id` set once at `create_entity()` and never changed)
+**Amends:** CLAUDE.md invariant 9 (`parent_id` set once at `create_entity()` and never
+changed); [ADR-115](115-add-based-writes-lazy-refill.md) and
+[ADR-133](133-client-shard-creation.md) (a bucket create is a transaction with a
+`ConditionCheck` on the owner's META, 4 WCU, not a single `PutItem`, and a cancelled check
+is a second cause of a lost create); [ADR-146](146-per-resource-cascade-policy.md) (a
+slow-path owner stamp older than the stored generation is not written)
 **Related:** [ADR-112](112-cascade-per-entity.md), [ADR-125](125-resource-disable.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-146](146-per-resource-cascade-policy.md), [ADR-147](147-client-side-rejection-cache.md), [#674](https://github.com/zeroae/zae-limiter/issues/674), [#684](https://github.com/zeroae/zae-limiter/issues/684), [#686](https://github.com/zeroae/zae-limiter/issues/686)
 **Design:** `docs/plans/2026-10-09-move-entity-design.md`
 
@@ -33,7 +38,10 @@ An entity's parent must be changeable through one repository operation that upda
 - No consumption or quota allowance moves between parents (ADR-145), and no lease is rewritten; details and costs are in the design doc.
 
 **Negative:**
-- A move is O(buckets of the entity) writes, not O(1), like a cascade-policy change.
+- A move is O(buckets of the entity) writes, not O(1), like a cascade-policy change. ADR-114
+  rejected merging META into buckets partly to avoid fan-out on metadata changes; denormalising
+  `parent_id` for a 0-RCU fast path makes this one metadata change pay that fan-out.
+- `set_parent` is a required `RepositoryProtocol` member, not capability-gated (ADR-109).
 - Until the fan-out reaches a shard, acquires on it debit the old parent.
 - Every bucket create becomes a transaction with one extra item, a `ConditionCheck` on the owner's META, which needs `dynamodb:ConditionCheckItem`: breaking for custom IAM.
 - Residual (GSI3 lag): a create that lands before the move's META write but is missed by both discovery passes keeps the old parent until its next slow pass or a repeat of the move.

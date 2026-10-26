@@ -1,6 +1,6 @@
 # ADR-147: Reject from the last bucket state seen, never admit from it
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-151](151-non-enforcing-limits.md): local rejection never rejects on a soft or bypassed limit)
 **Date:** 2026-10-06
 **Issue:** [#695](https://github.com/zeroae/zae-limiter/issues/695)
 **Related:** [ADR-134](134-random-shard-selection.md), [ADR-146](146-per-resource-cascade-policy.md), [#315](https://github.com/zeroae/zae-limiter/issues/315)

@@ -1,10 +1,10 @@
 # Multi-resource acquire: design
 
-**Decision record:** [ADR-148](../adr/148-multi-resource-acquire.md) (Proposed)
+**Decision record:** [ADR-148](../adr/148-multi-resource-acquire.md) (Accepted)
 **Issue:** [#675](https://github.com/zeroae/zae-limiter/issues/675) · **Epic:** [#674](https://github.com/zeroae/zae-limiter/issues/674) · **Milestone:** v0.17.0
 **Status:** implemented in v0.17.0 (#713, #717, #718, #748 and the post-merge review fixes),
 on the recommended option of every decision below. The decisions were built provisionally and
-were **ratified as built on 2026-10-26** (D1–D8, no changes); ADR-148 is accepted with the release.
+were **ratified as built on 2026-10-26** (D1–D8, no changes); ADR-148 was accepted the same day.
 
 ## TLDR
 
