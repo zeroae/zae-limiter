@@ -1,6 +1,6 @@
 # ADR-145: A sharded quota conserves its allowance
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-148](148-multi-resource-acquire.md): a dropped move grants 0; by [ADR-149](149-reset-and-top-up.md): I1, I7, I8 count operator top-ups)
 **Date:** 2026-09-28
 **Issue:** [#637](https://github.com/zeroae/zae-limiter/issues/637), [#642](https://github.com/zeroae/zae-limiter/issues/642)
 **Related:** ADR-133, ADR-134, ADR-137, [ADR-140](140-duration-window-shard-coherence.md), [#587](https://github.com/zeroae/zae-limiter/issues/587), [#477](https://github.com/zeroae/zae-limiter/issues/477)

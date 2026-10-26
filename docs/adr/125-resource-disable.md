@@ -1,6 +1,6 @@
 # ADR-125: Resource and Entity Disable
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-151](151-non-enforcing-limits.md): `disabled` gains a fourth value, `bypass`)
 **Date:** 2026-08-30
 **Issue:** TBD — link the tracking issue once filed
 

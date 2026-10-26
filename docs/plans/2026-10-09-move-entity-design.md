@@ -1,6 +1,6 @@
 # Move an entity to a new parent: design
 
-**Decision record:** [ADR-150](../adr/150-move-entity-to-new-parent.md) (Proposed)
+**Decision record:** [ADR-150](../adr/150-move-entity-to-new-parent.md) (Accepted)
 **Issue:** [#677](https://github.com/zeroae/zae-limiter/issues/677), part of epic #674
 **Milestone:** v0.17.0
 

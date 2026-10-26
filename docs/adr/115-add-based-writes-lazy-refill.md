@@ -1,6 +1,6 @@
 # ADR-115: ADD-Based Writes with Lazy Refill
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-150](150-move-entity-to-new-parent.md): a bucket create is a transaction with an owner check; by [ADR-151](151-non-enforcing-limits.md): a soft limit may go negative on admission)
 **Date:** 2026-01-28
 **Issue:** [#248](https://github.com/zeroae/zae-limiter/issues/248)
 **Depends on:** [ADR-114](114-composite-bucket-items.md)

@@ -1,6 +1,6 @@
 # ADR-124: Rename IAM Policies for Clarity
 
-**Status:** Accepted
+**Status:** Accepted (permission matrix superseded by [ADR-152](152-acquire-policies-grant-item-actions.md); the policy names stand)
 **Date:** 2026-02-02
 **Issue:** [#307](https://github.com/zeroae/zae-limiter/issues/307)
 **Amends:** ADR-117

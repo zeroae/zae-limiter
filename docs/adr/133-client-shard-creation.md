@@ -1,6 +1,6 @@
 # ADR-133: Client-Side Shard Bucket Creation
 
-**Status:** Accepted (partially superseded by [ADR-145](145-sharded-quota-conserves-allowance.md) for quota limits)
+**Status:** Accepted (partially superseded by [ADR-145](145-sharded-quota-conserves-allowance.md) for quota limits; create shape amended by [ADR-150](150-move-entity-to-new-parent.md))
 **Date:** 2026-09-11
 **Issue:** [#439](https://github.com/zeroae/zae-limiter/issues/439)
 

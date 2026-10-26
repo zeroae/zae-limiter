@@ -1309,7 +1309,7 @@ every resource in `also` for one entity and yields **one** lease — **all or no
 rejection, disable or backend error refunds every debit the acquire wrote before it propagates.
 Each resource resolves its own limits, `disabled`, cascade policy, shards and quota grants
 exactly as a single-resource acquire. `RepositoryProtocol` is unchanged; no new bucket writer,
-no schema change. ADR-148 is **Proposed** until the release; the design's decisions D1–D8 were
+no schema change. ADR-148 is **Accepted** (2026-10-26); the design's decisions D1–D8 were
 **ratified as built** on 2026-10-26 (see `docs/plans/2026-10-09-multi-resource-acquire-design.md`).
 
 - **Boundary** (`RateLimiter._acquire_parts`, before any I/O): `validate_resource` on every
@@ -1968,7 +1968,7 @@ supported on system config.
 
 Two ways to run a limit without enforcing it; both keep counting `tc`, so usage snapshots stay
 exact. User guide: `docs/guide/soft-limits-and-bypass.md`. Design:
-`docs/plans/2026-10-09-non-enforcing-limits-design.md`. Proposed until v0.17.0 ships.
+`docs/plans/2026-10-09-non-enforcing-limits-design.md`. ADR-151 Accepted (2026-10-26).
 
 - **Soft** is a property of one limit (`Limit.soft`, every factory takes `soft=`), resolved with
   the limit (override, not merge). Config `l_{name}_soft` (`w_…` for `reset_after`), bucket
@@ -2070,7 +2070,7 @@ exact. User guide: `docs/guide/soft-limits-and-bypass.md`. Design:
 and `Repository.top_up(entity_id, resource, amounts, principal=None, idempotency_key=None)` (both on
 `RepositoryProtocol`, generated sync twins; CLI `entity reset ID -r R [-l L ...]` /
 `entity top-up ID -r R --add L:N ...`) change one (entity, resource)'s balance **now**, on every
-shard. Both return `BucketOperationResult(entity_id, resource, shards, amounts)` (exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed until v0.17.0.
+shard. Both return `BucketOperationResult(entity_id, resource, shards, amounts)` (exported) and write `bucket_reset` / `bucket_topped_up` audit events. ADR-149 Accepted (2026-10-26).
 
 - **In place, never delete** (#471's delete lost `tc`, `disabled`, `shard_count`, `gc`). Each
   shard gets one rf-locked, zero-consumption pass; every shard of the pair goes in **one
