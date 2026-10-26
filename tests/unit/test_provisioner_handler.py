@@ -2450,6 +2450,28 @@ class TestApplyCostsWhatChanged:
         ]
         assert result["unchanged"] == self.ENTITIES
 
+    def test_a_config_item_written_before_gsi4sk_is_backfilled(self, counting):
+        """An item a pre-#778 provisioner wrote lacks GSI4SK, so GSI4 misses it.
+
+        It is otherwise exactly what the manifest builds. The change-only
+        pre-read compares the whole item, so the missing key alone is a
+        difference: the apply rewrites it and the item becomes indexed.
+        """
+        key = {"PK": {"S": pk_entity("ns123", "user-0")}, "SK": {"S": sk_config("gpt-4")}}
+        self._apply(self._manifest(1))
+        item = counting.get_item(TableName=self.TABLE, Key=key)["Item"]
+        assert "GSI4SK" in item
+        counting.put_item(
+            TableName=self.TABLE, Item={k: v for k, v in item.items() if k != "GSI4SK"}
+        )
+
+        result = self._apply(self._manifest(1))
+
+        assert result["changes"] == [
+            {"action": "update", "level": "entity", "target": "user-0/gpt-4"}
+        ]
+        assert counting.get_item(TableName=self.TABLE, Key=key)["Item"]["GSI4SK"] == item["GSI4SK"]
+
     def test_a_level_changed_out_of_band_is_restored(self, counting):
         self._apply(self._manifest(2))
         counting.update_item(
