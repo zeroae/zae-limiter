@@ -22,12 +22,25 @@ headless runner. Its id is fixed, so every process agrees on it without a
 message from the master. Each process creates it once, in the first cascade
 user's ``on_start`` (behind a lock), and treats ``EntityExistsError`` as
 success. Only the master or a local runner deletes it, in ``test_stop``; a
-worker never does, since other workers may still be debiting it. The master
-fires ``test_stop`` only after its workers report no running users (or after
-``stop_timeout`` + 60 s, when a straggler can still be mid-acquire). A run
-killed before ``test_stop`` leaves the parent behind, and the next run reuses
-it. Two runs of the same locustfile against one stack at the same time share
-the parent, and the first to finish deletes it.
+worker never does, since other workers may still be debiting it.
+
+On a normal stop (``MasterRunner.stop()``) the master fires ``test_stop`` only
+after its workers report no running users, so no child is still debiting the
+parent when it is deleted. Residuals, each of which can leave a worker debiting
+a deleted parent, whose next slow path then recreates an orphan parent bucket
+(system defaults, so it expires through its TTL):
+
+- the workers do not report within ``stop_timeout`` + 60 s, and the master
+  fires ``test_stop`` anyway;
+- the master quits instead of stopping (Ctrl-C, or the distributed CLI
+  stopping the Fargate task: SIGTERM -> ``runner.quit()``). ``quit()`` fires
+  ``test_stop`` at once and only then tells the workers to quit.
+
+Two more: a run killed before ``test_stop`` leaves the parent behind, and the
+next run reuses it with its old bucket state (possibly already sharded), so
+that run is not comparable with a cold start. Two runs of the same locustfile
+against one stack at the same time share the parent, and the first to finish
+deletes it.
 
 One parent for the run rather than one per process (#780): every cascading
 child writes to the parent's bucket, so the parent is the hot partition a
@@ -88,8 +101,8 @@ def on_test_stop(environment, **kwargs):
         limiter.delete_entity(entity_id)
     _created_entities.clear()
     if not is_worker:
-        # The master fires this once its workers report no users, so no child
-        # should still be debiting the parent (see the module docstring).
+        # On a normal stop the master fires this once its workers report no
+        # users; on a quit or a timeout it may not (see the module docstring).
         limiter.delete_entity(CASCADE_PARENT_ID)
 
 

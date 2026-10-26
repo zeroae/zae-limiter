@@ -52,9 +52,18 @@ The parent is **one entity for the whole run**, with a fixed id per locustfile
 master, every worker and a headless run all debit the same one, as in
 production, where a parent's bucket is the hot partition. Each process creates
 it on its first cascade user's `on_start` and treats "already exists" as
-success. Only the master (or a headless runner) deletes it in `on_test_stop`,
-after its workers have stopped; a worker never does. A run killed before
-`on_test_stop` leaves the parent behind, and the next run reuses it.
+success. Only the master (or a headless runner) deletes it in `on_test_stop`;
+a worker never does. On a normal stop the master fires `on_test_stop` only after
+its workers report no running users. It can fire earlier, while workers still
+debit the parent, when the workers do not report within `stop_timeout` + 60 s,
+or when the master quits instead of stopping (Ctrl-C, or the distributed CLI
+stopping the Fargate task): `quit()` fires `test_stop` before it tells the
+workers to quit. A worker's next slow path then recreates an orphan parent
+bucket, which expires through its TTL (system defaults).
+
+A run killed before `on_test_stop` leaves the parent behind, and the next run
+reuses it with its old bucket state (possibly already sharded), so that run is
+not comparable with a cold start.
 
 ## Running Locally
 
