@@ -798,12 +798,15 @@ costs one entry. Two consequences matter in operation:
 - A bucket item edited out of band while its config entry still matches is not repaired by a
   plain apply. `limits apply --full` (or `FullApply: true` on the CloudFormation resource, below)
   rewrites and fans out every declared entry.
-- Each bucket fan-out an apply owes is recorded before its config is written and removed once
-  it lands. An interrupted or failed apply leaves only the unfinished ones, which the next apply
-  retries, so even a large `--full` apply cut short by the Lambda timeout resumes where it
-  stopped. That holds when it is re-run with `--full` or `FullApply` too: a full apply that
-  finds unfinished fan-outs retries those (plus whatever the manifest changed) rather than every
-  entry, and reports `resumed`. `plan` and `diff` report how many are waiting.
+- Each bucket fan-out an apply owes is recorded before its config is written, run from the
+  table's live config, and removed once it lands. An interrupted or failed apply leaves only the
+  unfinished ones. A later apply retries them: at once for a fan-out that failed, and for an
+  interrupted apply only after the provisioner Lambda's timeout plus a minute, when that apply is
+  certainly gone. So even a large `--full` apply cut short by the Lambda timeout resumes where it
+  stopped: a `--full` / `FullApply` run that finds work an interrupted full apply left retries
+  that (plus whatever the manifest changed) rather than every entry, and reports `resumed`. Any
+  other unfinished fan-out never stops a full apply. `plan` and `diff` report how many are
+  waiting.
 
 See [Declarative Limits](../cli.md#declarative-limits) for the details.
 

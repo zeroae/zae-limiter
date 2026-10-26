@@ -333,18 +333,25 @@ existing buckets again, as every apply did before change-only applies. A change 
 or to `disabled: bypass` alone, is a change like any other: it is written and fanned out.
 
 An apply records every bucket fan-out it owes before it writes any config, and removes each one
-as soon as it lands. An apply that is interrupted (a Lambda timeout) or whose fan-out fails
-leaves only the unfinished ones, and the next apply retries exactly those, even when no entry
-changed. A retry fans out what the table holds for that entry now, not what the manifest being
-applied says, so a stale manifest cannot undo a newer apply's change. An interrupted `--full`
-apply therefore resumes where it stopped instead of starting again: the next apply, `--full`
-included, retries only the unfinished fan-outs plus whatever the manifest changed, and prints
-`Note: resumed the fan-outs an earlier full apply did not finish`. A `--full` apply that finds
-nothing unfinished fans out every entry. `plan` and `diff` report them:
+as soon as it lands. Every fan-out, an apply's own included, is run from what the table holds
+for that entry at that moment, not from the manifest being applied, so a stale or concurrent
+apply cannot undo a newer change. An apply that is interrupted (a Lambda timeout) or whose
+fan-out fails leaves only the unfinished ones, and a later apply retries exactly those, even
+when no entry changed:
+
+- one whose fan-out failed is retried by the very next apply;
+- one an interrupted apply left is retried once that apply is certainly gone: after the
+  provisioner Lambda's timeout plus a minute. Until then a new apply leaves it alone, so it can
+  never finish, or drop, work a still-running apply is doing.
+
+An interrupted `--full` apply resumes where it stopped instead of starting again: the next
+`--full` apply retries only the unfinished fan-outs plus whatever the manifest changed, and
+prints `Note: resumed the fan-outs an earlier full apply did not finish`. Only work a `--full`
+apply left does that; any other unfinished fan-out never stops `--full` from fanning out every
+entry. `plan` and `diff` report what is waiting:
 
 ```
-No changes. Infrastructure is up-to-date.
-Note: 3 bucket fan-out(s) an earlier apply did not finish; the next apply retries them.
+No config changes; 3 bucket fan-out(s) an earlier apply did not finish will be retried by the next apply.
 ```
 
 ### Detect Drift
@@ -409,9 +416,10 @@ Errors (1):
 
 Every write is idempotent, so re-running the same manifest reconciles the remainder. Each
 fan-out an apply owes is recorded as its own pending item **before** the config is written, and
-removed only once it lands, so one that failed or was cut short by a Lambda timeout is retried by
-the next apply even when the manifest has not changed (unchanged entries are otherwise skipped).
-Two applies running at once cannot erase each other's pending work. The `#PROVISIONER` record is
+removed only once it lands, so one that failed is retried by the next apply, and one cut short by
+a Lambda timeout by the first apply after that Lambda's timeout plus a minute, even when the
+manifest has not changed (unchanged entries are otherwise skipped). Two applies running at once
+cannot erase or take over each other's pending work. The `#PROVISIONER` record is
 written either way, so it always describes the config that is actually in the table.
 
 !!! note "Provisioner Lambda"

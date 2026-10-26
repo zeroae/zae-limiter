@@ -327,12 +327,14 @@ def _apply_and_record(
 ) -> ApplyResult:
     """Commit the config writes, fan out, then record the managed state (#563).
 
-    Every fan-out is **change-only**: it runs for a level only when that
-    level's write changed what it fans out — the stored cascade policy, the
-    stored `disabled`, or (entity level) the stored limits — read off each
-    write's own ``ALL_OLD`` image (``ApplyResult``). Unchanged levels never
-    reach here at all (``_plan_changes``). So an apply costs what changed, not
-    what the manifest declares. ``full`` fans out every change regardless.
+    Every fan-out is **change-only**: it is owed for a level only when the
+    pre-read (``stored``, the live item ``drop_unchanged`` read) predicts its
+    write will change what it fans out — the cascade policy, `disabled`, a
+    system or resource level's soft-ness, or (entity level) the limits
+    (``applier.fanouts_needed``) — or when the write's own ``ALL_OLD`` image
+    shows it did. Unchanged levels never reach here at all (``_plan_changes``).
+    So an apply costs what changed, not what the manifest declares. ``full``
+    owes every fan-out of every declared level.
 
     ``declared`` is every level the manifest touches, before ``drop_unchanged``
     (defaults to ``changes``). The version gates read it, so an unchanged
@@ -340,25 +342,25 @@ def _apply_and_record(
     Lambdas; and every declared level with an explicit ``disabled`` is
     re-asserted on each apply (``_reasserted_disabled``).
 
-    ``pending`` are the fan-outs an earlier apply left unfinished, one item
-    each (``pending.py``): being change-only, re-running the same apply would
-    otherwise see no change and never reconcile. They are claimed under this
-    apply's token and retried with its own changes. ``cascade_pending`` is the
-    list a v0.16 ``#PROVISIONER`` record carries; it is retried the same way
-    and dropped from the record by this apply's final write.
+    **Every owed fan-out is one pending item** (``pending.py``), written ahead
+    under this apply's token and lease (``deadline_ms``, when this invocation
+    is certainly gone) before the first config write, and released, on that
+    token, as soon as its own fan-out lands. ``pending`` are the items found at
+    the start: those whose lease has run out are claimed and owed too; one
+    still leased to a live apply is left to it (#739 re-review #2).
+    ``cascade_pending`` is the list a v0.16 ``#PROVISIONER`` record carries;
+    it is owed the same way and dropped from the record by the final write.
 
-    **Every fan-out this apply owes is written ahead** (#739 review), one
-    pending item per (kind, level), before the first config write, and each
-    item is removed (conditioned on this apply's token) as soon as its own
-    fan-out lands. ``stored`` is the live config ``drop_unchanged`` read, which
-    predicts the fan-outs a write will need (``applier.fanouts_needed``); an
-    item the write's ``ALL_OLD`` image shows was not needed is removed after
-    the writes. A Lambda killed or timed out at any point therefore leaves
-    exactly the fan-outs not yet done, and the next apply resumes from there:
-    an interrupted full apply converges instead of starting again (the next
-    full apply, finding them, resumes rather than predicting every level
-    again: ``_resumes``), and a concurrent apply cannot drop work this one has
-    taken on.
+    **Every owed fan-out runs from the level's live config**, this apply's own
+    included (``_retry_from_table``, #739 re-review #1): read, fan out, read
+    again, release once the reads agree. A prediction stands even when the
+    write's image disagrees (a re-sent write's image already shows the new
+    state). A Lambda killed or timed out at any point therefore leaves exactly
+    the fan-outs not yet done, the next apply resumes them, and no apply can
+    release work another has taken on. An interrupted full apply converges:
+    the next full apply resumes its marked items instead of starting again
+    (``_resumes``). What this apply still holds at the end failed; its lease
+    is ended (``pending.expire``) so the next apply retries it at once.
 
     The single place both entry points run an apply, so the ordering contract
     below cannot drift between the CFN and CLI paths again — which is exactly
