@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793012903290,
+  "lastUpdate": 1793017027992,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -66419,6 +66419,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.010064435594945917",
             "extra": "mean: 3.7600498045999986 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7e66f1ccfb39588dbea52e20bb06758bd1a3a2f1",
+          "message": "⚡ perf(provisioner): apply only the entries that changed (#739)\n\n## TLDR\n\n**`limits apply` now writes only the config items that changed, and\nevery bucket fan-out it owes survives a crash.** A one-line edit to a\n~1,200-entity manifest used to rewrite and fan out all ~1,200 levels.\nNow it rewrites one.\n\nRefs #739\n\n## Summary\n\n- **Change-only apply.** `applier.drop_unchanged` pre-reads each\ndeclared level's live config item and drops any create or update whose\nstored item already matches. Only changed items are written.\n- **Owed fan-outs are pending items.** Every fan-out an apply owes\n(disable, cascade, sync, soft) is its own item, shared by every apply\nthat owes it. It is written ahead before the config writes, so a killed\nLambda loses nothing.\n- **Fan-outs run from the live table**, never from the manifest.\n- **`--full` / `FullApply`** forces every fan-out, and resumes only an\ninterrupted full apply.\n- **CLI** reports `unchanged` and `pending`, and gains `--quiet`.\n- **Two bug fixes that also exist on `main`**, each in its own commit\n(see below).\n\n## How an apply runs\n\n| Step | What happens |\n|------|--------------|\n| 1. Pre-read | One strongly consistent `GetItem` per declared level\n(small thread pool; not `BatchGetItem`, which the provisioner role does\nnot grant). Numbers compare as numbers (`1000.0` = `1000`). Compared\nagainst the **table**, not the last manifest, so drift is still\nrepaired. |\n| 2. Predict | `applier.fanouts_needed` predicts each write's fan-outs\nfrom the pre-read, for creates, updates **and deletes**. When the read\nfailed, every kind the level can have is owed. |\n| 3. Claim | One strongly consistent `Query` of the pending prefix.\nTakes **only expired shares** (`pending.claim`); live shares are left\nalone. |\n| 4. Write ahead | Adds this apply's share to one pending item per\npredicted fan-out (`pending.write_ahead`), before any config write. |\n| 5. Config writes | Only the changed items. |\n| 6. Image-only fan-outs | A fan-out only the write's `ALL_OLD` image\nshows (a level changed out of band after the pre-read) is written ahead\ntoo, after the writes and before any fan-out runs. |\n| 7. Fan out | Each fan-out reads the level strongly consistently, fans\nout, re-reads. When the two reads agree it releases **this apply's share\nonly** (`pending.release`); otherwise it runs again, up to 3 rounds. A\nmissing item is fanned out as a delete. |\n| 8. Finish | `pending.expire` ends the lease on any share still held\n(failed, or config kept moving) and clears its `full` mark, so the next\napply retries it at once. Then one `Query` counts what is still\n`pending`. |\n\n### Pending items (`zae_limiter_provisioner/pending.py`)\n\n- **Key:** `PK={ns}/SYSTEM#`,\n`SK=#PROVISIONER#PENDING#{kind}#{level}#{target}`, plus `GSI4PK` /\n`GSI4SK` so `purge_namespace` removes them.\n- **Owners map:** `owners` maps each apply's token to its `lease` and\n`full` mark.\n- **Lease:** the invocation's timeout plus 60 s skew margin\n(`pending.deadline_for`; 15 min when unknown). It is the instant by\nwhich the owner is certainly gone.\n- **Legacy shape still read:** an item with a single `token` /\n`lease_until_ms` / `full` (an earlier build of this branch) is read as\none owner.\n- **Delete rule:** the item is deleted only when no share is left,\nconditioned on that.\n- A v0.16 record's `cascade_pending` is still read, owed and dropped.\nThe earlier `fanout_pending` / `full_pending` fields and the 100-level\ncap are **gone**.\n\n### Full apply\n\n- `limits apply --full` (event `full: true`), or `FullApply: true` on\n`Custom::ZaeLimiterLimits` (`limits cfn-template --full` emits it).\n- Rewrites every declared level and owes every fan-out. The system soft\nrestamp is owed only when soft-ness is in play there\n(`applier.full_system_fanouts`).\n- A full apply that finds a claimable `full` share (an interrupted full\napply) **resumes** change-only instead, and responds `resumed: true`. No\nother pending item turns a full apply into a change-only one.\n\n### Also\n\n- Every declared explicit `disabled` is **re-asserted** on each apply,\nso a bucket missed by the ADR-125 discovery race is still repaired. A\nresource-level re-assert skips buckets whose GSI2-projected stamp\nalready matches.\n- The walks that decide what a fan-out stamps\n(`fanout.resolve_disabled`, `bucket_sync.resolve_effective_limits` /\n`resolve_bucket_limits`) read strongly consistently.\n- The version gates read the **declared** set, not only the changed one.\n\n## CLI\n\n| Command | Change |\n|---------|--------|\n| `limits plan` / `apply` / `diff` | Report only real changes plus an\n`unchanged` count; `--quiet` / `-q` prints only the summary |\n| `limits plan` / `apply` | Report `pending`. With no config changes:\n\"No config changes; N bucket fan-out(s) an earlier apply did not finish\nwill be retried by the next apply.\" After an apply that changed config,\nthe same count follows as a note |\n| `limits apply` | `--full`; prints errors even when nothing changed\n(exit 1) |\n| `limits cfn-template` | `--full` emits `FullApply: true` |\n\n`src/zae_limiter/limits_cli.py` is the only change under\n`src/zae_limiter/`. **The acquire path is untouched.**\n\n## Bug fixes also on `main`\n\nEach is its own `🐛 fix(provisioner)` commit, so it reaches the\nchangelog.\n\n| Commit | Bug |\n|--------|-----|\n| `b076b8b9` | A **deleted** entity level's limits were never stripped\nfrom its buckets (a delete carries no data, so the stale set was always\nempty) |\n| `4514410d` | An entity **update that drops a limit** never stripped it\nfrom its buckets (`stale_limit_names=None`) |\n| `1d8ab1bc` | An entity **update to no limits** (e.g. only `disabled`)\nskipped the sync; buckets kept the old limits and no TTL. Now reconciled\nlike a delete |\n\nThe names to strip come from the pre-read, minus what the level still\ndeclares.\n\n## Cost\n\n| Case | Cost |\n|------|------|\n| Acquire path | **Unchanged.** Nothing on it reads these items |\n| No-change apply | One consistent `GetItem` per declared level; no\nconfig writes and no fan-outs |\n| Per apply | +2 `Query` (pending items before, the count after; 1 RCU\neach while the set fits in 4 KB) |\n| Per owed fan-out | +2 strongly consistent `GetItem` (1 RCU each); +2\n`UpdateItem` and +1 `DeleteItem` (add the share, remove it, delete the\nempty item) |\n| Image-only fan-out | +1 write-ahead `UpdateItem` (and its release);\nonly when a level changed between the pre-read and the write |\n| Claimed or failed share | +1 `UpdateItem` |\n| Fan-out walks | Consistent config reads, 0.5 → 1 RCU per item read,\nadmin path only |\n\nThe provisioner role already grants every call, so a code-only upgrade\nneeds no stack update.\n\n## Residuals\n\n- **A fan-out retried without a pre-read strips nothing.** That covers a\nfull apply, or a fan-out retried from an earlier apply that was\ninterrupted.\n- **After a Lambda timeout, a retry waits out the lease** (about the\nfunction timeout plus 1 min) before another apply claims the share.\n- The bucket param sync has the same discovery race as ADR-125 and is\nnot re-asserted. A bucket created mid-sync from stale config, or whose\nparams drifted while its config item still matches, keeps its params\nuntil the level changes again or a full apply runs.\n\n## Docs\n\n`CLAUDE.md` (Declarative Limits Management, Provisioner Lambda),\n`docs/cli.md`, `docs/infra/deployment.md`.\n\nExisting assertions changed: re-applying an unchanged manifest now\nreports `unchanged`, not `updated`\n(`tests/integration/test_provisioner.py`, `tests/e2e/test_aws.py`).\n\n## Test plan\n\n- [x] Unit: 7702 passed; diff coverage 100%\n- [x] Three fresh-context reviews; the last found no High findings\n- [ ] Integration and E2E (LocalStack, CI)\n- [ ] E2E (AWS, at release time): `TestE2EAWSProvisioner`, re-planning\nthe same manifest yields no changes and `unchanged == 4`\n- [ ] Manually: apply a large manifest, change one entry, re-apply.\nExpect one change, `(N unchanged)`, and a single fan-out\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01ASEDQdfdZZeqM2KMM1WTMo",
+          "timestamp": "2026-10-26T08:10:01-04:00",
+          "tree_id": "1c28571c5d4d620cf7901ab427401f485d7dfc26",
+          "url": "https://github.com/zeroae/zae-limiter/commit/7e66f1ccfb39588dbea52e20bb06758bd1a3a2f1"
+        },
+        "date": 1793017026561,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 149.62274961548783,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00031274491289240175",
+            "extra": "mean: 6.683475624996049 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 114.08812408567081,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00038768415311858954",
+            "extra": "mean: 8.765154200003167 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 72.09717903779745,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006640825205421722",
+            "extra": "mean: 13.870168200003263 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 133.58099294707444,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012272137013012065",
+            "extra": "mean: 7.486094974576254 msec\nrounds: 118"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 147.39581371136873,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00027958104994284065",
+            "extra": "mean: 6.784453199995255 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 154.58630659598822,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001225820309283512",
+            "extra": "mean: 6.468878272727629 msec\nrounds: 154"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 75.16921657240607,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00019690731770973798",
+            "extra": "mean: 13.303318108108245 msec\nrounds: 74"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 145.36553734310638,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00029018113583075824",
+            "extra": "mean: 6.879209600000991 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 115.08285044570042,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00032541037523740044",
+            "extra": "mean: 8.68939199999943 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 70.17042965886603,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00030553488566615163",
+            "extra": "mean: 14.25101720000157 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 148.95735345381192,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00029903052048493595",
+            "extra": "mean: 6.7133308750015885 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 114.72130123324835,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006320600433892627",
+            "extra": "mean: 8.716776999999556 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 135.31352367047586,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001033162744559404",
+            "extra": "mean: 7.390244322032911 msec\nrounds: 118"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 147.66210647525511,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002550723019845315",
+            "extra": "mean: 6.7722181666667325 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 144.1094457055036,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005113090864849364",
+            "extra": "mean: 6.939170399999739 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 74.21750848023869,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00040822022639936973",
+            "extra": "mean: 13.473909600000411 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 74.49372759090642,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003416866717830714",
+            "extra": "mean: 13.423948999997037 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 131.59764943628878,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013503113894788157",
+            "extra": "mean: 7.598919922077609 msec\nrounds: 154"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 1.323434552841527,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08798051845078768",
+            "extra": "mean: 755.6097109999996 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 63.19972425047251,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02301846182506231",
+            "extra": "mean: 15.822853847222659 msec\nrounds: 72"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 14.492634111466092,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0022063250253155516",
+            "extra": "mean: 69.00056900000209 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 15.205927359439805,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000605894239276721",
+            "extra": "mean: 65.76382856249819 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 44.38680131626444,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03911485622923269",
+            "extra": "mean: 22.529219730766563 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 75.43336898111919,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00017858614244185313",
+            "extra": "mean: 13.256732577465788 msec\nrounds: 71"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 3.2858795027399155,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004905968638666382",
+            "extra": "mean: 304.3325232000001 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 3.0696437351037416,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005803330071670555",
+            "extra": "mean: 325.7707037999978 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 76.79925532075518,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001276479157721629",
+            "extra": "mean: 13.020959589041063 msec\nrounds: 73"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 76.48160956961149,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014969978836948427",
+            "extra": "mean: 13.075038635135249 msec\nrounds: 74"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 2.9124391225349404,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006089521406841768",
+            "extra": "mean: 343.3548163333337 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 0.2670694743509152,
+            "unit": "iter/sec",
+            "range": "stddev: 0.1477102112056555",
+            "extra": "mean: 3.744344060400002 sec\nrounds: 5"
           }
         ]
       }
