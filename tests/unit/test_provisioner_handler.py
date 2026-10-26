@@ -2500,6 +2500,23 @@ class TestPendingItems:
         )["Item"]
         assert item["GSI4PK"] == {"S": "ns"}
 
+    def test_each_item_is_indexed_in_gsi4(self, client):
+        """Review finding 3: GSI4 indexes only items carrying both GSI4PK and GSI4SK."""
+        from zae_limiter.schema import GSI4_NAME
+        from zae_limiter_provisioner.pending import sk_pending, write_ahead
+
+        write_ahead(client, self.TABLE, "ns", "tok-a", [("cascade", "resource", "gpt-4")])
+        found = client.query(
+            TableName=self.TABLE,
+            IndexName=GSI4_NAME,
+            KeyConditionExpression="GSI4PK = :ns",
+            ExpressionAttributeValues={":ns": {"S": "ns"}},
+        )["Items"]
+
+        assert [(i["PK"]["S"], i["SK"]["S"]) for i in found] == [
+            (pk_system("ns"), sk_pending("cascade", "resource", "gpt-4"))
+        ]
+
     def test_a_release_by_another_token_leaves_the_item(self, client):
         from zae_limiter_provisioner.pending import read_pending, release, write_ahead
 

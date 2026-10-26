@@ -28,7 +28,8 @@ with a delete conditioned on that token. So:
   starting again (#739 review: a full apply too long for the Lambda timeout
   never converged).
 
-Items carry ``GSI4PK`` so ``purge_namespace`` removes them with the namespace.
+Items carry ``GSI4PK`` and ``GSI4SK`` (= PK) so ``purge_namespace`` removes them
+with the namespace.
 Every operation here is a single-item ``PutItem`` / ``UpdateItem`` /
 ``DeleteItem`` or a ``Query`` on the table, all of which the provisioner role
 already grants on the table. Nothing on the acquire path reads these items.
@@ -154,6 +155,10 @@ def write_ahead(
             Item={
                 **_key(namespace_id, kind, level, target),
                 "GSI4PK": {"S": namespace_id},
+                # GSI4's sort key: an item without it is not in the index, and
+                # `purge_namespace` would never find it. PK, as the client's
+                # repository writes it (#739 review, finding 3).
+                "GSI4SK": {"S": pk_system(namespace_id)},
                 "kind": {"S": kind},
                 "level": {"S": level},
                 "target": {"S": target},
