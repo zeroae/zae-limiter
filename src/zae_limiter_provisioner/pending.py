@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 PENDING_SK_PREFIX = f"{sk_provisioner()}#PENDING#"
 
 #: The fan-outs a level can owe, in the order the handler runs them.
-KINDS = ("disabled", "cascade", "sync")
+KINDS = ("disabled", "cascade", "soft", "sync")
 
 # Concurrent single-item writes. Below botocore's default connection pool of
 # 10, like `applier._READ_WORKERS`.

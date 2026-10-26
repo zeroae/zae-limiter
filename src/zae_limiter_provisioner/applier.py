@@ -584,11 +584,17 @@ def _note_changes(
 
 
 def fanouts_for(change: Change, old: dict[str, Any], new: dict[str, Any]) -> set[str]:
-    """The bucket fan-outs (``disabled``, ``cascade``, ``sync``) a write from ``old`` to
-    ``new`` makes necessary. System-level writes need none of the three."""
-    if change.target is None:
-        return set()
+    """The bucket fan-outs (``disabled``, ``cascade``, ``soft``, ``sync``) a write from
+    ``old`` to ``new`` makes necessary.
+
+    ``soft`` is the system- and resource-level soft restamp (#467): entity
+    levels carry soft-ness in their limits, which the sync restamps.
+    """
     kinds: set[str] = set()
+    if change.level in ("system", "resource") and _soft_names(old) != _soft_names(new):
+        kinds.add("soft")
+    if change.target is None:
+        return kinds
     if decode_cascade(old) != decode_cascade(new):
         kinds.add("cascade")
     if decode_disabled(old) != decode_disabled(new):
@@ -607,9 +613,11 @@ def fanouts_needed(namespace_id: str, change: Change, stored: dict[str, Any] | N
     stands even when the write's own ``ALL_OLD`` image disagrees: a re-sent
     write's image already shows the new state (#739 review, finding 2).
     """
-    if change.target is None:
-        return set()
-    every = {"disabled", "cascade"} | ({"sync"} if change.level == "entity" else set())
+    every = {
+        "system": {"soft"},
+        "resource": {"disabled", "cascade", "soft"},
+        "entity": {"disabled", "cascade", "sync"},
+    }.get(change.level, set())
     if stored is None:
         return every
     if change.action == "delete":

@@ -2098,6 +2098,7 @@ class TestCascadeFanoutChanges:
         assert errors == ["cascade fan-out resource llm: boom (retried on the next apply)"]
         assert failed == [("resource", "llm")]
 
+    @patch("zae_limiter_provisioner.handler._fanout_soft_changes", return_value=[])
     @patch("zae_limiter_provisioner.handler.write_ahead", return_value=set())
     @patch("zae_limiter_provisioner.handler.claim", return_value=[])
     @patch("zae_limiter_provisioner.handler._write_provisioner_state")
@@ -2120,6 +2121,7 @@ class TestCascadeFanoutChanges:
         mock_write,
         _claim,
         mock_ahead,
+        _soft,
     ):
         from zae_limiter_provisioner.applier import ApplyResult
         from zae_limiter_provisioner.handler import _apply_and_record
@@ -3680,7 +3682,12 @@ class TestChangeOnlyApplyNonEnforcing:
         }
 
     def _put_bucket(self, client, entity_id, **extra):
-        from zae_limiter.schema import gsi2_pk_resource, gsi2_sk_bucket, gsi3_pk_entity
+        from zae_limiter.schema import (
+            gsi2_pk_resource,
+            gsi2_sk_bucket,
+            gsi3_pk_entity,
+            gsi4_sk_bucket,
+        )
 
         item = {
             "PK": {"S": f"ns123/BUCKET#{entity_id}#gpt-4#0"},
@@ -3689,6 +3696,10 @@ class TestChangeOnlyApplyNonEnforcing:
             "GSI2SK": {"S": gsi2_sk_bucket(entity_id, 0)},
             "GSI3PK": {"S": gsi3_pk_entity("ns123", entity_id)},
             "GSI3SK": {"S": "BUCKET#gpt-4#0"},
+            # As the client writes every bucket: a system-level fan-out finds
+            # buckets through GSI4.
+            "GSI4PK": {"S": "ns123"},
+            "GSI4SK": {"S": gsi4_sk_bucket(entity_id, "gpt-4", 0)},
             "b_rpm_cp": {"N": "10000"},
             "b_rpm_ra": {"N": "10000"},
             "b_rpm_rp": {"N": "60"},
@@ -3760,6 +3771,53 @@ class TestChangeOnlyApplyNonEnforcing:
         assert self._bucket(counting, "user-0")["bypass"] == {"N": "1"}
         assert "N" in self._bucket(counting, "user-1")["bypass"]
         assert counting.calls.get("update_item", 0) == 1
+
+    def _resend_config_puts(self, counting):
+        real_put = counting._client.put_item
+
+        def resend(**kwargs):
+            if kwargs["Item"]["SK"]["S"].startswith("#CONFIG"):
+                real_put(**kwargs)  # landed; its response was lost
+            return real_put(**kwargs)
+
+        counting.put_item = resend
+
+    @pytest.mark.parametrize("level", ["resource", "system"])
+    def test_a_resent_soft_write_still_fans_out(self, counting, level):
+        """Re-review #5: soft-ness came only from `ALL_OLD`, so a re-send lost it.
+
+        A bucket on the changed level's defaults (no entity config of its
+        own) must be stamped soft.
+        """
+        manifest = self._manifest()
+        if level == "system":
+            manifest["system"] = {"limits": {"rpm": {"capacity": 1000}}}
+            del manifest["resources"]
+        self._apply(manifest)
+        self._put_bucket(counting, "user-9")
+        if level == "system":
+            manifest["system"]["limits"]["rpm"]["soft"] = True
+        else:
+            manifest["resources"]["gpt-4"]["limits"]["rpm"]["soft"] = True
+
+        self._resend_config_puts(counting)
+        try:
+            self._apply(manifest)
+        finally:
+            del counting.put_item
+
+        assert "N" in self._bucket(counting, "user-9")["b_rpm_soft"]
+        assert self._pending(counting) == []
+
+    def _pending(self, client):
+        return client.query(
+            TableName=self.TABLE,
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": {"S": pk_system("ns123")},
+                ":sk": {"S": "#PROVISIONER#PENDING#"},
+            },
+        )["Items"]
 
     def test_the_non_enforcing_gate_sees_unchanged_entries(self, counting):
         manifest = self._manifest(resource_soft=True)

@@ -414,11 +414,11 @@ def _apply_and_record(
     fanned = [c for c in changes if c.level in ("resource", "entity") and c.target]
     owed: list[tuple[str, str, str]] = list(legacy)
     predicted: list[tuple[str, Change]] = []
-    for change in fanned:
-        assert change.target is not None
+    # System levels too: a soft change there fans out (#739 re-review #5).
+    for change in [*(c for c in changes if c.level == "system"), *fanned]:
         live = None if full or stored is None else stored.get(id(change))
         for kind in sorted(fanouts_needed(namespace_id, change, live)):
-            owed.append((kind, change.level, change.target))
+            owed.append((kind, change.level, change.target or ""))
             predicted.append((kind, change))
     # A full apply's items, a resumed one's included, are marked so only an
     # interrupted full apply makes the next one resume (#739 re-review #3).
@@ -443,6 +443,7 @@ def _apply_and_record(
     # already shows the new state, #739 review finding 2), what the images
     # showed, and what earlier applies left.
     owed_keys = _owed_fanouts(result, predicted, retried)
+    soft_changed = {(lv, t or ""): names for lv, t, names in result.soft_changed}
 
     # Re-asserted `disabled` levels (the ADR-125 missed-bucket repair) hold no
     # pending item; each stamp is filtered by its bucket's live resolution.
@@ -453,14 +454,22 @@ def _apply_and_record(
         table_name, namespace_id, reasserted, reasserted=reasserted
     )
     result.errors.extend(disabled_errors)
-    result.errors.extend(_fanout_soft_changes(table_name, result.soft_changed, namespace_id))
 
     # Every owed fan-out, this apply's own included, runs from its level's
     # live config item, never from this apply's manifest (#739 re-review #1):
     # A writing 10 and B writing 20 could otherwise end with A's late fan-out
     # stamping 10 under a config of 20, and nothing left pending to fix it.
     for key in sorted(owed_keys, key=lambda k: (KINDS.index(k[0]), k[1] != "resource")):
-        result.errors.extend(_retry_from_table(client, table_name, namespace_id, key, _done))
+        result.errors.extend(
+            _retry_from_table(
+                client,
+                table_name,
+                namespace_id,
+                key,
+                _done,
+                soft_names=soft_changed.get((key[1], key[2])),
+            )
+        )
 
     # What this apply still holds failed; it is done with it, so the next
     # apply need not wait out the lease to retry it.
@@ -488,6 +497,7 @@ def _owed_fanouts(
         *((kind, change.level, change.target or "") for kind, change in predicted),
         *(("disabled", c.level, c.target or "") for c in result.disabled_changed),
         *(("cascade", level, target) for level, target in result.cascade_changed),
+        *(("soft", level, target or "") for level, target, _names in result.soft_changed),
         *(("sync", c.level, c.target or "") for c in result.limits_changed),
         *retried,
     ]
@@ -532,6 +542,7 @@ def _retry_from_table(
     namespace_id: str,
     key: tuple[str, str, str],
     done: Callable[[str, str, str], None],
+    soft_names: list[str] | None = None,
 ) -> list[str]:
     """Run one owed fan-out from the level's live config item.
 
@@ -574,6 +585,14 @@ def _retry_from_table(
                 errors, _ = _fanout_disabled_changes(table_name, namespace_id, [change])
             elif kind == "cascade":
                 errors, _ = _fanout_cascade_changes(table_name, namespace_id, [(level, target)])
+            elif kind == "soft":
+                # Every limit the level holds now, plus any whose soft-ness the
+                # write's own image showed changing (a limit removed with its
+                # stamp is in neither otherwise).
+                names = {*(change.data or {}).get("limits", {}), *(soft_names or ())}
+                errors = _fanout_soft_changes(
+                    table_name, [(level, target or None, sorted(names))], namespace_id
+                )
             else:
                 errors, _ = _sync_bucket_param_changes(table_name, namespace_id, [change])
             if errors:
@@ -615,12 +634,10 @@ def _fanout_soft_changes(
     so a routine apply writes no bucket. Mirrors ``Repository._fanout_soft``;
     failures are returned, like the disable fan-out's.
 
-    Unlike the disable fan-out it is not written ahead as a pending item, and
-    a failure is not retried: a soft stamp carries a deadline (ADR-151
-    decision 8). A stamp a lost fan-out failed to remove waives its limit for at
-    most ``STAMP_TTL_SECONDS``, and a stamp it failed to set is set by the next
-    slow pass that reads the config fresh. A missing ``disabled`` stamp has no
-    such deadline, which is why that fan-out is written ahead.
+    Called once per owed ``soft`` fan-out from ``_retry_from_table``, so like
+    every other kind it is predicted from the pre-read, written ahead as a
+    pending item, run from the live config and released once it lands (#739
+    re-review #5): a re-sent write's ``ALL_OLD`` alone lost it.
     """
     errors: list[str] = []
     if not changed:
