@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793012783398,
+  "lastUpdate": 1793016905731,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -37718,6 +37718,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0017776350988191359",
             "extra": "mean: 1.066069409000005 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7e66f1ccfb39588dbea52e20bb06758bd1a3a2f1",
+          "message": "⚡ perf(provisioner): apply only the entries that changed (#739)\n\n## TLDR\n\n**`limits apply` now writes only the config items that changed, and\nevery bucket fan-out it owes survives a crash.** A one-line edit to a\n~1,200-entity manifest used to rewrite and fan out all ~1,200 levels.\nNow it rewrites one.\n\nRefs #739\n\n## Summary\n\n- **Change-only apply.** `applier.drop_unchanged` pre-reads each\ndeclared level's live config item and drops any create or update whose\nstored item already matches. Only changed items are written.\n- **Owed fan-outs are pending items.** Every fan-out an apply owes\n(disable, cascade, sync, soft) is its own item, shared by every apply\nthat owes it. It is written ahead before the config writes, so a killed\nLambda loses nothing.\n- **Fan-outs run from the live table**, never from the manifest.\n- **`--full` / `FullApply`** forces every fan-out, and resumes only an\ninterrupted full apply.\n- **CLI** reports `unchanged` and `pending`, and gains `--quiet`.\n- **Two bug fixes that also exist on `main`**, each in its own commit\n(see below).\n\n## How an apply runs\n\n| Step | What happens |\n|------|--------------|\n| 1. Pre-read | One strongly consistent `GetItem` per declared level\n(small thread pool; not `BatchGetItem`, which the provisioner role does\nnot grant). Numbers compare as numbers (`1000.0` = `1000`). Compared\nagainst the **table**, not the last manifest, so drift is still\nrepaired. |\n| 2. Predict | `applier.fanouts_needed` predicts each write's fan-outs\nfrom the pre-read, for creates, updates **and deletes**. When the read\nfailed, every kind the level can have is owed. |\n| 3. Claim | One strongly consistent `Query` of the pending prefix.\nTakes **only expired shares** (`pending.claim`); live shares are left\nalone. |\n| 4. Write ahead | Adds this apply's share to one pending item per\npredicted fan-out (`pending.write_ahead`), before any config write. |\n| 5. Config writes | Only the changed items. |\n| 6. Image-only fan-outs | A fan-out only the write's `ALL_OLD` image\nshows (a level changed out of band after the pre-read) is written ahead\ntoo, after the writes and before any fan-out runs. |\n| 7. Fan out | Each fan-out reads the level strongly consistently, fans\nout, re-reads. When the two reads agree it releases **this apply's share\nonly** (`pending.release`); otherwise it runs again, up to 3 rounds. A\nmissing item is fanned out as a delete. |\n| 8. Finish | `pending.expire` ends the lease on any share still held\n(failed, or config kept moving) and clears its `full` mark, so the next\napply retries it at once. Then one `Query` counts what is still\n`pending`. |\n\n### Pending items (`zae_limiter_provisioner/pending.py`)\n\n- **Key:** `PK={ns}/SYSTEM#`,\n`SK=#PROVISIONER#PENDING#{kind}#{level}#{target}`, plus `GSI4PK` /\n`GSI4SK` so `purge_namespace` removes them.\n- **Owners map:** `owners` maps each apply's token to its `lease` and\n`full` mark.\n- **Lease:** the invocation's timeout plus 60 s skew margin\n(`pending.deadline_for`; 15 min when unknown). It is the instant by\nwhich the owner is certainly gone.\n- **Legacy shape still read:** an item with a single `token` /\n`lease_until_ms` / `full` (an earlier build of this branch) is read as\none owner.\n- **Delete rule:** the item is deleted only when no share is left,\nconditioned on that.\n- A v0.16 record's `cascade_pending` is still read, owed and dropped.\nThe earlier `fanout_pending` / `full_pending` fields and the 100-level\ncap are **gone**.\n\n### Full apply\n\n- `limits apply --full` (event `full: true`), or `FullApply: true` on\n`Custom::ZaeLimiterLimits` (`limits cfn-template --full` emits it).\n- Rewrites every declared level and owes every fan-out. The system soft\nrestamp is owed only when soft-ness is in play there\n(`applier.full_system_fanouts`).\n- A full apply that finds a claimable `full` share (an interrupted full\napply) **resumes** change-only instead, and responds `resumed: true`. No\nother pending item turns a full apply into a change-only one.\n\n### Also\n\n- Every declared explicit `disabled` is **re-asserted** on each apply,\nso a bucket missed by the ADR-125 discovery race is still repaired. A\nresource-level re-assert skips buckets whose GSI2-projected stamp\nalready matches.\n- The walks that decide what a fan-out stamps\n(`fanout.resolve_disabled`, `bucket_sync.resolve_effective_limits` /\n`resolve_bucket_limits`) read strongly consistently.\n- The version gates read the **declared** set, not only the changed one.\n\n## CLI\n\n| Command | Change |\n|---------|--------|\n| `limits plan` / `apply` / `diff` | Report only real changes plus an\n`unchanged` count; `--quiet` / `-q` prints only the summary |\n| `limits plan` / `apply` | Report `pending`. With no config changes:\n\"No config changes; N bucket fan-out(s) an earlier apply did not finish\nwill be retried by the next apply.\" After an apply that changed config,\nthe same count follows as a note |\n| `limits apply` | `--full`; prints errors even when nothing changed\n(exit 1) |\n| `limits cfn-template` | `--full` emits `FullApply: true` |\n\n`src/zae_limiter/limits_cli.py` is the only change under\n`src/zae_limiter/`. **The acquire path is untouched.**\n\n## Bug fixes also on `main`\n\nEach is its own `🐛 fix(provisioner)` commit, so it reaches the\nchangelog.\n\n| Commit | Bug |\n|--------|-----|\n| `b076b8b9` | A **deleted** entity level's limits were never stripped\nfrom its buckets (a delete carries no data, so the stale set was always\nempty) |\n| `4514410d` | An entity **update that drops a limit** never stripped it\nfrom its buckets (`stale_limit_names=None`) |\n| `1d8ab1bc` | An entity **update to no limits** (e.g. only `disabled`)\nskipped the sync; buckets kept the old limits and no TTL. Now reconciled\nlike a delete |\n\nThe names to strip come from the pre-read, minus what the level still\ndeclares.\n\n## Cost\n\n| Case | Cost |\n|------|------|\n| Acquire path | **Unchanged.** Nothing on it reads these items |\n| No-change apply | One consistent `GetItem` per declared level; no\nconfig writes and no fan-outs |\n| Per apply | +2 `Query` (pending items before, the count after; 1 RCU\neach while the set fits in 4 KB) |\n| Per owed fan-out | +2 strongly consistent `GetItem` (1 RCU each); +2\n`UpdateItem` and +1 `DeleteItem` (add the share, remove it, delete the\nempty item) |\n| Image-only fan-out | +1 write-ahead `UpdateItem` (and its release);\nonly when a level changed between the pre-read and the write |\n| Claimed or failed share | +1 `UpdateItem` |\n| Fan-out walks | Consistent config reads, 0.5 → 1 RCU per item read,\nadmin path only |\n\nThe provisioner role already grants every call, so a code-only upgrade\nneeds no stack update.\n\n## Residuals\n\n- **A fan-out retried without a pre-read strips nothing.** That covers a\nfull apply, or a fan-out retried from an earlier apply that was\ninterrupted.\n- **After a Lambda timeout, a retry waits out the lease** (about the\nfunction timeout plus 1 min) before another apply claims the share.\n- The bucket param sync has the same discovery race as ADR-125 and is\nnot re-asserted. A bucket created mid-sync from stale config, or whose\nparams drifted while its config item still matches, keeps its params\nuntil the level changes again or a full apply runs.\n\n## Docs\n\n`CLAUDE.md` (Declarative Limits Management, Provisioner Lambda),\n`docs/cli.md`, `docs/infra/deployment.md`.\n\nExisting assertions changed: re-applying an unchanged manifest now\nreports `unchanged`, not `updated`\n(`tests/integration/test_provisioner.py`, `tests/e2e/test_aws.py`).\n\n## Test plan\n\n- [x] Unit: 7702 passed; diff coverage 100%\n- [x] Three fresh-context reviews; the last found no High findings\n- [ ] Integration and E2E (LocalStack, CI)\n- [ ] E2E (AWS, at release time): `TestE2EAWSProvisioner`, re-planning\nthe same manifest yields no changes and `unchanged == 4`\n- [ ] Manually: apply a large manifest, change one entry, re-apply.\nExpect one change, `(N unchanged)`, and a single fan-out\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01ASEDQdfdZZeqM2KMM1WTMo",
+          "timestamp": "2026-10-26T08:10:01-04:00",
+          "tree_id": "1c28571c5d4d620cf7901ab427401f485d7dfc26",
+          "url": "https://github.com/zeroae/zae-limiter/commit/7e66f1ccfb39588dbea52e20bb06758bd1a3a2f1"
+        },
+        "date": 1793016904592,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 31.095427061410962,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006087790558717097",
+            "extra": "mean: 32.15906949999692 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.860300453315727,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009966310854165744",
+            "extra": "mean: 47.937948076919994 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 48.54862090711322,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003974186024968905",
+            "extra": "mean: 20.59790744444159 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 46.84316649657212,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005089473788637726",
+            "extra": "mean: 21.34783096000092 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 34.41276831568483,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004815349825102849",
+            "extra": "mean: 29.058981562497976 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 101.69215149619662,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0015109511440135762",
+            "extra": "mean: 9.833600580644625 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 37.47472137159368,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0037529134302561732",
+            "extra": "mean: 26.68465470587896 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 22.494800941855406,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06842995677827059",
+            "extra": "mean: 44.45471656249822 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 32.3436210159114,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006698396592142007",
+            "extra": "mean: 30.9179976944465 msec\nrounds: 36"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 30.767975714260803,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005871318131822622",
+            "extra": "mean: 32.50132570588662 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 38.433278361091375,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003531252835554083",
+            "extra": "mean: 26.019117875001996 msec\nrounds: 40"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 30.858026050971766,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006348207842267199",
+            "extra": "mean: 32.406479868420114 msec\nrounds: 38"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 40.80428584279867,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0031349697293108973",
+            "extra": "mean: 24.507229555556226 msec\nrounds: 36"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9377889792246858,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005329291065339304",
+            "extra": "mean: 516.0520627999972 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9335112160042442,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008938465426507183",
+            "extra": "mean: 517.1937932000105 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.957810987934318,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005492333102277698",
+            "extra": "mean: 1.044047325200006 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9341539738486171,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002324019810424699",
+            "extra": "mean: 1.0704873371999952 sec\nrounds: 5"
           }
         ]
       }
