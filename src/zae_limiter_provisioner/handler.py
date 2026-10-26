@@ -934,8 +934,11 @@ def _sync_bucket_param_changes(
                 limits, ttl_multiplier = effective, DEFAULT_TTL_MULTIPLIER
                 stale_limit_names = stale or None
             else:
+                # A limit the level declared before this apply and no longer
+                # does is stripped from its buckets (re-review 3 (b): synced
+                # with no stale names, it stayed enforced there).
                 limits, ttl_multiplier = declared, 0
-                stale_limit_names = None
+                stale_limit_names = (set(previous) - set(declared)) or None
 
             sync_bucket_params(
                 client=client,

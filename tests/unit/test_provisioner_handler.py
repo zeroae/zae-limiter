@@ -3952,6 +3952,26 @@ class TestChangeOnlyApplyStaysSafe:
         assert "ttl" in bucket  # running on defaults again
         assert self._pending(counting) == []
 
+    def test_an_entity_update_that_drops_a_limit_strips_it_from_its_buckets(self, counting):
+        """Re-review 3 (b), on main too: an update synced with `stale_limit_names=None`."""
+        manifest = self._manifest(capacity=10)
+        manifest["entities"]["user-0"]["resources"]["gpt-4"]["limits"]["tpm"] = {"capacity": 500}
+        self._apply(manifest)
+        self._put_bucket(counting, "user-0", capacity=10)
+        counting.update_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": "ns123/BUCKET#user-0#gpt-4#0"}, "SK": {"S": "#STATE"}},
+            UpdateExpression="SET b_tpm_cp = :v, b_tpm_ra = :v, b_tpm_rp = :p, b_tpm_tk = :v",
+            ExpressionAttributeValues={":v": {"N": "500000"}, ":p": {"N": "60"}},
+        )
+
+        self._apply(self._manifest(capacity=10))  # tpm dropped, rpm kept
+
+        bucket = self._bucket(counting, "user-0")
+        assert not [name for name in bucket if name.startswith("b_tpm_")]
+        assert bucket["b_rpm_cp"] == {"N": "10000"}
+        assert self._pending(counting) == []
+
     def test_an_undecodable_previous_item_strips_nothing(self):
         from zae_limiter_provisioner.handler import _stored_limits
 
