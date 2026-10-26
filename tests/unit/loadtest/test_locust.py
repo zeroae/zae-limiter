@@ -619,6 +619,48 @@ class TestAcquireCommit:
         # The RateLimitExceeded is passed in context for logging
         assert call_kwargs["context"]["rate_limit_exceeded"] is exc
 
+    def test_rejection_inside_the_body_is_not_the_outer_acquires(
+        self, session, mock_limiter, mock_event
+    ):
+        """A nested acquire rejected in the body fires one RATE_LIMITED, its own.
+
+        The outer acquire was admitted: it keeps its ACQUIRE success and fires
+        nothing more, so the rejection is not counted against it.
+        """
+        from zae_limiter.exceptions import RateLimitExceeded
+        from zae_limiter.models import Limit, LimitStatus
+
+        violation = LimitStatus(
+            entity_id="user-1",
+            resource="budget",
+            limit_name="budget_rpm",
+            limit=Limit.per_minute("budget_rpm", 100),
+            available=-10,
+            requested=1,
+            exceeded=True,
+            retry_after_seconds=5.0,
+        )
+        exc = RateLimitExceeded(statuses=[violation])
+        outer_lease = MagicMock()
+        outer_lease._has_adjustments = False
+
+        @contextmanager
+        def outer_ctx():
+            yield outer_lease
+
+        mock_limiter.acquire.side_effect = [outer_ctx(), exc]
+
+        with pytest.raises(RateLimitExceeded):
+            with session.acquire("user-1", "search", {"rpm": 1}):
+                with session.acquire("user-1", "budget", {"budget_rpm": 1}):
+                    pass  # pragma: no cover
+
+        fired = [
+            (c.kwargs["request_type"], c.kwargs["name"]) for c in mock_event.fire.call_args_list
+        ]
+        assert fired == [("ACQUIRE", "search"), ("RATE_LIMITED", "budget")]
+        assert mock_event.fire.call_args_list[0].kwargs["exception"] is None
+
 
 # ---------------------------------------------------------------------------
 # Multi-resource acquire (also=, ADR-148)

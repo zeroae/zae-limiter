@@ -165,8 +165,11 @@ class RateLimiterSession:
                 self._fire("COMMIT", stat_name, commit_start)
         except RateLimitExceeded as exc:
             # RateLimitExceeded is expected behavior, not a failure
-            # Fire as RATE_LIMITED (success) so it's tracked but not counted as error
-            self._fire("RATE_LIMITED", stat_name, acquire_start, rate_limit_exceeded=exc)
+            # Fire as RATE_LIMITED (success) so it's tracked but not counted as error.
+            # Only when this acquire was rejected: once admitted, a rejection comes
+            # from the body (e.g. a nested acquire, which fires its own event).
+            if not acquired:
+                self._fire("RATE_LIMITED", stat_name, acquire_start, rate_limit_exceeded=exc)
             raise
         except Exception as exc:
             if not acquired:
