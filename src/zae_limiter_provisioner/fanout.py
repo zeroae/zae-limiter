@@ -163,8 +163,10 @@ def fanout_resource(
     ``skip_matching`` leaves alone a bucket whose stamp, as GSI2 projects it
     (``ProjectionType: ALL``), already equals ``disabled`` — before resolving
     its entity, so a re-assert of an unchanged level (the handler's repair of
-    a bucket an earlier fan-out missed) costs only the discovery query. Off by
-    default: the index is eventually consistent, and a level that just
+    a bucket an earlier fan-out missed) writes nothing when nothing was
+    missed. It still pages the resource's whole GSI2 partition, every bucket
+    of the resource, twice: the same read cost as re-running the fan-out.
+    Off by default: the index is eventually consistent, and a level that just
     changed must not trust it.
 
     Mirrors ``Repository._fanout_resource``: an entity whose own config

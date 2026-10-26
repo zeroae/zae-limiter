@@ -516,7 +516,9 @@ def _reasserted_disabled(manifest: LimitsManifest, fanned: list[Change]) -> list
     carve-outs, normally a handful, not the whole manifest. A resource-level
     re-assert skips buckets already carrying the right stamp
     (``fanout_resource(skip_matching=True)``, read off GSI2's projection), so
-    it costs the discovery query and nothing else when nothing was missed.
+    it writes nothing when nothing was missed. It still pages the resource's
+    whole GSI2 partition (every bucket of the resource, two passes) on every
+    apply: the same read cost main paid to re-run the fan-out.
     """
     seen = {(c.level, c.target) for c in fanned}
     reasserted: list[Change] = []
