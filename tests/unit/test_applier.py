@@ -935,9 +935,13 @@ class TestChangedFanouts:
 
         entity = Change("update", "entity", "u1/gpt-4", _rpm(10))
         assert fanouts_needed("ns", entity, None) == {"disabled", "cascade", "sync"}
-        assert fanouts_needed("ns", Change("delete", "resource", "gpt-4"), {}) == {
-            "disabled",
-            "cascade",
+        delete = Change("delete", "resource", "gpt-4")
+        assert fanouts_needed("ns", delete, None) == {"disabled", "cascade"}
+        # A read delete needs what removing its stored item changes.
+        assert fanouts_needed("ns", delete, {}) == set()
+        assert fanouts_needed("ns", delete, {"disabled": {"BOOL": True}}) == {"disabled"}
+        assert fanouts_needed("ns", Change("delete", "entity", "u1/gpt-4"), self._stored(10)) == {
+            "sync"
         }
         assert fanouts_needed("ns", Change("update", "system", None, _rpm(10)), {}) == set()
         # An item that cannot be built (two timezones) is written anyway and reported.

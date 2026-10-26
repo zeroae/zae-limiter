@@ -366,7 +366,7 @@ def drop_unchanged(
     only the former: a code-only Lambda upgrade must not need a stack update.
     The reads run on a small thread pool (boto3 clients are thread-safe).
 
-    Deletes are always kept. A change whose item cannot be built (two
+    Deletes are always kept, and read like the rest. A change whose item cannot be built (two
     timezones on one item) or whose read fails is kept too, so
     ``apply_changes`` reports it or writes it as before: nothing is dropped
     without the stored item proving it redundant.
@@ -376,8 +376,13 @@ def drop_unchanged(
     which fan-outs a kept change will need before writing it
     (``fanouts_needed``). A change with no entry was not read.
     """
-    candidates: list[tuple[int, tuple[str, str], dict[str, Any]]] = []
+    # A delete is read too, never dropped: its stored item says which fan-outs
+    # removing it needs (`fanouts_needed`), so it does not run all of them.
+    candidates: list[tuple[int, tuple[str, str], dict[str, Any] | None]] = []
     for i, change in enumerate(changes):
+        if change.action == "delete":
+            candidates.append((i, config_key(namespace_id, change), None))
+            continue
         if change.action not in ("create", "update"):
             continue
         try:
@@ -412,7 +417,7 @@ def drop_unchanged(
     unchanged = {
         i
         for (i, _key, item), live in zip(candidates, stored, strict=True)
-        if live is not None and _normalized(live) == _normalized(item)
+        if item is not None and live is not None and _normalized(live) == _normalized(item)
     }
     if stored_out is not None:
         for (i, _key, _item), live in zip(candidates, stored, strict=True):
@@ -595,15 +600,22 @@ def fanouts_for(change: Change, old: dict[str, Any], new: dict[str, Any]) -> set
 def fanouts_needed(namespace_id: str, change: Change, stored: dict[str, Any] | None) -> set[str]:
     """The fan-outs a change will need, predicted before it is written.
 
-    From the live item ``drop_unchanged`` read (``stored``); with none — a
-    delete, an unread or unbuildable item — every fan-out the level can have,
-    since the old side is unknown. The write's own ``ALL_OLD`` image remains
-    the authority (``apply_changes``): this only decides what to record ahead.
+    From the live item ``drop_unchanged`` read (``stored``), for a delete as
+    for a create or update; with none — an unread or unbuildable item — every
+    fan-out the level can have, since the old side is unknown. The prediction
+    stands even when the write's own ``ALL_OLD`` image disagrees: a re-sent
+    write's image already shows the new state (#739 review, finding 2).
     """
     if change.target is None:
         return set()
     every = {"disabled", "cascade"} | ({"sync"} if change.level == "entity" else set())
-    if stored is None or change.action not in ("create", "update"):
+    if stored is None:
+        return every
+    if change.action == "delete":
+        # The level becomes absent: it needs what removing its stored item
+        # changes (#739 review), not every fan-out.
+        return fanouts_for(change, stored, {})
+    if change.action not in ("create", "update"):
         return every
     try:
         _pk, _sk, new = _build_change_item(namespace_id, change)

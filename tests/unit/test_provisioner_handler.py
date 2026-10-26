@@ -19,6 +19,8 @@ from zae_limiter.schema import (
     sk_provisioner,
 )
 from zae_limiter_provisioner.differ import Change
+from zae_limiter_provisioner.fanout import fanout_cascade as real_fanout_cascade
+from zae_limiter_provisioner.fanout import fanout_entity as real_fanout_entity
 from zae_limiter_provisioner.handler import (
     _cfn_limits_to_manifest,
     _cfn_properties_to_manifest,
@@ -3044,6 +3046,57 @@ class TestChangeOnlyApplyStaysSafe:
 
         assert self._pending(counting) == []
         assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
+
+    def test_a_delete_runs_only_the_fan_outs_its_level_needed(self, counting):
+        """A deleted entity level that set no `disabled` or `cascade` needs only the sync."""
+        self._apply(self._manifest(entities=("user-0", "user-1")))
+        self._put_bucket(counting, "user-1")
+        counting.calls.clear()
+
+        with (
+            patch(
+                "zae_limiter_provisioner.handler.fanout_entity", wraps=real_fanout_entity
+            ) as disabled,
+            patch(
+                "zae_limiter_provisioner.handler.fanout_cascade", wraps=real_fanout_cascade
+            ) as cascade,
+        ):
+            self._apply(self._manifest(entities=("user-0",)))
+
+        disabled.assert_not_called()
+        cascade.assert_not_called()
+        # The pending-items query, then the sync's bucket discovery (two passes).
+        assert counting.calls["query"] == 3
+        # Reconciled to the resource default.
+        assert self._bucket(counting, "user-1")["b_rpm_cp"] == {"N": "1000000"}
+        assert self._pending(counting) == []
+
+    def test_a_resent_delete_still_runs_what_the_pre_read_predicted(self, counting):
+        """The re-send's `ALL_OLD` is empty; the pre-read saw the deleted level."""
+        manifest = self._manifest(disabled=True, entities=("user-0", "user-1"))
+        self._apply(manifest)
+        self._put_bucket(counting, "user-1", disabled=True)
+        real_delete = counting._client.delete_item
+
+        def resend(**kwargs):
+            if kwargs["Key"]["SK"]["S"].startswith("#CONFIG"):
+                real_delete(**kwargs)  # landed; its response was lost
+            return real_delete(**kwargs)
+
+        counting.delete_item = resend
+        try:
+            with patch(
+                "zae_limiter_provisioner.handler.fanout_cascade", wraps=real_fanout_cascade
+            ) as cascade:
+                self._apply(self._manifest(disabled=True, entities=("user-0",)))
+        finally:
+            del counting.delete_item
+
+        bucket = self._bucket(counting, "user-1")
+        assert "disabled" not in bucket  # the level that disabled it is gone
+        assert bucket["b_rpm_cp"] == {"N": "1000000"}
+        cascade.assert_not_called()  # the deleted level set no cascade policy
+        assert self._pending(counting) == []
 
     def test_a_resent_config_write_still_fans_out(self, counting):
         """Review finding 2: botocore re-sends a write whose first try landed.
