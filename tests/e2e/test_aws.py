@@ -24,9 +24,12 @@ Resources are cleaned up after tests, but verify via AWS Console.
 """
 
 import asyncio
+import contextlib
 import time
 import warnings
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -2366,6 +2369,441 @@ class TestE2EAWSResetAndTopUp:
                 assert _access_denied_in(refused.value) is not None, refused.value
         finally:
             await repo.close()
+
+
+class TestE2EAWSMultiResourceAndMove:
+    """Multi-resource acquire, moving an entity, bypass and soft limits on real
+    IAM (ADR-148 #675, ADR-150 #677, ADR-151 #311 / #467).
+
+    LocalStack runs these features but evaluates no IAM, so only real AWS
+    shows that each runs as a principal holding **only** the managed policy
+    meant for it: an application role holding ``acq`` or ``ns-acq`` acquires
+    (the merged slow-path transaction with the owner ``ConditionCheck`` and an
+    ADR-145 donor debit included), an admin holding ``full`` or ``ns-full``
+    moves an entity, and ``acq`` cannot. Each test has its own namespace on
+    one class-scoped stack; buckets are read back raw, strongly consistently,
+    with the caller's credentials.
+    """
+
+    # An annual quota: no reset edge lands while a test runs.
+    BUDGET = Limit.quota("daily", 100, cron="0 0 1 1 *")
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def move_policy_stack(self, unique_name_class: str) -> AsyncIterator[Repository]:
+        """A stack with the optional IAM roles, no aggregator and no provisioner."""
+        repo = await (
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .enable_aggregator(False)
+            .enable_provisioner(False)
+            .enable_alarms(False)
+            .usage_retention_days(1)
+            .create_iam_roles(True)
+            .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
+            .role_name_format("PowerUserPB-{}")
+            .policy_name_format("PowerUserPB-{}")
+            .build()
+        )
+
+        yield repo
+
+        try:
+            await repo.delete_stack()
+        except Exception as e:
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.close()
+
+    # -- helpers ---------------------------------------------------------------
+
+    @staticmethod
+    async def _item(
+        repo: Repository, entity_id: str, resource: str, shard: int = 0
+    ) -> dict[str, Any]:
+        """The raw bucket item, read strongly consistently ({} when missing)."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ConsistentRead=True,
+        )
+        return dict(response.get("Item", {}))
+
+    @staticmethod
+    def _n(item: dict[str, Any], attr: str) -> int:
+        return int(item[attr]["N"]) if attr in item else 0
+
+    async def _tc(self, repo: Repository, entity_id: str, resource: str, limit: str) -> int:
+        """Shard 0's consumption counter for ``limit``, in tokens."""
+        return self._n(await self._item(repo, entity_id, resource), f"b_{limit}_tc") // 1000
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _namespace_role(
+        stack: str, suffix: str, policy_output: str, namespace_id: str
+    ) -> Iterator[dict[str, str]]:
+        """Credentials for a role holding only the stack's ``policy_output``
+        policy, tagged with ``namespace_id`` for its ``LeadingKeys`` condition.
+        The role is deleted on exit."""
+        import json
+
+        import boto3
+
+        policy_arn = TestE2EAWSAcquirePolicies._outputs(stack)[policy_output]
+        partition, account = TestE2EAWSAcquirePolicies._caller_partition_and_account()
+        iam = boto3.client("iam")
+        role_name = f"PowerUserPB-{stack}-{suffix}"
+        assert len(role_name) <= 64
+        iam.create_role(
+            RoleName=role_name,
+            PermissionsBoundary=f"arn:{partition}:iam::aws:policy/PowerUserAccess",
+            AssumeRolePolicyDocument=json.dumps(
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {"AWS": f"arn:{partition}:iam::{account}:root"},
+                            "Action": "sts:AssumeRole",
+                        }
+                    ],
+                }
+            ),
+            Tags=[{"Key": "zael_namespace_id", "Value": namespace_id}],
+        )
+        try:
+            iam.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+            yield TestE2EAWSAcquirePolicies._assume(
+                f"arn:{partition}:iam::{account}:role/{role_name}"
+            )
+        finally:
+            try:
+                iam.detach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+            finally:
+                iam.delete_role(RoleName=role_name)
+
+    @staticmethod
+    def _stack_role(stack: str, output: str) -> dict[str, str]:
+        """Credentials for one of the stack's own roles (``AppRoleArn``, ...)."""
+        outputs = TestE2EAWSAcquirePolicies._outputs(stack)
+        return TestE2EAWSAcquirePolicies._assume(outputs[output])
+
+    @staticmethod
+    async def _as(
+        monkeypatch: pytest.MonkeyPatch,
+        credentials: dict[str, str],
+        stack: str,
+        namespace: str,
+    ) -> Repository:
+        """A repository holding only ``credentials``. A repository connected
+        earlier keeps the credentials it was connected with."""
+        TestE2EAWSAcquirePolicies._become(monkeypatch, credentials)
+        return await TestE2EAWSAcquirePolicies._connect(stack, namespace)
+
+    # -- 1. multi-resource acquire (ADR-148) -------------------------------------
+
+    async def _seed_family(self, stack_repo: Repository, namespace: str) -> tuple[str, Repository]:
+        """``search`` cascades from ``user`` to ``org``; ``budget`` is a
+        per-user quota that does not cascade. Returns the namespace id and an
+        admin repository (the caller's credentials) scoped to it."""
+        namespace_id = await stack_repo.register_namespace(namespace)
+        admin = await stack_repo.namespace(namespace)
+        await admin.set_resource_defaults("search", [Limit.per_day("rpm", 1000)])
+        await admin.set_resource_defaults("budget", [self.BUDGET])
+        await admin.set_resource_cascade("budget", False)
+        await admin.create_entity("org")
+        await admin.create_entity("user", parent_id="org", cascade=True)
+        return namespace_id, admin
+
+    async def _multi_resource(self, admin: Repository, stack: str, namespace: str) -> None:
+        """Run as the principal whose credentials are in the environment."""
+        from zae_limiter import OnUnavailable, RateLimitExceeded
+
+        repo = await TestE2EAWSAcquirePolicies._connect(stack, namespace)
+        try:
+            limiter = RateLimiter(repository=repo)
+
+            async def acquire(budget: int) -> None:
+                async with limiter.acquire(
+                    "user",
+                    "search",
+                    {"rpm": 1},
+                    also={"budget": {"daily": budget}},
+                    on_unavailable=OnUnavailable.BLOCK,
+                ):
+                    pass
+
+            async def ledger() -> tuple[int, int, int]:
+                return (
+                    await self._tc(admin, "user", "search", "rpm"),
+                    await self._tc(admin, "org", "search", "rpm"),
+                    await self._tc(admin, "user", "budget", "daily"),
+                )
+
+            # First acquire: no bucket exists, so every part takes the slow
+            # path and all three buckets are created in ONE transaction, with
+            # the owner ConditionChecks for user and org (ADR-150).
+            await acquire(1)
+            assert await ledger() == (1, 1, 1)
+            # Second: every part on the fast path.
+            await acquire(1)
+            assert await ledger() == (2, 2, 2)
+            assert await self._item(admin, "org", "budget") == {}  # budget does not cascade
+
+            # All or none: budget rejects, so search (child and parent) is refunded.
+            with pytest.raises(RateLimitExceeded) as rejected:
+                await acquire(1000)
+            assert {s.resource for s in rejected.value.violations} == {"budget"}
+            assert await ledger() == (2, 2, 2)
+
+            # ADR-145 move: shard 0 holds the whole quota at count 1, then the
+            # count doubles. The first draw on shard 1 creates it, funded by a
+            # donor debit off shard 0 in the same transaction as the create.
+            assert await admin.bump_shard_count("user", "budget", 1) == 2
+            admitted = 2
+            for _ in range(40):
+                await acquire(1)
+                admitted += 1
+                if await self._item(admin, "user", "budget", 1):
+                    break
+            else:
+                pytest.fail("shard 1 was never drawn")
+
+            shard0 = await self._item(admin, "user", "budget", 0)
+            shard1 = await self._item(admin, "user", "budget", 1)
+            assert self._n(shard1, "b_daily_gc") == 2
+            # Funded with one share at count 2, then debited by the acquire.
+            assert self._n(shard1, "b_daily_tk") == (self.BUDGET.capacity // 2 - 1) * 1000
+            # Conserved: what both shards hold plus what was admitted is the quota.
+            held = self._n(shard0, "b_daily_tk") + self._n(shard1, "b_daily_tk")
+            assert held == (self.BUDGET.capacity - admitted) * 1000
+            spent = self._n(shard0, "b_daily_tc") + self._n(shard1, "b_daily_tc")
+            assert spent == admitted * 1000
+            assert (await ledger())[:2] == (admitted, admitted)
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_app_role_with_acq_runs_a_multi_resource_acquire(
+        self,
+        move_policy_stack: Repository,
+        unique_name_class: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The stack's app role (AcquireOnlyPolicy only)."""
+        namespace = "mr-acq"
+        _, admin = await self._seed_family(move_policy_stack, namespace)
+        TestE2EAWSAcquirePolicies._become(
+            monkeypatch, self._stack_role(unique_name_class, "AppRoleArn")
+        )
+        await self._multi_resource(admin, unique_name_class, namespace)
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_role_with_ns_acq_runs_a_multi_resource_acquire(
+        self,
+        move_policy_stack: Repository,
+        unique_name_class: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A role holding only NamespaceAcquirePolicy, tagged with the namespace."""
+        namespace = "mr-ns-acq"
+        namespace_id, admin = await self._seed_family(move_policy_stack, namespace)
+        with self._namespace_role(
+            unique_name_class, "mrnsacq", "NamespaceAcquirePolicyArn", namespace_id
+        ) as credentials:
+            TestE2EAWSAcquirePolicies._become(monkeypatch, credentials)
+            await self._multi_resource(admin, unique_name_class, namespace)
+
+    # -- 2. set_parent (ADR-150) -------------------------------------------------
+
+    async def _seed_orgs(self, stack_repo: Repository, namespace: str) -> tuple[str, Repository]:
+        namespace_id = await stack_repo.register_namespace(namespace)
+        admin = await stack_repo.namespace(namespace)
+        await admin.set_resource_defaults("search", [Limit.per_day("rpm", 1000)])
+        for org in ("org-a", "org-b"):
+            await admin.create_entity(org)
+        await admin.create_entity("user", parent_id="org-a", cascade=True)
+        return namespace_id, admin
+
+    async def _move(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        admin: Repository,
+        stack: str,
+        namespace: str,
+        mover_credentials: dict[str, str],
+    ) -> None:
+        """An app process (``acq``) learns ``org-a``; the mover moves ``user``
+        to ``org-b``; the app's next acquire debits ``org-b``, not ``org-a``."""
+        app = await self._as(monkeypatch, self._stack_role(stack, "AppRoleArn"), stack, namespace)
+        try:
+            limiter = RateLimiter(repository=app)
+            for _ in range(2):  # cold, then warm: org-a is cached
+                async with limiter.acquire("user", "search", {"rpm": 1}):
+                    pass
+
+            mover = await self._as(monkeypatch, mover_credentials, stack, namespace)
+            try:
+                assert await mover.set_parent("user", "org-b") == 1
+                deadline = time.monotonic() + 30
+                while True:  # GSI1 is eventually consistent
+                    children_b = {e.id for e in await mover.get_children("org-b")}
+                    children_a = {e.id for e in await mover.get_children("org-a")}
+                    if "user" in children_b and "user" not in children_a:
+                        break
+                    assert time.monotonic() < deadline, (children_a, children_b)
+                    await asyncio.sleep(1)
+            finally:
+                await mover.close()
+
+            orgs = ("org-a", "org-b")
+            assert [await self._tc(admin, o, "search", "rpm") for o in orgs] == [2, 0]
+            async with limiter.acquire("user", "search", {"rpm": 1}):
+                pass
+            # org-a was debited on the stale cache, then refunded on the same call.
+            assert [await self._tc(admin, o, "search", "rpm") for o in orgs] == [2, 1]
+            entity = await admin.get_entity("user", consistent_read=True)
+            assert entity is not None and entity.parent_id == "org-b"
+        finally:
+            await app.close()
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_admin_role_with_full_can_set_parent(
+        self,
+        move_policy_stack: Repository,
+        unique_name_class: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The stack's admin role (FullAccessPolicy only) moves the entity."""
+        namespace = "mv-full"
+        _, admin = await self._seed_orgs(move_policy_stack, namespace)
+        await self._move(
+            monkeypatch,
+            admin,
+            unique_name_class,
+            namespace,
+            self._stack_role(unique_name_class, "AdminRoleArn"),
+        )
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_role_with_ns_full_can_set_parent(
+        self,
+        move_policy_stack: Repository,
+        unique_name_class: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A role holding only NamespaceFullAccessPolicy moves the entity."""
+        namespace = "mv-ns-full"
+        namespace_id, admin = await self._seed_orgs(move_policy_stack, namespace)
+        with self._namespace_role(
+            unique_name_class, "mvnsfull", "NamespaceFullAccessPolicyArn", namespace_id
+        ) as credentials:
+            await self._move(monkeypatch, admin, unique_name_class, namespace, credentials)
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_app_role_with_acq_cannot_set_parent(
+        self,
+        move_policy_stack: Repository,
+        unique_name_class: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A move writes the entity's META record, outside ``*/BUCKET#*`` (#756)."""
+        from zae_limiter.limiter import _access_denied_in
+
+        namespace = "mv-acq"
+        _, admin = await self._seed_orgs(move_policy_stack, namespace)
+        app = await self._as(
+            monkeypatch,
+            self._stack_role(unique_name_class, "AppRoleArn"),
+            unique_name_class,
+            namespace,
+        )
+        try:
+            with pytest.raises(Exception) as refused:
+                await app.set_parent("user", "org-b")
+            assert _access_denied_in(refused.value) is not None, refused.value
+        finally:
+            await app.close()
+        entity = await admin.get_entity("user", consistent_read=True)
+        assert entity is not None and entity.parent_id == "org-a"
+
+    # -- 3. bypass and soft (ADR-151) --------------------------------------------
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_bypass_and_soft_on_real_buckets(
+        self,
+        move_policy_stack: Repository,
+        unique_name_class: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``full`` sets bypass and soft limits; ``acq`` acquires against them."""
+        from zae_limiter import OnUnavailable, RateLimitExceeded
+        from zae_limiter.lease import Lease
+
+        stack = unique_name_class
+        namespace = "np-acq"
+        await move_policy_stack.register_namespace(namespace)
+        raw = await move_policy_stack.namespace(namespace)
+
+        full = await self._as(
+            monkeypatch, self._stack_role(stack, "AdminRoleArn"), stack, namespace
+        )
+        app = await self._as(monkeypatch, self._stack_role(stack, "AppRoleArn"), stack, namespace)
+        try:
+            limiter = RateLimiter(repository=app)
+
+            async def acquire(resource: str, consume: dict[str, int]) -> Lease:
+                async with limiter.acquire(
+                    "u", resource, consume, on_unavailable=OnUnavailable.BLOCK
+                ) as lease:
+                    return lease
+
+            # Bypass: a limit of 2 per day, one spent before the bypass.
+            await full.set_resource_defaults("api", [Limit.per_day("rpm", 2)])
+            await acquire("api", {"rpm": 1})
+            assert await full.bypass_resource("api") == 1
+            for _ in range(5):
+                assert (await acquire("api", {"rpm": 1})).bypassed is True
+            item = await self._item(raw, "u", "api")
+            assert self._n(item, "b_rpm_tc") == 6_000  # every request counted
+            assert self._n(item, "b_rpm_tk") == 1_000  # the balance untouched
+            assert self._n(item, "bypass") > raw._now_ms()  # a live deadline
+
+            # Clearing it removes the stamp, so the limit is enforced at once.
+            assert await full.clear_resource_disabled("api") == 1
+            assert "bypass" not in await self._item(raw, "u", "api")
+            assert (await acquire("api", {"rpm": 1})).bypassed is False
+            with pytest.raises(RateLimitExceeded):
+                await acquire("api", {"rpm": 1})
+            item = await self._item(raw, "u", "api")
+            assert self._n(item, "b_rpm_tc") == 7_000
+            assert self._n(item, "b_rpm_tk") < 1_000
+
+            # Soft: tpm is debited into debt; a hard rpm rejection lists it as passed.
+            await full.set_resource_defaults(
+                "meter", [Limit.per_day("rpm", 100), Limit.per_day("tpm", 10, soft=True)]
+            )
+            for _ in range(3):
+                lease = await acquire("meter", {"rpm": 1, "tpm": 8})
+            assert lease.overdrawn == ["tpm"]
+            item = await self._item(raw, "u", "meter")
+            assert self._n(item, "b_tpm_tc") == 24_000
+            assert self._n(item, "b_tpm_tk") < -10_000
+            assert self._n(item, "b_tpm_soft") > raw._now_ms()
+
+            with pytest.raises(RateLimitExceeded) as rejected:
+                await acquire("meter", {"rpm": 500, "tpm": 1})
+            assert [s.limit_name for s in rejected.value.violations] == ["rpm"]
+            (tpm,) = [s for s in rejected.value.passed if s.limit_name == "tpm"]
+            assert tpm.limit.soft is True
+        finally:
+            await app.close()
+            await full.close()
 
 
 class TestE2EAWSUpgradeAppliesTemplate:
