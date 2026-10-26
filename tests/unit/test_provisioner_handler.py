@@ -2758,6 +2758,33 @@ class TestPendingItems:
         (item,) = read_pending(client, self.TABLE, "ns")
         assert sorted(item.owners) == ["tok-c"] and not item.owners["tok-c"].legacy
 
+    def test_an_item_with_neither_owners_nor_token_is_claimed(self, client):
+        """Re-review 3 #4: a single-owner release whose REMOVE landed, delete did not.
+
+        "Claimable" but never claimed or deleted, it inflated `pending`.
+        """
+        from zae_limiter_provisioner.pending import claim, read_pending, release, sk_pending
+
+        key = ("sync", "entity", "u1/gpt-4")
+        client.put_item(
+            TableName=self.TABLE,
+            Item={
+                "PK": {"S": pk_system("ns")},
+                "SK": {"S": sk_pending(*key)},
+                "kind": {"S": "sync"},
+                "level": {"S": "entity"},
+                "target": {"S": "u1/gpt-4"},
+            },
+        )
+
+        assert (
+            len(claim(client, self.TABLE, "ns", "tok-c", read_pending(client, self.TABLE, "ns")))
+            == 1
+        )
+        assert self._owners(client) == {key: ["tok-c"]}
+        release(client, self.TABLE, "ns", "tok-c", key)
+        assert read_pending(client, self.TABLE, "ns") == []
+
     def test_an_item_left_with_no_owner_is_claimable(self, client):
         from zae_limiter_provisioner.pending import claim, read_pending, sk_pending
 

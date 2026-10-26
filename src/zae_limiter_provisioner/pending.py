@@ -362,7 +362,7 @@ def claim(
                 f"AND (attribute_not_exists(#o.#t{i}.#l) OR #o.#t{i}.#l < :now)"
             )
             removes.append(f"#o.#t{i}")
-        if has_map or (not item.owners and not expired):
+        if has_map:
             names["#me"] = token
             sets = "#o.#me = :e"
             values[":e"] = entry
@@ -374,6 +374,12 @@ def claim(
             sets = "#o = :m"
             values[":m"] = {"M": {token: entry}}
             conditions.append("attribute_not_exists(#o)")
+            if not item.owners:
+                # Neither map nor single owner: a single-owner release whose
+                # REMOVE landed and whose delete did not. Claimed only while
+                # it is still ownerless (#739 re-review 3 #4).
+                names["#ltok"] = _LEGACY_TOKEN
+                conditions.append("attribute_not_exists(#ltok)")
         if not expired:
             del values[":now"]  # an item with no owner left tests no lease
         expression = f"SET {sets}" + (f" REMOVE {', '.join(removes)}" if removes else "")
