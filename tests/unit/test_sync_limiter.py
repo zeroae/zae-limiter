@@ -662,6 +662,7 @@ class TestLeaseRetryPath:
         state.shard_count = 1
         state.report_shard_count = 1
         state.report_top_up_milli = 0
+        state.soft_until_ms = None
         state.window_end_ms = None
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=60)
         undeclared_state = MagicMock()
@@ -702,6 +703,7 @@ class TestLeaseRetryPath:
         state.shard_count = 1
         state.report_shard_count = 1
         state.report_top_up_milli = 0
+        state.soft_until_ms = None
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=10)
         statuses = _build_retry_failure_statuses([entry], now_ms=1000)
         assert statuses[0].retry_after_seconds == 0.001
@@ -729,6 +731,7 @@ class TestLeaseRetryPath:
         state.shard_count = 1
         state.report_shard_count = 1
         state.report_top_up_milli = 0
+        state.soft_until_ms = None
         entry = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -776,6 +779,7 @@ class TestWriteOnEnter:
         state.shard_count = 1
         state.report_shard_count = 1
         state.report_top_up_milli = 0
+        state.soft_until_ms = None
         state.capacity_milli = 100000
         state.grant_count = None
         state.stored_vu_read = True
@@ -13843,6 +13847,74 @@ class TestRetryDebitsOnlyAGrantedBalance:
         s_status = next(s for s in rejection.statuses if s.limit_name == "s")
         assert s_status.exceeded is False
         assert s_status in rejection.passed
+
+    def _retry_fails_without_an_image(self, repo, entity_id, soft_limit, consume):
+        """The rf-locked write loses its lock; the retry then fails with no
+        image, as from a backend that returns none, so the 429 is built from
+        memory."""
+        repo.set_limits(entity_id, [self.RPM, soft_limit], resource="r")
+        with SyncRateLimiter(repository=repo).acquire(entity_id, "r", {"rpm": 1, "s": 1}):
+            pass
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        client = repo._get_client()
+        original = repo.transact_write
+        calls: list[str] = []
+
+        def lose_then_fail_bare(items):
+            if ":expected_rf" in repr(items):
+                calls.append("locked")
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "r", 0)},
+                        "SK": {"S": sk_state()},
+                    },
+                    UpdateExpression="ADD rf :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+                return original(items)
+            calls.append("retry")
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "x"}}, "UpdateItem"
+            )
+
+        repo.transact_write = lose_then_fail_bare
+        try:
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with slow.acquire(entity_id, "r", consume):
+                    pass
+        finally:
+            repo.transact_write = original
+        assert calls == ["locked", "retry"]
+        return exc_info.value
+
+    @pytest.mark.parametrize(
+        "soft_limit",
+        [Limit.per_minute("s", 5, soft=True), Limit.quota("s", 5, cron="0 0 * * *", soft=True)],
+        ids=["soft-rate", "soft-quota"],
+    )
+    def test_a_soft_limit_is_never_reported_exceeded_from_memory(self, sync_limiter, soft_limit):
+        """With no image the 429 is built from memory, which marked every
+        debited limit exceeded: a soft one was listed in ``violations``
+        (ADR-151 decision 1, review of #776)."""
+        rejection = self._retry_fails_without_an_image(
+            sync_limiter._repository, f"mem-{soft_limit.is_quota}", soft_limit, {"rpm": 1, "s": 10}
+        )
+        assert [s.limit_name for s in rejection.violations] == ["rpm"]
+        s_status = next(s for s in rejection.statuses if s.limit_name == "s")
+        assert s_status.exceeded is False
+        assert s_status in rejection.passed
+
+    def test_a_retry_with_only_soft_limits_waived_is_a_contended_429(self, sync_limiter):
+        """Every debited limit is a waived soft one, so nothing seen is short:
+        the write failed for a reason the 429 cannot name. Contended (#724),
+        never a ``ValueError`` from a rejection with no violation."""
+        rejection = self._retry_fails_without_an_image(
+            sync_limiter._repository, "only-soft", Limit.per_minute("s", 5, soft=True), {"s": 10}
+        )
+        assert rejection.contended is True
+        assert not rejection.violations
+        assert rejection.retry_after_seconds > 0
 
     def test_a_hard_quota_is_seeded_not_rejected(self, sync_limiter):
         quota = Limit.quota("q", 10, cron="0 0 * * *")

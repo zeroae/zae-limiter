@@ -1800,6 +1800,11 @@ class Lease:
                                 _period_statuses(self.entries, now_ms, unapplied)
                             ) from retry_exc
                         statuses = _build_retry_failure_statuses(self.entries, now_ms, images)
+                        if not any(status.exceeded for status in statuses):
+                            # Every debited limit is a waived soft one: the
+                            # write failed for a reason no status can name,
+                            # and nothing was debited (#724).
+                            raise _contention_rejection(self.entries, now_ms) from retry_exc
                         raise RateLimitExceeded(statuses) from retry_exc
                     retry_items = downgraded
                     retry_groups = downgraded_groups
@@ -3156,7 +3161,11 @@ def _retry_statuses(
         # stamps them onto a new one — but the state is the single source
         # `try_consume` also reads.
         retry_after = retry_after_for_deficit(entry.state, deficit_milli, now_ms)
-        if entry.consumed > 0:
+        # Waived as from an image, but the stamp is the one this pass read.
+        soft_until = entry.state.soft_until_ms
+        waived = bool(_soft_trusted([entry])) or (soft_until is not None and soft_until > now_ms)
+        exceeded = not waived and entry.consumed > 0
+        if exceeded:
             retry_after = max(retry_after, _MIN_RETRY_AFTER_S)
         statuses.append(
             LimitStatus(
@@ -3168,7 +3177,7 @@ def _retry_statuses(
                 ),
                 available=entry.state.tokens_milli // 1000,
                 requested=entry.consumed,
-                exceeded=entry.consumed > 0,
+                exceeded=exceeded,
                 retry_after_seconds=retry_after,
                 resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
             )

@@ -1360,6 +1360,8 @@ class SyncLease:
                                 _period_statuses(self.entries, now_ms, unapplied)
                             ) from retry_exc
                         statuses = _build_retry_failure_statuses(self.entries, now_ms, images)
+                        if not any(status.exceeded for status in statuses):
+                            raise _contention_rejection(self.entries, now_ms) from retry_exc
                         raise RateLimitExceeded(statuses) from retry_exc
                     retry_items = downgraded
                     retry_groups = downgraded_groups
@@ -2618,7 +2620,10 @@ def _retry_statuses(
             continue
         deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
         retry_after = retry_after_for_deficit(entry.state, deficit_milli, now_ms)
-        if entry.consumed > 0:
+        soft_until = entry.state.soft_until_ms
+        waived = bool(_soft_trusted([entry])) or (soft_until is not None and soft_until > now_ms)
+        exceeded = not waived and entry.consumed > 0
+        if exceeded:
             retry_after = max(retry_after, _MIN_RETRY_AFTER_S)
         statuses.append(
             LimitStatus(
@@ -2630,7 +2635,7 @@ def _retry_statuses(
                 ),
                 available=entry.state.tokens_milli // 1000,
                 requested=entry.consumed,
-                exceeded=entry.consumed > 0,
+                exceeded=exceeded,
                 retry_after_seconds=retry_after,
                 resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
             )
