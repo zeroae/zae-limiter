@@ -3662,10 +3662,15 @@
 
 
 <h1 id="adr-150-move-an-entity-to-a-new-parent">ADR-150: Move an entity to a new parent<a class="headerlink" href="#adr-150-move-an-entity-to-a-new-parent" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-10-09
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/677">#677</a>
-<strong>Amends:</strong> CLAUDE.md invariant 9 (<code>parent_id</code> set once at <code>create_entity()</code> and never changed)
+<strong>Amends:</strong> CLAUDE.md invariant 9 (<code>parent_id</code> set once at <code>create_entity()</code> and never
+changed); <a href="../115-add-based-writes-lazy-refill/">ADR-115</a> and
+<a href="../133-client-shard-creation/">ADR-133</a> (a bucket create is a transaction with a
+<code>ConditionCheck</code> on the owner's META, 4 WCU, not a single <code>PutItem</code>, and a cancelled check
+is a second cause of a lost create); <a href="../146-per-resource-cascade-policy/">ADR-146</a> (a
+slow-path owner stamp older than the stored generation is not written)
 <strong>Related:</strong> <a href="../112-cascade-per-entity/">ADR-112</a>, <a href="../125-resource-disable/">ADR-125</a>, <a href="../141-reset-after-version-gate/">ADR-141</a>, <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a>, <a href="../146-per-resource-cascade-policy/">ADR-146</a>, <a href="../147-client-side-rejection-cache/">ADR-147</a>, <a href="https://github.com/zeroae/zae-limiter/issues/674">#674</a>, <a href="https://github.com/zeroae/zae-limiter/issues/684">#684</a>, <a href="https://github.com/zeroae/zae-limiter/issues/686">#686</a>
 <strong>Design:</strong> <code>docs/plans/2026-10-09-move-entity-design.md</code></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
@@ -3687,7 +3692,10 @@ take only the fast path, where nothing would ever correct it.</p>
 - A move takes effect on the fast path of every process within one call per (process, entity): the child's item overrules a stale cache, and the old parent's debit is refunded.
 - No consumption or quota allowance moves between parents (ADR-145), and no lease is rewritten; details and costs are in the design doc.</p>
 <p><strong>Negative:</strong>
-- A move is O(buckets of the entity) writes, not O(1), like a cascade-policy change.
+- A move is O(buckets of the entity) writes, not O(1), like a cascade-policy change. ADR-114
+  rejected merging META into buckets partly to avoid fan-out on metadata changes; denormalising
+  <code>parent_id</code> for a 0-RCU fast path makes this one metadata change pay that fan-out.
+- <code>set_parent</code> is a required <code>RepositoryProtocol</code> member, not capability-gated (ADR-109).
 - Until the fan-out reaches a shard, acquires on it debit the old parent.
 - Every bucket create becomes a transaction with one extra item, a <code>ConditionCheck</code> on the owner's META, which needs <code>dynamodb:ConditionCheckItem</code>: breaking for custom IAM.
 - Residual (GSI3 lag): a create that lands before the move's META write but is missed by both discovery passes keeps the old parent until its next slow pass or a repeat of the move.

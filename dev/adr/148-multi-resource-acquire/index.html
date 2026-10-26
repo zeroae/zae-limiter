@@ -3695,10 +3695,11 @@
 
 
 <h1 id="adr-148-one-acquire-may-debit-several-resources-all-or-none">ADR-148: One acquire may debit several resources, all or none<a class="headerlink" href="#adr-148-one-acquire-may-debit-several-resources-all-or-none" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-10-09
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/675">#675</a>
-<strong>Related:</strong> <a href="../125-resource-disable/">ADR-125</a>, <a href="../133-client-shard-creation/">ADR-133</a>, <a href="../134-random-shard-selection/">ADR-134</a>, <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a>, <a href="../146-per-resource-cascade-policy/">ADR-146</a>, <a href="../147-client-side-rejection-cache/">ADR-147</a>, <a href="https://github.com/zeroae/zae-limiter/issues/674">#674</a>
+<strong>Amends:</strong> <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a> (a covered slot whose move is dropped to fit one transaction is granted 0 this period: an under-admission, neither a move nor a fresh grant)
+<strong>Related:</strong> <a href="../125-resource-disable/">ADR-125</a>, <a href="../133-client-shard-creation/">ADR-133</a>, <a href="../134-random-shard-selection/">ADR-134</a>, <a href="../146-per-resource-cascade-policy/">ADR-146</a>, <a href="../147-client-side-rejection-cache/">ADR-147</a>, <a href="https://github.com/zeroae/zae-limiter/issues/674">#674</a>
 <strong>Design:</strong> <code>docs/plans/2026-10-09-multi-resource-acquire-design.md</code></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
 <p>A lease covers one (entity, resource). The #674 use case debits a metered resource
@@ -3727,23 +3728,11 @@ rejected, disabled or unavailable, every debit that acquire wrote must be refund
 the exception reaches the caller. Each resource must resolve its limits, <code>disabled</code>,
 cascade policy, shard and quota grants exactly as a single-resource acquire does; no
 resource may be named twice in one acquire.</p>
-<p>Before any write, the ADR-147 rejection cache must be consulted for every resource
-(and its parent, where it cascades), and a resource known short must reject the acquire
-with no DynamoDB call. Otherwise the fast-path writes for every resource must be issued
-concurrently. Resources the fast path admits keep their debit; resources it cannot settle
-go to the slow path, which must plan them and commit them, with their ADR-145 donor
-debits, in one <code>TransactWriteItems</code>; when that commit rejects, the fast-path debits are
-refunded. The planned transaction must never exceed 100 items: the number of resources is
-capped at the API boundary, and a plan whose donor debits would overflow must be re-planned
-without moves (an under-admission, never a failure). A rejected acquire whose slow-path
-plan holds a quota move must commit that move with nothing consumed, as ADR-145 requires
-of a single resource.</p>
-<p><code>RateLimitExceeded</code> must carry a status for every declared limit of every resource the
-decision evaluated, each tagged with its resource; <code>ResourceDisabled</code> on any resource
-outranks <code>RateLimitExceeded</code> on another. Adjustments, consumption and releases must be
-addressable per resource without changing the meaning of the existing single-resource
-lease methods, and the exit reconcile must write one item per bucket touched. The sync
-twin must be generated from the async source (ADR-121).</p>
+<p>Before any write, the ADR-147 rejection cache must be consulted for every resource (and its parent, where it cascades), and a resource known short on an enforced limit (never a soft or bypassed one, ADR-151) must reject the acquire with no DynamoDB call.
+Otherwise the fast-path writes for every resource must be issued concurrently. Resources the fast path admits keep their debit; resources it cannot settle go to the slow path, which must plan them and commit them, with their ADR-145 donor debits, in one <code>TransactWriteItems</code>; when that commit rejects, the fast-path debits are refunded.
+The planned transaction must never exceed 100 items: the number of resources is capped at the API boundary, and a plan whose donor debits would overflow must be re-planned without moves (an under-admission, never a failure). A rejected acquire whose slow-path plan holds a quota move must commit that move with nothing consumed, as ADR-145 requires of a single resource.</p>
+<p><code>RateLimitExceeded</code> must carry a status for every declared limit of every resource the decision evaluated, each tagged with its resource; <code>ResourceDisabled</code> on any resource outranks <code>RateLimitExceeded</code> on another, except when a local rejection (ADR-147) answers before that resource is read (see Negative).
+Adjustments, consumption and releases must be addressable per resource without changing the meaning of the existing single-resource lease methods, and the exit reconcile must write one item per bucket touched. The sync twin must be generated from the async source (ADR-121).</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive</strong>
 - One lease and one exit reconcile per request; the fast path takes one round trip for

@@ -3695,10 +3695,10 @@
 
 
 <h1 id="adr-149-reset-and-top-up-are-in-place-rf-locked-passes-over-every-shard">ADR-149: Reset and top-up are in-place, rf-locked passes over every shard<a class="headerlink" href="#adr-149-reset-and-top-up-are-in-place-rf-locked-passes-over-every-shard" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-10-09
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/470">#470</a>
-<strong>Amends:</strong> <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a> (I1, I7, I8: a top-up is an operator grant above the plan)
+<strong>Amends:</strong> <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a> (I1, I7, I8: a top-up is an operator grant above the plan), <a href="../139-duration-reset-windows/">ADR-139</a> (a session top-up with no live window opens one at the top-up instant: an operator action, not an admitted request, anchors it)
 <strong>Related:</strong> <a href="../125-resource-disable/">ADR-125</a>, <a href="../137-reset-replaces-drip/">ADR-137</a>, <a href="../139-duration-reset-windows/">ADR-139</a>, <a href="../140-duration-window-shard-coherence/">ADR-140</a>, <a href="../141-reset-after-version-gate/">ADR-141</a>, <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a>, <a href="../147-client-side-rejection-cache/">ADR-147</a>, <a href="https://github.com/zeroae/zae-limiter/pull/471">#471</a>, <a href="https://github.com/zeroae/zae-limiter/issues/674">#674</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
 <p>The #674 use case needs a plan upgrade, a purchase of more allowance, or a session reset to
@@ -3747,6 +3747,7 @@ topped up above its ceiling only through <code>b_{q}_tu</code>, which ends with 
   <code>UpdateItem</code> and a separate audit <code>PutItem</code> were 2), against one delete per shard in #471.
 - Without an idempotency key, an error from a reset or top-up leaves its outcome unknown to the
   caller; the operation record lives three days.
+- <code>reset_bucket</code> / <code>top_up</code> are required <code>RepositoryProtocol</code> members, not capability-gated (ADR-109), and their audit event rides in the same transaction, so a backend that implements them must also write audit events (ADR-108 lists audit as optional elsewhere). A top-up that creates the bucket takes its bypass and soft stamps from config read uncached (ADR-151 decision 4).
 - A record is tied to the entity's incarnation (#716's <code>pinc</code>), read before the write rather
   than checked inside it: an entity deleted and recreated during one call can see a key retry
   applied once more. Closing it would put a <code>ConditionCheck</code> on META in every reset and

@@ -3734,10 +3734,10 @@
 
 
 <h1 id="adr-152-acquire-policies-grant-the-item-actions-they-write-with">ADR-152: Acquire policies grant the item actions they write with<a class="headerlink" href="#adr-152-acquire-policies-grant-the-item-actions-they-write-with" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed (accepted at the v0.17.0 release)
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-10-20
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/750">#750</a>, <a href="https://github.com/zeroae/zae-limiter/issues/756">#756</a>
-<strong>Supersedes:</strong> <a href="../124-policy-rename-clarity/">ADR-124</a> on acceptance (its permission matrix only; the policy names stand)
+<strong>Supersedes:</strong> <a href="../124-policy-rename-clarity/">ADR-124</a> (its permission matrix only; the policy names stand)
 <strong>Related:</strong> <a href="../117-managed-policies-by-default/">ADR-117</a>, <a href="../150-move-entity-to-new-parent/">ADR-150</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
 <p>ADR-124 renamed the managed policies and fixed their permission matrix. That matrix gave
@@ -3761,8 +3761,10 @@ LocalStack do not evaluate IAM, so no test below real AWS could see it.</p>
 following. Each namespace-scoped policy (<code>-ns-read</code>, <code>-ns-acq</code>, <code>-ns-full</code>) mirrors its
 table-level counterpart within its <code>dynamodb:LeadingKeys</code> condition: it must grant the same
 item actions (<code>GetItem</code>, <code>BatchGetItem</code>, <code>Query</code>, <code>ConditionCheckItem</code>, <code>PutItem</code>, <code>UpdateItem</code>,
-<code>DeleteItem</code>, as the row allows), and leaves out the table-wide ones (<code>Scan</code>, <code>DescribeTable</code>,
-<code>BatchWriteItem</code>). No policy lists <code>TransactWriteItems</code>, which IAM does not define.</p>
+<code>DeleteItem</code>, as the row allows), and leaves out the table-wide ones (<code>Scan</code>, <code>DescribeTable</code>).
+<code>-ns-full</code> also grants <code>BatchWriteItem</code> (#742: <code>delete_entity</code> deletes with it); IAM checks
+<code>LeadingKeys</code> on every item of a batch, so it reaches only the keys <code>PutItem</code> and <code>DeleteItem</code>
+already reach. No policy lists <code>TransactWriteItems</code>, which IAM does not define.</p>
 <table>
 <thead>
 <tr>
@@ -3840,7 +3842,11 @@ every item action <code>acquire()</code> issues, whether alone or inside a trans
 <code>PutItem</code> and <code>UpdateItem</code> on bucket items only: <code>dynamodb:LeadingKeys</code> <code>*/BUCKET#*</code> (and
 <code>{namespace id}/BUCKET#*</code> for <code>-ns-acq</code>), with <code>Null</code> false on the key. Every write <code>acquire()</code>
 issues is a bucket item, whose partition key is <code>{ns}/BUCKET#…</code>; namespace and entity ids contain
-no <code>/</code> or <code>#</code>, so no other item matches.</p>
+no <code>/</code> or <code>#</code>, so the only other items the grant reaches are those sharing a bucket's partition:
+ADR-149's operation records (<code>SK=#OP#…</code>, in shard 0's partition). An acquire principal can
+therefore write such a record, which can only make a later reset or top-up reusing that key
+return the stored result instead of applying (an under-grant); it raises no balance it could not
+already raise (see Negative).</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - <code>acquire()</code> works under the template's acquire policies and the <code>{stack}-app</code> role, as their
