@@ -2735,6 +2735,32 @@ class TestPendingItems:
         assert len(read_pending(client, self.TABLE, "ns")) == 2
 
 
+class TestRemainingMs:
+    """The lease reads the invocation's own remaining time (re-review #2)."""
+
+    def test_a_lambda_context_gives_its_remaining_time(self):
+        from zae_limiter_provisioner.handler import _remaining_ms
+
+        context = MagicMock()
+        context.get_remaining_time_in_millis.return_value = 300_000
+        assert _remaining_ms(context) == 300_000
+
+    @pytest.mark.parametrize(
+        "context",
+        [
+            None,
+            object(),
+            MagicMock(get_remaining_time_in_millis=MagicMock(side_effect=RuntimeError)),
+            MagicMock(get_remaining_time_in_millis=MagicMock(return_value=True)),
+            MagicMock(get_remaining_time_in_millis=MagicMock(return_value="300000")),
+        ],
+    )
+    def test_anything_else_says_nothing(self, context):
+        from zae_limiter_provisioner.handler import _remaining_ms
+
+        assert _remaining_ms(context) is None
+
+
 class TestOwedFanouts:
     """Every owed fan-out, from every source, once each."""
 

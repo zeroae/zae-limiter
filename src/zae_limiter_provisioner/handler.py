@@ -668,7 +668,6 @@ def _fanout_disabled_changes(
     changes: list[Change],
     *,
     reasserted: list[Change] | None = None,
-    on_done: Callable[[str, str, str], None] | None = None,
 ) -> tuple[list[str], list[Change]]:
     """Eagerly stamp bucket items for every resource/entity change given (ADR-125).
 
@@ -771,8 +770,6 @@ def _fanout_disabled_changes(
                 fanout_entity(
                     client, table_name, namespace_id, entity_id, fanout_resource_arg, disabled
                 )
-            if on_done is not None:
-                on_done("disabled", change.level, change.target or "")
         except Exception as e:
             logger.warning("disable fan-out failed for %s %s: %s", change.level, change.target, e)
             errors.append(
@@ -786,8 +783,6 @@ def _fanout_cascade_changes(
     table_name: str,
     namespace_id: str,
     changed: list[tuple[str, str]],
-    *,
-    on_done: Callable[[str, str, str], None] | None = None,
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Restamp buckets for every level whose cascade policy changed (ADR-146).
 
@@ -816,8 +811,6 @@ def _fanout_cascade_changes(
                 fanout_cascade(
                     client, table_name, namespace_id, entity_id=entity_id, resource=resource
                 )
-            if on_done is not None:
-                on_done("cascade", level, target)
         except Exception as e:
             logger.warning("cascade fan-out failed for %s %s: %s", level, target, e)
             errors.append(f"cascade fan-out {level} {target}: {e} (retried on the next apply)")
