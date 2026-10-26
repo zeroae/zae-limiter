@@ -175,6 +175,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "unchanged": unchanged,
         "full": full,
         "resumed": resumed,
+        "pending": result.pending,
         "errors": result.errors,
     }
 
@@ -248,6 +249,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "unchanged": unchanged,
         "full": full,
         "resumed": resumed,
+        "pending": result.pending,
         "errors": result.errors,
     }
 
@@ -488,6 +490,11 @@ def _apply_and_record(
     new_state["applied_hash"] = f"sha256:{manifest_hash}"
     _write_provisioner_state(table_name, namespace_id, new_state)
 
+    # What is still owed after this apply: its own failures, and work another
+    # apply still holds (a run that timed out keeps its lease for a while).
+    # Without it, an apply right after a timeout reported "up-to-date" with
+    # fan-outs still owed (#739 re-review 2 #4). One consistent Query.
+    result.pending = len(read_pending(client, table_name, namespace_id))
     return result
 
 

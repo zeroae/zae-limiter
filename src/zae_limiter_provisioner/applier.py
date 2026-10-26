@@ -86,6 +86,10 @@ class ApplyResult:
     # limits' soft-ness it changed (#467). Those levels reach buckets only at
     # TTL otherwise, so these are restamped by a change-only fan-out.
     soft_changed: list[tuple[str, str | None, list[str]]] = field(default_factory=list)
+    # Pending fan-out items left after the apply, its own failures and those
+    # still leased to another (possibly dead) apply included (#739 re-review 2
+    # #4). Set by the handler once the apply has finished.
+    pending: int = 0
 
 
 def _build_limit_item(

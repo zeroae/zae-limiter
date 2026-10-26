@@ -339,7 +339,7 @@ class TestProvisionerHandler:
 
         # GSI2 query for the resource fan-out, plus a stamp UpdateItem call.
         mock_client.query.assert_called()
-        query_kwargs = mock_client.query.call_args.kwargs
+        query_kwargs = _bucket_queries(mock_client)[-1].kwargs
         assert query_kwargs["IndexName"] == "GSI2"
         assert query_kwargs["ExpressionAttributeValues"][":pk"] == {"S": "ns123/RESOURCE#gpt-4"}
         (stamp,) = _bucket_updates(mock_client)
@@ -639,7 +639,7 @@ class TestProvisionerHandler:
         # Two passes over the discovery query (Finding 2); the single discovered
         # PK is stamped once thanks to cross-pass de-duplication.
         assert len(_bucket_queries(mock_client)) == 2
-        query_kwargs = mock_client.query.call_args.kwargs
+        query_kwargs = _bucket_queries(mock_client)[-1].kwargs
         assert query_kwargs["IndexName"] == "GSI2"
         assert query_kwargs["ExpressionAttributeValues"][":pk"] == {"S": "ns123/RESOURCE#gpt-4"}
         (stamp,) = _bucket_updates(mock_client)
@@ -2098,6 +2098,7 @@ class TestCascadeFanoutChanges:
         assert errors == ["cascade fan-out resource llm: boom (retried on the next apply)"]
         assert failed == [("resource", "llm")]
 
+    @patch("zae_limiter_provisioner.handler.read_pending", return_value=[])
     @patch("zae_limiter_provisioner.handler._fanout_soft_changes", return_value=[])
     @patch("zae_limiter_provisioner.handler.write_ahead", return_value=set())
     @patch("zae_limiter_provisioner.handler.claim", return_value=[])
@@ -2122,6 +2123,7 @@ class TestCascadeFanoutChanges:
         _claim,
         mock_ahead,
         _soft,
+        _read_pending,
     ):
         from zae_limiter_provisioner.applier import ApplyResult
         from zae_limiter_provisioner.handler import _apply_and_record
@@ -2426,8 +2428,8 @@ class TestApplyCostsWhatChanged:
         # removed once the sync landed, then the empty item deleted.
         assert counting.calls.get("update_item", 0) == 2
         assert counting.calls["delete_item"] == 1
-        # The pending-items query, then the new entity's bucket sync (two passes).
-        assert counting.calls.get("query", 0) == 3
+        # The pending-items query before and after, and the new entity's bucket sync (two passes).
+        assert counting.calls.get("query", 0) == 4
 
     def test_an_identical_reapply_writes_only_the_record(self, counting):
         self._apply(self._manifest(self.ENTITIES))
@@ -2438,8 +2440,8 @@ class TestApplyCostsWhatChanged:
         assert result["changes"] == []
         assert result["unchanged"] == self.ENTITIES + 1
         assert counting.calls["put_item"] == 1
-        # Only the pending-items query: no bucket is discovered.
-        assert counting.calls.get("query", 0) == 1
+        # Only the pending-items queries, before and after: no bucket is discovered.
+        assert counting.calls.get("query", 0) == 2
         assert counting.calls.get("delete_item", 0) == 0
 
     def test_plan_lists_only_what_would_change(self, counting):
@@ -3252,13 +3254,13 @@ class TestChangeOnlyApplyStaysSafe:
 
         assert counting.calls.get("update_item", 0) == 0
         # The pending-items query, then the GSI2 discovery (two passes).
-        assert counting.calls["query"] == 3
+        assert counting.calls["query"] == 4
 
     def test_an_undeclared_disabled_is_not_reasserted(self, counting):
         self._apply(self._manifest())
         counting.calls.clear()
         self._apply(self._manifest())
-        assert counting.calls.get("query", 0) == 1  # only the pending-items query
+        assert counting.calls.get("query", 0) == 2  # the pending-items queries, before and after
 
     def test_full_fans_out_every_declared_level(self, counting):
         manifest = self._manifest(entities=("user-0", "user-1", "user-2"))
@@ -3308,6 +3310,22 @@ class TestChangeOnlyApplyStaysSafe:
         assert result["changes"] == []  # change-only: no full re-apply
         assert sync.call_count == len(entities)
         assert self._pending(counting) == []
+
+    def test_an_apply_reports_what_is_still_pending_after_it(self, counting):
+        """Re-review 2 #4: right after a timeout, "up-to-date" while work was owed."""
+        self._apply(self._manifest(capacity=10))
+        with patch(
+            "zae_limiter_provisioner.handler._sync_bucket_param_changes", side_effect=_Killed()
+        ):
+            with pytest.raises(_Killed):
+                self._apply(self._manifest(capacity=20))
+
+        # Still leased to the dead run: this apply leaves it, and says so.
+        result = self._apply(self._manifest(capacity=20))
+        assert (result["changes"], result["pending"]) == ([], 1)
+
+        self._later()
+        assert self._apply(self._manifest(capacity=20))["pending"] == 0
 
     def test_a_plan_reports_the_fan_outs_an_interrupted_apply_left(self, counting):
         self._apply(self._manifest(capacity=10))
@@ -3770,7 +3788,7 @@ class TestChangeOnlyApplyStaysSafe:
         disabled.assert_not_called()
         cascade.assert_not_called()
         # The pending-items query, then the sync's bucket discovery (two passes).
-        assert counting.calls["query"] == 3
+        assert counting.calls["query"] == 4
         # Reconciled to the resource default.
         assert self._bucket(counting, "user-1")["b_rpm_cp"] == {"N": "1000000"}
         assert self._pending(counting) == []
@@ -4043,7 +4061,7 @@ class TestChangeOnlyApplyNonEnforcing:
 
         assert result["changes"] == []
         fanout.assert_not_called()
-        assert counting.calls.get("query", 0) == 1  # only the pending-items query
+        assert counting.calls.get("query", 0) == 2  # the pending-items queries, before and after
 
     def test_a_change_to_bypass_alone_restamps_the_buckets(self, counting):
         self._apply(self._manifest(resource_disabled=True))

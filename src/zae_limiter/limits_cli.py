@@ -86,10 +86,7 @@ def limits_plan(
         pending = result.get("pending") or 0
         if pending:
             # Not "up-to-date": the next apply still has bucket work to do.
-            click.echo(
-                f"No config changes; {pending} bucket fan-out(s) an earlier apply "
-                "did not finish will be retried by the next apply."
-            )
+            click.echo(_pending_line(pending))
         else:
             click.echo("No changes. Infrastructure is up-to-date.")
         return
@@ -150,6 +147,10 @@ def limits_apply(
     if not changes:
         if errors:
             click.echo("No config changes; retried fan-outs did not finish (see errors).")
+        elif result.get("pending"):
+            # Not "up-to-date": fan-outs are still owed, e.g. leased to a run
+            # that just timed out (#739 re-review 2 #4).
+            click.echo(_pending_line(result["pending"]))
         else:
             click.echo("No changes. Infrastructure is up-to-date.")
     else:
@@ -438,6 +439,14 @@ def _cascade_warnings(manifest_data: dict[str, Any]) -> list[str]:
         for name, resource in (manifest_data.get("resources") or {}).items()
         if (resource or {}).get("cascade") is True and name not in covered
     ]
+
+
+def _pending_line(pending: int) -> str:
+    """What `plan` and `apply` say when no config changed but fan-outs are owed."""
+    return (
+        f"No config changes; {pending} bucket fan-out(s) an earlier apply "
+        "did not finish will be retried by the next apply."
+    )
 
 
 def _echo_pending(result: dict[str, Any]) -> None:

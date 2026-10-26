@@ -1516,6 +1516,23 @@ class TestLimitsQuietAndUnchanged:
         assert "No config changes; retried fan-outs did not finish (see errors)." in result.output
         assert "bucket param sync: boom" in result.output
 
+    def test_apply_with_only_pending_fan_outs_is_not_up_to_date(self):
+        """Re-review 2 #4: fan-outs a dead run still owes are not "up-to-date"."""
+        response = {"status": "applied", "changes": [], "errors": [], "pending": 2}
+        result = self._run("apply", response)
+        assert result.exit_code == 0
+        assert "up-to-date" not in result.output
+        assert result.output == (
+            "No config changes; 2 bucket fan-out(s) an earlier apply did not finish "
+            "will be retried by the next apply.\n"
+        )
+
+    def test_apply_with_errors_and_pending_still_exits_1(self):
+        response = {"status": "applied", "changes": [], "errors": ["boom"], "pending": 1}
+        result = self._run("apply", response)
+        assert result.exit_code == 1
+        assert "No config changes; retried fan-outs did not finish (see errors)." in result.output
+
     def test_apply_with_no_changes_and_no_errors_is_up_to_date(self):
         response = {"status": "applied", "changes": [], "errors": []}
         result = self._run("apply", response)
