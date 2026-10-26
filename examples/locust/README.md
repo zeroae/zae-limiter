@@ -43,9 +43,18 @@ specific classes (default: all classes in the file).
 | `max_rps.py` | `MaxRpsUser` | No | Zero-wait standalone, max throughput |
 | `max_rps.py` | `MaxRpsCascadeUser` | Yes | Zero-wait cascade, measures cascade overhead |
 
-Cascade classes create child entities with `cascade=True` under a shared parent
-created in `on_test_start`. Every `acquire()` writes to both child and parent
-buckets, enabling direct comparison of cascade overhead vs standalone operation.
+Cascade classes create child entities with `cascade=True` under a shared parent.
+Every `acquire()` writes to both child and parent buckets, enabling direct
+comparison of cascade overhead vs standalone operation.
+
+The parent is **one entity for the whole run**, with a fixed id per locustfile
+(`loadtest-cascade-parent-simple`, `loadtest-cascade-parent-max-rps`), so the
+master, every worker and a headless run all debit the same one, as in
+production, where a parent's bucket is the hot partition. Each process creates
+it on its first cascade user's `on_start` and treats "already exists" as
+success. Only the master (or a headless runner) deletes it in `on_test_stop`,
+after its workers have stopped; a worker never does. A run killed before
+`on_test_stop` leaves the parent behind, and the next run reuses it.
 
 ## Running Locally
 
