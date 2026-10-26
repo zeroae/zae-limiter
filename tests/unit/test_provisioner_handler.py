@@ -2563,10 +2563,12 @@ class TestPendingItems:
         )
 
         assert written == {("disabled", "resource", "gpt-4"), ("sync", "entity", "u1/_default_")}
-        assert sorted(read_pending(client, self.TABLE, "ns"), key=lambda p: p.key) == [
-            Pending("disabled", "resource", "gpt-4", "tok-a"),
-            Pending("sync", "entity", "u1/_default_", "tok-a"),
+        items = sorted(read_pending(client, self.TABLE, "ns"), key=lambda p: p.key)
+        assert [(p.key, p.token) for p in items] == [
+            (("disabled", "resource", "gpt-4"), "tok-a"),
+            (("sync", "entity", "u1/_default_"), "tok-a"),
         ]
+        assert all(isinstance(p, Pending) and p.lease_until_ms for p in items)
         assert read_pending(client, self.TABLE, "other") == []
 
     def test_each_item_is_found_by_purge_namespace(self, client):
@@ -2603,14 +2605,78 @@ class TestPendingItems:
         from zae_limiter_provisioner.pending import read_pending, release, write_ahead
 
         key = ("sync", "entity", "u1/gpt-4")
-        write_ahead(client, self.TABLE, "ns", "tok-a", [key])
-        write_ahead(client, self.TABLE, "ns", "tok-b", [key])  # a later apply took it on
+        write_ahead(client, self.TABLE, "ns", "tok-a", [key], lease_until_ms=0)
+        # A later apply takes it on once the first one's lease has run out.
+        assert write_ahead(client, self.TABLE, "ns", "tok-b", [key]) == {key}
 
         release(client, self.TABLE, "ns", "tok-a", key)
         assert [p.token for p in read_pending(client, self.TABLE, "ns")] == ["tok-b"]
 
         release(client, self.TABLE, "ns", "tok-b", key)
         assert read_pending(client, self.TABLE, "ns") == []
+
+    def test_a_live_lease_is_not_taken_over(self, client):
+        """Re-review #2: an item leased to a live apply stays that apply's."""
+        from zae_limiter_provisioner.pending import claim, read_pending, write_ahead
+
+        key = ("sync", "entity", "u1/gpt-4")
+        write_ahead(client, self.TABLE, "ns", "tok-a", [key])
+
+        assert write_ahead(client, self.TABLE, "ns", "tok-b", [key]) == set()
+        assert (
+            claim(client, self.TABLE, "ns", "tok-b", read_pending(client, self.TABLE, "ns")) == []
+        )
+        assert [p.token for p in read_pending(client, self.TABLE, "ns")] == ["tok-a"]
+
+    def test_an_expired_lease_is_claimed_and_renewed(self, client):
+        from zae_limiter_provisioner.pending import claim, now_ms, read_pending, write_ahead
+
+        key = ("sync", "entity", "u1/gpt-4")
+        write_ahead(client, self.TABLE, "ns", "tok-a", [key], lease_until_ms=now_ms() - 1)
+        lease = now_ms() + 60_000
+
+        (claimed,) = claim(
+            client, self.TABLE, "ns", "tok-b", read_pending(client, self.TABLE, "ns"), lease
+        )
+
+        assert claimed.key == key
+        (item,) = read_pending(client, self.TABLE, "ns")
+        assert (item.token, item.lease_until_ms) == ("tok-b", lease)
+
+    def test_a_finished_apply_ends_its_lease_on_what_it_still_holds(self, client):
+        from zae_limiter_provisioner.pending import expire, now_ms, read_pending, write_ahead
+
+        key = ("sync", "entity", "u1/gpt-4")
+        write_ahead(client, self.TABLE, "ns", "tok-a", [key])
+
+        expire(client, self.TABLE, "ns", "tok-b", [key])  # not its item
+        (item,) = read_pending(client, self.TABLE, "ns")
+        assert not item.claimable(now_ms())
+
+        expire(client, self.TABLE, "ns", "tok-a", [key])
+        (item,) = read_pending(client, self.TABLE, "ns")
+        assert item.claimable(now_ms())
+
+    def test_a_failed_expire_is_logged_not_raised(self, client):
+        from zae_limiter_provisioner.pending import expire
+
+        failing = MagicMock()
+        failing.exceptions = client.exceptions
+        failing.update_item.side_effect = RuntimeError("throttled")
+
+        expire(failing, self.TABLE, "ns", "tok", [("sync", "entity", "u1/gpt-4")])
+
+    def test_the_lease_follows_the_invocations_own_timeout(self):
+        from zae_limiter_provisioner.pending import (
+            LEASE_MARGIN_MS,
+            MAX_RUN_MS,
+            deadline_for,
+            now_ms,
+        )
+
+        before = now_ms()
+        assert deadline_for(300_000) - before - LEASE_MARGIN_MS in range(300_000, 301_000)
+        assert deadline_for(None) - before - LEASE_MARGIN_MS in range(MAX_RUN_MS, MAX_RUN_MS + 1000)
 
     def test_the_read_follows_every_page(self):
         from zae_limiter_provisioner.pending import Pending, read_pending
@@ -2648,8 +2714,10 @@ class TestPendingItems:
     def test_a_claim_takes_only_what_it_read(self, client):
         from zae_limiter_provisioner.pending import Pending, claim, read_pending, write_ahead
 
-        write_ahead(client, self.TABLE, "ns", "tok-a", [("sync", "entity", "u1/gpt-4")])
-        write_ahead(client, self.TABLE, "ns", "tok-a", [("sync", "entity", "u2/gpt-4")])
+        for target in ("u1/gpt-4", "u2/gpt-4"):
+            write_ahead(
+                client, self.TABLE, "ns", "tok-a", [("sync", "entity", target)], lease_until_ms=0
+            )
         seen = read_pending(client, self.TABLE, "ns")
         # Another apply claims u2's item after we read it.
         claim(client, self.TABLE, "ns", "tok-c", [p for p in seen if p.target == "u2/gpt-4"])
@@ -2840,8 +2908,21 @@ class TestChangeOnlyApplyStaysSafe:
         setup.create_table()
         setup.close()
         client = _CountingClient(boto3.client("dynamodb", region_name="us-east-1"))
-        with patch("boto3.client", return_value=client):
+        from zae_limiter_provisioner import pending
+
+        real_now = pending.now_ms
+        self._offset_ms = 0
+        with (
+            patch("boto3.client", return_value=client),
+            patch.object(pending, "now_ms", side_effect=lambda: real_now() + self._offset_ms),
+        ):
             yield client
+
+    def _later(self):
+        """Move the lease clock past every lease: an interrupted apply is gone."""
+        from zae_limiter_provisioner.pending import LEASE_MARGIN_MS, MAX_RUN_MS
+
+        self._offset_ms += MAX_RUN_MS + 2 * LEASE_MARGIN_MS
 
     def _apply(self, manifest, action="apply", **extra):
         return on_event(
@@ -2913,6 +2994,7 @@ class TestChangeOnlyApplyStaysSafe:
                 self._apply(self._manifest(disabled=True))
         assert "disabled" not in self._bucket(counting, "user-0")
         assert ("disabled", "entity", "user-0/gpt-4") in self._owed(counting)
+        self._later()
 
         result = self._apply(self._manifest(disabled=True))
 
@@ -2932,6 +3014,7 @@ class TestChangeOnlyApplyStaysSafe:
             with pytest.raises(_Killed):
                 self._apply(self._manifest(capacity=20))
         assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "10000"}
+        self._later()
 
         self._apply(self._manifest(capacity=20))
 
@@ -2953,6 +3036,7 @@ class TestChangeOnlyApplyStaysSafe:
             with pytest.raises(_Killed):
                 self._apply(manifest)
         assert ("cascade", "entity", "user-0/gpt-4") in self._owed(counting)
+        self._later()
 
         with (
             patch("zae_limiter_provisioner.handler.require_cascade_policy_readers"),
@@ -3032,6 +3116,7 @@ class TestChangeOnlyApplyStaysSafe:
             with pytest.raises(_Killed):
                 self._apply(self._manifest(entities=entities))
         assert len(self._owed(counting)) == len(entities)
+        self._later()
 
         with patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync:
             result = self._apply(self._manifest(entities=entities))
@@ -3103,6 +3188,7 @@ class TestChangeOnlyApplyStaysSafe:
             self._apply(self._manifest(capacity=10, entities=("user-0", "user-1")))
 
         # The next apply of A's manifest finds its config already in place.
+        self._later()
         result = self._apply(self._manifest(capacity=20, entities=("user-0", "user-1")))
 
         assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
@@ -3127,6 +3213,7 @@ class TestChangeOnlyApplyStaysSafe:
         with patch.object(handler, "sync_bucket_params", side_effect=sync_until_killed):
             for _attempt in range(3):
                 budget["left"] = 50
+                self._later()
                 try:
                     self._apply(self._manifest(entities=entities))
                 except _Killed:
@@ -3156,6 +3243,7 @@ class TestChangeOnlyApplyStaysSafe:
             with pytest.raises(_Killed):
                 self._apply(manifest, full=True)
         assert len([i for i in self._pending(counting) if i["kind"]["S"] == "sync"]) == 10
+        self._later()
 
         with (
             patch.object(handler, "sync_bucket_params", wraps=real_sync) as sync,
@@ -3253,14 +3341,56 @@ class TestChangeOnlyApplyStaysSafe:
         assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
         assert self._pending(counting) == []
 
-    def test_a_retry_syncs_what_the_table_holds_not_the_stale_manifest(self, counting):
-        """Review finding 1: a stale no-op re-apply claims another apply's sync.
+    def test_a_concurrent_apply_cannot_release_work_before_its_config_lands(self, counting):
+        """Re-review #2: B claims and releases A's item before A's config write.
 
-        Apply A is moving user-0 from 10 to 20: it has written its sync ahead
-        (token B) and, while the stale apply runs, writes its config and syncs
-        the bucket to 20 — but its release fails, the stale apply having
-        claimed the item. The stale apply's retry must not sync the bucket
-        back to its own manifest's 10.
+        B's retry read the old config twice, the reads agreed, and B released
+        the item; A then wrote its config and died. The fan-out was lost and
+        the bucket stayed at 5 forever.
+        """
+        from zae_limiter_provisioner import handler
+
+        self._apply(self._manifest(capacity=5))
+        self._put_bucket(counting, "user-0", capacity=5)
+        real_apply = handler.apply_changes
+        real_sync = handler._sync_bucket_param_changes
+        state = {"b_ran": False, "in_b": False}
+
+        def a_writes(*args, **kwargs):
+            if not state["b_ran"]:
+                state["b_ran"] = state["in_b"] = True
+                try:
+                    self._apply(self._manifest(capacity=5))  # B, while A is between steps
+                finally:
+                    state["in_b"] = False
+            return real_apply(*args, **kwargs)
+
+        def a_dies(*args, **kwargs):
+            if state["in_b"]:
+                return real_sync(*args, **kwargs)
+            raise _Killed()
+
+        with (
+            patch.object(handler, "apply_changes", side_effect=a_writes),
+            patch.object(handler, "_sync_bucket_param_changes", side_effect=a_dies),
+        ):
+            with pytest.raises(_Killed):
+                self._apply(self._manifest(capacity=10))  # A, killed after its write
+
+        assert ("sync", "entity", "user-0/gpt-4") in self._owed(counting)
+        self._later()
+        self._apply(self._manifest(capacity=10))
+
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "10000"}
+        assert self._pending(counting) == []
+
+    def test_a_stale_reapply_leaves_a_live_applys_sync_to_it(self, counting):
+        """Review finding 1, then re-review #2: a stale no-op re-apply and B's sync.
+
+        Apply B is moving user-0 from 10 to 20 and has written its sync ahead.
+        The stale apply, running meanwhile, must not take B's item while B's
+        lease runs, so it can neither sync the bucket back to 10 nor release
+        what B still owes. B then finishes and removes its own item.
         """
         from zae_limiter_provisioner import handler
         from zae_limiter_provisioner.applier import apply_changes
@@ -3273,23 +3403,20 @@ class TestChangeOnlyApplyStaysSafe:
         key = ("sync", "entity", "user-0/gpt-4")
         tok_b = new_token()
         write_ahead(counting, table, "ns123", tok_b, [key])
-        real = handler._sync_bucket_param_changes
 
-        def a_sync(*args, **kwargs):
-            manifest = LimitsManifest.from_dict(self._manifest(capacity=20))
-            new = manifest.entities["user-0"].resources["gpt-4"].to_dict()
-            res = apply_changes([Change("update", "entity", "user-0/gpt-4", new)], table, "ns123")
-            real(
-                table,
-                "ns123",
-                res.limits_changed,
-                on_done=lambda *k: release(counting, table, "ns123", tok_b, k),
-            )
-            return real(*args, **kwargs)
+        self._apply(self._manifest(capacity=10))  # the stale apply
+        assert [i["token"]["S"] for i in self._pending(counting)] == [tok_b]
 
-        with patch.object(handler, "_sync_bucket_param_changes", side_effect=a_sync):
-            self._apply(self._manifest(capacity=10))
-        self._apply(self._manifest(capacity=20))
+        # B writes its config and syncs, then removes its own item.
+        manifest = LimitsManifest.from_dict(self._manifest(capacity=20))
+        new = manifest.entities["user-0"].resources["gpt-4"].to_dict()
+        res = apply_changes([Change("update", "entity", "user-0/gpt-4", new)], table, "ns123")
+        handler._sync_bucket_param_changes(
+            table,
+            "ns123",
+            res.limits_changed,
+            on_done=lambda *k: release(counting, table, "ns123", tok_b, k),
+        )
 
         assert self._pending(counting) == []
         assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
@@ -3389,6 +3516,7 @@ class TestChangeOnlyApplyStaysSafe:
             with pytest.raises(_Killed):
                 self._apply(disabled)
         assert ("disabled", "resource", "gpt-4") in self._owed(counting)
+        self._later()
 
         self._apply(
             {

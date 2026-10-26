@@ -52,7 +52,17 @@ from .fanout import (
     resolve_disabled,
 )
 from .manifest import LimitsManifest
-from .pending import KINDS, Pending, claim, new_token, read_pending, release, write_ahead
+from .pending import (
+    KINDS,
+    Pending,
+    claim,
+    deadline_for,
+    expire,
+    new_token,
+    read_pending,
+    release,
+    write_ahead,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +161,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
         declared=declared,
         full=full and not resumed,
         stored=stored,
+        deadline_ms=deadline_for(_remaining_ms(context)),
     )
 
     return {
@@ -221,6 +232,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         declared=declared,
         full=full and not resumed,
         stored=stored,
+        deadline_ms=deadline_for(_remaining_ms(context)),
     )
 
     return {
@@ -235,6 +247,22 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "resumed": resumed,
         "errors": result.errors,
     }
+
+
+def _remaining_ms(context: Any) -> int | None:
+    """The invocation's remaining time, which at its start is the function's timeout.
+
+    None outside a Lambda (or for a context that cannot say), and the lease
+    then falls back to the longest any Lambda can run (`pending.deadline_for`).
+    """
+    remaining = getattr(context, "get_remaining_time_in_millis", None)
+    if not callable(remaining):
+        return None
+    try:
+        value = remaining()
+    except Exception:
+        return None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _resumes(full: bool, pending: int) -> bool:
@@ -288,6 +316,7 @@ def _apply_and_record(
     declared: list[Change] | None = None,
     full: bool = False,
     stored: dict[int, dict[str, Any]] | None = None,
+    deadline_ms: int | None = None,
 ) -> ApplyResult:
     """Commit the config writes, fan out, then record the managed state (#563).
 
@@ -367,7 +396,10 @@ def _apply_and_record(
 
     client = boto3.client("dynamodb")
     token = new_token()
-    claimed = claim(client, table_name, namespace_id, token, pending or [])
+    # Until `deadline_ms` this invocation may still be running, so no other
+    # apply may take its pending items (#739 re-review #2).
+    lease = deadline_for(None) if deadline_ms is None else deadline_ms
+    claimed = claim(client, table_name, namespace_id, token, pending or [], lease)
     legacy = [("cascade", level, target) for level, target in cascade_pending or []]
     retried = [*(p.key for p in claimed), *legacy]
     held: set[tuple[str, str, str]] = {p.key for p in claimed}
@@ -381,7 +413,7 @@ def _apply_and_record(
         for kind in sorted(fanouts_needed(namespace_id, change, live)):
             owed.append((kind, change.level, change.target))
             predicted.append((kind, change))
-    held |= write_ahead(client, table_name, namespace_id, token, owed)
+    held |= write_ahead(client, table_name, namespace_id, token, owed, lease)
 
     def _done(kind: str, level: str, target: str) -> None:
         key = (kind, level, target)
@@ -418,6 +450,10 @@ def _apply_and_record(
     # stamping 10 under a config of 20, and nothing left pending to fix it.
     for key in sorted(owed_keys, key=lambda k: (KINDS.index(k[0]), k[1] != "resource")):
         result.errors.extend(_retry_from_table(client, table_name, namespace_id, key, _done))
+
+    # What this apply still holds failed; it is done with it, so the next
+    # apply need not wait out the lease to retry it.
+    expire(client, table_name, namespace_id, token, sorted(held))
 
     manifest_hash = hashlib.sha256(
         json.dumps(manifest.to_dict(), sort_keys=True).encode()
