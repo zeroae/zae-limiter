@@ -89,7 +89,10 @@ def _build_limit_item(
     item: dict[str, Any] = {
         "PK": {"S": pk},
         "SK": {"S": sk},
+        # Both GSI4 keys, or the item is left out of the index and
+        # `purge_namespace` never finds it. GSI4SK = PK, as the client writes.
         "GSI4PK": {"S": namespace_id},
+        "GSI4SK": {"S": pk},
     }
     if extra:
         for k, v in extra.items():
