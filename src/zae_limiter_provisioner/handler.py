@@ -37,6 +37,7 @@ from .applier import (
     config_key,
     drop_unchanged,
     fanouts_needed,
+    full_system_fanouts,
     require_cascade_policy_readers,
     require_non_enforcing_readers,
     require_reset_after_readers,
@@ -309,6 +310,11 @@ def _plan_changes(
     """
     declared = compute_diff(manifest, previous)
     if full:
+        # Only the system level is read: whether its soft restamp is owed
+        # depends on what it holds (``applier.full_system_fanouts``).
+        systems = [c for c in declared if c.level == "system" and c.action != "delete"]
+        if systems and stored_out is not None:
+            drop_unchanged(systems, table_name, namespace_id, stored_out=stored_out)
         return declared, declared
     return declared, drop_unchanged(declared, table_name, namespace_id, stored_out=stored_out)
 
@@ -422,8 +428,12 @@ def _apply_and_record(
     predicted: list[tuple[str, Change]] = []
     # System levels too: a soft change there fans out (#739 re-review #5).
     for change in [*(c for c in changes if c.level == "system"), *fanned]:
-        live = None if full or stored is None else stored.get(id(change))
-        for kind in sorted(fanouts_needed(namespace_id, change, live)):
+        live = None if stored is None else stored.get(id(change))
+        if full and change.level == "system":
+            kinds = full_system_fanouts(namespace_id, change, live)
+        else:
+            kinds = fanouts_needed(namespace_id, change, None if full else live)
+        for kind in sorted(kinds):
             owed.append((kind, change.level, change.target or ""))
             predicted.append((kind, change))
     # A full apply's items, a resumed one's included, are marked so only an

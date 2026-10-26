@@ -3974,13 +3974,14 @@ class TestChangeOnlyApplyNonEnforcing:
         ):
             yield client
 
-    def _apply(self, manifest, action="apply"):
+    def _apply(self, manifest, action="apply", **extra):
         return on_event(
             {
                 "action": action,
                 "table_name": self.TABLE,
                 "namespace_id": "ns123",
                 "manifest": manifest,
+                **extra,
             },
             MagicMock(),
         )
@@ -4134,6 +4135,29 @@ class TestChangeOnlyApplyNonEnforcing:
                 ":sk": {"S": "#PROVISIONER#PENDING#"},
             },
         )["Items"]
+
+    @pytest.mark.parametrize("soft", [False, True])
+    def test_a_full_apply_owes_the_system_soft_restamp_only_when_soft_is_in_play(
+        self, counting, soft
+    ):
+        """Re-review 2 #5: every full apply scanned the namespace for a system soft restamp.
+
+        Owed only when the system level has a soft limit (or this apply
+        changes its soft-ness): a stamp a removed soft limit left was the
+        removal's own fan-out, a change.
+        """
+        from zae_limiter_provisioner import handler
+        from zae_limiter_provisioner.fanout import fanout_soft
+
+        manifest = self._manifest()
+        manifest["system"] = {"limits": {"rpm": {"capacity": 1000, "soft": soft}}}
+        self._apply(manifest)
+
+        with patch.object(handler, "fanout_soft", wraps=fanout_soft) as restamp:
+            self._apply(manifest, full=True)
+
+        system_calls = [c for c in restamp.call_args_list if c.args[3] is None]
+        assert len(system_calls) == (1 if soft else 0)
 
     def test_the_non_enforcing_gate_sees_unchanged_entries(self, counting):
         manifest = self._manifest(resource_soft=True)

@@ -635,6 +635,28 @@ def fanouts_needed(namespace_id: str, change: Change, stored: dict[str, Any] | N
     return fanouts_for(change, stored, new)
 
 
+def full_system_fanouts(
+    namespace_id: str, change: Change, stored: dict[str, Any] | None
+) -> set[str]:
+    """The fan-outs a **full** apply owes the system level.
+
+    Only the soft restamp, and only when soft-ness is in play (#739 re-review 2
+    #5): the level holds a soft limit, or this apply gives it one. Owed on
+    every full apply, it paged the namespace's whole GSI4 partition and wrote
+    a stamp per bucket even with nothing soft anywhere. A stamp that a soft
+    limit removed earlier left behind was that removal's own fan-out, owed as a
+    change when it happened, and expires on its own within the stamp TTL.
+    With the level unread, it is owed, as every fan-out is.
+    """
+    if stored is None:
+        return {"soft"}
+    try:
+        _pk, _sk, new = _build_change_item(namespace_id, change)
+    except Exception:
+        return {"soft"}
+    return {"soft"} if _soft_names(stored) or _soft_names(new) else set()
+
+
 def _limit_attrs(item: dict[str, Any]) -> dict[str, Any]:
     """The attributes of a config item that say what its limits are."""
     return {

@@ -980,6 +980,38 @@ class TestChangedFanouts:
         # Known old side: only what differs.
         assert fanouts_needed("ns", entity, {}) == {"sync"}
 
+    def test_a_full_apply_owes_the_system_soft_restamp_only_with_soft_in_play(self):
+        """Re-review 2 #5."""
+        from zae_limiter_provisioner.applier import full_system_fanouts
+
+        hard = Change("update", "system", None, _rpm(10))
+        soft_limits = {"rpm": {**_rpm(10)["limits"]["rpm"], "soft": True}}
+        soft = Change("update", "system", None, {"limits": soft_limits})
+        stored_soft = {"l_rpm_cp": {"N": "10"}, "l_rpm_soft": {"BOOL": True}}
+
+        assert full_system_fanouts("ns", hard, {}) == set()
+        assert full_system_fanouts("ns", hard, stored_soft) == {"soft"}  # soft removed
+        assert full_system_fanouts("ns", soft, {}) == {"soft"}
+        assert full_system_fanouts("ns", hard, None) == {"soft"}  # unread
+        two_zones = Change(
+            "update",
+            "system",
+            None,
+            {
+                "limits": {
+                    "a": {
+                        **_rpm(1)["limits"]["rpm"],
+                        "schedule": [{"cron": "0 9 * * *", "tz": "UTC", "scale": 0.5}],
+                    },
+                    "b": {
+                        **_rpm(1)["limits"]["rpm"],
+                        "schedule": [{"cron": "0 9 * * *", "tz": "America/New_York", "scale": 0.5}],
+                    },
+                }
+            },
+        )
+        assert full_system_fanouts("ns", two_zones, {}) == {"soft"}
+
     def test_a_new_entity_with_limits_needs_a_sync_only(self):
         change = Change("create", "entity", "u1/gpt-4", _rpm(10))
         result = apply_changes([change], "t", "ns", client=self._client({}))
