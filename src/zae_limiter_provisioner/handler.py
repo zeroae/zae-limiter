@@ -892,7 +892,9 @@ def _write_provisioner_state(
     item: dict[str, Any] = {
         "PK": {"S": pk_system(namespace_id)},
         "SK": {"S": sk_provisioner()},
+        # Both GSI4 keys, or `purge_namespace` never finds the record.
         "GSI4PK": {"S": namespace_id},
+        "GSI4SK": {"S": pk_system(namespace_id)},
         "managed_system": {"BOOL": state.get("managed_system", False)},
         "managed_resources": {"L": [{"S": r} for r in state.get("managed_resources", [])]},
         "managed_entities": {
