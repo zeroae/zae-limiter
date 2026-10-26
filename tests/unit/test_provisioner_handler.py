@@ -3619,6 +3619,36 @@ class TestChangeOnlyApplyStaysSafe:
         assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "30000"}
         assert self._pending(counting) == []
 
+    def test_a_resent_claim_whose_first_send_landed_is_still_claimed(self, counting):
+        """Re-review 2 #3: the re-send failed on the token it had just replaced.
+
+        The share was then held in DynamoDB but not in memory: not retried,
+        and left to wait out this apply's own lease.
+        """
+        from zae_limiter_provisioner import handler
+
+        self._apply(self._manifest(capacity=10))
+        self._put_bucket(counting, "user-0", capacity=10)
+        with patch.object(handler, "_sync_bucket_param_changes", side_effect=_Killed()):
+            with pytest.raises(_Killed):
+                self._apply(self._manifest(capacity=20))
+        self._later()
+        real_update = counting._client.update_item
+
+        def resend_claims(**kwargs):
+            if kwargs.get("ConditionExpression", "").startswith("attribute_exists(PK) AND"):
+                real_update(**kwargs)  # landed; its response was lost
+            return real_update(**kwargs)
+
+        counting.update_item = resend_claims
+        try:
+            self._apply(self._manifest(capacity=20))
+        finally:
+            del counting.update_item
+
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
+        assert self._pending(counting) == []
+
     def test_a_failed_fan_out_keeps_this_applys_share_of_a_shared_item(self, counting):
         """Re-review 2 #1: B's sync errors while A holds the same item."""
         from zae_limiter_provisioner import handler

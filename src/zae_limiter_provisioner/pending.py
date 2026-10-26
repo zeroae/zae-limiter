@@ -371,10 +371,16 @@ def claim(
                 ConditionExpression=" AND ".join(conditions),
                 ExpressionAttributeNames=names,
                 ExpressionAttributeValues=values,
+                ReturnValuesOnConditionCheckFailure="ALL_OLD",
             )
             return True
-        except client.exceptions.ConditionalCheckFailedException:
-            return False
+        except client.exceptions.ConditionalCheckFailedException as e:
+            # A re-send of a claim whose first send landed fails on the token
+            # it has just replaced (#739 re-review 2 #3): the item already
+            # names this apply, so it is claimed. Otherwise it was taken or
+            # removed since it was read, and is left alone.
+            current = e.response.get("Item") if isinstance(e.response, dict) else None
+            return token in _owners_of(current or {})
 
     claimed = _parallel(_claim, candidates)
     return [item for item, ok in zip(candidates, claimed, strict=True) if ok]
