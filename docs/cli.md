@@ -419,7 +419,7 @@ fan-out an apply owes is recorded as its own pending item **before** the config 
 removed only once it lands, so one that failed is retried by the next apply, and one cut short by
 a Lambda timeout by the first apply after that Lambda's timeout plus a minute, even when the
 manifest has not changed (unchanged entries are otherwise skipped). Two applies running at once
-cannot erase or take over each other's pending work. The `#PROVISIONER` record is
+cannot erase or take over each other's pending work: when both owe the same fan-out, it stays pending until each has finished its own. Right after a timeout, `limits apply` reports the fan-outs the timed-out run still holds with the same "No config changes; N bucket fan-out(s) …" line, not "up-to-date". The `#PROVISIONER` record is
 written either way, so it always describes the config that is actually in the table.
 
 !!! note "Provisioner Lambda"
