@@ -49,7 +49,7 @@ _cascade_parent: dict[str, str] = {}
 _parent_lock = threading.Lock()
 
 _SEARCH_CONSUME = {"rpm": 1}
-_BUDGET_CONSUME = {"weekly": 1}
+_BUDGET_CONSUME = {"budget_rpm": 1}
 
 
 def _make_limiter(environment: object) -> SyncRateLimiter:
@@ -68,7 +68,9 @@ def on_test_start(environment: Environment, **kwargs: Any) -> None:
     repo.set_resource_defaults("search", [Limit.per_minute("rpm", 1_000_000_000)])
     # Children cascade on search only: budget is per user. One write, so a
     # concurrent process's full-replace defaults write cannot drop the policy.
-    repo.set_resource_defaults("budget", [Limit.per_minute("weekly", 1_000_000_000)], cascade=False)
+    repo.set_resource_defaults(
+        "budget", [Limit.per_minute("budget_rpm", 1_000_000_000)], cascade=False
+    )
 
 
 @events.test_stop.add_listener

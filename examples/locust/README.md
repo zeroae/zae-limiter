@@ -28,7 +28,7 @@ examples/locust/
 |----------|-----------|--------|----------|---------|
 | `simple` | 1 (`api`) | RPM | Many anonymous | `acquire` only |
 | `max_rps` | 1 (`api`) | RPM | Many anonymous | Zero-wait back-to-back `acquire` |
-| `multi_resource` | 2 (`search`, `budget`) | RPM + weekly | Children of a shared parent | Zero-wait `acquire(..., also=...)` vs two nested `acquire` |
+| `multi_resource` | 2 (`search`, `budget`) | `rpm` + `budget_rpm` (both per minute) | Children of a shared parent | Zero-wait `acquire(..., also=...)` vs two nested `acquire` |
 | `llm_gateway` | 8 LLM models | RPM + TPM | Many anonymous | `acquire` → `adjust` → `commit` |
 | `llm_production` | 8 LLM models | RPM + TPM | Many anonymous | Weighted tasks + custom load shapes |
 | `stress` | 8 APIs | RPM + TPM | 16K (whale/spike/powerlaw) | Hot partition + burst testing |

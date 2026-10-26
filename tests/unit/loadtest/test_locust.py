@@ -683,7 +683,7 @@ class TestAcquireAlso:
 
     def test_also_reaches_sync_limiter(self, session, mock_limiter, mock_event):
         self._yield_lease(mock_limiter)
-        also = {"budget": {"weekly": 1}}
+        also = {"budget": {"budget_rpm": 1}}
 
         with session.acquire("user-1", "search", {"rpm": 1}, also=also):
             pass
@@ -706,7 +706,7 @@ class TestAcquireAlso:
     def test_event_name_is_primary_resource(self, session, mock_limiter, mock_event):
         self._yield_lease(mock_limiter)
 
-        with session.acquire("user-1", "search", {"rpm": 1}, also={"budget": {"weekly": 1}}):
+        with session.acquire("user-1", "search", {"rpm": 1}, also={"budget": {"budget_rpm": 1}}):
             pass
 
         # One lease is one ACQUIRE event, named for the primary resource
@@ -722,7 +722,7 @@ class TestAcquireAlso:
             "user-1",
             "search",
             {"rpm": 1},
-            also={"budget": {"weekly": 1}},
+            also={"budget": {"budget_rpm": 1}},
             name="search+budget",
         ):
             pass

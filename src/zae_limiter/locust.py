@@ -139,7 +139,7 @@ class RateLimiterSession:
             consume: Dict of limit_name -> amount (e.g. {"rpm": 1, "tpm": 500}).
             also: Extra resources debited in the same acquire, as
                 resource -> {limit_name: amount}
-                (e.g. {"budget": {"weekly": 1}}). Passed to
+                (e.g. {"budget": {"budget_rpm": 1}}). Passed to
                 ``SyncRateLimiter.acquire(also=...)``.
             name: Locust stats name (defaults to the primary resource).
 
