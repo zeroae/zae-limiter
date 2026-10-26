@@ -3189,6 +3189,39 @@ class TestChangeOnlyApplyStaysSafe:
         assert (result["full"], result["resumed"], len(result["changes"])) == (True, False, 4)
         assert self._pending(counting) == []
 
+    def _throttle_config_puts(self, counting):
+        from botocore.exceptions import ClientError
+
+        real_put = counting._client.put_item
+
+        def throttled(**kwargs):
+            if kwargs["Item"]["SK"]["S"].startswith("#CONFIG"):
+                raise ClientError(
+                    {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "PutItem"
+                )
+            return real_put(**kwargs)
+
+        counting.put_item = throttled
+
+    def test_a_failed_config_write_fans_out_nothing_it_did_not_write(self, counting):
+        """Re-review #4: a predicted fan-out ran even when its config write failed.
+
+        Every owed fan-out reads the live config (re-review #1), so a write
+        that never landed leaves the buckets as the table says they should be.
+        """
+        self._apply(self._manifest(capacity=10))
+        self._put_bucket(counting, "user-0", capacity=10)
+        self._throttle_config_puts(counting)
+        try:
+            result = self._apply(self._manifest(capacity=20, resource_disabled=True))
+        finally:
+            del counting.put_item
+
+        assert any("ProvisionedThroughputExceeded" in e for e in result["errors"])
+        bucket = self._bucket(counting, "user-0")
+        assert "disabled" not in bucket
+        assert bucket["b_rpm_cp"] == {"N": "10000"}
+
     def test_an_applys_own_sync_fans_out_the_live_config(self, counting):
         """Re-review #1: A writes 10, B writes 20 and syncs, then A's late sync runs.
 
