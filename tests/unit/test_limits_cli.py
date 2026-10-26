@@ -1511,8 +1511,16 @@ class TestLimitsQuietAndUnchanged:
         response = {"status": "applied", "changes": [], "errors": ["bucket param sync: boom"]}
         result = self._run("apply", response)
         assert result.exit_code == 1
-        assert "up-to-date" in result.output
+        # Review finding 6: "up-to-date" beside an error and exit 1 contradicted itself.
+        assert "up-to-date" not in result.output
+        assert "No config changes; retried fan-outs did not finish (see errors)." in result.output
         assert "bucket param sync: boom" in result.output
+
+    def test_apply_with_no_changes_and_no_errors_is_up_to_date(self):
+        response = {"status": "applied", "changes": [], "errors": []}
+        result = self._run("apply", response)
+        assert result.exit_code == 0
+        assert "No changes. Infrastructure is up-to-date." in result.output
 
     def test_plan_quiet_prints_only_the_summary(self):
         response = {**self._APPLIED, "status": "planned"}

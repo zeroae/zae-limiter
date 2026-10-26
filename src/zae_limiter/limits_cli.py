@@ -141,7 +141,10 @@ def limits_apply(
     changes = result.get("changes", [])
     errors = result.get("errors", [])
     if not changes:
-        click.echo("No changes. Infrastructure is up-to-date.")
+        if errors:
+            click.echo("No config changes; retried fan-outs did not finish (see errors).")
+        else:
+            click.echo("No changes. Infrastructure is up-to-date.")
     else:
         if not quiet:
             for change in changes:
