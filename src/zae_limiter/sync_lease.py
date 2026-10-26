@@ -1360,6 +1360,8 @@ class SyncLease:
                                 _period_statuses(self.entries, now_ms, unapplied)
                             ) from retry_exc
                         statuses = _build_retry_failure_statuses(self.entries, now_ms, images)
+                        if not any(status.exceeded for status in statuses):
+                            raise _contention_rejection(self.entries, now_ms) from retry_exc
                         raise RateLimitExceeded(statuses) from retry_exc
                     retry_items = downgraded
                     retry_groups = downgraded_groups
@@ -2557,7 +2559,10 @@ def _retry_statuses(
     images: dict[tuple[str, str, int], dict[str, Any]] | None,
 ) -> list[LimitStatus]:
     """One status per declared entry: from its image where there is one, else
-    from the in-memory state (see :func:`_build_retry_failure_statuses`)."""
+    from the in-memory state (see :func:`_build_retry_failure_statuses`).
+
+    A limit an image exists for but does not carry is never exceeded (#775).
+    """
     statuses: list[LimitStatus] = []
     for entry in entries:
         if not entry._declared:
@@ -2573,7 +2578,11 @@ def _retry_statuses(
                 last_refill_ms=int(item.get(BUCKET_FIELD_RF, {}).get("N", now_ms)),
             )
             result = try_consume(real, entry.consumed, now_ms)
-            exceeded = entry.consumed > 0 and int(raw_tk) < entry.consumed * 1000
+            soft_until = decode_stamp(item.get(bucket_attr(entry.limit.name, BUCKET_FIELD_SOFT)))
+            waived = bool(_soft_trusted([entry])) or (
+                soft_until is not None and soft_until > now_ms
+            )
+            exceeded = not waived and entry.consumed > 0 and (int(raw_tk) < entry.consumed * 1000)
             statuses.append(
                 LimitStatus(
                     entity_id=entry.entity_id,
@@ -2592,9 +2601,29 @@ def _retry_statuses(
                 )
             )
             continue
+        if item is not None:
+            statuses.append(
+                LimitStatus(
+                    entity_id=entry.entity_id,
+                    resource=entry.resource,
+                    limit_name=entry.limit.name,
+                    limit=entry.limit.per_shard(
+                        entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
+                    ),
+                    available=(entry.state.tokens_milli + entry.consumed * 1000) // 1000,
+                    requested=entry.consumed,
+                    exceeded=False,
+                    retry_after_seconds=0.0,
+                    resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
+                )
+            )
+            continue
         deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
         retry_after = retry_after_for_deficit(entry.state, deficit_milli, now_ms)
-        if entry.consumed > 0:
+        soft_until = entry.state.soft_until_ms
+        waived = bool(_soft_trusted([entry])) or (soft_until is not None and soft_until > now_ms)
+        exceeded = not waived and entry.consumed > 0
+        if exceeded:
             retry_after = max(retry_after, _MIN_RETRY_AFTER_S)
         statuses.append(
             LimitStatus(
@@ -2606,7 +2635,7 @@ def _retry_statuses(
                 ),
                 available=entry.state.tokens_milli // 1000,
                 requested=entry.consumed,
-                exceeded=entry.consumed > 0,
+                exceeded=exceeded,
                 retry_after_seconds=retry_after,
                 resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
             )
