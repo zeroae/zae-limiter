@@ -3769,6 +3769,30 @@ class TestChangeOnlyApplyStaysSafe:
         assert self._pending(counting) == []
         assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
 
+    def test_deleting_an_entity_level_strips_limits_the_default_lacks(self, counting):
+        """Re-review 2 #6 (pre-existing on main): a delete carried no limit names.
+
+        The sync's stale set, `declared - effective`, was always empty, so a
+        limit only the deleted level declared stayed on the bucket.
+        """
+        manifest = self._manifest(entities=("user-0", "user-1"))
+        manifest["entities"]["user-1"]["resources"]["gpt-4"]["limits"]["tpm"] = {"capacity": 500}
+        self._apply(manifest)
+        self._put_bucket(counting, "user-1")
+        counting.update_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": "ns123/BUCKET#user-1#gpt-4#0"}, "SK": {"S": "#STATE"}},
+            UpdateExpression="SET b_tpm_cp = :v, b_tpm_ra = :v, b_tpm_rp = :p, b_tpm_tk = :v",
+            ExpressionAttributeValues={":v": {"N": "500000"}, ":p": {"N": "60"}},
+        )
+
+        self._apply(self._manifest(entities=("user-0",)))
+
+        bucket = self._bucket(counting, "user-1")
+        assert not [name for name in bucket if name.startswith("b_tpm_")]
+        assert bucket["b_rpm_cp"] == {"N": "1000000"}  # reconciled to the resource default
+        assert self._pending(counting) == []
+
     def test_a_delete_runs_only_the_fan_outs_its_level_needed(self, counting):
         """A deleted entity level that set no `disabled` or `cascade` needs only the sync."""
         self._apply(self._manifest(entities=("user-0", "user-1")))

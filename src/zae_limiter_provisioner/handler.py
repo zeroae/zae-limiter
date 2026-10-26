@@ -460,6 +460,14 @@ def _apply_and_record(
     # showed, and what earlier applies left.
     owed_keys = _owed_fanouts(result, predicted, retried)
     soft_changed = {(lv, t or ""): names for lv, t, names in result.soft_changed}
+    # The limits each deleted entity level held, from the pre-read: the sync of
+    # a delete strips from its buckets those the level it falls back to lacks
+    # (#739 re-review 2 #6). A delete carries no data, so that set was empty.
+    deleted_limits = {
+        (c.level, c.target or ""): decode_limits(stored[id(c)])
+        for c in changes
+        if c.action == "delete" and c.level == "entity" and stored and stored.get(id(c))
+    }
 
     # Re-asserted `disabled` levels (the ADR-125 missed-bucket repair) hold no
     # pending item; each stamp is filtered by its bucket's live resolution.
@@ -484,6 +492,7 @@ def _apply_and_record(
                 key,
                 _done,
                 soft_names=soft_changed.get((key[1], key[2])),
+                deleted_limits=deleted_limits.get((key[1], key[2])),
             )
         )
 
@@ -566,6 +575,7 @@ def _retry_from_table(
     key: tuple[str, str, str],
     done: Callable[[str, str, str], None],
     soft_names: list[str] | None = None,
+    deleted_limits: dict[str, Any] | None = None,
 ) -> list[str]:
     """Run one owed fan-out from the level's live config item.
 
@@ -604,6 +614,8 @@ def _retry_from_table(
         before = _read()
         for _round in range(_RETRY_ROUNDS):
             change = _change_from_item(level, target, before)
+            if change.action == "delete" and deleted_limits:
+                change = Change("delete", level, target, {"limits": deleted_limits})
             if kind == "disabled":
                 errors, _ = _fanout_disabled_changes(table_name, namespace_id, [change])
             elif kind == "cascade":
