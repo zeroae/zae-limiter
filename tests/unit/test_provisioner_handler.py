@@ -3609,6 +3609,49 @@ class TestChangeOnlyApplyStaysSafe:
         assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
         assert self._pending(counting) == []
 
+    def test_a_fan_out_only_the_write_image_shows_is_still_written_ahead(self, counting):
+        """Re-review 3 #1: an image-only fan-out ran with no pending share.
+
+        The manifest raises rpm 10 → 20 and says nothing of `disabled`. An
+        out-of-band disable lands after the pre-read, so only the write's
+        ALL_OLD shows `disabled` changing. That fan-out throttles: without a
+        share the bucket stayed disabled under an enabled config, and the
+        next apply saw nothing to do.
+        """
+        from zae_limiter_provisioner import handler
+
+        self._apply(self._manifest(capacity=10))
+        self._put_bucket(counting, "user-0", capacity=10)
+        real_apply = handler.apply_changes
+
+        def disabled_out_of_band(*args, **kwargs):
+            counting.update_item(
+                TableName=self.TABLE,
+                Key={"PK": {"S": pk_entity("ns123", "user-0")}, "SK": {"S": sk_config("gpt-4")}},
+                UpdateExpression="SET disabled = :t",
+                ExpressionAttributeValues={":t": {"BOOL": True}},
+            )
+            counting.update_item(
+                TableName=self.TABLE,
+                Key={"PK": {"S": "ns123/BUCKET#user-0#gpt-4#0"}, "SK": {"S": "#STATE"}},
+                UpdateExpression="SET disabled = :t",
+                ExpressionAttributeValues={":t": {"BOOL": True}},
+            )
+            return real_apply(*args, **kwargs)
+
+        with (
+            patch.object(handler, "apply_changes", side_effect=disabled_out_of_band),
+            patch.object(handler, "fanout_entity", side_effect=RuntimeError("throttled")),
+        ):
+            result = self._apply(self._manifest(capacity=20))
+        assert any("throttled" in e for e in result["errors"])
+        assert ("disabled", "entity", "user-0/gpt-4") in self._owed(counting)
+
+        self._apply(self._manifest(capacity=20))
+
+        assert "disabled" not in self._bucket(counting, "user-0")
+        assert self._pending(counting) == []
+
     def test_an_obligation_lives_until_every_apply_that_took_it_on_is_done(self, counting):
         """Re-review 2 #1: B, refused A's live item, fanned out holding nothing.
 

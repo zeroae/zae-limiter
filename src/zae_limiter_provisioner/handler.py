@@ -459,6 +459,15 @@ def _apply_and_record(
     # already shows the new state, #739 review finding 2), what the images
     # showed, and what earlier applies left.
     owed_keys = _owed_fanouts(result, predicted, retried)
+    # A fan-out only the write's image showed (a level changed out of band
+    # after the pre-read) was owed with no pending share: a failure or a crash
+    # lost it for good (#739 re-review 3 #1). Take those on too, before any
+    # fan-out runs.
+    image_only = [key for key in owed_keys if key not in held]
+    if image_only:
+        held |= write_ahead(
+            client, table_name, namespace_id, token, image_only, lease, full=full or mark_full
+        )
     soft_changed = {(lv, t or ""): names for lv, t, names in result.soft_changed}
     # The limits each deleted entity level held, from the pre-read: the sync of
     # a delete strips from its buckets those the level it falls back to lacks
