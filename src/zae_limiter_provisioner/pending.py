@@ -123,6 +123,15 @@ class Pending:
     level: str
     target: str
     owners: dict[str, Owner] = field(default_factory=dict)
+    #: Whether the item holds an ``owners`` map, empty or not. None: whether
+    #: any owner is stored in it.
+    has_map: bool | None = None
+
+    @property
+    def map_present(self) -> bool:
+        if self.has_map is not None:
+            return self.has_map
+        return any(not owner.legacy for owner in self.owners.values())
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -204,6 +213,7 @@ def read_pending(client: Any, table_name: str, namespace_id: str) -> list[Pendin
                         level=item["level"]["S"],
                         target=item["target"]["S"],
                         owners=_owners_of(item),
+                        has_map=_OWNERS in item,
                     )
                 )
             except KeyError:
@@ -330,7 +340,11 @@ def claim(
         values: dict[str, Any] = {":now": {"N": str(at)}}
         conditions = ["attribute_exists(PK)"]
         removes: list[str] = []
-        has_map = any(not owner.legacy for owner in item.owners.values())
+        # The map's presence, not its entries, decides how this apply's share
+        # is added: an expired single owner beside an empty map was claimed
+        # into a "create the map" update whose condition then failed (#739
+        # re-review 3 #3).
+        has_map = item.map_present
         for i, tok in enumerate(expired):
             owner = item.owners[tok]
             if owner.legacy:

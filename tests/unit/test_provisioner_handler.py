@@ -2732,6 +2732,32 @@ class TestPendingItems:
         (item,) = read_pending(client, self.TABLE, "ns")
         assert sorted(item.owners) == ["tok-c"] and not item.owners["tok-c"].legacy
 
+    def test_an_expired_single_owner_beside_an_empty_map_is_claimed(self, client):
+        """Re-review 3 #3: claim took the "create the map" branch, whose condition failed."""
+        from zae_limiter_provisioner.pending import claim, read_pending, sk_pending
+
+        key = ("sync", "entity", "u1/gpt-4")
+        client.put_item(
+            TableName=self.TABLE,
+            Item={
+                "PK": {"S": pk_system("ns")},
+                "SK": {"S": sk_pending(*key)},
+                "kind": {"S": "sync"},
+                "level": {"S": "entity"},
+                "target": {"S": "u1/gpt-4"},
+                "token": {"S": "tok-old"},
+                "lease_until_ms": {"N": "1"},
+                "owners": {"M": {}},
+            },
+        )
+
+        assert (
+            len(claim(client, self.TABLE, "ns", "tok-c", read_pending(client, self.TABLE, "ns")))
+            == 1
+        )
+        (item,) = read_pending(client, self.TABLE, "ns")
+        assert sorted(item.owners) == ["tok-c"] and not item.owners["tok-c"].legacy
+
     def test_an_item_left_with_no_owner_is_claimable(self, client):
         from zae_limiter_provisioner.pending import claim, read_pending, sk_pending
 
@@ -2842,8 +2868,8 @@ class TestPendingItems:
 
         owners = {"t": Owner(lease_until_ms=5)}
         assert read_pending(client, "t", "ns") == [
-            Pending("sync", "entity", "u1/a", owners),
-            Pending("sync", "entity", "u2/a", owners),
+            Pending("sync", "entity", "u1/a", owners, has_map=True),
+            Pending("sync", "entity", "u2/a", owners, has_map=True),
         ]
         assert client.query.call_args_list[1].kwargs["ExclusiveStartKey"] == {"k": 1}
 
