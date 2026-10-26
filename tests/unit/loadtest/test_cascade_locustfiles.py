@@ -1,7 +1,8 @@
 """The cascade user classes of the example locustfiles cascade on every runner (#780).
 
 ``simple.py`` and ``max_rps.py`` each define a cascade class whose children
-must debit one shared parent. The parent used to be created only by a
+must debit one shared parent; both classes of ``multi_resource.py`` do too,
+on ``search``. The parent used to be created only by a
 ``test_start`` listener that returns early on a ``WorkerRunner``, so in a
 distributed run every worker created its children with ``parent_id=None``
 and the cascade benchmark measured standalone against standalone.
@@ -34,7 +35,12 @@ STACK = "test-rate-limits"
 CASCADE_CLASSES = [
     pytest.param("simple", "SimpleCascadeUser", id="simple"),
     pytest.param("max_rps", "MaxRpsCascadeUser", id="max_rps"),
+    pytest.param("multi_resource", "MultiResourceAlsoUser", id="multi_resource-also"),
+    pytest.param("multi_resource", "MultiResourceNestedUser", id="multi_resource-nested"),
 ]
+
+# The resource each locustfile's children cascade to the parent on.
+PARENT_RESOURCE = {"simple": "api", "max_rps": "api", "multi_resource": "search"}
 
 
 class _Hook:
@@ -130,8 +136,8 @@ def _spawn(module: types.ModuleType, cls_name: str, env: Any) -> Any:
     return user
 
 
-def _parent_consumed_milli(limiter: Any, parent_id: str) -> int:
-    buckets = limiter._repository.get_buckets(parent_id, "api")
+def _parent_consumed_milli(limiter: Any, parent_id: str, name: str) -> int:
+    buckets = limiter._repository.get_buckets(parent_id, PARENT_RESOURCE[name])
     return sum(b.total_consumed_milli or 0 for b in buckets if b.limit_name == "rpm")
 
 
@@ -150,7 +156,7 @@ class TestCascadeLocustfiles:
         child = sync_limiter.get_entity(user.entity_id)
         assert child.parent_id is not None
         assert child.cascade is True
-        assert _parent_consumed_milli(sync_limiter, child.parent_id) > 0
+        assert _parent_consumed_milli(sync_limiter, child.parent_id, name) > 0
 
     def test_two_workers_share_one_parent(self, fake_locust, sync_limiter, name, cls_name):
         """Every process of a run debits the same parent, created exactly once."""
@@ -178,7 +184,7 @@ class TestCascadeLocustfiles:
             if e.action == AuditAction.ENTITY_CREATED
         ]
         assert len(created) == 1
-        assert _parent_consumed_milli(sync_limiter, parent_id) == 3 * 1000
+        assert _parent_consumed_milli(sync_limiter, parent_id, name) == 3 * 1000
 
     def test_only_the_master_deletes_the_parent(self, fake_locust, sync_limiter, name, cls_name):
         """A worker's test_stop leaves the parent; the master's deletes it."""
@@ -208,7 +214,7 @@ class TestCascadeLocustfiles:
         user = _spawn(local, cls_name, env)
         parent_id = sync_limiter.get_entity(user.entity_id).parent_id
         assert parent_id is not None
-        assert _parent_consumed_milli(sync_limiter, parent_id) > 0
+        assert _parent_consumed_milli(sync_limiter, parent_id, name) > 0
 
         local.on_test_stop(env)
         assert sync_limiter.get_entity(user.entity_id) is None

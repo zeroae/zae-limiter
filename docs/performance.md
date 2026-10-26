@@ -1027,6 +1027,7 @@ locust -f locustfile.py --host <stack-name>
 - **Shared limiter:** A single `SyncRateLimiter` instance is shared across all Locust user greenlets (thread-safe via boto3).
 - **Connection pool:** `_configure_boto3_pool()` automatically enlarges the boto3 connection pool (default 1000, override with `BOTO3_MAX_POOL` env var) to prevent pool exhaustion under high concurrency.
 - **Event types:** `ACQUIRE`, `COMMIT`, `RATE_LIMITED`, `AVAILABLE`, and management operations (`SET_SYSTEM_DEFAULTS`, `CREATE_ENTITY`, etc.) appear as distinct request types in the Locust UI.
+- **Multi-resource acquire:** `self.client.acquire(..., also={"budget": {"budget_rpm": 1}})` passes `also=` through to `SyncRateLimiter.acquire()` (ADR-148). One lease is one `ACQUIRE` event, named for the primary resource (or `name=` when given).
 - **Rate limit handling:** `RateLimitExceeded` is tracked as `RATE_LIMITED` (not counted as a failure), so Locust statistics cleanly separate infrastructure errors from expected rate limiting.
 
 ### Example Scenarios
@@ -1037,6 +1038,7 @@ Pre-built locustfiles are available in `examples/locust/locustfiles/`:
 |----------|------|-------------|
 | Simple | `simple.py` | Single resource, single limit, basic `acquire` |
 | Max RPS | `max_rps.py` | Zero-wait back-to-back `acquire` for throughput ceiling |
+| Multi-resource | `multi_resource.py` | One `acquire(..., also=...)` over a cascading `search` and a per-user `budget`, vs two nested acquires. Compare the `ITERATION multi-resource` row, which times a whole iteration in both classes; the per-resource rows are informational (the nested class has two per iteration) |
 | LLM Gateway | `llm_gateway.py` | 8 LLM models with RPM + TPM and lease adjustments |
 | LLM Production | `llm_production.py` | Weighted tasks with custom daily/spike load shapes |
 | Stress | `stress.py` | 16K entities with whale/spike/power-law traffic patterns |
