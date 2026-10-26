@@ -66,9 +66,9 @@ def on_test_start(environment: Environment, **kwargs: Any) -> None:
         return
     repo = _make_limiter(environment)._repository
     repo.set_resource_defaults("search", [Limit.per_minute("rpm", 1_000_000_000)])
-    repo.set_resource_defaults("budget", [Limit.per_minute("weekly", 1_000_000_000)])
-    # Children cascade on search only: budget is per user.
-    repo.set_resource_cascade("budget", False)
+    # Children cascade on search only: budget is per user. One write, so a
+    # concurrent process's full-replace defaults write cannot drop the policy.
+    repo.set_resource_defaults("budget", [Limit.per_minute("weekly", 1_000_000_000)], cascade=False)
 
 
 @events.test_stop.add_listener
