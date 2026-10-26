@@ -138,7 +138,12 @@ def resolve_disabled(
     levels.append((pk_resource(namespace_id, resource), sk_config()))
 
     for pk, sk in levels:
-        response = client.get_item(TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}})
+        # Strongly consistent (#739 re-review 3 #2): the walk runs right after
+        # this apply's own config write, and the stamp it decides is not
+        # re-checked by a later change-only apply.
+        response = client.get_item(
+            TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}}, ConsistentRead=True
+        )
         item = response.get("Item")
         if item is None:
             continue
@@ -150,17 +155,31 @@ def resolve_disabled(
 
 
 def fanout_resource(
-    client: Any, table_name: str, namespace_id: str, resource: str, disabled: bool | str
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    resource: str,
+    disabled: bool | str,
+    *,
+    skip_matching: bool = False,
 ) -> int:
     """Stamp every bucket for a resource, honoring per-entity overrides.
+
+    ``skip_matching`` leaves alone a bucket whose stamp, as GSI2 projects it
+    (``ProjectionType: ALL``), already equals ``disabled`` — before resolving
+    its entity, so a re-assert of an unchanged level (the handler's repair of
+    a bucket an earlier fan-out missed) writes nothing when nothing was
+    missed. It still pages the resource's whole GSI2 partition, every bucket
+    of the resource, twice: the same read cost as re-running the fan-out.
+    Off by default: the index is eventually consistent, and a level that just
+    changed must not trust it.
 
     Mirrors ``Repository._fanout_resource``: an entity whose own config
     resolves to a different value than the resource-level directive is
     skipped, which is what makes an entity-level `disabled: false` a
-    carve-out from a disabled resource (ADR-125). Without this check every
-    apply would clobber out-of-band per-entity state on manifest-managed
-    resources, because `differ.py` emits a change for every resource in the
-    manifest on every apply whether or not anything changed.
+    carve-out from a disabled resource (ADR-125). Without this check an apply
+    that changes a resource's `disabled` would clobber out-of-band per-entity
+    state on that resource.
 
     Returns the number of buckets stamped.
     """
@@ -180,6 +199,15 @@ def fanout_resource(
             return None
         return disabled, read_ms
 
+    def _matches(item: dict[str, Any]) -> bool:
+        if item.get(BUCKET_FIELD_DISABLED, {}).get("BOOL", False):
+            return disabled is True
+        if BUCKET_FIELD_BYPASS in item:
+            # Any deadline: an expired one is renewed from config by the next
+            # slow pass (ADR-151 decision 8), so the bucket is not missed.
+            return disabled == DISABLED_BYPASS
+        return disabled is False
+
     return _fanout(
         client,
         table_name,
@@ -190,6 +218,7 @@ def fanout_resource(
         sk_prefix="BUCKET#",
         disabled=disabled,
         decide=_decide,
+        already=_matches if skip_matching else None,
     )
 
 
@@ -256,6 +285,7 @@ def _fanout(
     sk_prefix: str,
     disabled: bool | str,
     decide: Callable[[str], tuple[bool | str, int] | None] | None = None,
+    already: Callable[[dict[str, Any]], bool] | None = None,
 ) -> int:
     """Discover and stamp matching bucket items, across two passes.
 
@@ -266,6 +296,8 @@ def _fanout(
     came from was read, or returns None to leave it alone; a PK it declines is
     NOT added to `stamped`, so it is re-considered (cheaply, since the
     caller's resolutions are memoized) on a later pass or page.
+    `already`, when given, is asked first about the indexed item and skips it
+    (unstamped and unresolved) when it says the bucket already holds the value.
 
     A deadline counts from the read behind its value (ADR-151 decision 8),
     like ``Repository._stamp_bucket_disabled``: counted from the fan-out's
@@ -277,9 +309,12 @@ def _fanout(
     started_ms = now_ms()
 
     for _pass in range(2):
-        for pk in _query_bucket_pks(
+        for item in _query_bucket_items(
             client, table_name, index, pk_name, sk_name, pk_value, sk_prefix
         ):
+            pk = item["PK"]["S"]
+            if already is not None and already(item):
+                continue
             if pk not in stamped:
                 decided = (disabled, started_ms) if decide is None else decide(pk)
                 if decided is None:
@@ -301,6 +336,22 @@ def _query_bucket_pks(
     sk_prefix: str,
 ) -> Iterator[str]:
     """Every bucket PK one paginated discovery query returns."""
+    for item in _query_bucket_items(
+        client, table_name, index, pk_name, sk_name, pk_value, sk_prefix
+    ):
+        yield item["PK"]["S"]
+
+
+def _query_bucket_items(
+    client: Any,
+    table_name: str,
+    index: str,
+    pk_name: str,
+    sk_name: str,
+    pk_value: str,
+    sk_prefix: str,
+) -> Iterator[dict[str, Any]]:
+    """Every bucket item (as the index projects it) one paginated discovery query returns."""
     start_key: dict[str, Any] | None = None
     while True:
         params: dict[str, Any] = {
@@ -316,9 +367,8 @@ def _query_bucket_pks(
             params["ExclusiveStartKey"] = start_key
         response = client.query(**params)
         for item in response.get("Items", []):
-            pk = item.get("PK", {}).get("S", "")
-            if pk:
-                yield pk
+            if item.get("PK", {}).get("S"):
+                yield item
         start_key = response.get("LastEvaluatedKey")
         if not start_key:
             return

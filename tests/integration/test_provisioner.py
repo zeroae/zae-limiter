@@ -172,11 +172,13 @@ class TestHandlerIntegration:
         system_limits, _ = await test_repo.get_system_defaults()
         assert any(lim.name == "rpm" and lim.capacity == 800 for lim in system_limits)
 
-        # Second plan should show update (not create) due to persisted state
+        # Re-applying the same manifest changes nothing: the stored item
+        # already matches, so it is neither rewritten nor fanned out.
         result2 = _handle_cli(event, None)
         assert result2["status"] == "applied"
-        assert result2["updated"] == 1
-        assert result2["created"] == 0
+        assert result2["changes"] == []
+        assert (result2["created"], result2["updated"], result2["deleted"]) == (0, 0, 0)
+        assert result2["unchanged"] == 1
 
     @pytest.mark.asyncio
     async def test_handler_apply_entity_limits(self, test_repo):
@@ -229,7 +231,8 @@ class TestHandlerIntegration:
         )
         r2 = _handle_cli(event_reduced, None)
         assert r2["deleted"] == 2  # system + claude-3
-        assert r2["updated"] == 1  # gpt-4
+        assert r2["updated"] == 0
+        assert r2["unchanged"] == 1  # gpt-4, declared as before
 
         # Verify gpt-4 still exists
         gpt4_limits = await test_repo.get_resource_defaults("gpt-4")

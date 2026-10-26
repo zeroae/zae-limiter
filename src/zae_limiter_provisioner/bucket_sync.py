@@ -356,9 +356,8 @@ def build_bucket_param_update(
     # fan-out, scheduled or not, forcing exactly one materialising pass that
     # clamps a surplus over a lowered ceiling before the fast path (a pure ADD
     # with no cap maths) can spend it. A manifest apply that shrinks a
-    # capacity has precisely #469's exposure, and `differ.py` re-asserts every
-    # manifest resource on every apply, so the mirror needs this as much as
-    # the async path does. `#vu` is SET, so it must never join `remove_parts`
+    # capacity has precisely #469's exposure, so the mirror needs this as
+    # much as the async path does. `#vu` is SET, so it must never join `remove_parts`
     # (#488).
     set_parts.append("#vu = :vu_zero")
     expr_names["#vu"] = BUCKET_FIELD_VU
@@ -621,9 +620,14 @@ def _walk(
     table_name: str,
     levels: list[tuple[str, str, str]],
     *,
-    consistent_read: bool = False,
+    consistent_read: bool = True,
 ) -> tuple[dict[str, dict[str, Any]], str | None]:
-    """Return the first level that defines any limits, and which one it was."""
+    """Return the first level that defines any limits, and which one it was.
+
+    Strongly consistent by default (#739 re-review 3 #2): every caller runs
+    right after the apply's own config write, and the limits it returns are
+    stamped onto buckets that a later change-only apply does not re-check.
+    """
     for level, pk, sk in levels:
         kwargs: dict[str, Any] = {}
         if consistent_read:
@@ -682,7 +686,7 @@ def resolve_bucket_limits(
     entity_id: str,
     resource: str,
     *,
-    consistent_read: bool = False,
+    consistent_read: bool = True,
 ) -> tuple[dict[str, dict[str, Any]], str | None]:
     """Full-precedence walk for one existing bucket, and the level that won.
 

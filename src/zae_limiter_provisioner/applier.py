@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import boto3
@@ -27,9 +29,11 @@ from zae_limiter.schema import (
     RESERVED_NAMESPACE,
     config_limit_names,
     decode_cascade,
+    decode_disabled,
     encode_cascade,
     encode_disabled,
     limit_attr,
+    parse_limit_attr,
     pk_entity,
     pk_resource,
     pk_system,
@@ -72,10 +76,20 @@ class ApplyResult:
     # (level, target) of every change whose stored cascade policy it changed
     # (ADR-146). Only these need their buckets restamped.
     cascade_changed: list[tuple[str, str]] = field(default_factory=list)
+    # Resource and entity changes whose stored tri-state `disabled` it changed
+    # (ADR-125). Only these need the disable fan-out.
+    disabled_changed: list[Change] = field(default_factory=list)
+    # Entity changes whose stored limits it changed (#481). Only these need
+    # their buckets' params synced.
+    limits_changed: list[Change] = field(default_factory=list)
     # (level, target, names) of every system- or resource-level change whose
     # limits' soft-ness it changed (#467). Those levels reach buckets only at
     # TTL otherwise, so these are restamped by a change-only fan-out.
     soft_changed: list[tuple[str, str | None, list[str]]] = field(default_factory=list)
+    # Pending fan-out items left after the apply, its own failures and those
+    # still leased to another (possibly dead) apply included (#739 re-review 2
+    # #4). Set by the handler once the apply has finished.
+    pending: int = 0
 
 
 def _build_limit_item(
@@ -326,6 +340,117 @@ def _require_readers(
     raise last_error
 
 
+# Concurrent `GetItem`s for the pre-read in `drop_unchanged`. Below botocore's
+# default connection pool of 10, so the threads never wait on a connection.
+_READ_WORKERS = 8
+
+
+def drop_unchanged(
+    changes: list[Change],
+    table_name: str,
+    namespace_id: str,
+    client: Any | None = None,
+    *,
+    stored_out: dict[int, dict[str, Any]] | None = None,
+) -> list[Change]:
+    """The changes that would actually change the table.
+
+    ``compute_diff`` emits a create or update for **every** level the manifest
+    declares, because the ``#PROVISIONER`` record holds only which levels are
+    managed, not what they hold. Applied as is, a one-line edit to a manifest
+    of a thousand entities rewrote a thousand config items and ran a thousand
+    bucket fan-outs, one call at a time.
+
+    This reads each create/update's live config item (strongly consistent, so
+    an edit made just before cannot be missed) and drops the change when the
+    item it would write is **identical** to the one stored. That write would be
+    a no-op ``PutItem``, so skipping it cannot change what the table holds, and
+    comparing against the live item rather than the previous manifest keeps the
+    apply reconciling drift: a level changed out of band (``entity set-limits``)
+    differs from the manifest's item and is rewritten as before.
+
+    ``GetItem`` rather than ``BatchGetItem`` because the provisioner role grants
+    only the former: a code-only Lambda upgrade must not need a stack update.
+    The reads run on a small thread pool (boto3 clients are thread-safe).
+
+    Deletes are always kept, and read like the rest. A change whose item cannot be built (two
+    timezones on one item) or whose read fails is kept too, so
+    ``apply_changes`` reports it or writes it as before: nothing is dropped
+    without the stored item proving it redundant.
+
+    ``stored_out``, when given, receives the live item read for each change
+    (keyed by ``id(change)``, ``{}`` when absent), so the caller can tell
+    which fan-outs a kept change will need before writing it
+    (``fanouts_needed``). A change with no entry was not read.
+    """
+    # A delete is read too, never dropped: its stored item says which fan-outs
+    # removing it needs (`fanouts_needed`), so it does not run all of them.
+    candidates: list[tuple[int, tuple[str, str], dict[str, Any] | None]] = []
+    for i, change in enumerate(changes):
+        if change.action == "delete":
+            candidates.append((i, config_key(namespace_id, change), None))
+            continue
+        try:
+            pk, sk, item = _build_change_item(namespace_id, change)
+        except Exception:
+            continue
+        candidates.append((i, (pk, sk), item))
+    if not candidates:
+        return list(changes)
+
+    if client is None:
+        client = boto3.client("dynamodb")
+
+    def _read(key: tuple[str, str]) -> dict[str, Any] | None:
+        try:
+            response = client.get_item(
+                TableName=table_name,
+                Key={"PK": {"S": key[0]}, "SK": {"S": key[1]}},
+                ConsistentRead=True,
+            )
+        except Exception as e:
+            logger.warning("Could not read %s %s, writing it: %s", key[0], key[1], e)
+            return None
+        item = response.get("Item") if isinstance(response, dict) else None
+        # Absent is {}: a create, whose old side is known to be empty.
+        return item if isinstance(item, dict) else {}
+
+    workers = min(_READ_WORKERS, len(candidates))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        stored = list(pool.map(_read, [key for _i, key, _item in candidates]))
+
+    unchanged = {
+        i
+        for (i, _key, item), live in zip(candidates, stored, strict=True)
+        if item is not None and live is not None and _normalized(live) == _normalized(item)
+    }
+    if stored_out is not None:
+        for (i, _key, _item), live in zip(candidates, stored, strict=True):
+            if live is not None:
+                stored_out[id(changes[i])] = live
+    return [change for i, change in enumerate(changes) if i not in unchanged]
+
+
+def _normalized(value: Any) -> Any:
+    """An attribute value with every number compared as a number.
+
+    DynamoDB stores a number canonically, so a manifest's ``capacity: 1000.0``
+    is written as ``"1000.0"`` and read back as ``"1000"``. Compared as strings
+    the entry would differ on every apply: correct, but rewritten and fanned
+    out each time.
+    """
+    if isinstance(value, dict):
+        if set(value) == {"N"} and isinstance(value["N"], str):
+            try:
+                return ("N", Decimal(value["N"]))
+            except InvalidOperation:
+                return value
+        return {k: _normalized(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalized(v) for v in value]
+    return value
+
+
 def apply_changes(
     changes: list[Change],
     table_name: str,
@@ -353,17 +478,18 @@ def apply_changes(
 
     for change in changes:
         try:
-            # The write's own ALL_OLD image says what the policy was, at no
-            # extra read: only a level whose policy actually changed has its
-            # buckets restamped (ADR-146), so a routine apply writes no more.
+            # The write's own ALL_OLD image says what the level held, at no
+            # extra read: only a level whose policy, `disabled` or limits
+            # actually changed has its buckets touched (ADR-146, ADR-125,
+            # #481), so a routine apply writes no more.
             if change.action == "delete":
                 old = _apply_delete(client, table_name, namespace_id, change)
-                _note_cascade_change(result, change, old, None)
+                _note_changes(result, change, old, {})
                 _note_soft_change(result, change, old)
                 result.deleted += 1
             elif change.action in ("create", "update"):
-                old = _apply_set(client, table_name, namespace_id, change)
-                _note_cascade_change(result, change, old, (change.data or {}).get("cascade"))
+                old, new = _apply_set(client, table_name, namespace_id, change)
+                _note_changes(result, change, old, new)
                 _note_soft_change(result, change, old)
                 if change.action == "create":
                     result.created += 1
@@ -376,48 +502,54 @@ def apply_changes(
     return result
 
 
+def config_key(namespace_id: str, change: Change) -> tuple[str, str]:
+    """The (PK, SK) of the config item a change writes or deletes."""
+    if change.level == "system":
+        return pk_system(namespace_id), sk_config()
+    if change.level == "resource":
+        assert change.target is not None
+        return pk_resource(namespace_id, change.target), sk_config()
+    if change.level == "entity":
+        assert change.target is not None
+        entity_id, resource = change.target.split("/", 1)
+        return pk_entity(namespace_id, entity_id), sk_config(resource)
+    raise ValueError(f"Unknown level: {change.level}")
+
+
+def _build_change_item(namespace_id: str, change: Change) -> tuple[str, str, dict[str, Any]]:
+    """The full config item a create or update writes, with its key."""
+    data = change.data or {}
+    limits = data.get("limits", {})
+    pk, sk = config_key(namespace_id, change)
+
+    extra: dict[str, Any] = {}
+    if change.level == "system":
+        on_unavailable = data.get("on_unavailable")
+        if on_unavailable is not None:
+            extra["on_unavailable"] = {"S": on_unavailable}
+    elif change.level == "resource":
+        assert change.target is not None
+        extra["resource"] = {"S": change.target}
+        _add_flags(extra, data)
+    else:
+        assert change.target is not None
+        entity_id, resource = change.target.split("/", 1)
+        extra["entity_id"] = {"S": entity_id}
+        extra["resource"] = {"S": resource}
+        _add_flags(extra, data)
+    return pk, sk, _build_limit_item(pk, sk, namespace_id, limits, extra)
+
+
 def _apply_set(
     client: Any,
     table_name: str,
     namespace_id: str,
     change: Change,
-) -> dict[str, Any]:
-    """Apply a create or update change (PutItem); return the replaced item, or {}."""
-    data = change.data or {}
-    limits = data.get("limits", {})
-
-    if change.level == "system":
-        pk = pk_system(namespace_id)
-        sk = sk_config()
-        extra: dict[str, Any] = {}
-        on_unavailable = data.get("on_unavailable")
-        if on_unavailable is not None:
-            extra["on_unavailable"] = {"S": on_unavailable}
-        item = _build_limit_item(pk, sk, namespace_id, limits, extra)
-
-    elif change.level == "resource":
-        assert change.target is not None
-        resource = change.target
-        pk = pk_resource(namespace_id, resource)
-        sk = sk_config()
-        extra = {"resource": {"S": resource}}
-        _add_flags(extra, data)
-        item = _build_limit_item(pk, sk, namespace_id, limits, extra)
-
-    elif change.level == "entity":
-        assert change.target is not None
-        entity_id, resource = change.target.split("/", 1)
-        pk = pk_entity(namespace_id, entity_id)
-        sk = sk_config(resource)
-        extra = {"entity_id": {"S": entity_id}, "resource": {"S": resource}}
-        _add_flags(extra, data)
-        item = _build_limit_item(pk, sk, namespace_id, limits, extra)
-
-    else:
-        raise ValueError(f"Unknown level: {change.level}")
-
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Apply a create or update change (PutItem); return (replaced item or {}, new item)."""
+    _pk, _sk, item = _build_change_item(namespace_id, change)
     response = client.put_item(TableName=table_name, Item=item, ReturnValues="ALL_OLD")
-    return _old_image(response)
+    return _old_image(response), item
 
 
 def _add_flags(extra: dict[str, Any], data: dict[str, Any]) -> None:
@@ -434,12 +566,104 @@ def _add_flags(extra: dict[str, Any], data: dict[str, Any]) -> None:
         extra[CONFIG_FIELD_CASCADE] = cascade_attr
 
 
-def _note_cascade_change(
-    result: ApplyResult, change: Change, old: dict[str, Any], new: bool | None
+def _note_changes(
+    result: ApplyResult, change: Change, old: dict[str, Any], new: dict[str, Any]
 ) -> None:
-    """Record a resource or entity change that changed its stored cascade policy."""
-    if change.target is not None and decode_cascade(old) != new:
+    """Record which bucket fan-outs a resource or entity write makes necessary.
+
+    Each fan-out derives bucket state from one part of the config, so it is
+    needed only when that part of this level changed: the resolution walks
+    for `disabled` and `cascade` take the first level that sets a value, and
+    a level whose own value is unchanged cannot change the answer. A level
+    above or below that did change is its own change, with its own fan-out.
+    """
+    kinds = fanouts_for(change, old, new)
+    if "cascade" in kinds:
+        assert change.target is not None
         result.cascade_changed.append((change.level, change.target))
+    if "disabled" in kinds:
+        result.disabled_changed.append(change)
+    if "sync" in kinds:
+        result.limits_changed.append(change)
+
+
+def fanouts_for(change: Change, old: dict[str, Any], new: dict[str, Any]) -> set[str]:
+    """The bucket fan-outs (``disabled``, ``cascade``, ``soft``, ``sync``) a write from
+    ``old`` to ``new`` makes necessary.
+
+    ``soft`` is the system- and resource-level soft restamp (#467): entity
+    levels carry soft-ness in their limits, which the sync restamps.
+    """
+    kinds: set[str] = set()
+    if change.level in ("system", "resource") and _soft_names(old) != _soft_names(new):
+        kinds.add("soft")
+    if change.target is None:
+        return kinds
+    if decode_cascade(old) != decode_cascade(new):
+        kinds.add("cascade")
+    if decode_disabled(old) != decode_disabled(new):
+        kinds.add("disabled")
+    if change.level == "entity" and _limit_attrs(old) != _limit_attrs(new):
+        kinds.add("sync")
+    return kinds
+
+
+def fanouts_needed(namespace_id: str, change: Change, stored: dict[str, Any] | None) -> set[str]:
+    """The fan-outs a change will need, predicted before it is written.
+
+    From the live item ``drop_unchanged`` read (``stored``), for a delete as
+    for a create or update; with none — an unread or unbuildable item — every
+    fan-out the level can have, since the old side is unknown. The prediction
+    stands even when the write's own ``ALL_OLD`` image disagrees: a re-sent
+    write's image already shows the new state (#739 review, finding 2).
+    """
+    every = {
+        "system": {"soft"},
+        "resource": {"disabled", "cascade", "soft"},
+        "entity": {"disabled", "cascade", "sync"},
+    }.get(change.level, set())
+    if stored is None:
+        return every
+    if change.action == "delete":
+        # The level becomes absent: it needs what removing its stored item
+        # changes (#739 review), not every fan-out.
+        return fanouts_for(change, stored, {})
+    try:
+        _pk, _sk, new = _build_change_item(namespace_id, change)
+    except Exception:
+        return every
+    return fanouts_for(change, stored, new)
+
+
+def full_system_fanouts(
+    namespace_id: str, change: Change, stored: dict[str, Any] | None
+) -> set[str]:
+    """The fan-outs a **full** apply owes the system level.
+
+    Only the soft restamp, and only when soft-ness is in play (#739 re-review 2
+    #5): the level holds a soft limit, or this apply gives it one. Owed on
+    every full apply, it paged the namespace's whole GSI4 partition and wrote
+    a stamp per bucket even with nothing soft anywhere. A stamp that a soft
+    limit removed earlier left behind was that removal's own fan-out, owed as a
+    change when it happened, and expires on its own within the stamp TTL.
+    With the level unread, it is owed, as every fan-out is.
+    """
+    if stored is None:
+        return {"soft"}
+    try:
+        _pk, _sk, new = _build_change_item(namespace_id, change)
+    except Exception:
+        return {"soft"}
+    return {"soft"} if _soft_names(stored) or _soft_names(new) else set()
+
+
+def _limit_attrs(item: dict[str, Any]) -> dict[str, Any]:
+    """The attributes of a config item that say what its limits are."""
+    return {
+        name: value
+        for name, value in item.items()
+        if name == CONFIG_FIELD_SCHED_TZ or parse_limit_attr(name) is not None
+    }
 
 
 def _soft_names(item: dict[str, Any]) -> set[str]:
@@ -459,8 +683,9 @@ def _soft_names(item: dict[str, Any]) -> set[str]:
 def _note_soft_change(result: ApplyResult, change: Change, old: dict[str, Any]) -> None:
     """Record a system- or resource-level change that changed any limit's soft-ness.
 
-    Entity levels need none: the param sync restamps their buckets on every
-    apply. The write's own ``ALL_OLD`` image is the old side, at no extra read.
+    Entity levels need none: the param sync restamps their buckets whenever
+    the level's limits changed, and soft-ness is one of them. The write's own
+    ``ALL_OLD`` image is the old side, at no extra read.
     """
     if change.level not in ("system", "resource"):
         return
@@ -491,25 +716,7 @@ def _apply_delete(
     change: Change,
 ) -> dict[str, Any]:
     """Apply a delete change (DeleteItem); return the deleted item, or {}."""
-    if change.level == "system":
-        pk = pk_system(namespace_id)
-        sk = sk_config()
-
-    elif change.level == "resource":
-        assert change.target is not None
-        resource = change.target
-        pk = pk_resource(namespace_id, resource)
-        sk = sk_config()
-
-    elif change.level == "entity":
-        assert change.target is not None
-        entity_id, resource = change.target.split("/", 1)
-        pk = pk_entity(namespace_id, entity_id)
-        sk = sk_config(resource)
-
-    else:
-        raise ValueError(f"Unknown level: {change.level}")
-
+    pk, sk = config_key(namespace_id, change)
     response = client.delete_item(
         TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}}, ReturnValues="ALL_OLD"
     )

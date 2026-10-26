@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 from zae_limiter.exceptions import VersionMismatchError
 from zae_limiter_provisioner.applier import (
     apply_changes,
+    drop_unchanged,
     require_cascade_policy_readers,
     require_reset_after_readers,
 )
@@ -822,3 +823,279 @@ class TestCascadePolicy:
             TableName="cascade-gate", Key={"PK": {"S": "_/SYSTEM#"}, "SK": {"S": "#VERSION"}}
         )["Item"]
         assert record["client_min_version"] == {"S": "0.16.0"}
+
+
+def _rpm(capacity: int) -> dict:
+    limit = {"capacity": capacity, "refill_amount": capacity, "refill_period": 60}
+    return {"limits": {"rpm": limit}}
+
+
+class TestDropUnchanged:
+    """Only a level whose stored config item would change is applied."""
+
+    TABLE = "drop-unchanged"
+
+    @pytest.fixture
+    def table(self, mock_dynamodb):
+        import boto3
+
+        from zae_limiter.sync_repository import SyncRepository
+
+        setup = SyncRepository(name=self.TABLE, region="us-east-1", _skip_deprecation_warning=True)
+        setup.create_table()
+        setup.close()
+        return boto3.client("dynamodb", region_name="us-east-1")
+
+    def _apply(self, table, changes):
+        return apply_changes(changes, self.TABLE, "ns", client=table)
+
+    def test_an_identical_item_is_dropped_and_a_different_one_kept(self, table):
+        same = Change("create", "entity", "u1/gpt-4", _rpm(10))
+        edited = Change("create", "entity", "u2/gpt-4", _rpm(10))
+        self._apply(table, [same, edited])
+
+        changes = [
+            Change("update", "entity", "u1/gpt-4", _rpm(10)),
+            Change("update", "entity", "u2/gpt-4", _rpm(20)),
+            Change("create", "entity", "u3/gpt-4", _rpm(10)),
+        ]
+        kept = drop_unchanged(changes, self.TABLE, "ns", client=table)
+
+        assert [c.target for c in kept] == ["u2/gpt-4", "u3/gpt-4"]
+
+    def test_drift_made_out_of_band_is_rewritten(self, table):
+        self._apply(table, [Change("create", "resource", "gpt-4", _rpm(10))])
+        table.update_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": "ns/RESOURCE#gpt-4"}, "SK": {"S": "#CONFIG"}},
+            UpdateExpression="SET l_rpm_cp = :c",
+            ExpressionAttributeValues={":c": {"N": "99"}},
+        )
+
+        change = Change("update", "resource", "gpt-4", _rpm(10))
+        assert drop_unchanged([change], self.TABLE, "ns", client=table) == [change]
+
+    def test_a_flag_difference_alone_is_a_change(self, table):
+        self._apply(table, [Change("create", "resource", "gpt-4", _rpm(10))])
+        change = Change("update", "resource", "gpt-4", {**_rpm(10), "disabled": True})
+        assert drop_unchanged([change], self.TABLE, "ns", client=table) == [change]
+
+    def test_deletes_are_always_kept(self, table):
+        change = Change("delete", "entity", "u1/gpt-4")
+        assert drop_unchanged([change], self.TABLE, "ns", client=table) == [change]
+
+    def test_the_read_is_strongly_consistent(self):
+        client = MagicMock()
+        client.get_item.return_value = {}
+        drop_unchanged([Change("update", "system", None, _rpm(1))], "t", "ns", client=client)
+        assert client.get_item.call_args.kwargs["ConsistentRead"] is True
+
+    def test_a_failed_read_keeps_the_change(self):
+        client = MagicMock()
+        client.get_item.side_effect = RuntimeError("throttled")
+        change = Change("update", "system", None, _rpm(1))
+        assert drop_unchanged([change], "t", "ns", client=client) == [change]
+
+    def test_an_unbuildable_change_is_kept_for_apply_to_report(self):
+        """Two timezones on one item: `apply_changes` records the error."""
+        sched = {"cron": "0 9 * * *", "scale": 0.5}
+        data = {
+            "limits": {
+                "rpm": {**_rpm(1)["limits"]["rpm"], "schedule": [{**sched, "tz": "UTC"}]},
+                "tpm": {**_rpm(1)["limits"]["rpm"], "schedule": [{**sched, "tz": "Asia/Tokyo"}]},
+            }
+        }
+        client = MagicMock()
+        change = Change("update", "system", None, data)
+        assert drop_unchanged([change], "t", "ns", client=client) == [change]
+        client.get_item.assert_not_called()
+
+
+class TestChangedFanouts:
+    """Each write records which bucket fan-outs it makes necessary."""
+
+    @staticmethod
+    def _client(old: dict) -> MagicMock:
+        client = MagicMock()
+        client.put_item.return_value = {"Attributes": old} if old else {}
+        client.delete_item.return_value = {"Attributes": old} if old else {}
+        return client
+
+    @staticmethod
+    def _stored(capacity: int, **extra) -> dict:
+        return {
+            "l_rpm_cp": {"N": str(capacity)},
+            "l_rpm_ra": {"N": str(capacity)},
+            "l_rpm_rp": {"N": "60"},
+            **extra,
+        }
+
+    def test_the_prediction_covers_every_kind_when_the_old_side_is_unknown(self):
+        from zae_limiter_provisioner.applier import fanouts_needed
+
+        entity = Change("update", "entity", "u1/gpt-4", _rpm(10))
+        assert fanouts_needed("ns", entity, None) == {"disabled", "cascade", "sync"}
+        delete = Change("delete", "resource", "gpt-4")
+        assert fanouts_needed("ns", delete, None) == {"disabled", "cascade", "soft"}
+        # A read delete needs what removing its stored item changes.
+        assert fanouts_needed("ns", delete, {}) == set()
+        assert fanouts_needed("ns", delete, {"disabled": {"BOOL": True}}) == {"disabled"}
+        assert fanouts_needed("ns", Change("delete", "entity", "u1/gpt-4"), self._stored(10)) == {
+            "sync"
+        }
+        system = Change("update", "system", None, _rpm(10))
+        assert fanouts_needed("ns", system, {}) == set()
+        assert fanouts_needed("ns", system, None) == {"soft"}
+        # A system or resource level whose soft-ness changes needs the soft
+        # restamp (re-review #5); entity levels carry it in their sync.
+        soft = Change(
+            "update",
+            "system",
+            None,
+            {"limits": {"rpm": {**_rpm(10)["limits"]["rpm"], "soft": True}}},
+        )
+        assert fanouts_needed("ns", soft, {}) == {"soft"}
+        assert fanouts_needed(
+            "ns", delete, {"l_rpm_cp": {"N": "1"}, "l_rpm_soft": {"BOOL": True}}
+        ) == {"soft"}
+        # An item that cannot be built (two timezones) is written anyway and reported.
+        two_zones = Change(
+            "update",
+            "entity",
+            "u1/gpt-4",
+            {
+                "limits": {
+                    "a": {
+                        **_rpm(1)["limits"]["rpm"],
+                        "schedule": [{"cron": "0 9 * * *", "tz": "UTC", "scale": 0.5}],
+                    },
+                    "b": {
+                        **_rpm(1)["limits"]["rpm"],
+                        "schedule": [{"cron": "0 9 * * *", "tz": "America/New_York", "scale": 0.5}],
+                    },
+                }
+            },
+        )
+        assert fanouts_needed("ns", two_zones, {}) == {"disabled", "cascade", "sync"}
+        # Known old side: only what differs.
+        assert fanouts_needed("ns", entity, {}) == {"sync"}
+
+    def test_a_full_apply_owes_the_system_soft_restamp_only_with_soft_in_play(self):
+        """Re-review 2 #5."""
+        from zae_limiter_provisioner.applier import full_system_fanouts
+
+        hard = Change("update", "system", None, _rpm(10))
+        soft_limits = {"rpm": {**_rpm(10)["limits"]["rpm"], "soft": True}}
+        soft = Change("update", "system", None, {"limits": soft_limits})
+        stored_soft = {"l_rpm_cp": {"N": "10"}, "l_rpm_soft": {"BOOL": True}}
+
+        assert full_system_fanouts("ns", hard, {}) == set()
+        assert full_system_fanouts("ns", hard, stored_soft) == {"soft"}  # soft removed
+        assert full_system_fanouts("ns", soft, {}) == {"soft"}
+        assert full_system_fanouts("ns", hard, None) == {"soft"}  # unread
+        two_zones = Change(
+            "update",
+            "system",
+            None,
+            {
+                "limits": {
+                    "a": {
+                        **_rpm(1)["limits"]["rpm"],
+                        "schedule": [{"cron": "0 9 * * *", "tz": "UTC", "scale": 0.5}],
+                    },
+                    "b": {
+                        **_rpm(1)["limits"]["rpm"],
+                        "schedule": [{"cron": "0 9 * * *", "tz": "America/New_York", "scale": 0.5}],
+                    },
+                }
+            },
+        )
+        assert full_system_fanouts("ns", two_zones, {}) == {"soft"}
+
+    def test_a_new_entity_with_limits_needs_a_sync_only(self):
+        change = Change("create", "entity", "u1/gpt-4", _rpm(10))
+        result = apply_changes([change], "t", "ns", client=self._client({}))
+        assert result.limits_changed == [change]
+        assert result.disabled_changed == []
+        assert result.cascade_changed == []
+
+    def test_unchanged_limits_beside_a_changed_flag_need_no_sync(self):
+        change = Change("update", "entity", "u1/gpt-4", {**_rpm(10), "disabled": True})
+        result = apply_changes([change], "t", "ns", client=self._client(self._stored(10)))
+        assert result.limits_changed == []
+        assert result.disabled_changed == [change]
+
+    def test_removing_a_disabled_line_is_a_change(self):
+        """Explicit `true` before, absent after: the buckets must be unstamped."""
+        old = self._stored(10, disabled={"BOOL": True})
+        change = Change("update", "resource", "gpt-4", _rpm(10))
+        result = apply_changes([change], "t", "ns", client=self._client(old))
+        assert result.disabled_changed == [change]
+
+    def test_resource_limits_never_need_a_sync(self):
+        """Buckets on defaults carry a TTL and are recreated (#271, #296)."""
+        change = Change("update", "resource", "gpt-4", _rpm(20))
+        result = apply_changes([change], "t", "ns", client=self._client(self._stored(10)))
+        assert result.limits_changed == []
+        assert result.disabled_changed == []
+
+    def test_deleting_an_entity_with_limits_needs_a_sync(self):
+        change = Change("delete", "entity", "u1/gpt-4")
+        result = apply_changes([change], "t", "ns", client=self._client(self._stored(10)))
+        assert result.limits_changed == [change]
+
+    def test_deleting_an_entity_carve_out_needs_a_disable_fanout(self):
+        change = Change("delete", "entity", "u1/gpt-4")
+        old = {"disabled": {"BOOL": False}}
+        result = apply_changes([change], "t", "ns", client=self._client(old))
+        assert result.disabled_changed == [change]
+        assert result.limits_changed == []
+
+    def test_an_unknown_level_is_reported(self):
+        result = apply_changes(
+            [Change("update", "bogus", "x", _rpm(1)), Change("delete", "bogus", "x")],
+            "t",
+            "ns",
+            client=self._client({}),
+        )
+        assert result.errors == [
+            "update bogus x: Unknown level: bogus",
+            "delete bogus x: Unknown level: bogus",
+        ]
+
+
+class TestDropUnchangedNumbers:
+    """Numbers compare as numbers: DynamoDB stores `1000.0` as `1000`."""
+
+    @pytest.fixture
+    def table(self, mock_dynamodb):
+        import boto3
+
+        from zae_limiter.sync_repository import SyncRepository
+
+        setup = SyncRepository(
+            name="drop-numbers", region="us-east-1", _skip_deprecation_warning=True
+        )
+        setup.create_table()
+        setup.close()
+        return boto3.client("dynamodb", region_name="us-east-1")
+
+    def test_a_float_capacity_matches_its_stored_integer(self, table):
+        limits = {"rpm": {"capacity": 1000.0, "refill_amount": 1000.0, "refill_period": 60}}
+        change = Change("update", "resource", "gpt-4", {"limits": limits})
+        apply_changes([change], "drop-numbers", "ns", client=table)
+
+        assert drop_unchanged([change], "drop-numbers", "ns", client=table) == []
+
+    def test_a_different_number_still_differs(self, table):
+        apply_changes(
+            [Change("create", "resource", "gpt-4", _rpm(1000))], "drop-numbers", "ns", client=table
+        )
+        change = Change("update", "resource", "gpt-4", _rpm(1001))
+        assert drop_unchanged([change], "drop-numbers", "ns", client=table) == [change]
+
+    def test_a_number_that_does_not_parse_compares_as_written(self):
+        from zae_limiter_provisioner.applier import _normalized
+
+        assert _normalized({"N": "not-a-number"}) == {"N": "not-a-number"}
+        assert _normalized({"L": [{"N": "1.0"}]}) == _normalized({"L": [{"N": "1"}]})

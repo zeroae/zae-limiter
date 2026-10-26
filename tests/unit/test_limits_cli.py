@@ -463,6 +463,45 @@ class TestLimitsCfnTemplateDisabled:
         assert round_tripped["entities"]["vip-1"]["resources"]["gpt-4"]["disabled"] is False
 
 
+class TestLimitsCfnTemplateFullApply:
+    """`cfn-template --full` is `limits apply --full` for a stack: the `FullApply` property."""
+
+    MANIFEST = {
+        "namespace": "test-ns",
+        "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1}}}},
+    }
+
+    def _props(self, *extra: str) -> dict:
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump(self.MANIFEST, f)
+            f.flush()
+            result = CliRunner().invoke(
+                cli, ["limits", "cfn-template", "--name", "test-app", "-f", f.name, *extra]
+            )
+        assert result.exit_code == 0, result.output
+        props: dict = yaml.safe_load(result.output)["Resources"]["TenantLimits"]["Properties"]
+        return props
+
+    def test_full_emits_full_apply(self):
+        assert self._props("--full")["FullApply"] is True
+
+    def test_omitted_by_default(self):
+        assert "FullApply" not in self._props()
+
+    @patch("zae_limiter_provisioner.handler._apply_and_record")
+    @patch("zae_limiter_provisioner.handler._plan_changes", return_value=([], []))
+    @patch("zae_limiter_provisioner.handler.read_pending", return_value=[])
+    @patch("zae_limiter_provisioner.handler.boto3")
+    @patch("zae_limiter_provisioner.handler._read_provisioner_state", return_value={})
+    def test_the_provisioner_reads_it_as_a_full_apply(self, _state, _boto3, _pending, plan, _a):
+        from zae_limiter_provisioner.handler import on_event
+
+        props = {**self._props("--full"), "NamespaceId": "ns123"}
+        on_event({"RequestType": "Update", "ResourceProperties": props}, MagicMock())
+
+        assert plan.call_args.kwargs["full"] is True
+
+
 class TestLimitsCfnTemplateCascade:
     """The `cascade` policy (ADR-146) rides the same tri-state wire format as `disabled`."""
 
@@ -1420,3 +1459,206 @@ class TestCfnTemplateFromYamlAnchors:
         premium = props["Entities"]["user-premium"]["Resources"]["gpt-4"]["Limits"]
         assert premium["rpm"]["Capacity"] == 1000
         assert premium["tpm"]["Capacity"] == 10000
+
+
+class TestLimitsQuietAndUnchanged:
+    """`--quiet` prints only the summary; the summary counts unchanged entries."""
+
+    _APPLIED = {
+        "status": "applied",
+        "changes": [
+            {"action": "create", "level": "entity", "target": "user-new/gpt-4"},
+            {"action": "update", "level": "resource", "target": "gpt-4"},
+        ],
+        "created": 1,
+        "updated": 1,
+        "deleted": 0,
+        "unchanged": 1177,
+        "errors": [],
+    }
+
+    def _run(self, command, response, *flags):
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+            with patch("zae_limiter.limits_cli._invoke_provisioner", return_value=response):
+                return CliRunner().invoke(
+                    cli, ["limits", command, "--name", "test-app", "-f", f.name, *flags]
+                )
+
+    def test_apply_lists_each_change_and_the_unchanged_count(self):
+        result = self._run("apply", self._APPLIED)
+        assert result.exit_code == 0
+        assert "+ create entity: user-new/gpt-4" in result.output
+        assert "~ update resource: gpt-4" in result.output
+        assert "Applied: 1 created, 1 updated, 0 deleted (1177 unchanged)." in result.output
+
+    @pytest.mark.parametrize("flag", ["--quiet", "-q"])
+    def test_apply_quiet_prints_only_the_summary(self, flag):
+        result = self._run("apply", self._APPLIED, flag)
+        assert result.exit_code == 0
+        assert result.output == "Applied: 1 created, 1 updated, 0 deleted (1177 unchanged).\n"
+
+    def test_apply_quiet_still_reports_errors(self):
+        response = {**self._APPLIED, "errors": ["disable fan-out resource gpt-4: boom"]}
+        result = self._run("apply", response, "-q")
+        assert result.exit_code == 1
+        assert "user-new/gpt-4" not in result.output
+        assert "disable fan-out resource gpt-4: boom" in result.output
+
+    def test_apply_with_no_changes_still_reports_a_failed_retry(self):
+        """A retried fan-out can fail on an apply that changes nothing."""
+        response = {"status": "applied", "changes": [], "errors": ["bucket param sync: boom"]}
+        result = self._run("apply", response)
+        assert result.exit_code == 1
+        # Review finding 6: "up-to-date" beside an error and exit 1 contradicted itself.
+        assert "up-to-date" not in result.output
+        assert "No config changes; retried fan-outs did not finish (see errors)." in result.output
+        assert "bucket param sync: boom" in result.output
+
+    def test_apply_with_only_pending_fan_outs_is_not_up_to_date(self):
+        """Re-review 2 #4: fan-outs a dead run still owes are not "up-to-date"."""
+        response = {"status": "applied", "changes": [], "errors": [], "pending": 2}
+        result = self._run("apply", response)
+        assert result.exit_code == 0
+        assert "up-to-date" not in result.output
+        assert result.output == (
+            "No config changes; 2 bucket fan-out(s) an earlier apply did not finish "
+            "will be retried by the next apply.\n"
+        )
+
+    def test_apply_with_changes_still_reports_pending_fan_outs(self):
+        """Re-review 3 #5: an apply that changed config said nothing of pending work."""
+        response = {
+            "status": "applied",
+            "changes": [{"action": "update", "level": "entity", "target": "u1/gpt-4"}],
+            "updated": 1,
+            "errors": [],
+            "pending": 3,
+        }
+        result = self._run("apply", response, "-q")
+        assert result.exit_code == 0
+        assert result.output == (
+            "Applied: 0 created, 1 updated, 0 deleted.\n"
+            "Note: 3 bucket fan-out(s) an earlier apply did not finish; "
+            "the next apply retries them.\n"
+        )
+
+    def test_apply_with_errors_and_pending_still_exits_1(self):
+        response = {"status": "applied", "changes": [], "errors": ["boom"], "pending": 1}
+        result = self._run("apply", response)
+        assert result.exit_code == 1
+        assert "No config changes; retried fan-outs did not finish (see errors)." in result.output
+
+    def test_apply_with_no_changes_and_no_errors_is_up_to_date(self):
+        response = {"status": "applied", "changes": [], "errors": []}
+        result = self._run("apply", response)
+        assert result.exit_code == 0
+        assert "No changes. Infrastructure is up-to-date." in result.output
+
+    def test_plan_quiet_prints_only_the_summary(self):
+        response = {**self._APPLIED, "status": "planned"}
+        result = self._run("plan", response, "--quiet")
+        assert result.exit_code == 0
+        assert result.output == "Plan: 2 change(s) (1177 unchanged)\n"
+
+    def test_diff_quiet_prints_only_the_summary(self):
+        response = {**self._APPLIED, "status": "planned"}
+        result = self._run("diff", response, "-q")
+        assert result.exit_code == 0
+        assert result.output == "Drift detected: 2 difference(s) (1177 unchanged)\n"
+
+    @pytest.mark.parametrize("command", ["plan", "diff"])
+    def test_a_preview_says_what_an_interrupted_apply_left(self, command):
+        """Fan-outs an earlier apply did not finish; the next apply retries them."""
+        response = {**self._APPLIED, "status": "planned", "pending": 3}
+        result = self._run(command, response, "-q")
+        assert result.exit_code == 0
+        assert "3 bucket fan-out(s) an earlier apply did not finish" in result.output
+
+    @pytest.mark.parametrize("command", ["plan", "diff"])
+    def test_it_is_said_even_with_no_changes(self, command):
+        response = {"status": "planned", "changes": [], "unchanged": 5, "pending": 1}
+        result = self._run(command, response)
+        assert result.exit_code == 0
+        assert "1 bucket fan-out(s) an earlier apply did not finish" in result.output
+
+    def test_a_plan_with_only_pending_fan_outs_is_not_up_to_date(self):
+        """Saying "up-to-date" and then "N fan-outs did not finish" contradicts itself."""
+        response = {"status": "planned", "changes": [], "unchanged": 5, "pending": 2}
+        result = self._run("plan", response)
+        assert result.exit_code == 0
+        assert "up-to-date" not in result.output
+        assert result.output == (
+            "No config changes; 2 bucket fan-out(s) an earlier apply did not finish "
+            "will be retried by the next apply.\n"
+        )
+
+    def test_a_plan_with_nothing_at_all_is_up_to_date(self):
+        response = {"status": "planned", "changes": [], "unchanged": 5, "pending": 0}
+        assert self._run("plan", response).output == "No changes. Infrastructure is up-to-date.\n"
+
+    def test_a_preview_with_nothing_owed_says_nothing_more(self):
+        response = {**self._APPLIED, "status": "planned", "pending": 0}
+        result = self._run("plan", response, "-q")
+        assert result.output == "Plan: 2 change(s) (1177 unchanged)\n"
+
+    def test_a_response_without_an_unchanged_count_prints_no_suffix(self):
+        """A provisioner predating the count still renders cleanly."""
+        response = {k: v for k, v in self._APPLIED.items() if k != "unchanged"}
+        result = self._run("apply", response, "-q")
+        assert result.output == "Applied: 1 created, 1 updated, 0 deleted.\n"
+
+
+class TestLimitsApplyFull:
+    """`--full` asks the provisioner to fan out every declared entry."""
+
+    def _invoke(self, *flags):
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+            with patch(
+                "zae_limiter.limits_cli._invoke_provisioner",
+                return_value={"status": "applied", "changes": []},
+            ) as invoke:
+                result = CliRunner().invoke(
+                    cli, ["limits", "apply", "--name", "test-app", "-f", f.name, *flags]
+                )
+        assert result.exit_code == 0
+        return invoke
+
+    def test_full_is_forwarded(self):
+        assert self._invoke("--full").call_args.kwargs["full"] is True
+
+    def test_change_only_by_default(self):
+        assert self._invoke().call_args.kwargs["full"] is False
+
+    @pytest.mark.parametrize("resumed", [True, False])
+    def test_a_resumed_full_apply_says_so(self, resumed):
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+            with patch(
+                "zae_limiter.limits_cli._invoke_provisioner",
+                return_value={"status": "applied", "changes": [], "resumed": resumed},
+            ):
+                result = CliRunner().invoke(
+                    cli, ["limits", "apply", "--name", "test-app", "-f", f.name, "--full"]
+                )
+        assert result.exit_code == 0
+        assert ("resumed the fan-outs an earlier full apply" in result.output) is resumed
+
+    @pytest.mark.parametrize("full", [True, False])
+    def test_full_reaches_the_payload_only_when_set(self, full):
+        from zae_limiter.limits_cli import _invoke_provisioner
+
+        with (
+            patch("asyncio.run", return_value="test-ns-id"),
+            patch("zae_limiter.limits_cli.boto3.client") as client,
+        ):
+            client.return_value.invoke.return_value = {
+                "Payload": io.BytesIO(json.dumps({"status": "applied"}).encode())
+            }
+            _invoke_provisioner("test-app", "us-east-1", None, "apply", {}, full=full)
+        payload = json.loads(client.return_value.invoke.call_args.kwargs["Payload"])
+        assert ("full" in payload) is full

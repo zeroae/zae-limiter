@@ -305,6 +305,55 @@ Applied: 4 created, 0 updated, 0 deleted.
 
 Subsequent applies with a modified YAML file will show `~` for updates and `-` for deletions (items removed from the manifest are deleted from DynamoDB).
 
+Only entries that differ from what is stored are applied. The provisioner reads each declared
+config item first (one strongly consistent `GetItem` per entry, run concurrently) and skips any
+whose stored item is already identical — no write, no bucket fan-out. Adding one entry to a
+manifest of a thousand therefore writes one config item and fans out one entry:
+
+```
+  + create entity: user-1001/gpt-4
+
+Applied: 1 created, 0 updated, 0 deleted (1000 unchanged).
+```
+
+Because the comparison is against the live table rather than the previous manifest, an entry
+changed out of band (for example with `entity set-limits`) still differs and is restored on the
+next apply. `plan` and `diff` make the same comparison, so they list only what an apply would
+change.
+
+Pass `--quiet` / `-q` to `plan`, `apply` or `diff` to print only the summary line, without a
+line per changed entry. Errors are still printed.
+
+Entries that declare `disabled` (kill switches and carve-outs, `bypass` included) are
+re-checked on every apply even when unchanged, so a bucket created while an earlier disable was
+being applied is still stamped. Limit changes are not re-checked: a bucket whose limits were
+changed out of band while its config entry still matches the manifest is not repaired by a
+plain apply. `limits apply --full` rewrites every declared entry and pushes its limits to
+existing buckets again, as every apply did before change-only applies. A change to `soft` alone,
+or to `disabled: bypass` alone, is a change like any other: it is written and fanned out.
+
+An apply records every bucket fan-out it owes before it writes any config, and removes each one
+as soon as it lands. Every fan-out, an apply's own included, is run from what the table holds
+for that entry at that moment, not from the manifest being applied, so a stale or concurrent
+apply cannot undo a newer change. An apply that is interrupted (a Lambda timeout) or whose
+fan-out fails leaves only the unfinished ones, and a later apply retries exactly those, even
+when no entry changed:
+
+- one whose fan-out failed is retried by the very next apply;
+- one an interrupted apply left is retried once that apply is certainly gone: after the
+  provisioner Lambda's timeout plus a minute. Until then a new apply leaves it alone, so it can
+  never finish, or drop, work a still-running apply is doing.
+
+An interrupted `--full` apply resumes where it stopped instead of starting again: the next
+`--full` apply retries only the unfinished fan-outs plus whatever the manifest changed, and
+prints `Note: resumed the fan-outs an earlier full apply did not finish`. Only work a `--full`
+apply left does that; any other unfinished fan-out never stops `--full` from fanning out every
+entry. `plan` and `diff` report what is waiting:
+
+```
+No config changes; 3 bucket fan-out(s) an earlier apply did not finish will be retried by the next apply.
+```
+
 ### Detect Drift
 
 ```bash
@@ -335,6 +384,11 @@ aws cloudformation deploy \
 
 The generated template uses `Custom::ZaeLimiterLimits` backed by the provisioner Lambda. The Lambda ARN is imported from the main stack via `Fn::ImportValue`.
 
+A stack update applies only the entries that changed, like `limits apply`. Pass `--full` to emit
+`FullApply: true` on the resource, the stack's equivalent of `limits apply --full`.
+CloudFormation calls the resource only when a property changes, so adding `FullApply` is what
+runs the full apply; while it stays set, every update is a full one.
+
 ### Common Options
 
 | Option | Short | Description |
@@ -344,6 +398,8 @@ The generated template uses `Custom::ZaeLimiterLimits` backed by the provisioner
 | `--region` | | AWS region |
 | `--endpoint-url` | | Custom endpoint URL (e.g., LocalStack) |
 | `--namespace` | `-N` | Namespace (default: `"default"`) |
+| `--quiet` | `-q` | Print only the summary, not a line per changed entry (`plan`, `apply`, `diff`) |
+| `--full` | | Rewrite and fan out every declared entry, not only changed ones (`apply`); emit `FullApply: true` (`cfn-template`) |
 
 ### Partial Failures
 
@@ -358,9 +414,13 @@ Errors (1):
   - bucket param sync entity user-123: <reason>
 ```
 
-Every write is idempotent, so re-running the same manifest reconciles the remainder. The
-`#PROVISIONER` record is written either way, so it always describes the config that is actually
-in the table.
+Every write is idempotent, so re-running the same manifest reconciles the remainder. Each
+fan-out an apply owes is recorded as its own pending item **before** the config is written, and
+removed only once it lands, so one that failed is retried by the next apply, and one cut short by
+a Lambda timeout by the first apply after that Lambda's timeout plus a minute, even when the
+manifest has not changed (unchanged entries are otherwise skipped). Two applies running at once
+cannot erase or take over each other's pending work: when both owe the same fan-out, it stays pending until each has finished its own. Right after a timeout, `limits apply` reports the fan-outs the timed-out run still holds with the same "No config changes; N bucket fan-out(s) …" line, not "up-to-date". The `#PROVISIONER` record is
+written either way, so it always describes the config that is actually in the table.
 
 !!! note "Provisioner Lambda"
     The `plan`, `apply`, and `diff` subcommands invoke the `{name}-limits-provisioner` Lambda function. This function must be deployed as part of the main stack before using these commands. It is deployed by default; `zae-limiter deploy --no-provisioner` (or `--no-iam`, which leaves no role for it) skips it.

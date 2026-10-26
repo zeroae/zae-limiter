@@ -54,12 +54,19 @@ def limits() -> None:
     type=click.Path(exists=True),
     help="YAML limits file.",
 )
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    help="Print only the summary, not a line per changed entry.",
+)
 def limits_plan(
     name: str,
     region: str | None,
     endpoint_url: str | None,
     namespace: str,
     file_path: str,
+    quiet: bool,
 ) -> None:
     """Preview changes without applying (like terraform plan).
 
@@ -76,10 +83,19 @@ def limits_plan(
 
     changes = result.get("changes", [])
     if not changes:
-        click.echo("No changes. Infrastructure is up-to-date.")
+        pending = result.get("pending") or 0
+        if pending:
+            # Not "up-to-date": the next apply still has bucket work to do.
+            click.echo(_pending_line(pending))
+        else:
+            click.echo("No changes. Infrastructure is up-to-date.")
         return
 
-    click.echo(f"Plan: {len(changes)} change(s)\n")
+    click.echo(f"Plan: {len(changes)} change(s){_unchanged_suffix(result)}")
+    _echo_pending(result)
+    if quiet:
+        return
+    click.echo()
     for change in changes:
         symbol = {"create": "+", "update": "~", "delete": "-"}.get(change["action"], "?")
         target = change.get("target") or "(system defaults)"
@@ -99,34 +115,70 @@ def limits_plan(
     type=click.Path(exists=True),
     help="YAML limits file.",
 )
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    help="Print only the summary, not a line per changed entry.",
+)
+@click.option(
+    "--full",
+    is_flag=True,
+    help=(
+        "Rewrite and fan out every declared entry, not only the ones that differ "
+        "from the table. Repairs bucket items an earlier fan-out missed."
+    ),
+)
 def limits_apply(
     name: str,
     region: str | None,
     endpoint_url: str | None,
     namespace: str,
     file_path: str,
+    quiet: bool,
+    full: bool,
 ) -> None:
     """Apply limits from YAML file (like terraform apply)."""
     manifest_data = _load_yaml(file_path)
-    result = _invoke_provisioner(name, region, endpoint_url, "apply", manifest_data)
+    result = _invoke_provisioner(name, region, endpoint_url, "apply", manifest_data, full=full)
 
     changes = result.get("changes", [])
-    if not changes:
-        click.echo("No changes. Infrastructure is up-to-date.")
-        return
-
-    for change in changes:
-        symbol = {"create": "+", "update": "~", "delete": "-"}.get(change["action"], "?")
-        target = change.get("target") or "(system defaults)"
-        click.echo(f"  {symbol} {change['action']} {change['level']}: {target}")
-
-    click.echo(
-        f"\nApplied: {result.get('created', 0)} created, "
-        f"{result.get('updated', 0)} updated, "
-        f"{result.get('deleted', 0)} deleted."
-    )
-
     errors = result.get("errors", [])
+    if not changes:
+        if errors:
+            click.echo("No config changes; retried fan-outs did not finish (see errors).")
+        elif result.get("pending"):
+            # Not "up-to-date": fan-outs are still owed, e.g. leased to a run
+            # that just timed out (#739 re-review 2 #4).
+            click.echo(_pending_line(result["pending"]))
+        else:
+            click.echo("No changes. Infrastructure is up-to-date.")
+    else:
+        if not quiet:
+            for change in changes:
+                symbol = {"create": "+", "update": "~", "delete": "-"}.get(change["action"], "?")
+                target = change.get("target") or "(system defaults)"
+                click.echo(f"  {symbol} {change['action']} {change['level']}: {target}")
+            click.echo()
+
+        click.echo(
+            f"Applied: {result.get('created', 0)} created, "
+            f"{result.get('updated', 0)} updated, "
+            f"{result.get('deleted', 0)} deleted"
+            f"{_unchanged_suffix(result)}."
+        )
+        # Fan-outs still owed after the apply, e.g. leased to a run that timed
+        # out, are worth saying even when config changed (#739 re-review 3 #5).
+        _echo_pending(result)
+
+    if result.get("resumed"):
+        click.echo(
+            "Note: resumed the fan-outs an earlier full apply did not finish, "
+            "instead of starting over."
+        )
+
+    # Reported even with no changes: an apply also retries the bucket
+    # fan-outs an earlier apply left unfinished, and those can fail again.
     if errors:
         click.echo(f"\nErrors ({len(errors)}):", err=True)
         for err in errors:
@@ -147,12 +199,19 @@ def limits_apply(
     type=click.Path(exists=True),
     help="YAML limits file.",
 )
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    help="Print only the summary, not a line per changed entry.",
+)
 def limits_diff(
     name: str,
     region: str | None,
     endpoint_url: str | None,
     namespace: str,
     file_path: str,
+    quiet: bool,
 ) -> None:
     """Show drift between YAML and live DynamoDB state.
 
@@ -165,9 +224,14 @@ def limits_diff(
     changes = result.get("changes", [])
     if not changes:
         click.echo("No drift detected. Live state matches YAML.")
+        _echo_pending(result)
         return
 
-    click.echo(f"Drift detected: {len(changes)} difference(s)\n")
+    click.echo(f"Drift detected: {len(changes)} difference(s){_unchanged_suffix(result)}")
+    _echo_pending(result)
+    if quiet:
+        return
+    click.echo()
     for change in changes:
         symbol = {"create": "+", "update": "~", "delete": "-"}.get(change["action"], "?")
         target = change.get("target") or "(system defaults)"
@@ -184,7 +248,15 @@ def limits_diff(
     type=click.Path(exists=True),
     help="YAML limits file.",
 )
-def limits_cfn_template(name: str, file_path: str) -> None:
+@click.option(
+    "--full",
+    is_flag=True,
+    help=(
+        "Emit FullApply: true, so every stack update applies in full, like "
+        "'limits apply --full'. Repairs bucket items an earlier fan-out missed."
+    ),
+)
+def limits_cfn_template(name: str, file_path: str, full: bool) -> None:
     """Generate a CloudFormation template from YAML file."""
     manifest_data = _load_yaml(file_path)
     namespace = manifest_data.get("namespace", "default")
@@ -194,6 +266,10 @@ def limits_cfn_template(name: str, file_path: str) -> None:
         "TableName": name,
         "Namespace": namespace,
     }
+    if full:
+        # CloudFormation invokes the resource only when a property changes, so
+        # adding (or removing) this one is itself what triggers the full apply.
+        properties["FullApply"] = True
 
     if "system" in manifest_data:
         system_props: dict[str, Any] = {}
@@ -368,6 +444,38 @@ def _cascade_warnings(manifest_data: dict[str, Any]) -> list[str]:
     ]
 
 
+def _pending_line(pending: int) -> str:
+    """What `plan` and `apply` say when no config changed but fan-outs are owed."""
+    return (
+        f"No config changes; {pending} bucket fan-out(s) an earlier apply "
+        "did not finish will be retried by the next apply."
+    )
+
+
+def _echo_pending(result: dict[str, Any]) -> None:
+    """Say how many bucket fan-outs an earlier apply left for the next one.
+
+    An apply records every fan-out it owes before writing config, and removes
+    each once it lands; one that was interrupted or failed leaves the rest,
+    which the next apply retries even when no entry has changed.
+    """
+    pending = result.get("pending") or 0
+    if pending:
+        click.echo(
+            f"Note: {pending} bucket fan-out(s) an earlier apply did not finish; "
+            "the next apply retries them."
+        )
+
+
+def _unchanged_suffix(result: dict[str, Any]) -> str:
+    """`` (N unchanged)`` for the declared levels already matching the table.
+
+    Empty when the provisioner reports none, or predates the count.
+    """
+    unchanged = result.get("unchanged") or 0
+    return f" ({unchanged} unchanged)" if unchanged else ""
+
+
 def _load_yaml(file_path: str) -> dict[str, Any]:
     """Load and parse a YAML file."""
     with open(file_path) as f:
@@ -386,6 +494,7 @@ def _invoke_provisioner(
     manifest_data: dict[str, Any],
     *,
     preview: str | None = None,
+    full: bool = False,
 ) -> dict[str, Any]:
     """Invoke the provisioner Lambda function.
 
@@ -496,12 +605,14 @@ def _invoke_provisioner(
         **kwargs,
     )
 
-    payload = {
+    payload: dict[str, Any] = {
         "action": action,
         "table_name": name,
         "namespace_id": namespace_id,
         "manifest": manifest_data,
     }
+    if full:
+        payload["full"] = True
 
     try:
         response = lambda_client.invoke(
