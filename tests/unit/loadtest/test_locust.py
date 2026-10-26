@@ -619,6 +619,117 @@ class TestAcquireCommit:
         # The RateLimitExceeded is passed in context for logging
         assert call_kwargs["context"]["rate_limit_exceeded"] is exc
 
+    def test_rejection_inside_the_body_is_not_the_outer_acquires(
+        self, session, mock_limiter, mock_event
+    ):
+        """A nested acquire rejected in the body fires one RATE_LIMITED, its own.
+
+        The outer acquire was admitted: it keeps its ACQUIRE success and fires
+        nothing more, so the rejection is not counted against it.
+        """
+        from zae_limiter.exceptions import RateLimitExceeded
+        from zae_limiter.models import Limit, LimitStatus
+
+        violation = LimitStatus(
+            entity_id="user-1",
+            resource="budget",
+            limit_name="budget_rpm",
+            limit=Limit.per_minute("budget_rpm", 100),
+            available=-10,
+            requested=1,
+            exceeded=True,
+            retry_after_seconds=5.0,
+        )
+        exc = RateLimitExceeded(statuses=[violation])
+        outer_lease = MagicMock()
+        outer_lease._has_adjustments = False
+
+        @contextmanager
+        def outer_ctx():
+            yield outer_lease
+
+        mock_limiter.acquire.side_effect = [outer_ctx(), exc]
+
+        with pytest.raises(RateLimitExceeded):
+            with session.acquire("user-1", "search", {"rpm": 1}):
+                with session.acquire("user-1", "budget", {"budget_rpm": 1}):
+                    pass  # pragma: no cover
+
+        fired = [
+            (c.kwargs["request_type"], c.kwargs["name"]) for c in mock_event.fire.call_args_list
+        ]
+        assert fired == [("ACQUIRE", "search"), ("RATE_LIMITED", "budget")]
+        assert mock_event.fire.call_args_list[0].kwargs["exception"] is None
+
+
+# ---------------------------------------------------------------------------
+# Multi-resource acquire (also=, ADR-148)
+# ---------------------------------------------------------------------------
+
+
+class TestAcquireAlso:
+    """Verify that acquire() passes also= through as one lease and one event."""
+
+    @staticmethod
+    def _yield_lease(mock_limiter):
+        mock_lease = MagicMock()
+        mock_lease._has_adjustments = False
+
+        @contextmanager
+        def mock_acquire_ctx():
+            yield mock_lease
+
+        mock_limiter.acquire.return_value = mock_acquire_ctx()
+
+    def test_also_reaches_sync_limiter(self, session, mock_limiter, mock_event):
+        self._yield_lease(mock_limiter)
+        also = {"budget": {"budget_rpm": 1}}
+
+        with session.acquire("user-1", "search", {"rpm": 1}, also=also):
+            pass
+
+        mock_limiter.acquire.assert_called_once_with(
+            entity_id="user-1",
+            resource="search",
+            consume={"rpm": 1},
+            also=also,
+        )
+
+    def test_also_defaults_to_none(self, session, mock_limiter, mock_event):
+        self._yield_lease(mock_limiter)
+
+        with session.acquire("user-1", "search", {"rpm": 1}):
+            pass
+
+        assert mock_limiter.acquire.call_args.kwargs["also"] is None
+
+    def test_event_name_is_primary_resource(self, session, mock_limiter, mock_event):
+        self._yield_lease(mock_limiter)
+
+        with session.acquire("user-1", "search", {"rpm": 1}, also={"budget": {"budget_rpm": 1}}):
+            pass
+
+        # One lease is one ACQUIRE event, named for the primary resource
+        assert mock_event.fire.call_count == 1
+        call_kwargs = mock_event.fire.call_args.kwargs
+        assert call_kwargs["request_type"] == "ACQUIRE"
+        assert call_kwargs["name"] == "search"
+
+    def test_event_name_uses_name_when_given(self, session, mock_limiter, mock_event):
+        self._yield_lease(mock_limiter)
+
+        with session.acquire(
+            "user-1",
+            "search",
+            {"rpm": 1},
+            also={"budget": {"budget_rpm": 1}},
+            name="search+budget",
+        ):
+            pass
+
+        assert mock_event.fire.call_count == 1
+        assert mock_event.fire.call_args.kwargs["name"] == "search+budget"
+
 
 # ---------------------------------------------------------------------------
 # Available

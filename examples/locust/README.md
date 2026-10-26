@@ -15,6 +15,7 @@ examples/locust/
 ├── locustfiles/                # Scenario files
 │   ├── simple.py               # Single resource, single limit
 │   ├── max_rps.py              # Zero-wait max throughput benchmark
+│   ├── multi_resource.py       # One multi-resource acquire vs two acquires
 │   ├── llm_gateway.py          # LLM gateway with lease adjustments
 │   ├── llm_production.py       # Production LLM traffic with load shapes
 │   └── stress.py               # Whale/spike/power-law distribution
@@ -27,6 +28,7 @@ examples/locust/
 |----------|-----------|--------|----------|---------|
 | `simple` | 1 (`api`) | RPM | Many anonymous | `acquire` only |
 | `max_rps` | 1 (`api`) | RPM | Many anonymous | Zero-wait back-to-back `acquire` |
+| `multi_resource` | 2 (`search`, `budget`) | `rpm` + `budget_rpm` (both per minute) | Children of one shared parent | Zero-wait `acquire(..., also=...)` vs two nested `acquire` |
 | `llm_gateway` | 8 LLM models | RPM + TPM | Many anonymous | `acquire` → `adjust` → `commit` |
 | `llm_production` | 8 LLM models | RPM + TPM | Many anonymous | Weighted tasks + custom load shapes |
 | `stress` | 8 APIs | RPM + TPM | 16K (whale/spike/powerlaw) | Hot partition + burst testing |
@@ -42,10 +44,42 @@ specific classes (default: all classes in the file).
 | `simple.py` | `SimpleCascadeUser` | Yes | Child entities under a shared parent |
 | `max_rps.py` | `MaxRpsUser` | No | Zero-wait standalone, max throughput |
 | `max_rps.py` | `MaxRpsCascadeUser` | Yes | Zero-wait cascade, measures cascade overhead |
+| `multi_resource.py` | `MultiResourceAlsoUser` | `search` only | One `acquire(..., also={"budget": ...})`: one lease, one round trip |
+| `multi_resource.py` | `MultiResourceNestedUser` | `search` only | Two nested acquires (`search`, then `budget`): two leases, two round trips |
 
-Cascade classes create child entities with `cascade=True` under a shared parent
-created in `on_test_start`. Every `acquire()` writes to both child and parent
-buckets, enabling direct comparison of cascade overhead vs standalone operation.
+Cascade classes create child entities with `cascade=True` under a shared parent.
+Every `acquire()` writes to both child and parent buckets, enabling direct
+comparison of cascade overhead vs standalone operation.
+
+The parent is **one entity for the whole run**, with a fixed id per locustfile
+(`loadtest-cascade-parent-simple`, `loadtest-cascade-parent-max-rps`,
+`loadtest-cascade-parent-multi-resource`), so the
+master, every worker and a headless run all debit the same one, as in
+production, where a parent's bucket is the hot partition. Each process creates
+it on its first cascade user's `on_start` and treats "already exists" as
+success. Only the master (or a headless runner) deletes it in `on_test_stop`;
+a worker never does. On a normal stop the master fires `on_test_stop` only after
+its workers report no running users. It can fire earlier, while workers still
+debit the parent, when the workers do not report within `stop_timeout` + 60 s,
+or when the master quits instead of stopping (Ctrl-C, or the distributed CLI
+stopping the Fargate task): `quit()` fires `test_stop` before it tells the
+workers to quit. A worker's next slow path then recreates an orphan parent
+bucket, which expires through its TTL (system defaults; resource defaults for
+`multi_resource.py`).
+
+A run killed before `on_test_stop` leaves the parent behind, and the next run
+reuses it with its old bucket state (possibly already sharded), so that run is
+not comparable with a cold start.
+
+The `multi_resource.py` classes share one setup: `search` cascades to the parent,
+`budget` does not (resource-level cascade policy, which needs the stack's Lambdas
+at v0.16.0 or later). **Compare the `ITERATION multi-resource` row**: both classes
+fire it once per task, timing the whole iteration, so its latency and RPS are like
+for like. The per-resource rows are informational only. A multi-resource acquire is
+one lease, so it reports one `ACQUIRE` row named for the primary resource
+(`search`); the nested class reports an `ACQUIRE` row for each resource, so its RPS
+reads doubled, and its `search` row times only the outer acquire, so its p50 reads
+halved. Their parent is the run-wide one described above.
 
 ## Running Locally
 
@@ -60,6 +94,10 @@ locust -f locustfiles/max_rps.py --host <stack-name>
 
 # Run only the cascade user class
 locust -f locustfiles/max_rps.py --host <stack-name> MaxRpsCascadeUser
+
+# Multi-resource: one acquire over two resources vs two acquires
+locust -f locustfiles/multi_resource.py --host <stack-name> MultiResourceAlsoUser
+locust -f locustfiles/multi_resource.py --host <stack-name> MultiResourceNestedUser
 
 # LLM Gateway: multiple models with lease adjustments
 locust -f locustfiles/llm_gateway.py --host <stack-name>

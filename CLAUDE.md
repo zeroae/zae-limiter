@@ -446,6 +446,8 @@ zae-limiter loadtest delete -n my-app --yes
 | `simple.py` | `SimpleCascadeUser` | Child entities with `cascade=True` to shared parent |
 | `max_rps.py` | `MaxRpsUser` | Zero-wait standalone, max throughput |
 | `max_rps.py` | `MaxRpsCascadeUser` | Zero-wait cascade, measures cascade overhead |
+| `multi_resource.py` | `MultiResourceAlsoUser` | Cascading `search` + per-user `budget` in one `acquire(..., also=...)` (ADR-148) |
+| `multi_resource.py` | `MultiResourceNestedUser` | Same setup as two nested acquires (`search`, then `budget`), for comparison |
 
 Cascade classes create child entities under a shared parent and set `cascade=True`, so every `acquire()` writes to both child and parent buckets. This is used to benchmark cascade overhead against standalone operation.
 
