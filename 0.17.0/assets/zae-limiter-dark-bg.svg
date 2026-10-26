@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="196" viewBox="80 52 720 196">
+<rect x="120" y="72" width="44" height="156" fill="#FFFFFF"/>
+<rect x="186" y="72" width="44" height="156" fill="#FFFFFF"/>
+<rect x="270" y="72" width="10" height="156" fill="#FFFFFF"/>
+<text x="310" y="190" fill="#FFFFFF" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="96" font-weight="600">zae-limiter</text>
+</svg>
