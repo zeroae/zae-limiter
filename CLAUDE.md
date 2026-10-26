@@ -1309,8 +1309,8 @@ every resource in `also` for one entity and yields **one** lease — **all or no
 rejection, disable or backend error refunds every debit the acquire wrote before it propagates.
 Each resource resolves its own limits, `disabled`, cascade policy, shards and quota grants
 exactly as a single-resource acquire. `RepositoryProtocol` is unchanged; no new bucket writer,
-no schema change. ADR-148 is **Proposed**; the design's decisions D1–D8 were built on their
-recommended options **provisionally** (see `docs/plans/2026-10-09-multi-resource-acquire-design.md`).
+no schema change. ADR-148 is **Proposed** until the release; the design's decisions D1–D8 were
+**ratified as built** on 2026-10-26 (see `docs/plans/2026-10-09-multi-resource-acquire-design.md`).
 
 - **Boundary** (`RateLimiter._acquire_parts`, before any I/O): `validate_resource` on every
   name; the primary in `also`, more than `MAX_ACQUIRE_RESOURCES = 16` resources, or `limits=`
