@@ -46,23 +46,27 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from locust import constant, events, task
-from locust.env import Environment
 from locust.runners import WorkerRunner
 
 from zae_limiter import EntityExistsError, Limit, RateLimitExceeded, SyncRateLimiter
 from zae_limiter.locust import RateLimiterUser
 
+if TYPE_CHECKING:
+    from locust.env import Environment
+
 # Children created by this process; the shared parent is not one of them.
 _created_entities: set[str] = set()
-# One parent for the whole run, whichever process (master, worker, Lambda)
-# a user runs in, so the parent's hot-partition load is not split per process.
-CASCADE_PARENT = "loadtest-cascade-parent-multi-resource"
-# Holds CASCADE_PARENT once this process has made sure it exists.
-_parent_ensured: set[str] = set()
+
+# The run's one cascade parent: the same id in every process (see above).
+CASCADE_PARENT_ID = "loadtest-cascade-parent-multi-resource"
 _parent_lock = threading.Lock()
+# Set once this process has made sure the parent exists. Cleared at every
+# test start and stop: a warm Lambda worker keeps module state across runs,
+# and the master deletes the parent at the end of each one.
+_parent_ready = threading.Event()
 
 # The like-for-like row both classes fire once per iteration.
 ITERATION_EVENT = ("ITERATION", "multi-resource")
@@ -81,6 +85,7 @@ def _make_limiter(environment: object) -> SyncRateLimiter:
 @events.test_start.add_listener
 def on_test_start(environment: Environment, **kwargs: Any) -> None:
     """Store resource defaults and the budget cascade policy (master or standalone only)."""
+    _parent_ready.clear()
     if isinstance(environment.runner, WorkerRunner):
         return
     repo = _make_limiter(environment)._repository
@@ -95,6 +100,7 @@ def on_test_start(environment: Environment, **kwargs: Any) -> None:
 @events.test_stop.add_listener
 def on_test_stop(environment: Environment, **kwargs: Any) -> None:
     """Delete this process's children; the master or local runner deletes the parent."""
+    _parent_ready.clear()
     is_worker = isinstance(environment.runner, WorkerRunner)
     if not _created_entities and is_worker:
         return
@@ -103,8 +109,9 @@ def on_test_stop(environment: Environment, **kwargs: Any) -> None:
         limiter.delete_entity(entity_id)
     _created_entities.clear()
     if not is_worker:
-        limiter.delete_entity(CASCADE_PARENT)
-        _parent_ensured.clear()
+        # On a normal stop the master fires this once its workers report no
+        # users; on a quit or a timeout it may not (see the module docstring).
+        limiter.delete_entity(CASCADE_PARENT_ID)
 
 
 class _MultiResourceUser(RateLimiterUser):
@@ -120,13 +127,13 @@ class _MultiResourceUser(RateLimiterUser):
         by another process carries on, so the call is idempotent.
         """
         with _parent_lock:
-            if CASCADE_PARENT not in _parent_ensured:
+            if not _parent_ready.is_set():
                 try:
-                    self.client._limiter.create_entity(CASCADE_PARENT, name="Cascade Parent")
+                    self.client._limiter.create_entity(CASCADE_PARENT_ID, name="Cascade Parent")
                 except EntityExistsError:
-                    pass
-                _parent_ensured.add(CASCADE_PARENT)
-            return CASCADE_PARENT
+                    pass  # Another process of this run, or a killed earlier run, made it
+                _parent_ready.set()
+        return CASCADE_PARENT_ID
 
     @contextmanager
     def _iteration(self) -> Iterator[None]:
