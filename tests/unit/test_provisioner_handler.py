@@ -2566,6 +2566,33 @@ class TestPendingItems:
         assert len(read_pending(client, self.TABLE, "ns")) == 2
 
 
+class TestMergePredicted:
+    """A predicted fan-out runs even when the write's own image did not report it."""
+
+    def test_each_kind_is_added_once(self):
+        from zae_limiter_provisioner.applier import ApplyResult
+        from zae_limiter_provisioner.handler import _merge_predicted
+
+        reported = Change("update", "entity", "u1/gpt-4", {})
+        unreported = Change("update", "entity", "u2/gpt-4", {})
+        result = ApplyResult(limits_changed=[reported])
+
+        _merge_predicted(
+            result,
+            [
+                ("sync", reported),
+                ("sync", unreported),
+                ("disabled", unreported),
+                ("cascade", unreported),
+                ("cascade", unreported),
+            ],
+        )
+
+        assert result.limits_changed == [reported, unreported]
+        assert result.disabled_changed == [unreported]
+        assert result.cascade_changed == [("entity", "u2/gpt-4")]
+
+
 class TestRetryFromTable:
     """A leftover fan-out is retried from its level's live config (finding 1)."""
 

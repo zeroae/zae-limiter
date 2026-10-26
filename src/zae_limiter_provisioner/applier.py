@@ -383,8 +383,6 @@ def drop_unchanged(
         if change.action == "delete":
             candidates.append((i, config_key(namespace_id, change), None))
             continue
-        if change.action not in ("create", "update"):
-            continue
         try:
             pk, sk, item = _build_change_item(namespace_id, change)
         except Exception:
@@ -615,8 +613,6 @@ def fanouts_needed(namespace_id: str, change: Change, stored: dict[str, Any] | N
         # The level becomes absent: it needs what removing its stored item
         # changes (#739 review), not every fan-out.
         return fanouts_for(change, stored, {})
-    if change.action not in ("create", "update"):
-        return every
     try:
         _pk, _sk, new = _build_change_item(namespace_id, change)
     except Exception:
