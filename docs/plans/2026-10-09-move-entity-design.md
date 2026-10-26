@@ -319,7 +319,10 @@ calls). A lost `pgen` pin: +1 WCU (the retry), only inside a move's race window.
 - **CLI:** `--parent`, `--none`, mutually exclusive, exit codes.
 - **Integration (LocalStack):** GSI1 propagation; end-to-end move under load with two limiters.
 
-## Open decisions
+## Decisions (ratified 2026-10-26)
+
+All seven were ratified as built, on the recommended option, at v0.17.0 release prep. The
+"Recommend" lines below are the chosen options; D4 and D5 carry follow-up notes.
 
 **D1 — Close the stale owner-stamp race (§4)?**
 - (a) `pgen` generation pinned on every `parent_id` writer. Closes it; one attribute + one
@@ -350,12 +353,16 @@ calls). A lost `pgen` pin: +1 WCU (the retry), only inside a move's race window.
 - (c) (b) plus a conditional write on each ancestor's `pgen` in one transaction (race-free).
 - **Recommend (b):** cascade is one hop, so a cycle cannot loop an acquire; (b) stops the
   operator mistake for ~1–2 RCU; (c) costs a transaction across d items for a race nobody hits.
+- **Follow-up:** the hierarchical guide says "two levels only", but neither `create_entity` nor
+  `set_parent` enforces it, which is why a cycle check is needed at all. Whether to enforce two
+  levels (which makes a cycle impossible) or document deeper chains is #784 (v1.0.0).
 
 **D5 — Must the new parent exist?**
 - (a) Yes (`EntityNotFoundError`); the ancestor walk reads it anyway.
 - (b) No, matching `create_entity`.
 - **Recommend (a):** the read is already paid, and moving users into a mistyped org is the
   likeliest operator error; `create_entity` can be tightened separately.
+- **Follow-up:** `create_entity` still accepts a missing parent; tightening it is part of #784.
 
 **D6 — Manifest support.**
 - (a) Out of scope: the manifest declares config items, not entities.

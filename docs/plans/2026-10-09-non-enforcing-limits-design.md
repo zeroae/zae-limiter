@@ -509,7 +509,10 @@ and checked in `tests/unit/test_expression_tokens.py`:
 | #311 DC6 Provisioner | Mirrored; carve-outs preserved (§6.1, §11) |
 | #311 DC7 System-level block | Out of scope — D9 |
 
-## Open decisions
+## Decisions (ratified 2026-10-26)
+
+All twelve were ratified as built, on the recommended option, at v0.17.0 release prep. The
+"Recommend" lines below are the chosen options; D3, D6, D9 and D10 carry follow-up notes.
 
 **D1. How soft-ness resolves.**
 (a) A property of the limit, travelling with it (override-not-merge). (b) An independent
@@ -530,6 +533,10 @@ a stale enforce guess. (b) Always debit `tk`, admit by condition, reset `tk` whe
 cleared. (c) Read config on the fast path.
 **Recommend (a):** warm cost 0 RCU + 1 WCU and `tk` exact; (b) puts a `SET tk` in the clear
 fan-out, which breaks ADR-145 conservation for quotas; (c) adds a read to every call.
+**Follow-up:** stamps keep expiring (decision 8, `stamp_ttl`), so each stamped bucket shard
+renews through one slow pass per ~60 s. The expiry backstops the open create-vs-fan-out race;
+#785 (v1.0.0) closes that race with a config-generation check on bucket creates, as ADR-150 did
+for `parent_id`, so the expiry can be lengthened or removed.
 
 **D4. How a resource- or system-level soft change reaches buckets.**
 (a) Change-only fan-out (GSI2 / GSI4). (b) Bucket TTL, as other resource/system changes.
@@ -547,7 +554,7 @@ cap can be given `cascade: false` on that resource (ADR-146) or the parent can b
 (a) `Lease.overdrawn` plus a usage-snapshot counter, both free. (b) Add a CloudWatch EMF metric
 from the aggregator now. (c) An `AuditEvent` per overdraw.
 **Recommend (a), with (b) as a follow-up:** no new infrastructure; (c) is a hot-path write per
-overdrawn request.
+overdrawn request. **Follow-up:** (b) is #758.
 
 **D7. How statuses report soft limits.**
 (a) `LimitStatus.soft` + derived `overdrawn`, soft limits in `passed`, `"soft"` on every
@@ -565,7 +572,7 @@ prefers not to lock out v0.15–0.16 clients for a fail-safe feature.
 (a) Out of scope; file a separate issue if a namespace kill switch is wanted. (b) Add both here
 with GSI4 fan-out.
 **Recommend (a):** ADR-125 and #693 rejected system-level `disabled`; reversing that is its own
-decision with its own blast radius.
+decision with its own blast radius. **Follow-up:** the kill switch is #759.
 
 **D10. Public names for bypass.**
 (a) `bypass_resource()` / `bypass_entity()`, `disabled="bypass"`, manifest `disabled: bypass`.
@@ -573,6 +580,8 @@ decision with its own blast radius.
 `disabled=`.
 **Recommend (a) for v0.17.0:** matches ADR-125's surface and #311's acceptance criteria; (b) is a
 cleaner name but a rename across API, CLI, manifest and CFN for no behavioural gain.
+**Follow-up:** (a) ships in v0.17.0; the owner chose (b) for v1.0.0, before the API freeze, as
+#786 (`access=` replacing `disabled=`, removed rather than deprecated).
 
 **D11. CLI spelling of soft.**
 (a) A repeatable `--soft NAME` flag. (b) A suffix in the `-l` grammar (`-l tpm:50000:soft`).

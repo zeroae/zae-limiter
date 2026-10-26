@@ -422,16 +422,17 @@ event (§4.2), so a one-shard operation is a 3-item transaction: 6 WRU where a b
 Even at 32 shards, a million operations cost about $70 in total. At #674's scale (one operation
 per plan change or purchase) that is negligible.
 
-## 8. Decisions
+## 8. Decisions (ratified 2026-10-26)
 
 All seven were decided by the owner on 2026-10-21 as recommended, in the Stack C validation
-against #470; D3 is to be revisited after the #678 guide.
+against #470, and ratified at v0.17.0 release prep on 2026-10-26: D1, D2 and D4–D7 as built,
+and D3 changed to (d), the answer the #678 guide had already adopted.
 
 | # | Decision | Options | Decided | Why |
 |---|----------|---------|----------------|-----|
 | D1 | How a quota top-up is spread over shards | (a) weighted by coverage `1/gc`; (b) all on one shard (shard 0 or most headroom); (c) equal split | **(a)** | Puts tokens where draws land; (b) conserves trivially but a draw on any other shard rejects while the entity holds the purchase. |
 | D2 | API shape | (a) two methods `reset_bucket` + `top_up(amounts={…})`; (b) one `reset_bucket(…, add=N)` as in the reshaped issue; (c) one `adjust_bucket(op=…)` | **(a)** | Different semantics, gates and return values; `amounts` dict matches `consume=` and allows several limits with different N. CLI `--add L:N` likewise. |
-| D3 | Plan upgrade as one call | (a) app calls `set_limits` then `top_up(Δ)`; (b) `set_limits(…, top_up_difference=True)`; (c) `upgrade_plan()` helper | **(a)** for v0.17.0 | No atomicity that matters is lost (the gap between the two calls only under-admits), and it keeps `set_limits` free of bucket token writes. Revisit after the #678 guide. |
+| D3 | Plan upgrade as one call | (a) app calls `set_limits` then `top_up(Δ)`; (b) `set_limits(…, top_up_difference=True)`; (c) `upgrade_plan()` helper; (d) app calls `set_limits` then `reset_bucket()`, never `top_up()` | **(d)** (ratified 2026-10-26; (a) was decided 2026-10-21) | A top-up's `tu` survives a downgrade until the next reset, so (a) let an upgrade-then-downgrade keep the bought room on the cheaper plan. A reset sets the new plan's full share and leaves no `tu`. Accepted cost: the reset grants the whole new share, not only the difference, in the period of the upgrade. No API change; `docs/guide/per-resource-budgets.md` teaches (d). |
 | D4 | Session top-up when no window is live | (a) open a window at the top-up instant and credit it; (b) refuse with an error; (c) carry the credit to the next window | **(a)** | A credit to an ended window is wiped by the next opener (silently lost); (c) changes opener semantics; (a) reads naturally as "the purchase starts the session". |
 | D5 | Top-up when no bucket exists | (a) create shard 0 from resolved config with `tk = share + N`, `tu = N` (`attribute_not_exists(PK)`); (b) refuse; (c) no-op | **(a)** | A purchase must not be lost because the user had not called yet; reuses the slow-path create builder. The TTL horizon is ≥ 7 periods, longer than the period the credit lives in. |
 | D6 | Ship quota top-up above the ceiling in v0.17.0 | (a) yes, with `tu` and the 0.17 gate; (b) reset + bounded top-up now, `tu` later (validator's suggestion) | **(a)**, (b) as fallback if the milestone slips | #674 needs purchases; (b) ships with no new invariant term if time runs short. |
