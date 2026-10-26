@@ -3,7 +3,7 @@
 Usage:
     locust -f locustfiles/multi_resource.py --host <stack-name>
 
-Each Locust user is a child entity cascading to a shared parent org on the
+Each Locust user is a child entity cascading to one shared parent org on the
 ``search`` resource, plus a per-user ``budget`` resource that does not
 cascade (resource-level cascade policy, ADR-146). Every request debits
 ``search`` (child + parent) and ``budget`` (child only): three bucket items.
@@ -24,6 +24,11 @@ cost for both: 0 RCU + 3 WCU)::
     zae-limiter loadtest run -n <stack> -f locustfiles/multi_resource.py \\
         MultiResourceNestedUser
 
+The parent has a fixed id (``CASCADE_PARENT``), so a distributed or
+multi-Lambda run has one parent, not one per process. Each process creates it
+if it is missing (an existing one counts as success); only the master or a
+local runner deletes it at test stop, never a worker.
+
 Limits are sized so nothing is rejected: the scenario measures the admitted
 path, not rate limiting. Setting the ``budget`` cascade policy needs the
 stack's Lambdas at v0.16.0 or later.
@@ -40,12 +45,16 @@ from locust import constant, events, task
 from locust.env import Environment
 from locust.runners import WorkerRunner
 
-from zae_limiter import Limit, SyncRateLimiter
+from zae_limiter import EntityExistsError, Limit, SyncRateLimiter
 from zae_limiter.locust import RateLimiterUser
 
+# Children created by this process; the shared parent is not one of them.
 _created_entities: set[str] = set()
-# Per-process shared parent, keyed "id" once created (a dict avoids `global`).
-_cascade_parent: dict[str, str] = {}
+# One parent for the whole run, whichever process (master, worker, Lambda)
+# a user runs in, so the parent's hot-partition load is not split per process.
+CASCADE_PARENT = "loadtest-cascade-parent-multi-resource"
+# Holds CASCADE_PARENT once this process has made sure it exists.
+_parent_ensured: set[str] = set()
 _parent_lock = threading.Lock()
 
 _SEARCH_CONSUME = {"rpm": 1}
@@ -75,30 +84,39 @@ def on_test_start(environment: Environment, **kwargs: Any) -> None:
 
 @events.test_stop.add_listener
 def on_test_stop(environment: Environment, **kwargs: Any) -> None:
-    """Clean up entities created by this process."""
-    if not _created_entities:
+    """Delete this process's children; the master or local runner deletes the parent."""
+    is_worker = isinstance(environment.runner, WorkerRunner)
+    if not _created_entities and is_worker:
         return
     limiter = _make_limiter(environment)
     for entity_id in _created_entities:
         limiter.delete_entity(entity_id)
     _created_entities.clear()
+    if not is_worker:
+        limiter.delete_entity(CASCADE_PARENT)
+        _parent_ensured.clear()
 
 
 class _MultiResourceUser(RateLimiterUser):
-    """Shared setup: a child entity cascading to this process's parent org."""
+    """Shared setup: a child entity cascading to the run's shared parent org."""
 
     abstract = True
     wait_time = constant(0)
 
     def _parent(self) -> str:
-        """Create the shared parent once per process (workers included)."""
+        """Make sure the shared parent exists, once per process (workers included).
+
+        Every process tries to create it; one that finds it already created
+        by another process carries on, so the call is idempotent.
+        """
         with _parent_lock:
-            if "id" not in _cascade_parent:
-                parent = f"org-{uuid.uuid4().hex[:8]}"
-                self.client._limiter.create_entity(parent, name="Cascade Parent")
-                _created_entities.add(parent)
-                _cascade_parent["id"] = parent
-            return _cascade_parent["id"]
+            if CASCADE_PARENT not in _parent_ensured:
+                try:
+                    self.client._limiter.create_entity(CASCADE_PARENT, name="Cascade Parent")
+                except EntityExistsError:
+                    pass
+                _parent_ensured.add(CASCADE_PARENT)
+            return CASCADE_PARENT
 
     def on_start(self) -> None:
         """Create a child entity under the shared cascade parent."""

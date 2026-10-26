@@ -28,7 +28,7 @@ examples/locust/
 |----------|-----------|--------|----------|---------|
 | `simple` | 1 (`api`) | RPM | Many anonymous | `acquire` only |
 | `max_rps` | 1 (`api`) | RPM | Many anonymous | Zero-wait back-to-back `acquire` |
-| `multi_resource` | 2 (`search`, `budget`) | `rpm` + `budget_rpm` (both per minute) | Children of a shared parent | Zero-wait `acquire(..., also=...)` vs two nested `acquire` |
+| `multi_resource` | 2 (`search`, `budget`) | `rpm` + `budget_rpm` (both per minute) | Children of one shared parent | Zero-wait `acquire(..., also=...)` vs two nested `acquire` |
 | `llm_gateway` | 8 LLM models | RPM + TPM | Many anonymous | `acquire` → `adjust` → `commit` |
 | `llm_production` | 8 LLM models | RPM + TPM | Many anonymous | Weighted tasks + custom load shapes |
 | `stress` | 8 APIs | RPM + TPM | 16K (whale/spike/powerlaw) | Hot partition + burst testing |
@@ -56,6 +56,12 @@ The `multi_resource.py` classes share one setup: `search` cascades to the parent
 at v0.16.0 or later). A multi-resource acquire is one lease, so it reports one
 `ACQUIRE` row named for the primary resource (`search`); the nested class reports
 an `ACQUIRE` row for each resource.
+
+Their parent is one entity for the whole run, with a fixed id
+(`loadtest-cascade-parent-multi-resource`), whether the users run locally, on
+distributed workers or on several Lambdas. Each process creates it if it is
+missing (an existing one counts as success), and only the master or a local
+runner deletes it when the test stops, never a worker.
 
 ## Running Locally
 
