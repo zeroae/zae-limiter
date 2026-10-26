@@ -801,7 +801,9 @@ costs one entry. Two consequences matter in operation:
 - Each bucket fan-out an apply owes is recorded before its config is written and removed once
   it lands. An interrupted or failed apply leaves only the unfinished ones, which the next apply
   retries, so even a large `--full` apply cut short by the Lambda timeout resumes where it
-  stopped. `plan` and `diff` report how many are waiting.
+  stopped. That holds when it is re-run with `--full` or `FullApply` too: a full apply that
+  finds unfinished fan-outs retries those (plus whatever the manifest changed) rather than every
+  entry, and reports `resumed`. `plan` and `diff` report how many are waiting.
 
 See [Declarative Limits](../cli.md#declarative-limits) for the details.
 

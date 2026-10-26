@@ -336,8 +336,11 @@ An apply records every bucket fan-out it owes before it writes any config, and r
 as soon as it lands. An apply that is interrupted (a Lambda timeout) or whose fan-out fails
 leaves only the unfinished ones, and the next apply retries exactly those, even when no entry
 changed. A retry fans out what the table holds for that entry now, not what the manifest being
-applied says, so a stale manifest cannot undo a newer apply's change. An interrupted `--full` apply therefore resumes where it stopped instead of starting
-again. `plan` and `diff` report them:
+applied says, so a stale manifest cannot undo a newer apply's change. An interrupted `--full`
+apply therefore resumes where it stopped instead of starting again: the next apply, `--full`
+included, retries only the unfinished fan-outs plus whatever the manifest changed, and prints
+`Note: resumed the fan-outs an earlier full apply did not finish`. A `--full` apply that finds
+nothing unfinished fans out every entry. `plan` and `diff` report them:
 
 ```
 No changes. Infrastructure is up-to-date.

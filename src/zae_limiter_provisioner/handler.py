@@ -112,15 +112,21 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
     manifest = LimitsManifest.from_dict(manifest_data)
     previous = _read_provisioner_state(table_name, namespace_id)
     full = event.get("full") is True
-    stored: dict[int, dict[str, Any]] = {}
-    declared, changes = _plan_changes(
-        manifest, previous, table_name, namespace_id, full=full, stored_out=stored
-    )
-    unchanged = len(declared) - len(changes)
     # Fan-outs an earlier apply left unfinished. The next apply retries them,
     # so a plan reports how many there are.
     owed = read_pending(boto3.client("dynamodb"), table_name, namespace_id)
     pending_count = len(owed) + len(previous.get("cascade_pending", []))
+    resumed = _resumes(full, pending_count)
+    stored: dict[int, dict[str, Any]] = {}
+    declared, changes = _plan_changes(
+        manifest,
+        previous,
+        table_name,
+        namespace_id,
+        full=full and not resumed,
+        stored_out=stored,
+    )
+    unchanged = len(declared) - len(changes)
 
     change_dicts = [{"action": c.action, "level": c.level, "target": c.target} for c in changes]
 
@@ -130,6 +136,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "changes": change_dicts,
             "unchanged": unchanged,
             "full": full,
+            "resumed": resumed,
             "pending": pending_count,
         }
 
@@ -142,7 +149,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
         previous.get("cascade_pending", []),
         owed,
         declared=declared,
-        full=full,
+        full=full and not resumed,
         stored=stored,
     )
 
@@ -154,6 +161,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "deleted": result.deleted,
         "unchanged": unchanged,
         "full": full,
+        "resumed": resumed,
         "errors": result.errors,
     }
 
@@ -190,9 +198,16 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
     manifest = LimitsManifest.from_dict(manifest_data)
     previous = _read_provisioner_state(table_name, namespace_id)
     full = requested_full
+    owed = read_pending(boto3.client("dynamodb"), table_name, namespace_id)
+    resumed = _resumes(full, len(owed) + len(previous.get("cascade_pending", [])))
     stored: dict[int, dict[str, Any]] = {}
     declared, changes = _plan_changes(
-        manifest, previous, table_name, namespace_id, full=full, stored_out=stored
+        manifest,
+        previous,
+        table_name,
+        namespace_id,
+        full=full and not resumed,
+        stored_out=stored,
     )
     unchanged = len(declared) - len(changes)
 
@@ -202,9 +217,9 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         table_name,
         namespace_id,
         previous.get("cascade_pending", []),
-        read_pending(boto3.client("dynamodb"), table_name, namespace_id),
+        owed,
         declared=declared,
-        full=full,
+        full=full and not resumed,
         stored=stored,
     )
 
@@ -217,8 +232,26 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "deleted": result.deleted,
         "unchanged": unchanged,
         "full": full,
+        "resumed": resumed,
         "errors": result.errors,
     }
+
+
+def _resumes(full: bool, pending: int) -> bool:
+    """Whether a full apply resumes an unfinished run instead of starting over.
+
+    A full apply writes a pending item ahead for every fan-out of every
+    declared level, and each is removed only once it lands. One too large for
+    the Lambda timeout, restarted from scratch each time, would never finish
+    (#739 review, finding 5). So when a full apply finds pending items, it
+    retries those (each from its level's live config) plus whatever this
+    manifest changed, and leaves the levels an earlier run already finished.
+    A full apply that finds nothing pending fans out every level.
+
+    The items may also be another apply's, still running: the full apply then
+    resumes too, and a later full apply, finding nothing pending, runs in full.
+    """
+    return full and pending > 0
 
 
 def _plan_changes(
@@ -286,8 +319,10 @@ def _apply_and_record(
     item the write's ``ALL_OLD`` image shows was not needed is removed after
     the writes. A Lambda killed or timed out at any point therefore leaves
     exactly the fan-outs not yet done, and the next apply resumes from there:
-    an interrupted full apply converges instead of starting again, and a
-    concurrent apply cannot drop work this one has taken on.
+    an interrupted full apply converges instead of starting again (the next
+    full apply, finding them, resumes rather than predicting every level
+    again: ``_resumes``), and a concurrent apply cannot drop work this one has
+    taken on.
 
     The single place both entry points run an apply, so the ordering contract
     below cannot drift between the CFN and CLI paths again — which is exactly

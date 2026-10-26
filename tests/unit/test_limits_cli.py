@@ -1576,6 +1576,21 @@ class TestLimitsApplyFull:
     def test_change_only_by_default(self):
         assert self._invoke().call_args.kwargs["full"] is False
 
+    @pytest.mark.parametrize("resumed", [True, False])
+    def test_a_resumed_full_apply_says_so(self, resumed):
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+            with patch(
+                "zae_limiter.limits_cli._invoke_provisioner",
+                return_value={"status": "applied", "changes": [], "resumed": resumed},
+            ):
+                result = CliRunner().invoke(
+                    cli, ["limits", "apply", "--name", "test-app", "-f", f.name, "--full"]
+                )
+        assert result.exit_code == 0
+        assert ("resumed the fan-outs an earlier full apply" in result.output) is resumed
+
     @pytest.mark.parametrize("full", [True, False])
     def test_full_reaches_the_payload_only_when_set(self, full):
         from zae_limiter.limits_cli import _invoke_provisioner

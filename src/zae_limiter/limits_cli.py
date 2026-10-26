@@ -157,6 +157,12 @@ def limits_apply(
             f"{_unchanged_suffix(result)}."
         )
 
+    if result.get("resumed"):
+        click.echo(
+            "Note: resumed the fan-outs an earlier full apply did not finish, "
+            "instead of starting over."
+        )
+
     # Reported even with no changes: an apply also retries the bucket
     # fan-outs an earlier apply left unfinished, and those can fail again.
     if errors:

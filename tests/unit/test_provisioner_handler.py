@@ -3050,6 +3050,59 @@ class TestChangeOnlyApplyStaysSafe:
         assert set(synced) == set(entities)
         assert self._pending(counting) == []
 
+    def test_an_interrupted_full_apply_resumes_instead_of_restarting(self, counting):
+        """Review finding 5: a full apply too long for one run must still converge."""
+        from zae_limiter_provisioner import handler
+
+        entities = tuple(f"user-{i}" for i in range(20))
+        manifest = self._manifest(entities=entities)
+        self._apply(manifest)
+        real_sync = handler.sync_bucket_params
+        budget = {"left": 10}
+
+        def sync_until_killed(*args, **kwargs):
+            if budget["left"] == 0:
+                raise _Killed()
+            budget["left"] -= 1
+            return real_sync(*args, **kwargs)
+
+        with patch.object(handler, "sync_bucket_params", side_effect=sync_until_killed):
+            with pytest.raises(_Killed):
+                self._apply(manifest, full=True)
+        assert len([i for i in self._pending(counting) if i["kind"]["S"] == "sync"]) == 10
+
+        with (
+            patch.object(handler, "sync_bucket_params", wraps=real_sync) as sync,
+            patch.object(handler, "fanout_entity", wraps=real_fanout_entity) as disabled,
+            patch.object(handler, "fanout_cascade", wraps=real_fanout_cascade) as cascade,
+        ):
+            result = self._apply(manifest, full=True)
+
+        # Only the ten syncs the first run did not reach; its disable and
+        # cascade fan-outs had all landed.
+        assert sync.call_count == 10
+        assert disabled.call_count == cascade.call_count == 0
+        assert (result["full"], result["resumed"], result["changes"]) == (True, True, [])
+        assert self._pending(counting) == []
+
+    def test_a_full_apply_with_nothing_pending_fans_out_every_level(self, counting):
+        from zae_limiter_provisioner import handler
+
+        entities = ("user-0", "user-1", "user-2")
+        manifest = self._manifest(entities=entities)
+        self._apply(manifest)
+
+        with (
+            patch.object(handler, "sync_bucket_params", wraps=handler.sync_bucket_params) as sync,
+            patch.object(handler, "fanout_cascade", wraps=real_fanout_cascade) as cascade,
+        ):
+            result = self._apply(manifest, full=True)
+
+        assert sync.call_count == len(entities)
+        assert cascade.call_count == len(entities) + 1  # the resource too
+        assert (result["full"], result["resumed"], len(result["changes"])) == (True, False, 4)
+        assert self._pending(counting) == []
+
     def test_a_retry_syncs_what_the_table_holds_not_the_stale_manifest(self, counting):
         """Review finding 1: a stale no-op re-apply claims another apply's sync.
 
