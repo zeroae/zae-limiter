@@ -3120,8 +3120,11 @@ def _retry_statuses(
             )
             continue
         if item is not None:
-            # The failed item does not carry this limit (#775): one being
-            # seeded (#633), or removed mid-flight. Its absence is no
+            # The failed item does not carry this limit (#775): one the retry
+            # could not seed (#633: a quota, window or schedule), a create
+            # that lost its race to a winner lacking it (stale config, an
+            # aggregator clone of a pre-seed image), or one removed since the
+            # read. Its absence is no
             # shortfall — the retry re-plans for it unless another limit is
             # genuinely short (`_genuinely_short`), and that limit is the
             # rejection. Nothing was spent from it, so it holds the balance
