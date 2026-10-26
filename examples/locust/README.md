@@ -53,9 +53,13 @@ buckets, enabling direct comparison of cascade overhead vs standalone operation.
 
 The `multi_resource.py` classes share one setup: `search` cascades to the parent,
 `budget` does not (resource-level cascade policy, which needs the stack's Lambdas
-at v0.16.0 or later). A multi-resource acquire is one lease, so it reports one
-`ACQUIRE` row named for the primary resource (`search`); the nested class reports
-an `ACQUIRE` row for each resource.
+at v0.16.0 or later). **Compare the `ITERATION multi-resource` row**: both classes
+fire it once per task, timing the whole iteration, so its latency and RPS are like
+for like. The per-resource rows are informational only. A multi-resource acquire is
+one lease, so it reports one `ACQUIRE` row named for the primary resource
+(`search`); the nested class reports an `ACQUIRE` row for each resource, so its RPS
+reads doubled, and its `search` row times only the outer acquire, so its p50 reads
+halved.
 
 Their parent is one entity for the whole run, with a fixed id
 (`loadtest-cascade-parent-multi-resource`), whether the users run locally, on

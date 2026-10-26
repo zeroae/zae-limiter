@@ -15,9 +15,13 @@ positional class names):
 - MultiResourceNestedUser: two nested acquires, ``search`` then ``budget``.
   Two leases, two round trips, ACQUIRE rows named ``search`` and ``budget``.
 
-Both classes do the same work against the same setup, so running each alone
-compares the latency and throughput of the two shapes (expected fast-path
-cost for both: 0 RCU + 3 WCU)::
+Both classes do the same work against the same setup (expected fast-path
+cost for both: 0 RCU + 3 WCU). **Compare the ``ITERATION multi-resource`` row**:
+each class fires it once per task, timing the whole iteration, so its latency
+and RPS are like for like. The per-resource ACQUIRE rows are informational
+only: the nested class has two per iteration, so its RPS reads doubled, and
+its ``search`` row times only the outer acquire, so its p50 reads halved.
+Run each class alone::
 
     zae-limiter loadtest run -n <stack> -f locustfiles/multi_resource.py \\
         MultiResourceAlsoUser
@@ -38,14 +42,17 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from locust import constant, events, task
 from locust.env import Environment
 from locust.runners import WorkerRunner
 
-from zae_limiter import EntityExistsError, Limit, SyncRateLimiter
+from zae_limiter import EntityExistsError, Limit, RateLimitExceeded, SyncRateLimiter
 from zae_limiter.locust import RateLimiterUser
 
 # Children created by this process; the shared parent is not one of them.
@@ -56,6 +63,9 @@ CASCADE_PARENT = "loadtest-cascade-parent-multi-resource"
 # Holds CASCADE_PARENT once this process has made sure it exists.
 _parent_ensured: set[str] = set()
 _parent_lock = threading.Lock()
+
+# The like-for-like row both classes fire once per iteration.
+ITERATION_EVENT = ("ITERATION", "multi-resource")
 
 _SEARCH_CONSUME = {"rpm": 1}
 _BUDGET_CONSUME = {"budget_rpm": 1}
@@ -118,6 +128,34 @@ class _MultiResourceUser(RateLimiterUser):
                 _parent_ensured.add(CASCADE_PARENT)
             return CASCADE_PARENT
 
+    @contextmanager
+    def _iteration(self) -> Iterator[None]:
+        """Fire one ITERATION event timing the whole task body.
+
+        A rejection is not timed as an iteration: its RATE_LIMITED row
+        already records it, and the limits are sized so none happens.
+        """
+        start = time.perf_counter()
+        try:
+            yield
+        except RateLimitExceeded:
+            raise
+        except Exception as exc:
+            self._fire_iteration(start, exc)
+            raise
+        self._fire_iteration(start, None)
+
+    def _fire_iteration(self, start: float, exception: BaseException | None) -> None:
+        request_type, name = ITERATION_EVENT
+        self.environment.events.request.fire(
+            request_type=request_type,
+            name=name,
+            response_time=(time.perf_counter() - start) * 1000,
+            response_length=0,
+            exception=exception,
+            context={},
+        )
+
     def on_start(self) -> None:
         """Create a child entity under the shared cascade parent."""
         self.entity_id = f"user-{uuid.uuid4().hex[:8]}"
@@ -135,11 +173,14 @@ class MultiResourceAlsoUser(_MultiResourceUser):
     @task
     def acquire(self) -> None:
         """One lease over search (cascades to the parent) and budget."""
-        with self.client.acquire(
-            entity_id=self.entity_id,
-            resource="search",
-            consume=_SEARCH_CONSUME,
-            also={"budget": _BUDGET_CONSUME},
+        with (
+            self._iteration(),
+            self.client.acquire(
+                entity_id=self.entity_id,
+                resource="search",
+                consume=_SEARCH_CONSUME,
+                also={"budget": _BUDGET_CONSUME},
+            ),
         ):
             pass
 
@@ -150,14 +191,17 @@ class MultiResourceNestedUser(_MultiResourceUser):
     @task
     def acquire(self) -> None:
         """Two leases: search (cascades to the parent), then budget."""
-        with self.client.acquire(
-            entity_id=self.entity_id,
-            resource="search",
-            consume=_SEARCH_CONSUME,
-        ):
-            with self.client.acquire(
+        with (
+            self._iteration(),
+            self.client.acquire(
+                entity_id=self.entity_id,
+                resource="search",
+                consume=_SEARCH_CONSUME,
+            ),
+            self.client.acquire(
                 entity_id=self.entity_id,
                 resource="budget",
                 consume=_BUDGET_CONSUME,
-            ):
-                pass
+            ),
+        ):
+            pass

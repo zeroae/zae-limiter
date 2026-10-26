@@ -1038,7 +1038,7 @@ Pre-built locustfiles are available in `examples/locust/locustfiles/`:
 |----------|------|-------------|
 | Simple | `simple.py` | Single resource, single limit, basic `acquire` |
 | Max RPS | `max_rps.py` | Zero-wait back-to-back `acquire` for throughput ceiling |
-| Multi-resource | `multi_resource.py` | One `acquire(..., also=...)` over a cascading `search` and a per-user `budget`, vs two nested acquires |
+| Multi-resource | `multi_resource.py` | One `acquire(..., also=...)` over a cascading `search` and a per-user `budget`, vs two nested acquires. Compare the `ITERATION multi-resource` row, which times a whole iteration in both classes; the per-resource rows are informational (the nested class has two per iteration) |
 | LLM Gateway | `llm_gateway.py` | 8 LLM models with RPM + TPM and lease adjustments |
 | LLM Production | `llm_production.py` | Weighted tasks with custom daily/spike load shapes |
 | Stress | `stress.py` | 16K entities with whale/spike/power-law traffic patterns |
