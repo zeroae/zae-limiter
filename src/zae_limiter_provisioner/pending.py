@@ -436,7 +436,7 @@ def expire(
                 ExpressionAttributeValues={**past, ":me": {"S": token}},
             )
         except client.exceptions.ConditionalCheckFailedException:
-            pass
+            logger.debug("Pending %s is no longer leased to this apply; left alone", key)
         except Exception as e:
             logger.warning("Could not end the lease on pending %s: %s", key, e)
 
