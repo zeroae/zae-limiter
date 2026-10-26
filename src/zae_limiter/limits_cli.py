@@ -83,8 +83,15 @@ def limits_plan(
 
     changes = result.get("changes", [])
     if not changes:
-        click.echo("No changes. Infrastructure is up-to-date.")
-        _echo_pending(result)
+        pending = result.get("pending") or 0
+        if pending:
+            # Not "up-to-date": the next apply still has bucket work to do.
+            click.echo(
+                f"No config changes; {pending} bucket fan-out(s) an earlier apply "
+                "did not finish will be retried by the next apply."
+            )
+        else:
+            click.echo("No changes. Infrastructure is up-to-date.")
         return
 
     click.echo(f"Plan: {len(changes)} change(s){_unchanged_suffix(result)}")

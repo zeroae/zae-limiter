@@ -1549,6 +1549,21 @@ class TestLimitsQuietAndUnchanged:
         assert result.exit_code == 0
         assert "1 bucket fan-out(s) an earlier apply did not finish" in result.output
 
+    def test_a_plan_with_only_pending_fan_outs_is_not_up_to_date(self):
+        """Saying "up-to-date" and then "N fan-outs did not finish" contradicts itself."""
+        response = {"status": "planned", "changes": [], "unchanged": 5, "pending": 2}
+        result = self._run("plan", response)
+        assert result.exit_code == 0
+        assert "up-to-date" not in result.output
+        assert result.output == (
+            "No config changes; 2 bucket fan-out(s) an earlier apply did not finish "
+            "will be retried by the next apply.\n"
+        )
+
+    def test_a_plan_with_nothing_at_all_is_up_to_date(self):
+        response = {"status": "planned", "changes": [], "unchanged": 5, "pending": 0}
+        assert self._run("plan", response).output == "No changes. Infrastructure is up-to-date.\n"
+
     def test_a_preview_with_nothing_owed_says_nothing_more(self):
         response = {**self._APPLIED, "status": "planned", "pending": 0}
         result = self._run("plan", response, "-q")
