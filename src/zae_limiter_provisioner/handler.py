@@ -395,51 +395,28 @@ def _apply_and_record(
         result.limits_changed = [c for c in fanned if c.level == "entity"]
         result.cascade_changed = [(c.level, c.target or "") for c in fanned]
 
-    # Every fan-out written ahead is run, even one the write's own `ALL_OLD`
-    # image says was not needed (#739 review, finding 2). A config write whose
-    # response is lost is re-sent by botocore, and the re-send's `ALL_OLD`
-    # already equals the new item: read alone, it said "no change", and the
-    # item written ahead was released with its fan-out never run. The
-    # strongly consistent pre-read saw the old item, so what it predicted
-    # stands; the image only adds what it did not predict. The worst case is
-    # one unneeded fan-out, and every fan-out is idempotent.
-    _merge_predicted(result, predicted)
+    # Every owed fan-out: what the pre-read predicted (it stands even when
+    # the write's own `ALL_OLD` image disagrees, since a re-sent write's image
+    # already shows the new state, #739 review finding 2), what the images
+    # showed, and what earlier applies left.
+    owed_keys = _owed_fanouts(result, predicted, retried)
 
-    # This apply's own fan-outs. A retried level this apply also changed is
-    # covered by them: its pending item is released by their `on_done`.
-    own = {
-        "disabled": {(c.level, c.target or "") for c in result.disabled_changed},
-        "cascade": set(result.cascade_changed),
-        "sync": {(c.level, c.target or "") for c in result.limits_changed},
-    }
-    retries = [key for key in dict.fromkeys(retried) if (key[1], key[2]) not in own[key[0]]]
+    # Re-asserted `disabled` levels (the ADR-125 missed-bucket repair) hold no
+    # pending item; each stamp is filtered by its bucket's live resolution.
     reasserted = _reasserted_disabled(
-        manifest,
-        [
-            *result.disabled_changed,
-            *(Change("update", lv, t) for k, lv, t in retries if k == "disabled"),
-        ],
+        manifest, [Change("update", lv, t) for k, lv, t in owed_keys if k == "disabled"]
     )
     disabled_errors, _ = _fanout_disabled_changes(
-        table_name,
-        namespace_id,
-        [*result.disabled_changed, *reasserted],
-        reasserted=reasserted,
-        on_done=_done,
+        table_name, namespace_id, reasserted, reasserted=reasserted
     )
     result.errors.extend(disabled_errors)
     result.errors.extend(_fanout_soft_changes(table_name, result.soft_changed, namespace_id))
-    cascade_errors, _ = _fanout_cascade_changes(
-        table_name, namespace_id, list(dict.fromkeys(result.cascade_changed)), on_done=_done
-    )
-    result.errors.extend(cascade_errors)
-    sync_errors, _ = _sync_bucket_param_changes(
-        table_name, namespace_id, result.limits_changed, on_done=_done
-    )
-    result.errors.extend(sync_errors)
 
-    # Then what earlier applies left, each from its level's live config.
-    for key in sorted(retries, key=lambda k: (KINDS.index(k[0]), k[1] != "resource")):
+    # Every owed fan-out, this apply's own included, runs from its level's
+    # live config item, never from this apply's manifest (#739 re-review #1):
+    # A writing 10 and B writing 20 could otherwise end with A's late fan-out
+    # stamping 10 under a config of 20, and nothing left pending to fix it.
+    for key in sorted(owed_keys, key=lambda k: (KINDS.index(k[0]), k[1] != "resource")):
         result.errors.extend(_retry_from_table(client, table_name, namespace_id, key, _done))
 
     manifest_hash = hashlib.sha256(
@@ -454,24 +431,20 @@ def _apply_and_record(
     return result
 
 
-def _merge_predicted(result: ApplyResult, predicted: list[tuple[str, Change]]) -> None:
-    """Add each predicted fan-out the writes' images did not report, in place."""
-    seen: dict[str, set[tuple[str, str]]] = {
-        "disabled": {(c.level, c.target or "") for c in result.disabled_changed},
-        "cascade": set(result.cascade_changed),
-        "sync": {(c.level, c.target or "") for c in result.limits_changed},
-    }
-    for kind, change in predicted:
-        key = (change.level, change.target or "")
-        if key in seen[kind]:
-            continue
-        seen[kind].add(key)
-        if kind == "disabled":
-            result.disabled_changed.append(change)
-        elif kind == "cascade":
-            result.cascade_changed.append(key)
-        else:
-            result.limits_changed.append(change)
+def _owed_fanouts(
+    result: ApplyResult,
+    predicted: list[tuple[str, Change]],
+    retried: list[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
+    """Every (kind, level, target) fan-out an apply owes, once each, in a stable order."""
+    keys: list[tuple[str, str, str]] = [
+        *((kind, change.level, change.target or "") for kind, change in predicted),
+        *(("disabled", c.level, c.target or "") for c in result.disabled_changed),
+        *(("cascade", level, target) for level, target in result.cascade_changed),
+        *(("sync", c.level, c.target or "") for c in result.limits_changed),
+        *retried,
+    ]
+    return list(dict.fromkeys(keys))
 
 
 def _reasserted_disabled(manifest: LimitsManifest, fanned: list[Change]) -> list[Change]:
@@ -513,14 +486,16 @@ def _retry_from_table(
     key: tuple[str, str, str],
     done: Callable[[str, str, str], None],
 ) -> list[str]:
-    """Retry one fan-out an earlier apply left, from the level's live config item.
+    """Run one owed fan-out from the level's live config item.
 
-    Never from this apply's manifest (#739 review, finding 1). The apply that
-    left the item may have written a newer config than this manifest declares,
-    and may still be running: fanning out from a stale manifest re-synced a
-    bucket another apply had just moved from 10 to 20 back to 10, and turned a
-    level the manifest no longer declares into a delete that stamped
-    ``disabled=False`` over a config still saying disabled (finding 4).
+    Every fan-out an apply owes goes through here, its own and those earlier
+    applies left: never from this apply's manifest (#739 review finding 1,
+    re-review #1). Another apply may have written a newer config than this
+    manifest declares, and may still be running: fanning out from the manifest
+    re-synced a bucket another apply had just moved from 10 to 20 back to 10,
+    let an apply's late fan-out stamp its own 10 under another's 20, and turned
+    a level the manifest no longer declares into a delete that stamped
+    ``disabled=False`` over a config still saying disabled.
 
     The level's config item is read strongly consistently before the fan-out
     and again after it. If it changed in between, another apply wrote it while

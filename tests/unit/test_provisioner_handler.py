@@ -2140,10 +2140,12 @@ class TestCascadeFanoutChanges:
         )
 
         mock_gate.assert_called_once_with(changes, "t")
-        # This apply's changes, then each leftover it did not cover, on its own
-        # (`resource llm` is both, so it is fanned out once).
+        # Every owed cascade fan-out runs once, on its own, through the
+        # table-driven retry (`resource llm` is both this apply's and a
+        # leftover); resources first.
         assert [c.args for c in mock_fanout.call_args_list] == [
-            ("t", "ns", [("resource", "llm"), ("entity", "u1/llm")]),
+            ("t", "ns", [("resource", "llm")]),
+            ("t", "ns", [("entity", "u1/llm")]),
             ("t", "ns", [("entity", "old/gpt-4")]),
         ]
         assert "err" in result.errors
@@ -2663,31 +2665,35 @@ class TestPendingItems:
         assert len(read_pending(client, self.TABLE, "ns")) == 2
 
 
-class TestMergePredicted:
-    """A predicted fan-out runs even when the write's own image did not report it."""
+class TestOwedFanouts:
+    """Every owed fan-out, from every source, once each."""
 
-    def test_each_kind_is_added_once(self):
+    def test_each_source_once(self):
         from zae_limiter_provisioner.applier import ApplyResult
-        from zae_limiter_provisioner.handler import _merge_predicted
+        from zae_limiter_provisioner.handler import _owed_fanouts
 
         reported = Change("update", "entity", "u1/gpt-4", {})
         unreported = Change("update", "entity", "u2/gpt-4", {})
-        result = ApplyResult(limits_changed=[reported])
-
-        _merge_predicted(
-            result,
-            [
-                ("sync", reported),
-                ("sync", unreported),
-                ("disabled", unreported),
-                ("cascade", unreported),
-                ("cascade", unreported),
-            ],
+        result = ApplyResult(
+            limits_changed=[reported],
+            disabled_changed=[reported],
+            cascade_changed=[("resource", "gpt-4")],
         )
 
-        assert result.limits_changed == [reported, unreported]
-        assert result.disabled_changed == [unreported]
-        assert result.cascade_changed == [("entity", "u2/gpt-4")]
+        owed = _owed_fanouts(
+            result,
+            [("sync", reported), ("sync", unreported), ("cascade", unreported)],
+            [("sync", "entity", "u3/gpt-4"), ("sync", "entity", "u2/gpt-4")],
+        )
+
+        assert owed == [
+            ("sync", "entity", "u1/gpt-4"),
+            ("sync", "entity", "u2/gpt-4"),
+            ("cascade", "entity", "u2/gpt-4"),
+            ("disabled", "entity", "u1/gpt-4"),
+            ("cascade", "resource", "gpt-4"),
+            ("sync", "entity", "u3/gpt-4"),
+        ]
 
 
 class TestRetryFromTable:
@@ -2921,9 +2927,9 @@ class TestChangeOnlyApplyStaysSafe:
 
         with patch(
             "zae_limiter_provisioner.handler._sync_bucket_param_changes",
-            side_effect=TimeoutError("Lambda timed out"),
+            side_effect=_Killed(),
         ):
-            with pytest.raises(TimeoutError):
+            with pytest.raises(_Killed):
                 self._apply(self._manifest(capacity=20))
         assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "10000"}
 
@@ -2941,10 +2947,10 @@ class TestChangeOnlyApplyStaysSafe:
             patch("zae_limiter_provisioner.handler.require_cascade_policy_readers"),
             patch(
                 "zae_limiter_provisioner.handler._fanout_cascade_changes",
-                side_effect=TimeoutError("Lambda timed out"),
+                side_effect=_Killed(),
             ),
         ):
-            with pytest.raises(TimeoutError):
+            with pytest.raises(_Killed):
                 self._apply(manifest)
         assert ("cascade", "entity", "user-0/gpt-4") in self._owed(counting)
 
@@ -3181,6 +3187,37 @@ class TestChangeOnlyApplyStaysSafe:
         assert sync.call_count == len(entities)
         assert cascade.call_count == len(entities) + 1  # the resource too
         assert (result["full"], result["resumed"], len(result["changes"])) == (True, False, 4)
+        assert self._pending(counting) == []
+
+    def test_an_applys_own_sync_fans_out_the_live_config(self, counting):
+        """Re-review #1: A writes 10, B writes 20 and syncs, then A's late sync runs.
+
+        A's own fan-out came from A's manifest and stamped 10 over B's 20,
+        leaving config 20, buckets 10, nothing pending, and nothing that a
+        re-apply would see as a change.
+        """
+        from zae_limiter_provisioner import handler
+
+        self._apply(self._manifest(capacity=5))
+        self._put_bucket(counting, "user-0", capacity=5)
+        real_sync = handler._sync_bucket_param_changes
+        state = {"b_ran": False}
+
+        def a_sync(*args, **kwargs):
+            if not state["b_ran"]:
+                state["b_ran"] = True
+                self._apply(self._manifest(capacity=20))  # B, start to finish
+            return real_sync(*args, **kwargs)
+
+        with patch.object(handler, "_sync_bucket_param_changes", side_effect=a_sync):
+            self._apply(self._manifest(capacity=10))  # A
+
+        config = counting.get_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": pk_entity("ns123", "user-0")}, "SK": {"S": sk_config("gpt-4")}},
+        )["Item"]
+        assert config["l_rpm_cp"] == {"N": "20"}
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
         assert self._pending(counting) == []
 
     def test_a_retry_syncs_what_the_table_holds_not_the_stale_manifest(self, counting):
