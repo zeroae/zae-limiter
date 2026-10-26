@@ -3,8 +3,8 @@
 **Decision record:** [ADR-148](../adr/148-multi-resource-acquire.md) (Proposed)
 **Issue:** [#675](https://github.com/zeroae/zae-limiter/issues/675) · **Epic:** [#674](https://github.com/zeroae/zae-limiter/issues/674) · **Milestone:** v0.17.0
 **Status:** implemented in v0.17.0 (#713, #717, #718, #748 and the post-merge review fixes),
-on the recommended option of every decision below. The decisions were built **provisionally**
-and are ratified with ADR-148 at release; the section keeps its original title for the record.
+on the recommended option of every decision below. The decisions were built provisionally and
+were **ratified as built on 2026-10-26** (D1–D8, no changes); ADR-148 is accepted with the release.
 
 ## TLDR
 
@@ -277,9 +277,9 @@ including a cancellation, and the 2 WCU/item accounting.
 rejected multi-resource pass) — "who funds this slot" is unchanged per resource, but the
 rejection now comes from another resource.
 
-## Open decisions
+## Decisions (ratified 2026-10-26)
 
-| # | Decision | Options | Recommendation | Why |
+| # | Decision | Options | Chosen | Why |
 |---|----------|---------|----------------|-----|
 | D1 | How extra resources are named | A1 `also=` mapping · A2 nested `consume` · A3 `acquire_many()` | **A1** | Backward compatible, one keyword, matches #674/#675 |
 | D2 | Per-resource adjust/consume/release | B1 `also=` on each method · **B2 `lease.resource(name)` handle** · B3 `adjust_resources()` | **B2** | `also=` collides with a limit named `also`; a handle makes `consumed` unambiguous and keeps lease-level methods unchanged |
