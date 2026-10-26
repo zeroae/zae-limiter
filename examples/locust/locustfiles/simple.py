@@ -15,21 +15,61 @@ p50 stays at floor latency (8-9ms) regardless of user count.
 Two user classes are available (select via --class-picker or Locust UI):
 - SimpleUser: standalone entities, no cascade
 - SimpleCascadeUser: child entities with cascade=True to a shared parent
+
+The cascade parent is ONE entity for the whole run,
+``loadtest-cascade-parent-simple``, shared by the master, every worker and a
+headless runner. Its id is fixed, so every process agrees on it without a
+message from the master. Each process creates it once, in the first cascade
+user's ``on_start`` (behind a lock), and treats ``EntityExistsError`` as
+success. Only the master or a local runner deletes it, in ``test_stop``; a
+worker never does, since other workers may still be debiting it.
+
+On a normal stop (``MasterRunner.stop()``) the master fires ``test_stop`` only
+after its workers report no running users, so no child is still debiting the
+parent when it is deleted. Residuals, each of which can leave a worker debiting
+a deleted parent, whose next slow path then recreates an orphan parent bucket
+(system defaults, so it expires through its TTL):
+
+- the workers do not report within ``stop_timeout`` + 60 s, and the master
+  fires ``test_stop`` anyway;
+- the master quits instead of stopping (Ctrl-C, or the distributed CLI
+  stopping the Fargate task: SIGTERM -> ``runner.quit()``). ``quit()`` fires
+  ``test_stop`` at once and only then tells the workers to quit.
+
+Two more: a run killed before ``test_stop`` leaves the parent behind, and the
+next run reuses it with its old bucket state (possibly already sharded), so
+that run is not comparable with a cold start. Two runs of the same locustfile
+against one stack at the same time share the parent, and the first to finish
+deletes it.
+
+One parent for the run rather than one per process (#780): every cascading
+child writes to the parent's bucket, so the parent is the hot partition a
+cascade benchmark exists to load. N parents for N workers would divide that
+load by N (see CLAUDE.md "Hot Partition Risk Mitigation").
 """
 
 from __future__ import annotations
 
 import os
+import threading
 import uuid
 
 from locust import between, events, task
 from locust.runners import WorkerRunner
 
 from zae_limiter import Limit, SyncRateLimiter
+from zae_limiter.exceptions import EntityExistsError
 from zae_limiter.locust import RateLimiterUser
 
 _created_entities: set[str] = set()
-_cascade_parent: str | None = None
+
+# The run's one cascade parent: the same id in every process (see above).
+CASCADE_PARENT_ID = "loadtest-cascade-parent-simple"
+_parent_lock = threading.Lock()
+# Set once this process has made sure the parent exists. Cleared at every
+# test start and stop: a warm Lambda worker keeps module state across runs,
+# and the master deletes the parent at the end of each one.
+_parent_ready = threading.Event()
 
 
 def _make_limiter(environment: object) -> SyncRateLimiter:
@@ -41,27 +81,41 @@ def _make_limiter(environment: object) -> SyncRateLimiter:
 
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
-    """Set system defaults and cascade parent (master or standalone only)."""
-    global _cascade_parent  # noqa: PLW0603
+    """Set system defaults (master or standalone only)."""
+    _parent_ready.clear()
     if isinstance(environment.runner, WorkerRunner):
         return
     limiter = _make_limiter(environment)
     limiter.set_system_defaults(limits=[Limit.per_minute("rpm", 1_000_000_000)])
-    # Create a shared parent for cascade users
-    _cascade_parent = f"org-{uuid.uuid4().hex[:8]}"
-    limiter.create_entity(_cascade_parent, name="Cascade Parent")
-    _created_entities.add(_cascade_parent)
 
 
 @events.test_stop.add_listener
 def on_test_stop(environment, **kwargs):
-    """Clean up entities created by this process."""
-    if not _created_entities:
+    """Clean up entities created by this process, and the parent if not a worker."""
+    _parent_ready.clear()
+    is_worker = isinstance(environment.runner, WorkerRunner)
+    if not _created_entities and is_worker:
         return
     limiter = _make_limiter(environment)
     for entity_id in _created_entities:
         limiter.delete_entity(entity_id)
     _created_entities.clear()
+    if not is_worker:
+        # On a normal stop the master fires this once its workers report no
+        # users; on a quit or a timeout it may not (see the module docstring).
+        limiter.delete_entity(CASCADE_PARENT_ID)
+
+
+def _ensure_cascade_parent(limiter: SyncRateLimiter) -> str:
+    """Make sure the run's shared parent exists, once per process."""
+    with _parent_lock:
+        if not _parent_ready.is_set():
+            try:
+                limiter.create_entity(CASCADE_PARENT_ID, name="Cascade Parent")
+            except EntityExistsError:
+                pass  # Another process of this run, or a killed earlier run, made it
+            _parent_ready.set()
+    return CASCADE_PARENT_ID
 
 
 class SimpleUser(RateLimiterUser):
@@ -99,7 +153,7 @@ class SimpleCascadeUser(RateLimiterUser):
         self.entity_id = f"user-{uuid.uuid4().hex[:8]}"
         self.client._limiter.create_entity(
             self.entity_id,
-            parent_id=_cascade_parent,
+            parent_id=_ensure_cascade_parent(self.client._limiter),
             cascade=True,
         )
         _created_entities.add(self.entity_id)
