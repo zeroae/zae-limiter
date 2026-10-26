@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792918364929,
+  "lastUpdate": 1792983341460,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -37146,6 +37146,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0042010169295852",
             "extra": "mean: 1.0754029222000043 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9966c1a87a2ec42314bf9be72f8c9e68d4670721",
+          "message": "🐛 fix(lease): report a limit missing from the retry's item as not exceeded (#776)\n\n## Summary\n- When the consumption-only retry is rejected by a real shortfall, its\nstatuses are built from the failed item's image. A declared limit that\nthe image did not carry (a limit being seeded, #633) dropped to the\nin-memory branch. That branch marks every debited limit exceeded and\ngives it the minimum wait.\n- Result: a **soft** limit showed up in `violations`, which ADR-151\ndecision 1 forbids, and a **hard** quota holding its whole allowance was\nreported as short. The rejection itself was correct (`rpm` really is\nshort). Only the report was wrong.\n- Fix in `lease._retry_statuses`: when an image exists but does not\ncarry the limit, report the limit **not exceeded**, with the balance\nplanned before the in-memory debit and no wait of its own. The in-memory\nbranch is kept for a failure that returned no image.\n- Sync twin regenerated (`sync_lease.py`, `test_sync_limiter.py`).\n\n## Test plan\n- [x] Regression test: limit `q` added to an existing item, seeding pass\nloses its `rf` lock to a writer that also spent `rpm`. Asserts\n`violations == ['rpm']` and `q`'s status has `exceeded is False`, for\nboth a soft and a hard `q` (async + generated sync)\n- [x] Sync twins regenerated; `verify-sync-generated` hook passes\n- [ ] CI unit / integration / e2e green\n\nCloses #775\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_017XzYMYKXNcZNQYS3xQhFdc",
+          "timestamp": "2026-10-25T22:50:43-04:00",
+          "tree_id": "25aefcd480a50f93de772498be08f9f33e5a42c7",
+          "url": "https://github.com/zeroae/zae-limiter/commit/9966c1a87a2ec42314bf9be72f8c9e68d4670721"
+        },
+        "date": 1792983340323,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 36.39416101874136,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005595351937246543",
+            "extra": "mean: 27.47693509090771 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 25.860215959015882,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008100578233284025",
+            "extra": "mean: 38.66943731579166 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 58.09875515827782,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00430706006509024",
+            "extra": "mean: 17.212072741932435 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 48.452987192602095,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004994383035235122",
+            "extra": "mean: 20.638562407410912 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 38.325170909035016,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004546956316749669",
+            "extra": "mean: 26.092512473682245 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 143.68098968092607,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001984358052891351",
+            "extra": "mean: 6.959862972970264 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 30.15312010692097,
+            "unit": "iter/sec",
+            "range": "stddev: 0.052231383567427334",
+            "extra": "mean: 33.164063833330225 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 37.09197797573876,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004999720155714141",
+            "extra": "mean: 26.9600073809513 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 41.29073940313459,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005629257647342807",
+            "extra": "mean: 24.21850551613239 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 40.99361601862597,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007291029823436987",
+            "extra": "mean: 24.394042222223998 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 46.310040394789866,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00329128404562882",
+            "extra": "mean: 21.593589456521084 msec\nrounds: 46"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 42.67583044287703,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0021661515777501835",
+            "extra": "mean: 23.432467268294456 msec\nrounds: 41"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 45.03183682188796,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0028304216677126916",
+            "extra": "mean: 22.20651145000474 msec\nrounds: 40"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9345552801896875,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0088018778898046",
+            "extra": "mean: 516.9146678000061 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9456290483649963,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0034295655778801798",
+            "extra": "mean: 513.9725893999923 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9643407571478737,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0022656794186576438",
+            "extra": "mean: 1.0369778447999978 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.947195984243054,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007563534524196095",
+            "extra": "mean: 1.0557477191999964 sec\nrounds: 5"
           }
         ]
       }
