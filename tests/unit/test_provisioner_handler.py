@@ -2209,6 +2209,64 @@ class TestCascadePendingState:
         assert _read_provisioner_state(self.TABLE, "ns")["cascade_pending"] == []
 
 
+class TestProvisionerItemsArePurgeable:
+    """Every item the provisioner writes is found through GSI4 (`purge_namespace`).
+
+    GSI4 is keyed ``GSI4PK`` + ``GSI4SK``, and DynamoDB leaves an item missing
+    either key attribute out of the index. Config items and the #PROVISIONER
+    record carried ``GSI4PK`` only, so a purge left every limit config a
+    manifest wrote, and its state record, behind.
+    """
+
+    TABLE = "prov-gsi4"
+    NS = "ns-gsi4"
+
+    @pytest.fixture
+    def client(self, mock_dynamodb):
+        import boto3
+
+        from zae_limiter.sync_repository import SyncRepository
+
+        repo = SyncRepository(name=self.TABLE, region="us-east-1", _skip_deprecation_warning=True)
+        repo.create_table()
+        repo.close()
+        return boto3.client("dynamodb", region_name="us-east-1")
+
+    def _gsi4_keys(self, client):
+        from zae_limiter.schema import GSI4_NAME
+
+        response = client.query(
+            TableName=self.TABLE,
+            IndexName=GSI4_NAME,
+            KeyConditionExpression="GSI4PK = :ns",
+            ExpressionAttributeValues={":ns": {"S": self.NS}},
+        )
+        return {(i["PK"]["S"], i["SK"]["S"]) for i in response["Items"]}
+
+    def test_the_state_record_is_indexed(self, client):
+        from zae_limiter.schema import pk_system, sk_provisioner
+        from zae_limiter_provisioner.handler import _write_provisioner_state
+
+        _write_provisioner_state(self.TABLE, self.NS, {"managed_system": True})
+
+        assert (pk_system(self.NS), sk_provisioner()) in self._gsi4_keys(client)
+
+    @pytest.mark.parametrize(
+        "level,target",
+        [("system", None), ("resource", "gpt-4"), ("entity", "u1/gpt-4")],
+    )
+    def test_every_config_level_is_indexed(self, client, level, target):
+        from zae_limiter_provisioner.applier import apply_changes
+        from zae_limiter_provisioner.differ import Change
+
+        rpm = {"capacity": 100, "refill_amount": 100, "refill_period": 60}
+        change = Change(action="create", level=level, target=target, data={"limits": {"rpm": rpm}})
+        apply_changes([change], self.TABLE, self.NS, client=client)
+
+        configs = {key for key in self._gsi4_keys(client) if key[1].startswith("#CONFIG")}
+        assert len(configs) == 1
+
+
 class TestSystemDisabledThroughTheHandler:
     """#693: `disabled` on `system` fails both entry points before any write.
 
