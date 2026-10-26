@@ -339,11 +339,13 @@ def _apply_and_record(
 
     fanned = [c for c in changes if c.level in ("resource", "entity") and c.target]
     owed: list[tuple[str, str, str]] = list(legacy)
+    predicted: list[tuple[str, Change]] = []
     for change in fanned:
         assert change.target is not None
         live = None if full or stored is None else stored.get(id(change))
         for kind in sorted(fanouts_needed(namespace_id, change, live)):
             owed.append((kind, change.level, change.target))
+            predicted.append((kind, change))
     held |= write_ahead(client, table_name, namespace_id, token, owed)
 
     def _done(kind: str, level: str, target: str) -> None:
@@ -358,15 +360,15 @@ def _apply_and_record(
         result.limits_changed = [c for c in fanned if c.level == "entity"]
         result.cascade_changed = [(c.level, c.target or "") for c in fanned]
 
-    # Written ahead on a prediction the writes' own images did not bear out.
-    needed = {
-        *(("disabled", c.level, c.target or "") for c in result.disabled_changed),
-        *(("cascade", level, target) for level, target in result.cascade_changed),
-        *(("sync", c.level, c.target or "") for c in result.limits_changed),
-        *retried,
-    }
-    for key in sorted(held - needed):
-        _done(*key)
+    # Every fan-out written ahead is run, even one the write's own `ALL_OLD`
+    # image says was not needed (#739 review, finding 2). A config write whose
+    # response is lost is re-sent by botocore, and the re-send's `ALL_OLD`
+    # already equals the new item: read alone, it said "no change", and the
+    # item written ahead was released with its fan-out never run. The
+    # strongly consistent pre-read saw the old item, so what it predicted
+    # stands; the image only adds what it did not predict. The worst case is
+    # one unneeded fan-out, and every fan-out is idempotent.
+    _merge_predicted(result, predicted)
 
     # This apply's own fan-outs. A retried level this apply also changed is
     # covered by them: its pending item is released by their `on_done`.
@@ -415,6 +417,26 @@ def _apply_and_record(
     _write_provisioner_state(table_name, namespace_id, new_state)
 
     return result
+
+
+def _merge_predicted(result: ApplyResult, predicted: list[tuple[str, Change]]) -> None:
+    """Add each predicted fan-out the writes' images did not report, in place."""
+    seen: dict[str, set[tuple[str, str]]] = {
+        "disabled": {(c.level, c.target or "") for c in result.disabled_changed},
+        "cascade": set(result.cascade_changed),
+        "sync": {(c.level, c.target or "") for c in result.limits_changed},
+    }
+    for kind, change in predicted:
+        key = (change.level, change.target or "")
+        if key in seen[kind]:
+            continue
+        seen[kind].add(key)
+        if kind == "disabled":
+            result.disabled_changed.append(change)
+        elif kind == "cascade":
+            result.cascade_changed.append(key)
+        else:
+            result.limits_changed.append(change)
 
 
 def _reasserted_disabled(manifest: LimitsManifest, fanned: list[Change]) -> list[Change]:

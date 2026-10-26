@@ -3045,6 +3045,31 @@ class TestChangeOnlyApplyStaysSafe:
         assert self._pending(counting) == []
         assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
 
+    def test_a_resent_config_write_still_fans_out(self, counting):
+        """Review finding 2: botocore re-sends a write whose first try landed.
+
+        The re-send's ``ALL_OLD`` already equals the new item, so the write's
+        own image shows no change. The strongly consistent pre-read saw the
+        old item and predicted the sync; that prediction must stand.
+        """
+        self._apply(self._manifest(capacity=10))
+        self._put_bucket(counting, "user-0", capacity=10)
+        real_put = counting._client.put_item
+
+        def resend(**kwargs):
+            if kwargs["Item"]["SK"]["S"].startswith("#CONFIG"):
+                real_put(**kwargs)  # landed; its response was lost
+            return real_put(**kwargs)
+
+        counting.put_item = resend
+        try:
+            self._apply(self._manifest(capacity=20))
+        finally:
+            del counting.put_item
+
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
+        assert self._pending(counting) == []
+
     def test_a_retried_level_the_manifest_dropped_keeps_its_live_disabled(self, counting):
         """Review finding 4: a retry is not a synthetic delete stamping `disabled=False`.
 
