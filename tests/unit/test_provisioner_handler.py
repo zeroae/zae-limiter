@@ -2754,7 +2754,7 @@ class TestPendingItems:
         from zae_limiter_provisioner.pending import expire, now_ms, read_pending, write_ahead
 
         key = ("sync", "entity", "u1/gpt-4")
-        write_ahead(client, self.TABLE, "ns", "tok-a", [key])
+        write_ahead(client, self.TABLE, "ns", "tok-a", [key], full=True)
 
         expire(client, self.TABLE, "ns", "tok-b", [key])  # not its item
         (item,) = read_pending(client, self.TABLE, "ns")
@@ -2763,6 +2763,8 @@ class TestPendingItems:
         expire(client, self.TABLE, "ns", "tok-a", [key])
         (item,) = read_pending(client, self.TABLE, "ns")
         assert item.claimable(now_ms())
+        # A finished full apply is not an interrupted one (re-review 2 #2).
+        assert not item.owners["tok-a"].full
 
     def test_a_single_owner_item_ends_its_lease_too(self, client):
         from zae_limiter_provisioner.pending import expire, now_ms, read_pending, sk_pending
@@ -3470,6 +3472,42 @@ class TestChangeOnlyApplyStaysSafe:
         owed = self._owed(counting)
         # A live apply's item stays its own; a claimable one was retried.
         assert owed == ({foreign} if lease is None else set())
+
+    def test_a_full_apply_that_failed_a_fan_out_does_not_make_the_next_one_resume(self, counting):
+        """Re-review 2 #2: a failed fan-out's expired, still-`full` share was resumable.
+
+        Every later `--full` then resumed change-only and never repaired
+        drift. Only an apply killed mid-run, which never reaches `expire`,
+        should leave a share a full apply resumes.
+        """
+        from zae_limiter_provisioner import handler
+
+        entities = ("user-0", "user-1")
+        manifest = self._manifest(capacity=10, entities=entities)
+        self._apply(manifest)
+        self._put_bucket(counting, "user-0", capacity=10)
+        real_sync = handler.sync_bucket_params
+
+        def user_1_fails(*args, **kwargs):
+            if kwargs["entity_id"] == "user-1":
+                raise RuntimeError("throttled")
+            return real_sync(*args, **kwargs)
+
+        with patch.object(handler, "sync_bucket_params", side_effect=user_1_fails):
+            first = self._apply(manifest, full=True)
+        assert any("throttled" in e for e in first["errors"])
+        counting.update_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": "ns123/BUCKET#user-0#gpt-4#0"}, "SK": {"S": "#STATE"}},
+            UpdateExpression="SET b_rpm_cp = :c",
+            ExpressionAttributeValues={":c": {"N": "999000"}},
+        )
+
+        second = self._apply(manifest, full=True)
+
+        assert (second["full"], second["resumed"]) == (True, False)
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "10000"}
+        assert self._pending(counting) == []
 
     def test_a_full_apply_with_nothing_pending_fans_out_every_level(self, counting):
         from zae_limiter_provisioner import handler

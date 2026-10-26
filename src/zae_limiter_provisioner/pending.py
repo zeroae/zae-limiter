@@ -390,20 +390,24 @@ def expire(
     """End this apply's lease on items it still holds as it finishes.
 
     A fan-out that failed keeps its share for the next apply; the apply that
-    held it is done, so the next one need not wait out the lease. Best effort:
-    a failure only makes the next apply wait for the lease.
+    held it is done, so the next one need not wait out the lease. The share's
+    ``full`` mark is cleared too (#739 re-review 2 #2): a full apply that
+    finished, failures and all, is not an interrupted one, and a resumable
+    share would make every later full apply change-only. Only an apply killed
+    mid-run, which never gets here, leaves a share a full apply resumes. Best
+    effort: a failure only makes the next apply wait for the lease.
     """
     at = now_ms()
 
     def _expire(key: tuple[str, str, str]) -> None:
-        past = {":past": {"N": str(at - 1)}}
+        past = {":past": {"N": str(at - 1)}, ":no": {"BOOL": False}}
         try:
             client.update_item(
                 TableName=table_name,
                 Key=_key(namespace_id, *key),
-                UpdateExpression="SET #o.#me.#l = :past",
+                UpdateExpression="SET #o.#me.#l = :past, #o.#me.#f = :no",
                 ConditionExpression="attribute_exists(#o.#me)",
-                ExpressionAttributeNames={"#o": _OWNERS, "#me": token, "#l": _LEASE},
+                ExpressionAttributeNames={"#o": _OWNERS, "#me": token, "#l": _LEASE, "#f": _FULL},
                 ExpressionAttributeValues=past,
             )
             return
@@ -416,9 +420,13 @@ def expire(
             client.update_item(
                 TableName=table_name,
                 Key=_key(namespace_id, *key),
-                UpdateExpression="SET #llease = :past",
+                UpdateExpression="SET #llease = :past, #lfull = :no",
                 ConditionExpression="#ltok = :me",
-                ExpressionAttributeNames={"#ltok": _LEGACY_TOKEN, "#llease": _LEGACY_LEASE},
+                ExpressionAttributeNames={
+                    "#ltok": _LEGACY_TOKEN,
+                    "#llease": _LEGACY_LEASE,
+                    "#lfull": _LEGACY_FULL,
+                },
                 ExpressionAttributeValues={**past, ":me": {"S": token}},
             )
         except client.exceptions.ConditionalCheckFailedException:
