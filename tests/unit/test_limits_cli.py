@@ -1527,6 +1527,23 @@ class TestLimitsQuietAndUnchanged:
             "will be retried by the next apply.\n"
         )
 
+    def test_apply_with_changes_still_reports_pending_fan_outs(self):
+        """Re-review 3 #5: an apply that changed config said nothing of pending work."""
+        response = {
+            "status": "applied",
+            "changes": [{"action": "update", "level": "entity", "target": "u1/gpt-4"}],
+            "updated": 1,
+            "errors": [],
+            "pending": 3,
+        }
+        result = self._run("apply", response, "-q")
+        assert result.exit_code == 0
+        assert result.output == (
+            "Applied: 0 created, 1 updated, 0 deleted.\n"
+            "Note: 3 bucket fan-out(s) an earlier apply did not finish; "
+            "the next apply retries them.\n"
+        )
+
     def test_apply_with_errors_and_pending_still_exits_1(self):
         response = {"status": "applied", "changes": [], "errors": ["boom"], "pending": 1}
         result = self._run("apply", response)

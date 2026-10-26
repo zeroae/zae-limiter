@@ -167,6 +167,9 @@ def limits_apply(
             f"{result.get('deleted', 0)} deleted"
             f"{_unchanged_suffix(result)}."
         )
+        # Fan-outs still owed after the apply, e.g. leased to a run that timed
+        # out, are worth saying even when config changed (#739 re-review 3 #5).
+        _echo_pending(result)
 
     if result.get("resumed"):
         click.echo(
