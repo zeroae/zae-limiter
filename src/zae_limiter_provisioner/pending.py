@@ -92,6 +92,9 @@ class Pending:
     target: str
     token: str | None = None
     lease_until_ms: int | None = None
+    #: Written by a full apply (#739 re-review #3): only such an item, left
+    #: by an interrupted run, makes the next full apply resume.
+    full: bool = False
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -100,6 +103,12 @@ class Pending:
     def claimable(self, at_ms: int) -> bool:
         """Whether its owner is certainly gone, so another apply may take it."""
         return self.lease_until_ms is None or self.lease_until_ms < at_ms
+
+
+def any_full_claimable(items: Iterable[Pending]) -> bool:
+    """Whether an interrupted full apply left work that may be taken over now."""
+    at = now_ms()
+    return any(item.full and item.claimable(at) for item in items)
 
 
 def new_token() -> str:
@@ -147,6 +156,7 @@ def read_pending(client: Any, table_name: str, namespace_id: str) -> list[Pendin
                         lease_until_ms=(
                             int(item["lease_until_ms"]["N"]) if "lease_until_ms" in item else None
                         ),
+                        full=bool(item.get("full", {}).get("BOOL", False)),
                     )
                 )
             except KeyError:
@@ -170,8 +180,12 @@ def write_ahead(
     token: str,
     owed: Iterable[tuple[str, str, str]],
     lease_until_ms: int | None = None,
+    full: bool = False,
 ) -> set[tuple[str, str, str]]:
     """Record fan-outs this apply is about to owe, under its own token and lease.
+
+    ``full`` marks the items of a full apply, so an interrupted one is
+    resumed by the next full apply and no other item is (``Pending.full``).
 
     ``lease_until_ms`` (``deadline_for``) is when this apply is certainly
     gone; until then no other apply may take the item (#739 re-review #2).
@@ -203,6 +217,7 @@ def write_ahead(
                     "token": {"S": token},
                     "written_ms": {"N": str(written)},
                     "lease_until_ms": {"N": str(lease)},
+                    "full": {"BOOL": full},
                 },
                 ConditionExpression=(
                     "attribute_not_exists(PK) OR attribute_not_exists(#lease) "

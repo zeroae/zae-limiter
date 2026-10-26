@@ -3259,6 +3259,36 @@ class TestChangeOnlyApplyStaysSafe:
         assert (result["full"], result["resumed"], result["changes"]) == (True, True, [])
         assert self._pending(counting) == []
 
+    @pytest.mark.parametrize("stuck", ["leased to a live apply", "left by a change-only apply"])
+    def test_a_foreign_pending_item_does_not_turn_full_into_change_only(self, counting, stuck):
+        """Re-review #3: any pending item made `--full` silently change-only.
+
+        A full apply is the repair for a bucket that drifted while its config
+        still matches, so an item it did not write must not stop it.
+        """
+        from zae_limiter_provisioner.pending import new_token, write_ahead
+
+        self._apply(self._manifest(capacity=10, entities=("user-0", "user-1")))
+        self._put_bucket(counting, "user-0", capacity=10)
+        counting.update_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": "ns123/BUCKET#user-0#gpt-4#0"}, "SK": {"S": "#STATE"}},
+            UpdateExpression="SET b_rpm_cp = :c",
+            ExpressionAttributeValues={":c": {"N": "999000"}},
+        )
+        foreign = ("sync", "entity", "user-1/gpt-4")
+        lease = None if stuck == "leased to a live apply" else 0
+        write_ahead(counting, self.TABLE, "ns123", new_token(), [foreign], lease_until_ms=lease)
+
+        result = self._apply(self._manifest(capacity=10, entities=("user-0", "user-1")), full=True)
+
+        assert (result["full"], result["resumed"]) == (True, False)
+        assert len(result["changes"]) == 3
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "10000"}
+        owed = self._owed(counting)
+        # A live apply's item stays its own; a claimable one was retried.
+        assert owed == ({foreign} if lease is None else set())
+
     def test_a_full_apply_with_nothing_pending_fans_out_every_level(self, counting):
         from zae_limiter_provisioner import handler
 

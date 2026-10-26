@@ -55,6 +55,7 @@ from .manifest import LimitsManifest
 from .pending import (
     KINDS,
     Pending,
+    any_full_claimable,
     claim,
     deadline_for,
     expire,
@@ -126,7 +127,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # so a plan reports how many there are.
     owed = read_pending(boto3.client("dynamodb"), table_name, namespace_id)
     pending_count = len(owed) + len(previous.get("cascade_pending", []))
-    resumed = _resumes(full, pending_count)
+    resumed = _resumes(full, owed)
     stored: dict[int, dict[str, Any]] = {}
     declared, changes = _plan_changes(
         manifest,
@@ -162,6 +163,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
         full=full and not resumed,
         stored=stored,
         deadline_ms=deadline_for(_remaining_ms(context)),
+        mark_full=full,
     )
 
     return {
@@ -210,7 +212,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
     previous = _read_provisioner_state(table_name, namespace_id)
     full = requested_full
     owed = read_pending(boto3.client("dynamodb"), table_name, namespace_id)
-    resumed = _resumes(full, len(owed) + len(previous.get("cascade_pending", [])))
+    resumed = _resumes(full, owed)
     stored: dict[int, dict[str, Any]] = {}
     declared, changes = _plan_changes(
         manifest,
@@ -233,6 +235,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         full=full and not resumed,
         stored=stored,
         deadline_ms=deadline_for(_remaining_ms(context)),
+        mark_full=full,
     )
 
     return {
@@ -265,21 +268,24 @@ def _remaining_ms(context: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _resumes(full: bool, pending: int) -> bool:
-    """Whether a full apply resumes an unfinished run instead of starting over.
+def _resumes(full: bool, pending: list[Pending]) -> bool:
+    """Whether a full apply resumes an interrupted full apply instead of starting over.
 
     A full apply writes a pending item ahead for every fan-out of every
     declared level, and each is removed only once it lands. One too large for
     the Lambda timeout, restarted from scratch each time, would never finish
-    (#739 review, finding 5). So when a full apply finds pending items, it
-    retries those (each from its level's live config) plus whatever this
-    manifest changed, and leaves the levels an earlier run already finished.
-    A full apply that finds nothing pending fans out every level.
+    (#739 review, finding 5). So a full apply that finds a claimable item an
+    interrupted **full** apply left (``Pending.full``) retries those (each from
+    its level's live config) plus whatever this manifest changed, and leaves
+    the levels that run already finished.
 
-    The items may also be another apply's, still running: the full apply then
-    resumes too, and a later full apply, finding nothing pending, runs in full.
+    Only such an item (#739 re-review #3). A full apply is the one repair for a
+    bucket that drifted while its config still matches, so an item a
+    change-only apply left, one still leased to a live apply, or one stuck on a
+    failing fan-out must not quietly turn it change-only. With none, it fans
+    out every level, still retrying whatever claimable items it finds.
     """
-    return full and pending > 0
+    return full and any_full_claimable(pending)
 
 
 def _plan_changes(
@@ -317,6 +323,7 @@ def _apply_and_record(
     full: bool = False,
     stored: dict[int, dict[str, Any]] | None = None,
     deadline_ms: int | None = None,
+    mark_full: bool = False,
 ) -> ApplyResult:
     """Commit the config writes, fan out, then record the managed state (#563).
 
@@ -413,7 +420,11 @@ def _apply_and_record(
         for kind in sorted(fanouts_needed(namespace_id, change, live)):
             owed.append((kind, change.level, change.target))
             predicted.append((kind, change))
-    held |= write_ahead(client, table_name, namespace_id, token, owed, lease)
+    # A full apply's items, a resumed one's included, are marked so only an
+    # interrupted full apply makes the next one resume (#739 re-review #3).
+    held |= write_ahead(
+        client, table_name, namespace_id, token, owed, lease, full=full or mark_full
+    )
 
     def _done(kind: str, level: str, target: str) -> None:
         key = (kind, level, target)
