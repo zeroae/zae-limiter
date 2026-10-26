@@ -1949,7 +1949,7 @@ class TestPostCommitFanoutFailure:
         # would otherwise see no change: written, never deleted.
         pending_sk = "#PROVISIONER#PENDING#disabled#resource#gpt-4"
         assert pending_sk in [
-            c.kwargs["Item"]["SK"]["S"] for c in mock_client.put_item.call_args_list
+            c.kwargs["Key"]["SK"]["S"] for c in mock_client.update_item.call_args_list
         ]
         assert pending_sk not in [
             c.kwargs["Key"]["SK"]["S"] for c in mock_client.delete_item.call_args_list
@@ -2420,14 +2420,14 @@ class TestApplyCostsWhatChanged:
         assert (result["created"], result["updated"], result["deleted"]) == (1, 0, 0)
         assert result["unchanged"] == self.ENTITIES + 1
         assert result["errors"] == []
-        # The new config item, its sync written ahead as a pending item, and
-        # the #PROVISIONER record; nothing else.
-        assert counting.calls["put_item"] == 3
-        # The pending sync, removed once it landed.
+        # The new config item and the #PROVISIONER record.
+        assert counting.calls["put_item"] == 2
+        # The pending sync: this apply's share added (write-ahead), then
+        # removed once the sync landed, then the empty item deleted.
+        assert counting.calls.get("update_item", 0) == 2
         assert counting.calls["delete_item"] == 1
         # The pending-items query, then the new entity's bucket sync (two passes).
         assert counting.calls.get("query", 0) == 3
-        assert counting.calls.get("update_item", 0) == 0
 
     def test_an_identical_reapply_writes_only_the_record(self, counting):
         self._apply(self._manifest(self.ENTITIES))
@@ -2538,7 +2538,7 @@ class TestApplyCostsWhatChanged:
 
 
 class TestPendingItems:
-    """One item per owed fan-out, owned by the token of the apply holding it."""
+    """One item per owed fan-out, shared by every apply that took it on."""
 
     TABLE = "prov-pending-items"
 
@@ -2553,8 +2553,13 @@ class TestPendingItems:
         repo.close()
         return boto3.client("dynamodb", region_name="us-east-1")
 
+    def _owners(self, client):
+        from zae_limiter_provisioner.pending import read_pending
+
+        return {p.key: sorted(p.owners) for p in read_pending(client, self.TABLE, "ns")}
+
     def test_written_items_read_back(self, client):
-        from zae_limiter_provisioner.pending import Pending, read_pending, write_ahead
+        from zae_limiter_provisioner.pending import read_pending, write_ahead
 
         written = write_ahead(
             client,
@@ -2562,15 +2567,16 @@ class TestPendingItems:
             "ns",
             "tok-a",
             [("disabled", "resource", "gpt-4"), ("sync", "entity", "u1/_default_")] * 2,
+            full=True,
         )
 
         assert written == {("disabled", "resource", "gpt-4"), ("sync", "entity", "u1/_default_")}
         items = sorted(read_pending(client, self.TABLE, "ns"), key=lambda p: p.key)
-        assert [(p.key, p.token) for p in items] == [
-            (("disabled", "resource", "gpt-4"), "tok-a"),
-            (("sync", "entity", "u1/_default_"), "tok-a"),
+        assert [(p.key, sorted(p.owners)) for p in items] == [
+            (("disabled", "resource", "gpt-4"), ["tok-a"]),
+            (("sync", "entity", "u1/_default_"), ["tok-a"]),
         ]
-        assert all(isinstance(p, Pending) and p.lease_until_ms for p in items)
+        assert all(p.owners["tok-a"].lease_until_ms and p.owners["tok-a"].full for p in items)
         assert read_pending(client, self.TABLE, "other") == []
 
     def test_each_item_is_found_by_purge_namespace(self, client):
@@ -2603,38 +2609,41 @@ class TestPendingItems:
             (pk_system("ns"), sk_pending("cascade", "resource", "gpt-4"))
         ]
 
-    def test_a_release_by_another_token_leaves_the_item(self, client):
+    def test_two_owners_share_one_item_until_both_release(self, client):
+        """Re-review 2 #1: another owner never refuses a share, nor ends the item."""
         from zae_limiter_provisioner.pending import read_pending, release, write_ahead
 
         key = ("sync", "entity", "u1/gpt-4")
-        write_ahead(client, self.TABLE, "ns", "tok-a", [key], lease_until_ms=0)
-        # A later apply takes it on once the first one's lease has run out.
+        write_ahead(client, self.TABLE, "ns", "tok-a", [key])
         assert write_ahead(client, self.TABLE, "ns", "tok-b", [key]) == {key}
+        assert self._owners(client) == {key: ["tok-a", "tok-b"]}
 
         release(client, self.TABLE, "ns", "tok-a", key)
-        assert [p.token for p in read_pending(client, self.TABLE, "ns")] == ["tok-b"]
+        assert self._owners(client) == {key: ["tok-b"]}
+        release(client, self.TABLE, "ns", "tok-c", key)  # not an owner: no effect
+        assert self._owners(client) == {key: ["tok-b"]}
 
         release(client, self.TABLE, "ns", "tok-b", key)
         assert read_pending(client, self.TABLE, "ns") == []
 
-    def test_a_live_lease_is_not_taken_over(self, client):
-        """Re-review #2: an item leased to a live apply stays that apply's."""
+    def test_a_live_share_is_not_taken_over(self, client):
+        """Re-review #2: a share leased to a live apply stays that apply's."""
         from zae_limiter_provisioner.pending import claim, read_pending, write_ahead
 
         key = ("sync", "entity", "u1/gpt-4")
         write_ahead(client, self.TABLE, "ns", "tok-a", [key])
 
-        assert write_ahead(client, self.TABLE, "ns", "tok-b", [key]) == set()
         assert (
             claim(client, self.TABLE, "ns", "tok-b", read_pending(client, self.TABLE, "ns")) == []
         )
-        assert [p.token for p in read_pending(client, self.TABLE, "ns")] == ["tok-a"]
+        assert self._owners(client) == {key: ["tok-a"]}
 
-    def test_an_expired_lease_is_claimed_and_renewed(self, client):
+    def test_only_the_expired_shares_are_claimed(self, client):
         from zae_limiter_provisioner.pending import claim, now_ms, read_pending, write_ahead
 
         key = ("sync", "entity", "u1/gpt-4")
-        write_ahead(client, self.TABLE, "ns", "tok-a", [key], lease_until_ms=now_ms() - 1)
+        write_ahead(client, self.TABLE, "ns", "tok-dead", [key], lease_until_ms=now_ms() - 1)
+        write_ahead(client, self.TABLE, "ns", "tok-live", [key])
         lease = now_ms() + 60_000
 
         (claimed,) = claim(
@@ -2643,7 +2652,103 @@ class TestPendingItems:
 
         assert claimed.key == key
         (item,) = read_pending(client, self.TABLE, "ns")
-        assert (item.token, item.lease_until_ms) == ("tok-b", lease)
+        assert sorted(item.owners) == ["tok-b", "tok-live"]
+        assert item.owners["tok-b"].lease_until_ms == lease
+
+    def test_an_item_of_the_single_owner_shape_reads_and_works_as_one_owner(self, client):
+        """Items an earlier build of this branch wrote carry `token`, not `owners`."""
+        from zae_limiter_provisioner.pending import (
+            claim,
+            read_pending,
+            release,
+            sk_pending,
+            write_ahead,
+        )
+
+        key = ("sync", "entity", "u1/gpt-4")
+        item_key = {"PK": {"S": pk_system("ns")}, "SK": {"S": sk_pending(*key)}}
+        client.put_item(
+            TableName=self.TABLE,
+            Item={
+                **item_key,
+                "kind": {"S": "sync"},
+                "level": {"S": "entity"},
+                "target": {"S": "u1/gpt-4"},
+                "token": {"S": "tok-old"},
+                "lease_until_ms": {"N": "1"},
+                "full": {"BOOL": True},
+            },
+        )
+        (item,) = read_pending(client, self.TABLE, "ns")
+        assert item.owners["tok-old"].legacy and item.owners["tok-old"].full
+
+        # A new share beside the old one, then the old one claimed away.
+        write_ahead(client, self.TABLE, "ns", "tok-new", [key])
+        assert self._owners(client) == {key: ["tok-new", "tok-old"]}
+        assert (
+            len(claim(client, self.TABLE, "ns", "tok-c", read_pending(client, self.TABLE, "ns")))
+            == 1
+        )
+        assert self._owners(client) == {key: ["tok-c", "tok-new"]}
+        for token in ("tok-c", "tok-new"):
+            release(client, self.TABLE, "ns", token, key)
+        assert read_pending(client, self.TABLE, "ns") == []
+
+        # A single-owner item released by its own token goes at once.
+        client.put_item(
+            TableName=self.TABLE,
+            Item={
+                **item_key,
+                "kind": {"S": "sync"},
+                "level": {"S": "entity"},
+                "target": {"S": "u1/gpt-4"},
+                "token": {"S": "tok-old"},
+            },
+        )
+        release(client, self.TABLE, "ns", "tok-old", key)
+        assert read_pending(client, self.TABLE, "ns") == []
+
+    def test_a_single_owner_item_alone_is_claimed_into_the_map(self, client):
+        from zae_limiter_provisioner.pending import claim, read_pending, sk_pending
+
+        key = ("sync", "entity", "u1/gpt-4")
+        client.put_item(
+            TableName=self.TABLE,
+            Item={
+                "PK": {"S": pk_system("ns")},
+                "SK": {"S": sk_pending(*key)},
+                "kind": {"S": "sync"},
+                "level": {"S": "entity"},
+                "target": {"S": "u1/gpt-4"},
+                "token": {"S": "tok-old"},
+            },
+        )
+        assert (
+            len(claim(client, self.TABLE, "ns", "tok-c", read_pending(client, self.TABLE, "ns")))
+            == 1
+        )
+        (item,) = read_pending(client, self.TABLE, "ns")
+        assert sorted(item.owners) == ["tok-c"] and not item.owners["tok-c"].legacy
+
+    def test_an_item_left_with_no_owner_is_claimable(self, client):
+        from zae_limiter_provisioner.pending import claim, read_pending, sk_pending
+
+        client.put_item(
+            TableName=self.TABLE,
+            Item={
+                "PK": {"S": pk_system("ns")},
+                "SK": {"S": sk_pending("sync", "entity", "u1/gpt-4")},
+                "kind": {"S": "sync"},
+                "level": {"S": "entity"},
+                "target": {"S": "u1/gpt-4"},
+                "owners": {"M": {}},
+            },
+        )
+        assert (
+            len(claim(client, self.TABLE, "ns", "tok-c", read_pending(client, self.TABLE, "ns")))
+            == 1
+        )
+        assert self._owners(client) == {("sync", "entity", "u1/gpt-4"): ["tok-c"]}
 
     def test_a_finished_apply_ends_its_lease_on_what_it_still_holds(self, client):
         from zae_limiter_provisioner.pending import expire, now_ms, read_pending, write_ahead
@@ -2659,12 +2764,46 @@ class TestPendingItems:
         (item,) = read_pending(client, self.TABLE, "ns")
         assert item.claimable(now_ms())
 
+    def test_a_single_owner_item_ends_its_lease_too(self, client):
+        from zae_limiter_provisioner.pending import expire, now_ms, read_pending, sk_pending
+
+        key = ("sync", "entity", "u1/gpt-4")
+        client.put_item(
+            TableName=self.TABLE,
+            Item={
+                "PK": {"S": pk_system("ns")},
+                "SK": {"S": sk_pending(*key)},
+                "kind": {"S": "sync"},
+                "level": {"S": "entity"},
+                "target": {"S": "u1/gpt-4"},
+                "token": {"S": "tok-old"},
+                "lease_until_ms": {"N": str(now_ms() + 600_000)},
+            },
+        )
+        expire(client, self.TABLE, "ns", "tok-old", [key])
+        (item,) = read_pending(client, self.TABLE, "ns")
+        assert item.claimable(now_ms())
+
     def test_a_failed_expire_is_logged_not_raised(self, client):
         from zae_limiter_provisioner.pending import expire
 
         failing = MagicMock()
         failing.exceptions = client.exceptions
         failing.update_item.side_effect = RuntimeError("throttled")
+
+        expire(failing, self.TABLE, "ns", "tok", [("sync", "entity", "u1/gpt-4")])
+
+    def test_a_failed_single_owner_expire_is_logged_not_raised(self, client):
+        from zae_limiter_provisioner.pending import expire
+
+        failing = MagicMock()
+        failing.exceptions = client.exceptions
+        failing.update_item.side_effect = [
+            client.exceptions.ConditionalCheckFailedException(
+                {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"
+            ),
+            RuntimeError("throttled"),
+        ]
 
         expire(failing, self.TABLE, "ns", "tok", [("sync", "entity", "u1/gpt-4")])
 
@@ -2681,14 +2820,14 @@ class TestPendingItems:
         assert deadline_for(None) - before - LEASE_MARGIN_MS in range(MAX_RUN_MS, MAX_RUN_MS + 1000)
 
     def test_the_read_follows_every_page(self):
-        from zae_limiter_provisioner.pending import Pending, read_pending
+        from zae_limiter_provisioner.pending import Owner, Pending, read_pending
 
         def item(target):
             return {
                 "kind": {"S": "sync"},
                 "level": {"S": "entity"},
                 "target": {"S": target},
-                "token": {"S": "t"},
+                "owners": {"M": {"t": {"M": {"lease": {"N": "5"}}}}},
             }
 
         client = MagicMock()
@@ -2697,24 +2836,37 @@ class TestPendingItems:
             {"Items": [item("u2/a")]},
         ]
 
+        owners = {"t": Owner(lease_until_ms=5)}
         assert read_pending(client, "t", "ns") == [
-            Pending("sync", "entity", "u1/a", "t"),
-            Pending("sync", "entity", "u2/a", "t"),
+            Pending("sync", "entity", "u1/a", owners),
+            Pending("sync", "entity", "u2/a", owners),
         ]
         assert client.query.call_args_list[1].kwargs["ExclusiveStartKey"] == {"k": 1}
 
     def test_a_failed_release_is_logged_not_raised(self, client):
-        """The fan-out landed; a leftover item only costs the next apply a retry."""
+        """The fan-out landed; a leftover share only costs a later apply a retry."""
         from zae_limiter_provisioner.pending import release
 
         failing = MagicMock()
         failing.exceptions = client.exceptions
-        failing.delete_item.side_effect = RuntimeError("throttled")
+        failing.update_item.side_effect = RuntimeError("throttled")
 
         release(failing, self.TABLE, "ns", "tok", ("sync", "entity", "u1/gpt-4"))
 
+    def test_a_write_ahead_that_keeps_losing_its_race_raises(self, client):
+        from zae_limiter_provisioner.pending import write_ahead
+
+        racing = MagicMock()
+        racing.exceptions = client.exceptions
+        racing.update_item.side_effect = client.exceptions.ConditionalCheckFailedException(
+            {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"
+        )
+
+        with pytest.raises(RuntimeError, match="could not record pending fan-out"):
+            write_ahead(racing, self.TABLE, "ns", "tok", [("sync", "entity", "u1/gpt-4")])
+
     def test_a_claim_takes_only_what_it_read(self, client):
-        from zae_limiter_provisioner.pending import Pending, claim, read_pending, write_ahead
+        from zae_limiter_provisioner.pending import Owner, Pending, claim, read_pending, write_ahead
 
         for target in ("u1/gpt-4", "u2/gpt-4"):
             write_ahead(
@@ -2727,10 +2879,12 @@ class TestPendingItems:
         claimed = claim(client, self.TABLE, "ns", "tok-b", seen)
 
         assert [p.target for p in claimed] == ["u1/gpt-4"]
-        tokens = {p.target: p.token for p in read_pending(client, self.TABLE, "ns")}
-        assert tokens == {"u1/gpt-4": "tok-b", "u2/gpt-4": "tok-c"}
+        assert self._owners(client) == {
+            ("sync", "entity", "u1/gpt-4"): ["tok-b"],
+            ("sync", "entity", "u2/gpt-4"): ["tok-c"],
+        }
         # An item removed since it was read is not claimed back into existence.
-        gone = Pending("disabled", "resource", "gone", "tok-a")
+        gone = Pending("disabled", "resource", "gone", {"tok-a": Owner(lease_until_ms=0)})
         assert claim(client, self.TABLE, "ns", "tok-b", [gone]) == []
         assert len(read_pending(client, self.TABLE, "ns")) == 2
 
@@ -3399,6 +3553,56 @@ class TestChangeOnlyApplyStaysSafe:
         assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "20000"}
         assert self._pending(counting) == []
 
+    def test_an_obligation_lives_until_every_apply_that_took_it_on_is_done(self, counting):
+        """Re-review 2 #1: B, refused A's live item, fanned out holding nothing.
+
+        A (10 → 20) holds the sync. B (→ 30) writes ahead while A is live,
+        writes its config and dies. A's reads agree and A releases. B's share
+        of the obligation must survive A's release.
+        """
+        from zae_limiter_provisioner import handler
+        from zae_limiter_provisioner.pending import new_token, release, write_ahead
+
+        self._apply(self._manifest(capacity=10))
+        self._put_bucket(counting, "user-0", capacity=10)
+        key = ("sync", "entity", "user-0/gpt-4")
+        tok_a = new_token()
+        write_ahead(counting, self.TABLE, "ns123", tok_a, [key])  # A, still running
+
+        with patch.object(handler, "_sync_bucket_param_changes", side_effect=_Killed()):
+            with pytest.raises(_Killed):
+                self._apply(self._manifest(capacity=30))  # B, killed after its write
+        release(counting, self.TABLE, "ns123", tok_a, key)  # A finishes
+
+        assert key in self._owed(counting)
+        self._later()
+        self._apply(self._manifest(capacity=30))
+
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "30000"}
+        assert self._pending(counting) == []
+
+    def test_a_failed_fan_out_keeps_this_applys_share_of_a_shared_item(self, counting):
+        """Re-review 2 #1: B's sync errors while A holds the same item."""
+        from zae_limiter_provisioner import handler
+        from zae_limiter_provisioner.pending import new_token, release, write_ahead
+
+        self._apply(self._manifest(capacity=10))
+        self._put_bucket(counting, "user-0", capacity=10)
+        key = ("sync", "entity", "user-0/gpt-4")
+        tok_a = new_token()
+        write_ahead(counting, self.TABLE, "ns123", tok_a, [key])
+
+        with patch.object(handler, "sync_bucket_params", side_effect=RuntimeError("throttled")):
+            result = self._apply(self._manifest(capacity=30))  # B
+        assert any("throttled" in e for e in result["errors"])
+        release(counting, self.TABLE, "ns123", tok_a, key)
+
+        assert key in self._owed(counting)
+        self._apply(self._manifest(capacity=30))  # B ended its lease: retried at once
+
+        assert self._bucket(counting, "user-0")["b_rpm_cp"] == {"N": "30000"}
+        assert self._pending(counting) == []
+
     def test_a_concurrent_apply_cannot_release_work_before_its_config_lands(self, counting):
         """Re-review #2: B claims and releases A's item before A's config write.
 
@@ -3463,7 +3667,7 @@ class TestChangeOnlyApplyStaysSafe:
         write_ahead(counting, table, "ns123", tok_b, [key])
 
         self._apply(self._manifest(capacity=10))  # the stale apply
-        assert [i["token"]["S"] for i in self._pending(counting)] == [tok_b]
+        assert [list(i["owners"]["M"]) for i in self._pending(counting)] == [[tok_b]]
 
         # B writes its config and syncs, then removes its own item.
         manifest = LimitsManifest.from_dict(self._manifest(capacity=20))

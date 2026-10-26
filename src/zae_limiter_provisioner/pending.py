@@ -13,25 +13,34 @@ One item per owed fan-out, beside the ``#PROVISIONER`` record::
     PK = {ns}/SYSTEM#
     SK = #PROVISIONER#PENDING#{kind}#{level}#{target}
 
-``kind`` is ``disabled`` (ADR-125), ``cascade`` (ADR-146) or ``sync`` (the
-#481 bucket param sync). Each item carries the ``token`` of the apply that
-owns it. Every apply that takes a fan-out on writes its own token (a write
-ahead, or a claim of an item an earlier apply left), and removes the item
-with a delete conditioned on that token. So:
+``kind`` is ``disabled`` (ADR-125), ``cascade`` (ADR-146), ``soft`` (#467) or
+``sync`` (the #481 bucket param sync).
 
-- an apply never removes work another apply has taken on since: a later
-  writer's token fails the earlier one's delete, and the item stays for
-  whoever owns it now (#739 review: one record holding every apply's pending
-  list was overwritten by a concurrent apply's final write);
-- progress is per level: an interrupted apply leaves exactly the fan-outs it
-  had not finished, and the next apply resumes from there instead of
-  starting again (#739 review: a full apply too long for the Lambda timeout
-  never converged).
+**An item has many owners** (#739 re-review 2 #1). ``owners`` maps the token of
+every apply that took the fan-out on to its lease (``lease``: the instant by
+which that apply is certainly gone) and whether it was a full apply
+(``full``). Two applies changing the same level each owe its fan-out, and the
+obligation lives until **every** one has finished its own:
 
-Items carry ``GSI4PK`` and ``GSI4SK`` (= PK) so ``purge_namespace`` removes them
-with the namespace.
-Every operation here is a single-item ``PutItem`` / ``UpdateItem`` /
-``DeleteItem`` or a ``Query`` on the table, all of which the provisioner role
+- ``write_ahead`` adds this apply's entry; another owner never refuses it;
+- ``release`` removes only this apply's entry, and deletes the item only once
+  no entry is left;
+- ``claim`` takes over only entries whose lease has run out (their apply is
+  certainly gone), replacing them with this apply's;
+- ``expire`` ends this apply's lease as it finishes with fan-outs it could not
+  complete, so the next apply claims them at once.
+
+With one owner per item, an apply refused another's live item fanned out
+holding nothing: when the other released, the obligation was gone, and a
+config this apply wrote and then died with was never fanned out.
+
+An item written by an earlier build of this branch carries a single ``token``
+/ ``lease_until_ms`` / ``full`` instead of ``owners``; it is read as that one
+owner and cleaned up by the same operations.
+
+Items carry ``GSI4PK`` and ``GSI4SK`` (= PK) so ``purge_namespace`` removes
+them with the namespace. Every operation here is a single-item ``UpdateItem``
+/ ``DeleteItem`` or a ``Query`` on the table, all of which the provisioner role
 already grants on the table. Nothing on the acquire path reads these items.
 """
 
@@ -42,7 +51,7 @@ import time
 import uuid
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from zae_limiter.schema import pk_system, sk_provisioner
@@ -64,6 +73,14 @@ MAX_RUN_MS = 900_000
 #: Added to every lease, for clock skew between invocations.
 LEASE_MARGIN_MS = 60_000
 
+_OWNERS = "owners"
+_LEASE = "lease"
+_FULL = "full"
+# The single-owner shape an earlier build of this branch wrote.
+_LEGACY_TOKEN = "token"
+_LEGACY_LEASE = "lease_until_ms"
+_LEGACY_FULL = "full"
+
 
 def now_ms() -> int:
     """Wall-clock epoch milliseconds, the clock every lease is read against."""
@@ -84,31 +101,46 @@ def deadline_for(remaining_ms: int | None) -> int:
 
 
 @dataclass(frozen=True)
+class Owner:
+    """One apply's share of a pending item."""
+
+    #: None for a lease never recorded (read as already run out).
+    lease_until_ms: int | None = None
+    #: Taken on by a full apply that may still resume it (#739 re-review #3).
+    full: bool = False
+    #: Stored in the single-owner shape of an earlier build.
+    legacy: bool = False
+
+    def expired(self, at_ms: int) -> bool:
+        return self.lease_until_ms is None or self.lease_until_ms < at_ms
+
+
+@dataclass(frozen=True)
 class Pending:
-    """One owed fan-out, and the token of the apply that holds it."""
+    """One owed fan-out, and every apply that holds a share of it."""
 
     kind: str
     level: str
     target: str
-    token: str | None = None
-    lease_until_ms: int | None = None
-    #: Written by a full apply (#739 re-review #3): only such an item, left
-    #: by an interrupted run, makes the next full apply resume.
-    full: bool = False
+    owners: dict[str, Owner] = field(default_factory=dict)
 
     @property
     def key(self) -> tuple[str, str, str]:
         return (self.kind, self.level, self.target)
 
+    def expired_tokens(self, at_ms: int) -> list[str]:
+        """The owners whose lease has run out: their applies are certainly gone."""
+        return sorted(token for token, owner in self.owners.items() if owner.expired(at_ms))
+
     def claimable(self, at_ms: int) -> bool:
-        """Whether its owner is certainly gone, so another apply may take it."""
-        return self.lease_until_ms is None or self.lease_until_ms < at_ms
+        """Whether another apply may take a share now: an owner is gone, or none is left."""
+        return not self.owners or bool(self.expired_tokens(at_ms))
 
 
 def any_full_claimable(items: Iterable[Pending]) -> bool:
     """Whether an interrupted full apply left work that may be taken over now."""
     at = now_ms()
-    return any(item.full and item.claimable(at) for item in items)
+    return any(owner.full and owner.expired(at) for item in items for owner in item.owners.values())
 
 
 def new_token() -> str:
@@ -126,6 +158,25 @@ def _key(namespace_id: str, kind: str, level: str, target: str) -> dict[str, Any
         "PK": {"S": pk_system(namespace_id)},
         "SK": {"S": sk_pending(kind, level, target)},
     }
+
+
+def _owners_of(item: dict[str, Any]) -> dict[str, Owner]:
+    """Every owner an item records, the single-owner shape included."""
+    owners: dict[str, Owner] = {}
+    for token, entry in item.get(_OWNERS, {}).get("M", {}).items():
+        fields = entry.get("M", {})
+        owners[token] = Owner(
+            lease_until_ms=int(fields[_LEASE]["N"]) if _LEASE in fields else None,
+            full=bool(fields.get(_FULL, {}).get("BOOL", False)),
+        )
+    legacy = item.get(_LEGACY_TOKEN, {}).get("S")
+    if legacy is not None:
+        owners[legacy] = Owner(
+            lease_until_ms=(int(item[_LEGACY_LEASE]["N"]) if _LEGACY_LEASE in item else None),
+            full=bool(item.get(_LEGACY_FULL, {}).get("BOOL", False)),
+            legacy=True,
+        )
+    return owners
 
 
 def read_pending(client: Any, table_name: str, namespace_id: str) -> list[Pending]:
@@ -152,11 +203,7 @@ def read_pending(client: Any, table_name: str, namespace_id: str) -> list[Pendin
                         kind=item["kind"]["S"],
                         level=item["level"]["S"],
                         target=item["target"]["S"],
-                        token=item.get("token", {}).get("S"),
-                        lease_until_ms=(
-                            int(item["lease_until_ms"]["N"]) if "lease_until_ms" in item else None
-                        ),
-                        full=bool(item.get("full", {}).get("BOOL", False)),
+                        owners=_owners_of(item),
                     )
                 )
             except KeyError:
@@ -173,6 +220,10 @@ def _parallel(fn: Any, args: list[Any]) -> list[Any]:
         return list(pool.map(fn, args))
 
 
+def _entry(lease_until_ms: int, full: bool) -> dict[str, Any]:
+    return {"M": {_LEASE: {"N": str(lease_until_ms)}, _FULL: {"BOOL": full}}}
+
+
 def write_ahead(
     client: Any,
     table_name: str,
@@ -182,57 +233,72 @@ def write_ahead(
     lease_until_ms: int | None = None,
     full: bool = False,
 ) -> set[tuple[str, str, str]]:
-    """Record fan-outs this apply is about to owe, under its own token and lease.
-
-    ``full`` marks the items of a full apply, so an interrupted one is
-    resumed by the next full apply and no other item is (``Pending.full``).
+    """Take on fan-outs this apply is about to owe: add its share to each item.
 
     ``lease_until_ms`` (``deadline_for``) is when this apply is certainly
-    gone; until then no other apply may take the item (#739 re-review #2).
-    An item already there is taken over only if its lease has run out: one
-    still leased to a live apply stays that apply's, so neither can release
-    the other's work, and this apply runs the fan-out without holding it.
-    Raises on any other failure, before any config is written. Returns the
-    keys this apply now holds.
+    gone. ``full`` marks a full apply's share, so an interrupted one is resumed
+    by the next full apply and no other item is. Another owner never refuses
+    the write (#739 re-review 2 #1): the item then has both, and stays until
+    both have finished. Raises on failure, before any config is written.
+    Returns the keys this apply now holds.
     """
     keys = list(dict.fromkeys(owed))
     written = now_ms()
     lease = deadline_for(None) if lease_until_ms is None else lease_until_ms
+    entry = _entry(lease, full)
 
-    def _put(key: tuple[str, str, str]) -> bool:
+    def _put(key: tuple[str, str, str]) -> None:
         kind, level, target = key
-        try:
-            client.put_item(
-                TableName=table_name,
-                Item={
-                    **_key(namespace_id, kind, level, target),
-                    "GSI4PK": {"S": namespace_id},
-                    # GSI4's sort key: an item without it is not in the index,
-                    # and `purge_namespace` would never find it. PK, as the
-                    # client's repository writes it (#739 review, finding 3).
-                    "GSI4SK": {"S": pk_system(namespace_id)},
-                    "kind": {"S": kind},
-                    "level": {"S": level},
-                    "target": {"S": target},
-                    "token": {"S": token},
-                    "written_ms": {"N": str(written)},
-                    "lease_until_ms": {"N": str(lease)},
-                    "full": {"BOOL": full},
-                },
-                ConditionExpression=(
-                    "attribute_not_exists(PK) OR attribute_not_exists(#lease) "
-                    "OR #lease < :now OR #tok = :me"
-                ),
-                ExpressionAttributeNames={"#lease": "lease_until_ms", "#tok": "token"},
-                ExpressionAttributeValues={":now": {"N": str(written)}, ":me": {"S": token}},
-            )
-            return True
-        except client.exceptions.ConditionalCheckFailedException:
-            logger.debug("Pending %s is leased to a live apply; left to it", key)
-            return False
+        meta = {
+            ":ns": {"S": namespace_id},
+            # GSI4's sort key: an item without it is not in the index, and
+            # `purge_namespace` would never find it. PK, as the client's
+            # repository writes it (#739 review, finding 3).
+            ":g4sk": {"S": pk_system(namespace_id)},
+            ":kind": {"S": kind},
+            ":level": {"S": level},
+            ":target": {"S": target},
+            ":written": {"N": str(written)},
+        }
+        sets = (
+            "GSI4PK = :ns, GSI4SK = :g4sk, kind = :kind, #lvl = :level, "
+            "#tgt = :target, written_ms = :written"
+        )
+        names = {"#o": _OWNERS, "#lvl": "level", "#tgt": "target"}
+        # Create the map with this apply's entry, or add the entry to the map
+        # another owner made. The two cannot be one expression (a path and its
+        # parent overlap), and each is conditioned on the map's existence, so
+        # whichever races loses only to the other and is re-sent. Creating
+        # first: an item nobody else holds, the usual case, costs one write.
+        for _attempt in range(2):
+            try:
+                client.update_item(
+                    TableName=table_name,
+                    Key=_key(namespace_id, kind, level, target),
+                    UpdateExpression=f"SET #o = :m, {sets}",
+                    ConditionExpression="attribute_not_exists(#o)",
+                    ExpressionAttributeNames=names,
+                    ExpressionAttributeValues={**meta, ":m": {"M": {token: entry}}},
+                )
+                return
+            except client.exceptions.ConditionalCheckFailedException:
+                pass
+            try:
+                client.update_item(
+                    TableName=table_name,
+                    Key=_key(namespace_id, kind, level, target),
+                    UpdateExpression=f"SET #o.#me = :e, {sets}",
+                    ConditionExpression="attribute_exists(#o)",
+                    ExpressionAttributeNames={**names, "#me": token},
+                    ExpressionAttributeValues={**meta, ":e": entry},
+                )
+                return
+            except client.exceptions.ConditionalCheckFailedException:
+                continue
+        raise RuntimeError(f"could not record pending fan-out {key}")
 
-    held = _parallel(_put, keys)
-    return {key for key, ok in zip(keys, held, strict=True) if ok}
+    _parallel(_put, keys)
+    return set(keys)
 
 
 def claim(
@@ -242,38 +308,68 @@ def claim(
     token: str,
     items: Iterable[Pending],
     lease_until_ms: int | None = None,
+    full: bool = False,
 ) -> list[Pending]:
-    """Take over pending items an earlier apply left; return the ones claimed.
+    """Take over the shares of applies that are certainly gone; return the items claimed.
 
-    Only an item whose lease has run out: its owner is certainly gone (#739
-    re-review #2). Claiming one still leased let a concurrent apply read the
-    old config twice, before the owner's config write, release the item, and
-    lose the fan-out when the owner then died. Conditioned on the token read
-    as well: an item another apply has claimed or removed since is left to it.
+    Only owners whose lease has run out (#739 re-review #2): claiming a share
+    still leased let a concurrent apply read the old config twice, before the
+    owner's config write, and release the work. In one conditional update the
+    expired owners are replaced by this apply, conditioned on each still being
+    there and expired, so two claimers cannot both take one share. An item with
+    no owner left at all is claimable too. Live owners keep their share.
     """
     at = now_ms()
     candidates = [item for item in items if item.claimable(at)]
     lease = deadline_for(None) if lease_until_ms is None else lease_until_ms
+    entry = _entry(lease, full)
 
     def _claim(item: Pending) -> bool:
-        condition = "#tok = :old" if item.token is not None else "attribute_not_exists(#tok)"
-        values: dict[str, Any] = {
-            ":me": {"S": token},
-            ":now": {"N": str(at)},
-            ":lease": {"N": str(lease)},
-        }
-        if item.token is not None:
-            values[":old"] = {"S": item.token}
+        expired = item.expired_tokens(at)
+        names: dict[str, str] = {"#o": _OWNERS}
+        values: dict[str, Any] = {":now": {"N": str(at)}}
+        conditions = ["attribute_exists(PK)"]
+        removes: list[str] = []
+        has_map = any(not owner.legacy for owner in item.owners.values())
+        for i, tok in enumerate(expired):
+            owner = item.owners[tok]
+            if owner.legacy:
+                names.update({"#ltok": _LEGACY_TOKEN, "#llease": _LEGACY_LEASE})
+                values[":ltok"] = {"S": tok}
+                conditions.append("#ltok = :ltok")
+                conditions.append("(attribute_not_exists(#llease) OR #llease < :now)")
+                removes += ["#ltok", "#llease", f"#{_LEGACY_FULL}x"]
+                names[f"#{_LEGACY_FULL}x"] = _LEGACY_FULL
+                continue
+            names[f"#t{i}"] = tok
+            names["#l"] = _LEASE
+            conditions.append(
+                f"attribute_exists(#o.#t{i}) "
+                f"AND (attribute_not_exists(#o.#t{i}.#l) OR #o.#t{i}.#l < :now)"
+            )
+            removes.append(f"#o.#t{i}")
+        if has_map or (not item.owners and not expired):
+            names["#me"] = token
+            sets = "#o.#me = :e"
+            values[":e"] = entry
+            conditions.append("attribute_exists(#o)")
+            if not item.owners:
+                values[":z"] = {"N": "0"}
+                conditions.append("size(#o) = :z")
+        else:
+            sets = "#o = :m"
+            values[":m"] = {"M": {token: entry}}
+            conditions.append("attribute_not_exists(#o)")
+        if not expired:
+            del values[":now"]  # an item with no owner left tests no lease
+        expression = f"SET {sets}" + (f" REMOVE {', '.join(removes)}" if removes else "")
         try:
             client.update_item(
                 TableName=table_name,
                 Key=_key(namespace_id, *item.key),
-                UpdateExpression="SET #tok = :me, written_ms = :now, #lease = :lease",
-                ConditionExpression=(
-                    f"attribute_exists(PK) AND {condition} "
-                    "AND (attribute_not_exists(#lease) OR #lease < :now)"
-                ),
-                ExpressionAttributeNames={"#tok": "token", "#lease": "lease_until_ms"},
+                UpdateExpression=expression,
+                ConditionExpression=" AND ".join(conditions),
+                ExpressionAttributeNames=names,
                 ExpressionAttributeValues=values,
             )
             return True
@@ -293,21 +389,37 @@ def expire(
 ) -> None:
     """End this apply's lease on items it still holds as it finishes.
 
-    A fan-out that failed keeps its item for the next apply; the apply that
+    A fan-out that failed keeps its share for the next apply; the apply that
     held it is done, so the next one need not wait out the lease. Best effort:
     a failure only makes the next apply wait for the lease.
     """
     at = now_ms()
 
     def _expire(key: tuple[str, str, str]) -> None:
+        past = {":past": {"N": str(at - 1)}}
         try:
             client.update_item(
                 TableName=table_name,
                 Key=_key(namespace_id, *key),
-                UpdateExpression="SET #lease = :now",
-                ConditionExpression="#tok = :me",
-                ExpressionAttributeNames={"#tok": "token", "#lease": "lease_until_ms"},
-                ExpressionAttributeValues={":now": {"N": str(at - 1)}, ":me": {"S": token}},
+                UpdateExpression="SET #o.#me.#l = :past",
+                ConditionExpression="attribute_exists(#o.#me)",
+                ExpressionAttributeNames={"#o": _OWNERS, "#me": token, "#l": _LEASE},
+                ExpressionAttributeValues=past,
+            )
+            return
+        except client.exceptions.ConditionalCheckFailedException:
+            pass
+        except Exception as e:
+            logger.warning("Could not end the lease on pending %s: %s", key, e)
+            return
+        try:
+            client.update_item(
+                TableName=table_name,
+                Key=_key(namespace_id, *key),
+                UpdateExpression="SET #llease = :past",
+                ConditionExpression="#ltok = :me",
+                ExpressionAttributeNames={"#ltok": _LEGACY_TOKEN, "#llease": _LEGACY_LEASE},
+                ExpressionAttributeValues={**past, ":me": {"S": token}},
             )
         except client.exceptions.ConditionalCheckFailedException:
             pass
@@ -324,21 +436,51 @@ def release(
     token: str,
     key: tuple[str, str, str],
 ) -> None:
-    """Remove one pending item this apply holds, once its fan-out has landed.
+    """Remove this apply's share once its fan-out has landed; the item once none is left.
 
-    Conditioned on ``token``: if another apply has taken the item on since, it
-    stays for that apply. A failure is logged, never raised: the fan-out
-    landed, and an item left behind only costs the next apply a retry.
+    Another apply's share keeps the item (#739 re-review 2 #1): its fan-out is
+    still owed. The delete is conditioned on no share being left, so an owner
+    added in between keeps it too. A failure is logged, never raised: the
+    fan-out landed, and a share left behind only costs a later apply a retry.
     """
+    item_key = _key(namespace_id, *key)
     try:
+        try:
+            response = client.update_item(
+                TableName=table_name,
+                Key=item_key,
+                UpdateExpression="REMOVE #o.#me",
+                ConditionExpression="attribute_exists(#o.#me)",
+                ExpressionAttributeNames={"#o": _OWNERS, "#me": token},
+                ReturnValues="ALL_NEW",
+            )
+        except client.exceptions.ConditionalCheckFailedException:
+            # Not in the map: an item of the single-owner shape, or no share.
+            response = client.update_item(
+                TableName=table_name,
+                Key=item_key,
+                UpdateExpression="REMOVE #ltok, #llease, #lfull",
+                ConditionExpression="#ltok = :me",
+                ExpressionAttributeNames={
+                    "#ltok": _LEGACY_TOKEN,
+                    "#llease": _LEGACY_LEASE,
+                    "#lfull": _LEGACY_FULL,
+                },
+                ExpressionAttributeValues={":me": {"S": token}},
+                ReturnValues="ALL_NEW",
+            )
+        if _owners_of(response.get("Attributes", {})):
+            return
         client.delete_item(
             TableName=table_name,
-            Key=_key(namespace_id, *key),
-            ConditionExpression="#tok = :me",
-            ExpressionAttributeNames={"#tok": "token"},
-            ExpressionAttributeValues={":me": {"S": token}},
+            Key=item_key,
+            ConditionExpression=(
+                "(attribute_not_exists(#o) OR size(#o) = :z) AND attribute_not_exists(#ltok)"
+            ),
+            ExpressionAttributeNames={"#o": _OWNERS, "#ltok": _LEGACY_TOKEN},
+            ExpressionAttributeValues={":z": {"N": "0"}},
         )
     except client.exceptions.ConditionalCheckFailedException:
-        logger.debug("Pending %s was taken over by another apply; left to it", key)
+        logger.debug("Pending %s is still owed by another apply; left to it", key)
     except Exception as e:
         logger.warning("Could not remove pending %s (retried next apply): %s", key, e)

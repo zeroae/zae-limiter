@@ -275,7 +275,7 @@ def _resumes(full: bool, pending: list[Pending]) -> bool:
     declared level, and each is removed only once it lands. One too large for
     the Lambda timeout, restarted from scratch each time, would never finish
     (#739 review, finding 5). So a full apply that finds a claimable item an
-    interrupted **full** apply left (``Pending.full``) retries those (each from
+    interrupted **full** apply left (an ``Owner.full`` share) retries those (each from
     its level's live config) plus whatever this manifest changed, and leaves
     the levels that run already finished.
 
@@ -408,7 +408,9 @@ def _apply_and_record(
     # Until `deadline_ms` this invocation may still be running, so no other
     # apply may take its pending items (#739 re-review #2).
     lease = deadline_for(None) if deadline_ms is None else deadline_ms
-    claimed = claim(client, table_name, namespace_id, token, pending or [], lease)
+    claimed = claim(
+        client, table_name, namespace_id, token, pending or [], lease, full=full or mark_full
+    )
     legacy = [("cascade", level, target) for level, target in cascade_pending or []]
     retried = [*(p.key for p in claimed), *legacy]
     held: set[tuple[str, str, str]] = {p.key for p in claimed}
