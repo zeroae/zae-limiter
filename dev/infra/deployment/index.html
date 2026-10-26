@@ -5778,6 +5778,24 @@ within one file, which is also the unit <code>limits apply</code> manages: one m
 namespace, or update the Lambdas. They exit 1 when the stack or namespace is missing, or when
 the stack's Lambdas are behind the client — run <code>zae-limiter upgrade -n my-app</code> first. <code>apply</code>
 registers a new namespace itself (see <a href="../../cli/#read-only-commands">Read-Only Commands</a>).</p>
+<p>An apply writes only the entries whose stored config differs from the manifest, and fans out
+to live bucket items only what those writes changed, so a one-line edit to a large manifest
+costs one entry. Two consequences matter in operation:</p>
+<ul>
+<li>A bucket item edited out of band while its config entry still matches is not repaired by a
+  plain apply. <code>limits apply --full</code> (or <code>FullApply: true</code> on the CloudFormation resource, below)
+  rewrites and fans out every declared entry.</li>
+<li>Each bucket fan-out an apply owes is recorded before its config is written, run from the
+  table's live config, and removed once it lands. An interrupted or failed apply leaves only the
+  unfinished ones. A later apply retries them: at once for a fan-out that failed, and for an
+  interrupted apply only after the provisioner Lambda's timeout plus a minute, when that apply is
+  certainly gone. So even a large <code>--full</code> apply cut short by the Lambda timeout resumes where it
+  stopped: a <code>--full</code> / <code>FullApply</code> run that finds work an interrupted full apply left retries
+  that (plus whatever the manifest changed) rather than every entry, and reports <code>resumed</code>. Any
+  other unfinished fan-out never stops a full apply. <code>plan</code> and <code>diff</code> report how many are
+  waiting.</li>
+</ul>
+<p>See <a href="../../cli/#declarative-limits">Declarative Limits</a> for the details.</p>
 <p>The provisioner tracks which items it manages in a <code>#PROVISIONER</code> state record. When you remove an item from the manifest and re-apply, the provisioner deletes it from DynamoDB. Items created outside the manifest (via <code>set-defaults</code> or <code>set-limits</code> CLI commands) are not affected.</p>
 <h3 id="multi-namespace">Multi-Namespace<a class="headerlink" href="#multi-namespace" title="Permanent link">&para;</a></h3>
 <p>Each manifest targets a single namespace. To manage limits for multiple namespaces, use separate YAML files:</p>
@@ -5818,6 +5836,12 @@ registers a new namespace itself (see <a href="../../cli/#read-only-commands">Re
 <p><code>disabled</code> and <code>cascade</code> appear as <code>Disabled</code> and <code>Cascade</code> properties on <code>Resources</code> and
 <code>Entities</code> entries; omitting one clears it, as in the manifest. A <code>Cascade</code> or <code>Disabled</code> under
 <code>System</code> fails the stack operation.</p>
+<p>A stack update applies only the entries that changed. Set <code>FullApply: true</code> on the resource
+(<code>limits cfn-template --full</code> emits it) for the equivalent of <code>limits apply --full</code>.
+CloudFormation calls a custom resource only when one of its properties changes, so re-running an
+unchanged stack update does nothing; adding <code>FullApply</code> is itself the change that triggers the
+full apply. While it stays set, every update is a full one. Any value other than <code>true</code> or
+<code>false</code> fails the stack operation before anything is written.</p>
 <p>This approach lets you manage limits alongside other infrastructure in CloudFormation, with full lifecycle support (Create, Update, Delete).</p>
 <div class="admonition warning">
 <p class="admonition-title">A partial apply succeeds; it does not roll the stack back</p>
@@ -5828,8 +5852,9 @@ listed under <code>errors</code> in the custom resource's response data, rather 
 rollback would revert a stack whose configuration had already been applied.</p>
 <p>A successful stack update is therefore not proof that every bucket was reached. Check
 <code>errors</code> in the response data, or the <code>{stack}-limits-provisioner</code> log group, which records
-the same list. Every write is idempotent, so re-running the same stack update reconciles the
-remainder. The <code>#PROVISIONER</code> record is written on both outcomes, so it always describes the
+the same list. Every write is idempotent, and a failed fan-out is retried by the next
+update; since an unchanged stack update never reaches the resource, add or toggle
+<code>FullApply</code> to run one. The <code>#PROVISIONER</code> record is written on both outcomes, so it always describes the
 config that is actually in the table.</p>
 <p>A failure writing that record <em>is</em> reported as FAILED: it is the last step, nothing after
 it can be salvaged, and a retry is the right answer.</p>
