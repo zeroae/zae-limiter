@@ -52,7 +52,8 @@ Every `acquire()` writes to both child and parent buckets, enabling direct
 comparison of cascade overhead vs standalone operation.
 
 The parent is **one entity for the whole run**, with a fixed id per locustfile
-(`loadtest-cascade-parent-simple`, `loadtest-cascade-parent-max-rps`), so the
+(`loadtest-cascade-parent-simple`, `loadtest-cascade-parent-max-rps`,
+`loadtest-cascade-parent-multi-resource`), so the
 master, every worker and a headless run all debit the same one, as in
 production, where a parent's bucket is the hot partition. Each process creates
 it on its first cascade user's `on_start` and treats "already exists" as
@@ -63,7 +64,8 @@ debit the parent, when the workers do not report within `stop_timeout` + 60 s,
 or when the master quits instead of stopping (Ctrl-C, or the distributed CLI
 stopping the Fargate task): `quit()` fires `test_stop` before it tells the
 workers to quit. A worker's next slow path then recreates an orphan parent
-bucket, which expires through its TTL (system defaults).
+bucket, which expires through its TTL (system defaults; resource defaults for
+`multi_resource.py`).
 
 A run killed before `on_test_stop` leaves the parent behind, and the next run
 reuses it with its old bucket state (possibly already sharded), so that run is
@@ -77,13 +79,7 @@ for like. The per-resource rows are informational only. A multi-resource acquire
 one lease, so it reports one `ACQUIRE` row named for the primary resource
 (`search`); the nested class reports an `ACQUIRE` row for each resource, so its RPS
 reads doubled, and its `search` row times only the outer acquire, so its p50 reads
-halved.
-
-Their parent is one entity for the whole run, with a fixed id
-(`loadtest-cascade-parent-multi-resource`), whether the users run locally, on
-distributed workers or on several Lambdas. Each process creates it if it is
-missing (an existing one counts as success), and only the master or a local
-runner deletes it when the test stops, never a worker.
+halved. Their parent is the run-wide one described above.
 
 ## Running Locally
 

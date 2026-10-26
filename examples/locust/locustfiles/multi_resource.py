@@ -28,10 +28,36 @@ Run each class alone::
     zae-limiter loadtest run -n <stack> -f locustfiles/multi_resource.py \\
         MultiResourceNestedUser
 
-The parent has a fixed id (``CASCADE_PARENT``), so a distributed or
-multi-Lambda run has one parent, not one per process. Each process creates it
-if it is missing (an existing one counts as success); only the master or a
-local runner deletes it at test stop, never a worker.
+The cascade parent is ONE entity for the whole run,
+``loadtest-cascade-parent-multi-resource``, shared by the master, every worker
+and a headless runner. Its id is fixed, so every process agrees on it without a
+message from the master. Each process creates it once, in the first user's
+``on_start`` (behind a lock), and treats ``EntityExistsError`` as success. Only
+the master or a local runner deletes it, in ``test_stop``; a worker never does,
+since other workers may still be debiting it.
+
+On a normal stop (``MasterRunner.stop()``) the master fires ``test_stop`` only
+after its workers report no running users, so no child is still debiting the
+parent when it is deleted. Residuals, each of which can leave a worker debiting
+a deleted parent, whose next slow path then recreates an orphan parent bucket
+(resource defaults, so it expires through its TTL):
+
+- the workers do not report within ``stop_timeout`` + 60 s, and the master
+  fires ``test_stop`` anyway;
+- the master quits instead of stopping (Ctrl-C, or the distributed CLI
+  stopping the Fargate task: SIGTERM -> ``runner.quit()``). ``quit()`` fires
+  ``test_stop`` at once and only then tells the workers to quit.
+
+Two more: a run killed before ``test_stop`` leaves the parent behind, and the
+next run reuses it with its old bucket state (possibly already sharded), so
+that run is not comparable with a cold start. Two runs of the same locustfile
+against one stack at the same time share the parent, and the first to finish
+deletes it.
+
+One parent for the run rather than one per process (#780): every cascading
+child writes to the parent's bucket, so the parent is the hot partition a
+cascade benchmark exists to load. N parents for N workers would divide that
+load by N (see CLAUDE.md "Hot Partition Risk Mitigation").
 
 Limits are sized so nothing is rejected: the scenario measures the admitted
 path, not rate limiting. Setting the ``budget`` cascade policy needs the
