@@ -620,9 +620,14 @@ def _walk(
     table_name: str,
     levels: list[tuple[str, str, str]],
     *,
-    consistent_read: bool = False,
+    consistent_read: bool = True,
 ) -> tuple[dict[str, dict[str, Any]], str | None]:
-    """Return the first level that defines any limits, and which one it was."""
+    """Return the first level that defines any limits, and which one it was.
+
+    Strongly consistent by default (#739 re-review 3 #2): every caller runs
+    right after the apply's own config write, and the limits it returns are
+    stamped onto buckets that a later change-only apply does not re-check.
+    """
     for level, pk, sk in levels:
         kwargs: dict[str, Any] = {}
         if consistent_read:
@@ -681,7 +686,7 @@ def resolve_bucket_limits(
     entity_id: str,
     resource: str,
     *,
-    consistent_read: bool = False,
+    consistent_read: bool = True,
 ) -> tuple[dict[str, dict[str, Any]], str | None]:
     """Full-precedence walk for one existing bucket, and the level that won.
 

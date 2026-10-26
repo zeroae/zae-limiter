@@ -138,7 +138,12 @@ def resolve_disabled(
     levels.append((pk_resource(namespace_id, resource), sk_config()))
 
     for pk, sk in levels:
-        response = client.get_item(TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}})
+        # Strongly consistent (#739 re-review 3 #2): the walk runs right after
+        # this apply's own config write, and the stamp it decides is not
+        # re-checked by a later change-only apply.
+        response = client.get_item(
+            TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}}, ConsistentRead=True
+        )
         item = response.get("Item")
         if item is None:
             continue

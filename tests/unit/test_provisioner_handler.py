@@ -2893,6 +2893,75 @@ class TestPendingItems:
         assert len(read_pending(client, self.TABLE, "ns")) == 2
 
 
+class TestFanoutResolutionsAreConsistent:
+    """Re-review 3 #2: the value a fan-out stamps comes from a strongly consistent walk.
+
+    Each runs right after this apply's own config write, and change-only no
+    longer re-stamps on the next apply: a stale replica's answer stayed.
+    """
+
+    @staticmethod
+    def _client():
+        client = MagicMock()
+        client.get_item.return_value = {}
+        return client
+
+    @staticmethod
+    def _all_consistent(client):
+        calls = client.get_item.call_args_list
+        return bool(calls) and all(c.kwargs.get("ConsistentRead") is True for c in calls)
+
+    def test_the_disable_walk(self):
+        from zae_limiter_provisioner.fanout import resolve_disabled
+
+        client = self._client()
+        resolve_disabled(client, "t", "ns", "u1", "gpt-4")
+        assert self._all_consistent(client)
+
+    def test_the_walk_a_deleted_level_falls_back_to(self):
+        from zae_limiter_provisioner.bucket_sync import resolve_effective_limits
+
+        client = self._client()
+        resolve_effective_limits(client, "t", "ns", "u1", "gpt-4")
+        assert self._all_consistent(client)
+
+    def test_the_walk_each_entity_wide_bucket_is_stamped_from(self):
+        from zae_limiter_provisioner.bucket_sync import resolve_bucket_limits
+
+        client = self._client()
+        resolve_bucket_limits(client, "t", "ns", "u1", "gpt-4")
+        assert self._all_consistent(client)
+
+    def test_a_stale_replica_cannot_decide_the_stamp(self, mock_dynamodb):
+        """Reviewer's case (a): a disable just written, read back stale."""
+        import boto3
+
+        from zae_limiter.sync_repository import SyncRepository
+        from zae_limiter_provisioner.fanout import resolve_disabled
+
+        repo = SyncRepository(name="prov-stale", region="us-east-1", _skip_deprecation_warning=True)
+        repo.create_table()
+        repo.close()
+        real = boto3.client("dynamodb", region_name="us-east-1")
+        real.put_item(
+            TableName="prov-stale",
+            Item={
+                "PK": {"S": pk_resource("ns", "gpt-4")},
+                "SK": {"S": sk_config()},
+                "disabled": {"BOOL": True},
+            },
+        )
+        stale = MagicMock()
+
+        def get_item(**kwargs):
+            # A replica that has not seen the write yet answers eventual reads.
+            return real.get_item(**kwargs) if kwargs.get("ConsistentRead") else {}
+
+        stale.get_item.side_effect = get_item
+
+        assert resolve_disabled(stale, "prov-stale", "ns", "u1", "gpt-4") is True
+
+
 class TestRemainingMs:
     """The lease reads the invocation's own remaining time (re-review #2)."""
 
