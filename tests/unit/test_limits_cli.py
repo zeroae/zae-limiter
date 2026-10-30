@@ -1662,3 +1662,69 @@ class TestLimitsApplyFull:
             _invoke_provisioner("test-app", "us-east-1", None, "apply", {}, full=full)
         payload = json.loads(client.return_value.invoke.call_args.kwargs["Payload"])
         assert ("full" in payload) is full
+
+
+class TestLimitsDebug:
+    """`--debug` asks the provisioner for its timing metrics and prints them."""
+
+    @pytest.mark.parametrize("command", ["plan", "apply", "diff"])
+    def test_debug_is_forwarded(self, command):
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+            with patch(
+                "zae_limiter.limits_cli._invoke_provisioner",
+                return_value={"status": "applied", "changes": []},
+            ) as invoke:
+                result = CliRunner().invoke(
+                    cli, ["limits", command, "--name", "test-app", "-f", f.name, "--debug"]
+                )
+        assert result.exit_code == 0, result.output
+        assert invoke.call_args.kwargs["debug"] is True
+
+    def _invoke(self, response: dict, debug: bool):
+        from zae_limiter.limits_cli import _invoke_provisioner
+
+        with (
+            patch("asyncio.run", return_value="test-ns-id"),
+            patch("zae_limiter.limits_cli.boto3.client") as client,
+        ):
+            client.return_value.invoke.return_value = {
+                "Payload": io.BytesIO(json.dumps(response).encode())
+            }
+            result = _invoke_provisioner("test-app", "us-east-1", None, "apply", {}, debug=debug)
+        payload = json.loads(client.return_value.invoke.call_args.kwargs["Payload"])
+        return result, payload
+
+    @pytest.mark.parametrize("debug", [True, False])
+    def test_debug_reaches_the_payload_only_when_set(self, debug):
+        _result, payload = self._invoke({"status": "applied"}, debug)
+        assert ("debug" in payload) is debug
+
+    def test_the_metrics_go_to_stderr_and_out_of_the_result(self, capsys):
+        result, _ = self._invoke({"status": "applied", "debug": {"elapsed_ms": 12.5}}, True)
+        assert "debug" not in result
+        captured = capsys.readouterr()
+        assert '"elapsed_ms": 12.5' in captured.err
+        assert captured.out == ""
+
+    def test_a_run_without_metrics_points_at_the_log(self, capsys):
+        with pytest.raises(SystemExit):
+            self._invoke({"errorMessage": "Task timed out after 300.00 seconds"}, True)
+        err = capsys.readouterr().err
+        assert "ZAEL_PROVISIONER_METRICS" in err
+        assert "/aws/lambda/test-app-limits-provisioner" in err
+
+    def test_cfn_template_debug_emits_the_property(self):
+        def props(*extra):
+            with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+                yaml.dump({"namespace": "test-ns"}, f)
+                f.flush()
+                result = CliRunner().invoke(
+                    cli, ["limits", "cfn-template", "--name", "test-app", "-f", f.name, *extra]
+                )
+            assert result.exit_code == 0, result.output
+            return yaml.safe_load(result.output)["Resources"]["TenantLimits"]["Properties"]
+
+        assert props("--debug")["Debug"] is True
+        assert "Debug" not in props()

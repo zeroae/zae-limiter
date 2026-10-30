@@ -57,6 +57,7 @@ from .fanout import (
     resolve_disabled,
 )
 from .manifest import LimitsManifest
+from .metrics import NULL_METRICS, ApplyMetrics, debug_requested
 from .pending import (
     KINDS,
     Pending,
@@ -100,7 +101,7 @@ def _workers_from_env() -> int:
 _APPLY_WORKERS = _workers_from_env()
 
 
-def _new_client() -> Any:
+def _new_client(metrics: Any = NULL_METRICS) -> Any:
     """The one DynamoDB client an invocation uses.
 
     Built once and shared by every step and thread (boto3 clients are
@@ -110,14 +111,34 @@ def _new_client() -> Any:
     of 8 in ``drop_unchanged``, ``apply_changes`` and ``pending``.
     """
     pool = max(_APPLY_WORKERS, _DEFAULT_WORKERS) + 2
-    return boto3.client("dynamodb", config=Config(max_pool_connections=pool))
+    return metrics.instrument(boto3.client("dynamodb", config=Config(max_pool_connections=pool)))
 
 
 def on_event(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda entry point."""
     if "RequestType" in event:
         return _handle_cfn_with_response(event, context)
-    return _handle_cli(event, context)
+    return _with_debug(event, context, _handle_cli)
+
+
+def _with_debug(
+    event: dict[str, Any],
+    context: Any,
+    handle: Callable[[dict[str, Any], Any, Any], dict[str, Any]],
+) -> dict[str, Any]:
+    """Run ``handle`` with metrics when the invocation asked for them (``metrics.py``)."""
+    if not debug_requested(event):
+        return handle(event, context, NULL_METRICS)
+    metrics = ApplyMetrics(context)
+    metrics.start_heartbeat()
+    try:
+        result = handle(event, context, metrics)
+    except Exception:
+        metrics.count("failed", True)
+        metrics.emit()
+        raise
+    result["debug"] = metrics.emit()
+    return result
 
 
 def _handle_cfn_with_response(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -129,7 +150,7 @@ def _handle_cfn_with_response(event: dict[str, Any], context: Any) -> dict[str, 
     """
     physical_resource_id = event.get("PhysicalResourceId", "")
     try:
-        result = _handle_cfn(event, context)
+        result = _with_debug(event, context, _handle_cfn)
         physical_resource_id = result.pop("physical_resource_id", physical_resource_id)
         if "ResponseURL" in event:
             _send_cfn_response(
@@ -153,36 +174,41 @@ def _handle_cfn_with_response(event: dict[str, Any], context: Any) -> dict[str, 
         raise
 
 
-def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
+def _handle_cli(event: dict[str, Any], context: Any, metrics: Any = NULL_METRICS) -> dict[str, Any]:
     """Handle CLI invocation (plan or apply)."""
     action = event.get("action", "plan")
     table_name = event.get("table_name", TABLE_NAME)
     namespace_id = event.get("namespace_id", "")
     manifest_data = event.get("manifest", {})
-    client = _new_client()
+    client = _new_client(metrics)
 
     # `full` (#739 review): skip the change-only filter and fan out every
     # declared level, as every apply did before. The escape hatch for a bucket
     # a fan-out's discovery query missed (see `_apply_and_record`).
-    manifest = LimitsManifest.from_dict(manifest_data)
-    previous = _read_provisioner_state(table_name, namespace_id, client=client)
+    with metrics.phase("parse_manifest"):
+        manifest = LimitsManifest.from_dict(manifest_data)
+    with metrics.phase("read_state"):
+        previous = _read_provisioner_state(table_name, namespace_id, client=client)
     full = event.get("full") is True
     # Fan-outs an earlier apply left unfinished. The next apply retries them,
     # so a plan reports how many there are.
-    owed = read_pending(client, table_name, namespace_id)
+    with metrics.phase("read_pending"):
+        owed = read_pending(client, table_name, namespace_id)
     pending_count = len(owed) + len(previous.get("cascade_pending", []))
     resumed = _resumes(full, owed)
     stored: dict[int, dict[str, Any]] = {}
-    declared, changes = _plan_changes(
-        manifest,
-        previous,
-        table_name,
-        namespace_id,
-        full=full and not resumed,
-        stored_out=stored,
-        client=client,
-    )
+    with metrics.phase("plan"):
+        declared, changes = _plan_changes(
+            manifest,
+            previous,
+            table_name,
+            namespace_id,
+            full=full and not resumed,
+            stored_out=stored,
+            client=client,
+        )
     unchanged = len(declared) - len(changes)
+    _count_levels(metrics, declared, changes, owed)
 
     change_dicts = [{"action": c.action, "level": c.level, "target": c.target} for c in changes]
 
@@ -210,6 +236,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
         deadline_ms=deadline_for(_remaining_ms(context)),
         mark_full=full,
         client=client,
+        metrics=metrics,
     )
 
     return {
@@ -226,14 +253,14 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
     }
 
 
-def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
+def _handle_cfn(event: dict[str, Any], context: Any, metrics: Any = NULL_METRICS) -> dict[str, Any]:
     """Handle CloudFormation custom resource event."""
     request_type = event["RequestType"]
     properties = event.get("ResourceProperties", {})
 
     table_name = properties.get("TableName", TABLE_NAME)
     namespace_id = properties.get("NamespaceId", "")
-    client = _new_client()
+    client = _new_client(metrics)
     if not namespace_id:
         namespace_name = properties.get("Namespace", "default")
         namespace_id = _resolve_namespace_id(table_name, namespace_name, client=client)
@@ -256,22 +283,27 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         and "FullApply" in properties
         and _coerce_bool(properties["FullApply"], "FullApply")
     )
-    manifest = LimitsManifest.from_dict(manifest_data)
-    previous = _read_provisioner_state(table_name, namespace_id, client=client)
+    with metrics.phase("parse_manifest"):
+        manifest = LimitsManifest.from_dict(manifest_data)
+    with metrics.phase("read_state"):
+        previous = _read_provisioner_state(table_name, namespace_id, client=client)
     full = requested_full
-    owed = read_pending(client, table_name, namespace_id)
+    with metrics.phase("read_pending"):
+        owed = read_pending(client, table_name, namespace_id)
     resumed = _resumes(full, owed)
     stored: dict[int, dict[str, Any]] = {}
-    declared, changes = _plan_changes(
-        manifest,
-        previous,
-        table_name,
-        namespace_id,
-        full=full and not resumed,
-        stored_out=stored,
-        client=client,
-    )
+    with metrics.phase("plan"):
+        declared, changes = _plan_changes(
+            manifest,
+            previous,
+            table_name,
+            namespace_id,
+            full=full and not resumed,
+            stored_out=stored,
+            client=client,
+        )
     unchanged = len(declared) - len(changes)
+    _count_levels(metrics, declared, changes, owed)
 
     result = _apply_and_record(
         manifest,
@@ -286,6 +318,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         deadline_ms=deadline_for(_remaining_ms(context)),
         mark_full=full,
         client=client,
+        metrics=metrics,
     )
 
     return {
@@ -317,6 +350,23 @@ def _remaining_ms(context: Any) -> int | None:
     except Exception:
         return None
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _count_levels(
+    metrics: Any, declared: list[Change], changes: list[Change], pending: list[Pending]
+) -> None:
+    """Record the size of the work, by level and action, never by name (``metrics.py``)."""
+    if not metrics.enabled:
+        return
+    shape: dict[str, int] = {}
+    for change in changes:
+        key = f"{change.action}:{change.level}"
+        shape[key] = shape.get(key, 0) + 1
+    metrics.count("declared_levels", len(declared))
+    metrics.count("changed_levels", len(changes))
+    metrics.count("changes", dict(sorted(shape.items())))
+    metrics.count("pending_found", len(pending))
+    metrics.count("workers", _APPLY_WORKERS)
 
 
 def _resumes(full: bool, pending: list[Pending]) -> bool:
@@ -384,6 +434,7 @@ def _apply_and_record(
     deadline_ms: int | None = None,
     mark_full: bool = False,
     client: Any | None = None,
+    metrics: Any = NULL_METRICS,
 ) -> ApplyResult:
     """Commit the config writes, fan out, then record the managed state (#563).
 
@@ -467,22 +518,24 @@ def _apply_and_record(
     if declared is None:
         declared = changes
     if client is None:
-        client = _new_client()
+        client = _new_client(metrics)
 
     # Before anything is written (#638): a refusal raises, which is a clean
     # CloudFormation FAILED / CLI error because the table is untouched. Gated
     # on the declared set, not only the changed one (#739 review).
-    require_reset_after_readers(declared, table_name, client)
-    require_cascade_policy_readers(declared, table_name, client)
-    require_non_enforcing_readers(declared, table_name, client)
+    with metrics.phase("version_gates"):
+        require_reset_after_readers(declared, table_name, client)
+        require_cascade_policy_readers(declared, table_name, client)
+        require_non_enforcing_readers(declared, table_name, client)
 
     token = new_token()
     # Until `deadline_ms` this invocation may still be running, so no other
     # apply may take its pending items (#739 re-review #2).
     lease = deadline_for(None) if deadline_ms is None else deadline_ms
-    claimed = claim(
-        client, table_name, namespace_id, token, pending or [], lease, full=full or mark_full
-    )
+    with metrics.phase("claim_pending"):
+        claimed = claim(
+            client, table_name, namespace_id, token, pending or [], lease, full=full or mark_full
+        )
     legacy = [("cascade", level, target) for level, target in cascade_pending or []]
     retried = [*(p.key for p in claimed), *legacy]
     held: set[tuple[str, str, str]] = {p.key for p in claimed}
@@ -502,9 +555,10 @@ def _apply_and_record(
             predicted.append((kind, change))
     # A full apply's items, a resumed one's included, are marked so only an
     # interrupted full apply makes the next one resume (#739 re-review #3).
-    held |= write_ahead(
-        client, table_name, namespace_id, token, owed, lease, full=full or mark_full
-    )
+    with metrics.phase("write_ahead"):
+        held |= write_ahead(
+            client, table_name, namespace_id, token, owed, lease, full=full or mark_full
+        )
     held_lock = threading.Lock()
 
     def _done(kind: str, level: str, target: str) -> None:
@@ -516,7 +570,8 @@ def _apply_and_record(
             held.discard(key)
         release(client, table_name, namespace_id, token, key)
 
-    result = apply_changes(changes, table_name, namespace_id, client)
+    with metrics.phase("config_writes"):
+        result = apply_changes(changes, table_name, namespace_id, client)
     if full:
         result.disabled_changed = list(fanned)
         result.limits_changed = [c for c in fanned if c.level == "entity"]
@@ -533,9 +588,11 @@ def _apply_and_record(
     # fan-out runs.
     image_only = [key for key in owed_keys if key not in held]
     if image_only:
-        held |= write_ahead(
-            client, table_name, namespace_id, token, image_only, lease, full=full or mark_full
-        )
+        with metrics.phase("write_ahead"):
+            held |= write_ahead(
+                client, table_name, namespace_id, token, image_only, lease, full=full or mark_full
+            )
+    metrics.count("owed_fanouts", len(owed_keys))
     soft_changed = {(lv, t or ""): names for lv, t, names in result.soft_changed}
     # The limits each changed entity level held before this apply, from the
     # pre-read: its sync strips from its buckets those the level no longer
@@ -552,31 +609,36 @@ def _apply_and_record(
     reasserted = _reasserted_disabled(
         manifest, [Change("update", lv, t) for k, lv, t in owed_keys if k == "disabled"]
     )
-    disabled_errors, _ = _fanout_disabled_changes(
-        table_name, namespace_id, reasserted, reasserted=reasserted, client=client
-    )
+    with metrics.phase("reasserted_disabled"):
+        disabled_errors, _ = _fanout_disabled_changes(
+            table_name, namespace_id, reasserted, reasserted=reasserted, client=client
+        )
     result.errors.extend(disabled_errors)
+    metrics.count("reasserted_disabled", len(reasserted))
 
     # Every owed fan-out, this apply's own included, runs from its level's
     # live config item, never from this apply's manifest (#739 re-review #1):
     # A writing 10 and B writing 20 could otherwise end with A's late fan-out
     # stamping 10 under a config of 20, and nothing left pending to fix it.
     def _one(key: tuple[str, str, str]) -> list[str]:
-        return _retry_from_table(
-            client,
-            table_name,
-            namespace_id,
-            key,
-            _done,
-            soft_names=soft_changed.get((key[1], key[2])),
-            previous_limits=previous_limits.get((key[1], key[2])),
-        )
+        with metrics.fanout(key[0], key[1]):
+            return _retry_from_table(
+                client,
+                table_name,
+                namespace_id,
+                key,
+                _done,
+                soft_names=soft_changed.get((key[1], key[2])),
+                previous_limits=previous_limits.get((key[1], key[2])),
+            )
 
-    result.errors.extend(_run_fanouts(owed_keys, _one))
+    with metrics.phase("fanouts"):
+        result.errors.extend(_run_fanouts(owed_keys, _one))
 
     # What this apply still holds failed; it is done with it, so the next
     # apply need not wait out the lease to retry it.
-    expire(client, table_name, namespace_id, token, sorted(held))
+    with metrics.phase("expire_pending"):
+        expire(client, table_name, namespace_id, token, sorted(held))
 
     manifest_hash = hashlib.sha256(
         json.dumps(manifest.to_dict(), sort_keys=True).encode()
@@ -585,13 +647,15 @@ def _apply_and_record(
     new_state = manifest.managed_set()
     new_state["last_applied"] = datetime.now(UTC).isoformat()
     new_state["applied_hash"] = f"sha256:{manifest_hash}"
-    _write_provisioner_state(table_name, namespace_id, new_state, client=client)
+    with metrics.phase("record_state"):
+        _write_provisioner_state(table_name, namespace_id, new_state, client=client)
 
     # What is still owed after this apply: its own failures, and work another
     # apply still holds (a run that timed out keeps its lease for a while).
     # Without it, an apply right after a timeout reported "up-to-date" with
     # fan-outs still owed (#739 re-review 2 #4). One consistent Query.
-    result.pending = len(read_pending(client, table_name, namespace_id))
+    with metrics.phase("count_pending"):
+        result.pending = len(read_pending(client, table_name, namespace_id))
     return result
 
 
