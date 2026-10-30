@@ -226,3 +226,44 @@ class TestDebugApply:
             )
         assert result["debug"]["counts"]["changes"] == {"create:resource": 1}
         assert respond.call_args.args[2] == "SUCCESS"
+
+
+class TestCallOutcomes:
+    """Retries and transport failures, which moto never produces on its own."""
+
+    def test_retries_and_error_codes_are_counted(self):
+        metrics = ApplyMetrics()
+        model = MagicMock()
+        model.name = "UpdateItem"
+        context: dict = {}
+        metrics._before(context=context)
+        metrics._after(
+            model=model,
+            parsed={
+                "ResponseMetadata": {"RetryAttempts": 2},
+                "Error": {"Code": "ProvisionedThroughputExceededException"},
+            },
+            context=context,
+        )
+        call = metrics.as_dict()["dynamodb_calls"]["UpdateItem"]
+        assert call["count"] == 1
+        assert call["retries"] == 2
+        assert call["errors"] == {"ProvisionedThroughputExceededException": 1}
+
+    def test_a_transport_error_is_timed_and_named(self):
+        metrics = ApplyMetrics()
+        model = MagicMock()
+        model.name = "Query"
+        context: dict = {}
+        metrics._before(context=context)
+        metrics._after_error(model=model, exception=TimeoutError("read"), context=context)
+        metrics._after_error(model=model, exception=None, context=None)
+        call = metrics.as_dict()["dynamodb_calls"]["Query"]
+        assert call["count"] == 1
+        assert call["errors"] == {"Exception": 1, "TimeoutError": 1}
+
+    def test_a_context_that_cannot_say_its_remaining_time(self):
+        context = MagicMock(memory_limit_in_mb=None)
+        context.get_remaining_time_in_millis.side_effect = RuntimeError("no")
+        report = ApplyMetrics(context).as_dict()
+        assert (report["memory_limit_mb"], report["remaining_ms_at_start"]) == (None, None)

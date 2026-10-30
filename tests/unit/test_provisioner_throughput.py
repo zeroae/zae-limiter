@@ -172,3 +172,48 @@ class TestInitialApply:
         assert (result["created"], result["errors"], result["pending"]) == (31, [], 0)
         again = _apply(_manifest(30))
         assert (again["changes"], again["unchanged"]) == ([], 31)
+
+
+class TestSharedClientPlumbing:
+    def test_a_cfn_event_resolves_its_namespace_on_the_shared_client(self, table):
+        from zae_limiter.sync_repository import SyncRepository
+
+        repo = SyncRepository(name=TABLE, region="us-east-1", _skip_deprecation_warning=True)
+        namespace_id = repo._register_namespace("tenant")
+        repo.close()
+        with patch.object(handler, "_send_cfn_response") as respond:
+            result = handler.on_event(
+                {
+                    "RequestType": "Create",
+                    "ResponseURL": "https://example.invalid",
+                    "ResourceProperties": {
+                        "TableName": TABLE,
+                        "Namespace": "tenant",
+                        "Resources": {"gpt-4": {"Limits": {"rpm": {"Capacity": "5"}}}},
+                    },
+                },
+                None,
+            )
+        assert result["created"] == 1
+        expected = f"{TABLE}/{namespace_id}/limits-provisioner"
+        assert respond.call_args.kwargs["physical_resource_id"] == expected
+
+    def test_helpers_still_build_a_client_when_given_none(self, table):
+        assert handler._fanout_disabled_changes(
+            TABLE, NS, [Change("update", "resource", "gpt-4", {"disabled": False})]
+        ) == ([], [])
+        with pytest.raises(ValueError, match="not found"):
+            handler._resolve_namespace_id(TABLE, "missing")
+
+    def test_an_unknown_action_is_skipped(self, table):
+        from zae_limiter_provisioner.applier import apply_changes
+
+        result = apply_changes(
+            [
+                Change("noop", "entity", "u1/gpt-4", None),
+                Change("create", "entity", "u2/gpt-4", {"limits": {"rpm": _limit(1)}}),
+            ],
+            TABLE,
+            NS,
+        )
+        assert (result.created, result.updated, result.deleted, result.errors) == (1, 0, 0, [])
