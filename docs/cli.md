@@ -422,6 +422,20 @@ manifest has not changed (unchanged entries are otherwise skipped). Two applies 
 cannot erase or take over each other's pending work: when both owe the same fan-out, it stays pending until each has finished its own. Right after a timeout, `limits apply` reports the fan-outs the timed-out run still holds with the same "No config changes; N bucket fan-out(s) …" line, not "up-to-date". The `#PROVISIONER` record is
 written either way, so it always describes the config that is actually in the table.
 
+### Large Manifests
+
+On a first apply every entity entry is new, so every one owes a bucket fan-out: about nine
+DynamoDB calls per entry, seven of which depend on each other. The provisioner writes the config
+items eight at a time and runs the fan-outs eight at a time, in the same order as always (every
+`disabled` fan-out before any `cascade` one, and so on; resources before entities within each),
+all on one DynamoDB client. Set `ZAEL_PROVISIONER_WORKERS` (1-64) on the
+`{name}-limits-provisioner` function to change the eight.
+
+The function's 256 MB also means a small share of a vCPU, and botocore's per-call CPU counts at
+that size. Raising its memory raises its CPU with it. Both are function settings outside the
+manifest (`aws lambda update-function-configuration --memory-size` / `--environment`, keeping
+`TABLE_NAME`); a later stack update that touches the function puts the template's values back.
+
 !!! note "Provisioner Lambda"
     The `plan`, `apply`, and `diff` subcommands invoke the `{name}-limits-provisioner` Lambda function. This function must be deployed as part of the main stack before using these commands. It is deployed by default; `zae-limiter deploy --no-provisioner` (or `--no-iam`, which leaves no role for it) skips it.
 

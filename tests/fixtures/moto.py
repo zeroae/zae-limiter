@@ -1,6 +1,7 @@
 """Moto fixtures for unit tests with mocked AWS."""
 
 import asyncio
+import threading
 from collections.abc import Awaitable
 from unittest.mock import patch
 
@@ -28,8 +29,31 @@ def aws_credentials(monkeypatch):
 @pytest.fixture
 def mock_dynamodb(aws_credentials):
     """Mock DynamoDB for tests."""
-    with mock_aws(), _patch_aiobotocore_response():
+    with mock_aws(), _patch_aiobotocore_response(), _serialize_moto_requests():
         yield
+
+
+def _serialize_moto_requests():
+    """Answer one request at a time, as a linearizable service would.
+
+    moto's in-process backend is not thread-safe (#656): a GSI ``Query``
+    iterating the table while another thread's ``UpdateItem`` adds an item
+    raises "dictionary changed size during iteration". Real DynamoDB has no
+    such race. The provisioner runs its fan-outs and config writes on a thread
+    pool, so without this its tests would fail intermittently on moto alone.
+    Only moto's dispatch is held, never the caller's code, so the threads still
+    interleave between calls exactly as they would against DynamoDB.
+    """
+    from moto.core.botocore_stubber import BotocoreStubber
+
+    original = BotocoreStubber.process_request
+    lock = threading.RLock()
+
+    def process_request(self, request):
+        with lock:
+            return original(self, request)
+
+    return patch.object(BotocoreStubber, "process_request", process_request)
 
 
 def _patch_aiobotocore_response():

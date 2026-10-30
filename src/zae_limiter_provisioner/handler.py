@@ -12,13 +12,17 @@ import json
 import logging
 import math
 import os
+import threading
 import time
 import urllib.request
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from itertools import groupby
 from typing import Any
 
 import boto3
+from botocore.config import Config
 
 from zae_limiter.schema import (
     DEFAULT_RESOURCE,
@@ -70,6 +74,44 @@ logger = logging.getLogger(__name__)
 
 TABLE_NAME = os.environ.get("TABLE_NAME", "rate-limits")
 
+#: Environment variable overriding how many owed fan-outs run at once.
+WORKERS_ENV = "ZAEL_PROVISIONER_WORKERS"
+_DEFAULT_WORKERS = 8
+_MAX_WORKERS = 64
+
+
+def _workers_from_env() -> int:
+    """``ZAEL_PROVISIONER_WORKERS``, clamped to 1..64; the default when unset or invalid."""
+    raw = os.environ.get(WORKERS_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_WORKERS
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Ignoring %s=%r: not an integer", WORKERS_ENV, raw)
+        return _DEFAULT_WORKERS
+    return max(1, min(_MAX_WORKERS, value))
+
+
+# Owed fan-outs run this many at a time. An apply is a long chain of small,
+# latency-bound DynamoDB calls (a 1270-level initial apply is ~11k of them),
+# so concurrency, not throughput, is what bounds it. The client's connection
+# pool (`_new_client`) is sized above it so no thread waits on a socket.
+_APPLY_WORKERS = _workers_from_env()
+
+
+def _new_client() -> Any:
+    """The one DynamoDB client an invocation uses.
+
+    Built once and shared by every step and thread (boto3 clients are
+    thread-safe). Each fan-out used to build its own: a botocore client
+    construction plus a fresh TCP+TLS connection per owed fan-out, i.e. per
+    declared level on an initial apply. The pool also covers the fixed pools
+    of 8 in ``drop_unchanged``, ``apply_changes`` and ``pending``.
+    """
+    pool = max(_APPLY_WORKERS, _DEFAULT_WORKERS) + 2
+    return boto3.client("dynamodb", config=Config(max_pool_connections=pool))
+
 
 def on_event(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda entry point."""
@@ -117,16 +159,17 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
     table_name = event.get("table_name", TABLE_NAME)
     namespace_id = event.get("namespace_id", "")
     manifest_data = event.get("manifest", {})
+    client = _new_client()
 
     # `full` (#739 review): skip the change-only filter and fan out every
     # declared level, as every apply did before. The escape hatch for a bucket
     # a fan-out's discovery query missed (see `_apply_and_record`).
     manifest = LimitsManifest.from_dict(manifest_data)
-    previous = _read_provisioner_state(table_name, namespace_id)
+    previous = _read_provisioner_state(table_name, namespace_id, client=client)
     full = event.get("full") is True
     # Fan-outs an earlier apply left unfinished. The next apply retries them,
     # so a plan reports how many there are.
-    owed = read_pending(boto3.client("dynamodb"), table_name, namespace_id)
+    owed = read_pending(client, table_name, namespace_id)
     pending_count = len(owed) + len(previous.get("cascade_pending", []))
     resumed = _resumes(full, owed)
     stored: dict[int, dict[str, Any]] = {}
@@ -137,6 +180,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
         namespace_id,
         full=full and not resumed,
         stored_out=stored,
+        client=client,
     )
     unchanged = len(declared) - len(changes)
 
@@ -165,6 +209,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
         stored=stored,
         deadline_ms=deadline_for(_remaining_ms(context)),
         mark_full=full,
+        client=client,
     )
 
     return {
@@ -188,9 +233,10 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     table_name = properties.get("TableName", TABLE_NAME)
     namespace_id = properties.get("NamespaceId", "")
+    client = _new_client()
     if not namespace_id:
         namespace_name = properties.get("Namespace", "default")
-        namespace_id = _resolve_namespace_id(table_name, namespace_name)
+        namespace_id = _resolve_namespace_id(table_name, namespace_name, client=client)
 
     physical_resource_id = f"{table_name}/{namespace_id}/limits-provisioner"
 
@@ -211,9 +257,9 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         and _coerce_bool(properties["FullApply"], "FullApply")
     )
     manifest = LimitsManifest.from_dict(manifest_data)
-    previous = _read_provisioner_state(table_name, namespace_id)
+    previous = _read_provisioner_state(table_name, namespace_id, client=client)
     full = requested_full
-    owed = read_pending(boto3.client("dynamodb"), table_name, namespace_id)
+    owed = read_pending(client, table_name, namespace_id)
     resumed = _resumes(full, owed)
     stored: dict[int, dict[str, Any]] = {}
     declared, changes = _plan_changes(
@@ -223,6 +269,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         namespace_id,
         full=full and not resumed,
         stored_out=stored,
+        client=client,
     )
     unchanged = len(declared) - len(changes)
 
@@ -238,6 +285,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         stored=stored,
         deadline_ms=deadline_for(_remaining_ms(context)),
         mark_full=full,
+        client=client,
     )
 
     return {
@@ -299,6 +347,7 @@ def _plan_changes(
     *,
     full: bool = False,
     stored_out: dict[int, dict[str, Any]] | None = None,
+    client: Any | None = None,
 ) -> tuple[list[Change], list[Change]]:
     """``(declared, changes)``: every level the manifest touches, and those an apply writes.
 
@@ -314,9 +363,11 @@ def _plan_changes(
         # depends on what it holds (``applier.full_system_fanouts``).
         systems = [c for c in declared if c.level == "system" and c.action != "delete"]
         if systems and stored_out is not None:
-            drop_unchanged(systems, table_name, namespace_id, stored_out=stored_out)
+            drop_unchanged(systems, table_name, namespace_id, client, stored_out=stored_out)
         return declared, declared
-    return declared, drop_unchanged(declared, table_name, namespace_id, stored_out=stored_out)
+    return declared, drop_unchanged(
+        declared, table_name, namespace_id, client, stored_out=stored_out
+    )
 
 
 def _apply_and_record(
@@ -332,6 +383,7 @@ def _apply_and_record(
     stored: dict[int, dict[str, Any]] | None = None,
     deadline_ms: int | None = None,
     mark_full: bool = False,
+    client: Any | None = None,
 ) -> ApplyResult:
     """Commit the config writes, fan out, then record the managed state (#563).
 
@@ -400,18 +452,30 @@ def _apply_and_record(
     step, there is nothing after it to salvage, and a DynamoDB failure there is
     a genuine infrastructure failure for which a FAILED response and a retry are
     the right answer.
+
+    **Concurrency.** The config writes run on a thread pool
+    (``apply_changes``), and the owed fan-outs run ``_APPLY_WORKERS`` at a time
+    *within* each phase of the order they always ran in — every ``disabled``
+    fan-out before every ``cascade`` one, and so on through ``pending.KINDS``,
+    resource levels before entity levels within a kind (``_run_fanouts``). Two
+    fan-outs in one phase touch different levels and each resolves its buckets
+    from the live table, which is exactly what two applies running at once
+    already had to tolerate (the shared pending items, #739), so running them
+    side by side in one apply adds no interleaving the design did not already
+    allow. One client serves every step and thread (``_new_client``).
     """
     if declared is None:
         declared = changes
+    if client is None:
+        client = _new_client()
 
     # Before anything is written (#638): a refusal raises, which is a clean
     # CloudFormation FAILED / CLI error because the table is untouched. Gated
     # on the declared set, not only the changed one (#739 review).
-    require_reset_after_readers(declared, table_name)
-    require_cascade_policy_readers(declared, table_name)
-    require_non_enforcing_readers(declared, table_name)
+    require_reset_after_readers(declared, table_name, client)
+    require_cascade_policy_readers(declared, table_name, client)
+    require_non_enforcing_readers(declared, table_name, client)
 
-    client = boto3.client("dynamodb")
     token = new_token()
     # Until `deadline_ms` this invocation may still be running, so no other
     # apply may take its pending items (#739 re-review #2).
@@ -441,14 +505,18 @@ def _apply_and_record(
     held |= write_ahead(
         client, table_name, namespace_id, token, owed, lease, full=full or mark_full
     )
+    held_lock = threading.Lock()
 
     def _done(kind: str, level: str, target: str) -> None:
+        # Called from the fan-out threads; each key is released by one only.
         key = (kind, level, target)
-        if key in held:
-            release(client, table_name, namespace_id, token, key)
+        with held_lock:
+            if key not in held:
+                return
             held.discard(key)
+        release(client, table_name, namespace_id, token, key)
 
-    result = apply_changes(changes, table_name, namespace_id)
+    result = apply_changes(changes, table_name, namespace_id, client)
     if full:
         result.disabled_changed = list(fanned)
         result.limits_changed = [c for c in fanned if c.level == "entity"]
@@ -485,7 +553,7 @@ def _apply_and_record(
         manifest, [Change("update", lv, t) for k, lv, t in owed_keys if k == "disabled"]
     )
     disabled_errors, _ = _fanout_disabled_changes(
-        table_name, namespace_id, reasserted, reasserted=reasserted
+        table_name, namespace_id, reasserted, reasserted=reasserted, client=client
     )
     result.errors.extend(disabled_errors)
 
@@ -493,18 +561,18 @@ def _apply_and_record(
     # live config item, never from this apply's manifest (#739 re-review #1):
     # A writing 10 and B writing 20 could otherwise end with A's late fan-out
     # stamping 10 under a config of 20, and nothing left pending to fix it.
-    for key in sorted(owed_keys, key=lambda k: (KINDS.index(k[0]), k[1] != "resource")):
-        result.errors.extend(
-            _retry_from_table(
-                client,
-                table_name,
-                namespace_id,
-                key,
-                _done,
-                soft_names=soft_changed.get((key[1], key[2])),
-                previous_limits=previous_limits.get((key[1], key[2])),
-            )
+    def _one(key: tuple[str, str, str]) -> list[str]:
+        return _retry_from_table(
+            client,
+            table_name,
+            namespace_id,
+            key,
+            _done,
+            soft_names=soft_changed.get((key[1], key[2])),
+            previous_limits=previous_limits.get((key[1], key[2])),
         )
+
+    result.errors.extend(_run_fanouts(owed_keys, _one))
 
     # What this apply still holds failed; it is done with it, so the next
     # apply need not wait out the lease to retry it.
@@ -517,7 +585,7 @@ def _apply_and_record(
     new_state = manifest.managed_set()
     new_state["last_applied"] = datetime.now(UTC).isoformat()
     new_state["applied_hash"] = f"sha256:{manifest_hash}"
-    _write_provisioner_state(table_name, namespace_id, new_state)
+    _write_provisioner_state(table_name, namespace_id, new_state, client=client)
 
     # What is still owed after this apply: its own failures, and work another
     # apply still holds (a run that timed out keeps its lease for a while).
@@ -525,6 +593,38 @@ def _apply_and_record(
     # fan-outs still owed (#739 re-review 2 #4). One consistent Query.
     result.pending = len(read_pending(client, table_name, namespace_id))
     return result
+
+
+def _fanout_phase(key: tuple[str, str, str]) -> tuple[int, bool]:
+    """The ordering every owed fan-out keeps: by kind, then resource levels first."""
+    return KINDS.index(key[0]), key[1] != "resource"
+
+
+def _run_fanouts(
+    keys: list[tuple[str, str, str]],
+    run: Callable[[tuple[str, str, str]], list[str]],
+) -> list[str]:
+    """Run every owed fan-out, phase by phase, concurrently within a phase.
+
+    The phases are the order the fan-outs always ran in (``_fanout_phase``),
+    and a phase finishes before the next starts, so every ``disabled`` stamp
+    lands before any ``cascade`` one and a resource level's before its
+    entities'. Within a phase the keys are distinct levels; see
+    ``_apply_and_record`` for why running those side by side is safe. Errors
+    come back in the key order a serial run reported them in. ``run`` reports
+    its own failures rather than raising (``_retry_from_table``).
+    """
+    errors: list[str] = []
+    ordered = sorted(keys, key=_fanout_phase)
+    for _phase, group in groupby(ordered, key=_fanout_phase):
+        batch = list(group)
+        if len(batch) == 1:
+            errors.extend(run(batch[0]))
+            continue
+        with ThreadPoolExecutor(max_workers=min(_APPLY_WORKERS, len(batch))) as pool:
+            for found in pool.map(run, batch):
+                errors.extend(found)
+    return errors
 
 
 def _owed_fanouts(
@@ -628,19 +728,28 @@ def _retry_from_table(
                 data = {**(change.data or {}), "previous_limits": previous_limits}
                 change = Change(change.action, level, target, data)
             if kind == "disabled":
-                errors, _ = _fanout_disabled_changes(table_name, namespace_id, [change])
+                errors, _ = _fanout_disabled_changes(
+                    table_name, namespace_id, [change], client=client
+                )
             elif kind == "cascade":
-                errors, _ = _fanout_cascade_changes(table_name, namespace_id, [(level, target)])
+                errors, _ = _fanout_cascade_changes(
+                    table_name, namespace_id, [(level, target)], client=client
+                )
             elif kind == "soft":
                 # Every limit the level holds now, plus any whose soft-ness the
                 # write's own image showed changing (a limit removed with its
                 # stamp is in neither otherwise).
                 names = {*(change.data or {}).get("limits", {}), *(soft_names or ())}
                 errors = _fanout_soft_changes(
-                    table_name, [(level, target or None, sorted(names))], namespace_id
+                    table_name,
+                    [(level, target or None, sorted(names))],
+                    namespace_id,
+                    client=client,
                 )
             else:
-                errors, _ = _sync_bucket_param_changes(table_name, namespace_id, [change])
+                errors, _ = _sync_bucket_param_changes(
+                    table_name, namespace_id, [change], client=client
+                )
             if errors:
                 return errors
             after = _read()
@@ -681,6 +790,8 @@ def _fanout_soft_changes(
     table_name: str,
     changed: list[tuple[str, str | None, list[str]]],
     namespace_id: str,
+    *,
+    client: Any | None = None,
 ) -> list[str]:
     """Restamp buckets for every system or resource level whose soft-ness changed (#467).
 
@@ -696,7 +807,8 @@ def _fanout_soft_changes(
     errors: list[str] = []
     if not changed:
         return errors
-    client = boto3.client("dynamodb")
+    if client is None:
+        client = boto3.client("dynamodb")
     for level, target, names in changed:
         try:
             fanout_soft(
@@ -718,6 +830,7 @@ def _fanout_disabled_changes(
     changes: list[Change],
     *,
     reasserted: list[Change] | None = None,
+    client: Any | None = None,
 ) -> tuple[list[str], list[Change]]:
     """Eagerly stamp bucket items for every resource/entity change given (ADR-125).
 
@@ -797,7 +910,8 @@ def _fanout_disabled_changes(
     errors: list[str] = []
     failed: list[Change] = []
     reasserted_ids = {id(c) for c in reasserted or ()}
-    client = boto3.client("dynamodb")
+    if client is None:
+        client = boto3.client("dynamodb")
     for change in sorted(candidates, key=lambda c: 0 if c.level == "resource" else 1):
         data = change.data or {}
         try:
@@ -833,6 +947,8 @@ def _fanout_cascade_changes(
     table_name: str,
     namespace_id: str,
     changed: list[tuple[str, str]],
+    *,
+    client: Any | None = None,
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Restamp buckets for every level whose cascade policy changed (ADR-146).
 
@@ -851,7 +967,8 @@ def _fanout_cascade_changes(
         return [], []
     errors: list[str] = []
     failed: list[tuple[str, str]] = []
-    client = boto3.client("dynamodb")
+    if client is None:
+        client = boto3.client("dynamodb")
     for level, target in changed:
         try:
             if level == "resource":
@@ -874,6 +991,7 @@ def _sync_bucket_param_changes(
     changes: list[Change],
     *,
     on_done: Callable[[str, str, str], None] | None = None,
+    client: Any | None = None,
 ) -> tuple[list[str], list[Change]]:
     """Push entity-level limit changes out to existing bucket items (#481).
 
@@ -897,7 +1015,8 @@ def _sync_bucket_param_changes(
     ``ValueError`` escaped past ``_write_provisioner_state``. See
     ``_apply_and_record``.
     """
-    client = boto3.client("dynamodb")
+    if client is None:
+        client = boto3.client("dynamodb")
     errors: list[str] = []
     failed: list[Change] = []
 
@@ -1328,9 +1447,12 @@ def _cfn_limits_to_manifest(cfn_limits: dict[str, Any], *, where: str = "Limits"
     return result
 
 
-def _read_provisioner_state(table_name: str, namespace_id: str) -> dict[str, Any]:
+def _read_provisioner_state(
+    table_name: str, namespace_id: str, client: Any | None = None
+) -> dict[str, Any]:
     """Read the #PROVISIONER state record from DynamoDB."""
-    client = boto3.client("dynamodb")
+    if client is None:
+        client = boto3.client("dynamodb")
     result = client.get_item(
         TableName=table_name,
         Key={
@@ -1370,9 +1492,11 @@ def _write_provisioner_state(
     table_name: str,
     namespace_id: str,
     state: dict[str, Any],
+    client: Any | None = None,
 ) -> None:
     """Write the #PROVISIONER state record to DynamoDB."""
-    client = boto3.client("dynamodb")
+    if client is None:
+        client = boto3.client("dynamodb")
     item: dict[str, Any] = {
         "PK": {"S": pk_system(namespace_id)},
         "SK": {"S": sk_provisioner()},
@@ -1393,7 +1517,7 @@ def _write_provisioner_state(
     client.put_item(TableName=table_name, Item=item)
 
 
-def _resolve_namespace_id(table_name: str, namespace_name: str) -> str:
+def _resolve_namespace_id(table_name: str, namespace_name: str, client: Any | None = None) -> str:
     """Resolve namespace name to opaque ID via DynamoDB lookup.
 
     Args:
@@ -1406,7 +1530,8 @@ def _resolve_namespace_id(table_name: str, namespace_name: str) -> str:
     Raises:
         ValueError: If the namespace is not registered.
     """
-    client = boto3.client("dynamodb")
+    if client is None:
+        client = boto3.client("dynamodb")
     result = client.get_item(
         TableName=table_name,
         Key={
