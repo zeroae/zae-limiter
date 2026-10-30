@@ -2143,14 +2143,16 @@ class TestCascadeFanoutChanges:
             [("entity", "old/gpt-4"), ("resource", "llm")],
         )
 
-        mock_gate.assert_called_once_with(changes, "t")
+        mock_gate.assert_called_once_with(changes, "t", _boto3.client.return_value)
         # Every owed cascade fan-out runs once, on its own, through the
         # table-driven retry (`resource llm` is both this apply's and a
-        # leftover); resources first.
-        assert [c.args for c in mock_fanout.call_args_list] == [
-            ("t", "ns", [("resource", "llm")]),
-            ("t", "ns", [("entity", "u1/llm")]),
+        # leftover); resources first. The entity levels share a phase and run
+        # concurrently, so their relative order is not fixed.
+        calls = [c.args for c in mock_fanout.call_args_list]
+        assert calls[0] == ("t", "ns", [("resource", "llm")])
+        assert sorted(calls[1:]) == [
             ("t", "ns", [("entity", "old/gpt-4")]),
+            ("t", "ns", [("entity", "u1/llm")]),
         ]
         assert "err" in result.errors
         # The legacy entries become pending items before anything is written,

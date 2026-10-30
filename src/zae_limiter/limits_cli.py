@@ -60,6 +60,14 @@ def limits() -> None:
     is_flag=True,
     help="Print only the summary, not a line per changed entry.",
 )
+@click.option(
+    "--debug",
+    is_flag=True,
+    help=(
+        "Ask the provisioner for timing metrics (phases, DynamoDB calls, fan-outs) "
+        "and print them to stderr as JSON. Also logged to CloudWatch."
+    ),
+)
 def limits_plan(
     name: str,
     region: str | None,
@@ -67,6 +75,7 @@ def limits_plan(
     namespace: str,
     file_path: str,
     quiet: bool,
+    debug: bool,
 ) -> None:
     """Preview changes without applying (like terraform plan).
 
@@ -76,7 +85,9 @@ def limits_plan(
     provisioner does the planning, so run 'zae-limiter upgrade' first.
     """
     manifest_data = _load_yaml(file_path)
-    result = _invoke_provisioner(name, region, endpoint_url, "plan", manifest_data, preview="plan")
+    result = _invoke_provisioner(
+        name, region, endpoint_url, "plan", manifest_data, preview="plan", debug=debug
+    )
 
     for warning in _cascade_warnings(manifest_data):
         click.echo(f"Warning: {warning}", err=True)
@@ -129,6 +140,14 @@ def limits_plan(
         "from the table. Repairs bucket items an earlier fan-out missed."
     ),
 )
+@click.option(
+    "--debug",
+    is_flag=True,
+    help=(
+        "Ask the provisioner for timing metrics (phases, DynamoDB calls, fan-outs) "
+        "and print them to stderr as JSON. Also logged to CloudWatch."
+    ),
+)
 def limits_apply(
     name: str,
     region: str | None,
@@ -137,10 +156,13 @@ def limits_apply(
     file_path: str,
     quiet: bool,
     full: bool,
+    debug: bool,
 ) -> None:
     """Apply limits from YAML file (like terraform apply)."""
     manifest_data = _load_yaml(file_path)
-    result = _invoke_provisioner(name, region, endpoint_url, "apply", manifest_data, full=full)
+    result = _invoke_provisioner(
+        name, region, endpoint_url, "apply", manifest_data, full=full, debug=debug
+    )
 
     changes = result.get("changes", [])
     errors = result.get("errors", [])
@@ -205,6 +227,14 @@ def limits_apply(
     is_flag=True,
     help="Print only the summary, not a line per changed entry.",
 )
+@click.option(
+    "--debug",
+    is_flag=True,
+    help=(
+        "Ask the provisioner for timing metrics (phases, DynamoDB calls, fan-outs) "
+        "and print them to stderr as JSON. Also logged to CloudWatch."
+    ),
+)
 def limits_diff(
     name: str,
     region: str | None,
@@ -212,6 +242,7 @@ def limits_diff(
     namespace: str,
     file_path: str,
     quiet: bool,
+    debug: bool,
 ) -> None:
     """Show drift between YAML and live DynamoDB state.
 
@@ -219,7 +250,9 @@ def limits_diff(
     namespace, or a stack whose Lambdas are behind this client.
     """
     manifest_data = _load_yaml(file_path)
-    result = _invoke_provisioner(name, region, endpoint_url, "plan", manifest_data, preview="diff")
+    result = _invoke_provisioner(
+        name, region, endpoint_url, "plan", manifest_data, preview="diff", debug=debug
+    )
 
     changes = result.get("changes", [])
     if not changes:
@@ -256,7 +289,15 @@ def limits_diff(
         "'limits apply --full'. Repairs bucket items an earlier fan-out missed."
     ),
 )
-def limits_cfn_template(name: str, file_path: str, full: bool) -> None:
+@click.option(
+    "--debug",
+    is_flag=True,
+    help=(
+        "Emit Debug: true, so the provisioner logs timing metrics to CloudWatch "
+        "on every stack operation (ZAEL_PROVISIONER_METRICS lines)."
+    ),
+)
+def limits_cfn_template(name: str, file_path: str, full: bool, debug: bool) -> None:
     """Generate a CloudFormation template from YAML file."""
     manifest_data = _load_yaml(file_path)
     namespace = manifest_data.get("namespace", "default")
@@ -270,6 +311,10 @@ def limits_cfn_template(name: str, file_path: str, full: bool) -> None:
         # CloudFormation invokes the resource only when a property changes, so
         # adding (or removing) this one is itself what triggers the full apply.
         properties["FullApply"] = True
+    if debug:
+        # Read by the provisioner only to turn on its metrics; adding it is a
+        # property change, so it also triggers an (ordinary, change-only) apply.
+        properties["Debug"] = True
 
     if "system" in manifest_data:
         system_props: dict[str, Any] = {}
@@ -495,6 +540,7 @@ def _invoke_provisioner(
     *,
     preview: str | None = None,
     full: bool = False,
+    debug: bool = False,
 ) -> dict[str, Any]:
     """Invoke the provisioner Lambda function.
 
@@ -510,6 +556,9 @@ def _invoke_provisioner(
             and refuses when the stack's Lambdas are behind this client.
             ``apply`` keeps ``Repository.open()`` and auto-registers the
             manifest's namespace.
+        full: Apply in full (``limits apply --full``).
+        debug: Ask for the provisioner's timing metrics and print them to
+            stderr (``zae_limiter_provisioner.metrics``).
 
     Returns:
         Lambda response payload.
@@ -613,6 +662,8 @@ def _invoke_provisioner(
     }
     if full:
         payload["full"] = True
+    if debug:
+        payload["debug"] = True
 
     try:
         response = lambda_client.invoke(
@@ -645,9 +696,28 @@ def _invoke_provisioner(
 
     response_payload: dict[str, Any] = json.loads(response["Payload"].read())
 
+    if debug:
+        _echo_debug(response_payload, function_name)
+
     if "errorMessage" in response_payload:
         msg = response_payload["errorMessage"]
         click.echo(f"Error: Lambda execution failed: {msg}", err=True)
         sys.exit(1)
 
     return response_payload
+
+
+def _echo_debug(response_payload: dict[str, Any], function_name: str) -> None:
+    """Print the provisioner's ``--debug`` metrics to stderr, as JSON."""
+    metrics = response_payload.pop("debug", None)
+    if metrics is None:
+        # A failed or timed-out run returns no metrics; its log has them,
+        # including the periodic partial snapshots taken before it stopped.
+        click.echo(
+            f"Debug: no metrics returned; see the ZAEL_PROVISIONER_METRICS lines in "
+            f"/aws/lambda/{function_name}'s CloudWatch log.",
+            err=True,
+        )
+        return
+    click.echo("Debug metrics:", err=True)
+    click.echo(json.dumps(metrics, indent=2, sort_keys=True), err=True)
