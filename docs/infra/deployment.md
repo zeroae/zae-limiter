@@ -797,7 +797,9 @@ costs one entry. Two consequences matter in operation:
 
 - A bucket item edited out of band while its config entry still matches is not repaired by a
   plain apply. `limits apply --full` (or `FullApply: true` on the CloudFormation resource, below)
-  rewrites and fans out every declared entry.
+  rewrites and fans out every declared entry. It also repairs the indexes `resource list` and
+  `entity list-resources` / `entity list --with-custom-limits` read, for entries an older
+  provisioner (which did not maintain them) wrote; run it once after `zae-limiter upgrade`.
 - Each bucket fan-out an apply owes is recorded before its config is written, run from the
   table's live config, and removed once it lands. An interrupted or failed apply leaves only the
   unfinished ones. A later apply retries them: at once for a fan-out that failed, and for an

@@ -448,7 +448,7 @@ def _apply_and_record(
             release(client, table_name, namespace_id, token, key)
             held.discard(key)
 
-    result = apply_changes(changes, table_name, namespace_id)
+    result = apply_changes(changes, table_name, namespace_id, stored=stored)
     if full:
         result.disabled_changed = list(fanned)
         result.limits_changed = [c for c in fanned if c.level == "entity"]

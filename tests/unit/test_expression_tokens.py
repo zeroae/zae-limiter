@@ -37,6 +37,11 @@ from zae_limiter_aggregator.processor import (
     _quota_count_freeze,
     try_refill_bucket,
 )
+from zae_limiter_provisioner.applier import (
+    entity_registry_cleanup,
+    entity_registry_update,
+    resource_registry_update,
+)
 from zae_limiter_provisioner.bucket_sync import build_bucket_param_update
 
 from .conftest import _setup_moto_table
@@ -713,6 +718,27 @@ class TestCompositeBuilders:
             "e", "r", [QuotaDonorDebit(1, DOTTED, 1, 2, None, None)]
         ):
             assert_expression_safe(item["Update"])
+
+
+class TestProvisionerRegistryWrites:
+    """The registries the CLI's list commands read, kept by the provisioner.
+
+    The resource name is the wide-column attribute name in
+    #ENTITY_CONFIG_RESOURCES, so it may only ever be an alias value.
+    """
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            resource_registry_update("ns", "openai/gpt-4o.mini:2024", add=True),
+            resource_registry_update("ns", "openai/gpt-4o.mini:2024", add=False),
+            entity_registry_update("ns", "openai/gpt-4o.mini:2024", 1),
+            entity_registry_update("ns", "openai/gpt-4o.mini:2024", -1),
+            entity_registry_cleanup("ns", "openai/gpt-4o.mini:2024"),
+        ],
+    )
+    def test_registry_update(self, kwargs: dict[str, Any]) -> None:
+        assert_expression_safe(kwargs)
 
 
 class TestParamSyncBuilders:
