@@ -2746,6 +2746,41 @@ class TestEntityConfigRegistry:
         resources = repo.list_resources_with_entity_configs()
         assert "gpt-4" not in resources
 
+    def test_uncounted_config_is_deleted_without_a_decrement(self, repo):
+        """An item without GSI3PK was never counted; deleting it leaves the count alone.
+
+        Older provisioners wrote entity config items with no GSI3 entry and
+        no registry count. Decrementing for one would unlist a resource
+        another entity still holds.
+        """
+        from zae_limiter import schema
+
+        repo.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        client = repo._get_client()
+        client.put_item(
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity(repo._namespace_id, "legacy")},
+                "SK": {"S": schema.sk_config("gpt-4")},
+                "entity_id": {"S": "legacy"},
+                "resource": {"S": "gpt-4"},
+                "l_rpm_cp": {"N": "10"},
+                "l_rpm_ra": {"N": "10"},
+                "l_rpm_rp": {"N": "60"},
+            },
+        )
+        repo.delete_limits("legacy", resource="gpt-4")
+        assert repo.get_limits("legacy", resource="gpt-4") == []
+        assert repo.list_resources_with_entity_configs() == ["gpt-4"]
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system(repo._namespace_id)},
+                "SK": {"S": schema.sk_entity_config_resources()},
+            },
+        )
+        assert response["Item"]["gpt-4"] == {"N": "1"}
+
     def test_delete_limits_nonexistent_config_is_silent(self, repo):
         """delete_limits silently succeeds when config doesn't exist."""
         repo.create_entity("user-1")

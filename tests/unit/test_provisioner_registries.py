@@ -19,11 +19,12 @@ from unittest.mock import MagicMock
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 
 from zae_limiter import Limit
 from zae_limiter.schema import pk_system, sk_entity_config_resources
 from zae_limiter.sync_repository import SyncRepository
-from zae_limiter_provisioner.applier import _build_change_item
+from zae_limiter_provisioner.applier import _build_change_item, apply_changes
 from zae_limiter_provisioner.differ import Change
 from zae_limiter_provisioner.handler import on_event
 
@@ -233,3 +234,141 @@ class TestItemsAnOlderProvisionerWrote:
         assert repo.get_limits("user-1", resource=RESOURCE) == []
         assert _counts(repo) == {RESOURCE: 1}
         assert _entities(repo, RESOURCE) == ["api-user"]
+
+
+def _client_error(code: str, *reasons: str) -> ClientError:
+    response: dict[str, Any] = {"Error": {"Code": code, "Message": code}}
+    if reasons:
+        response["CancellationReasons"] = [{"Code": reason} for reason in reasons]
+    return ClientError(response, "Write")
+
+
+_ENTITY = Change("update", "entity", f"user-1/{RESOURCE}", _full_rpm(10))
+_COUNTED = {"GSI3PK": {"S": "ns/ENTITY_CONFIG#gpt-4"}, "l_rpm_cp": {"N": "5"}}
+
+
+class TestCountedWritesUnderContention:
+    """Lost conditions re-read and retry; anything else is reported, never swallowed."""
+
+    def test_a_create_that_loses_to_a_counted_one_replaces_it_uncounted(self):
+        client = MagicMock()
+        client.transact_write_items.side_effect = _client_error(
+            "TransactionCanceledException", "ConditionalCheckFailed", "None"
+        )
+        client.get_item.return_value = {"Item": _COUNTED}
+        client.put_item.return_value = {"Attributes": _COUNTED}
+
+        result = apply_changes([_ENTITY], TABLE, "ns", client, stored={id(_ENTITY): {}})
+
+        assert result.errors == []
+        assert client.transact_write_items.call_count == 1
+        assert client.put_item.call_args.kwargs["ConditionExpression"] == "attribute_exists(#g3)"
+
+    def test_a_transaction_conflict_is_retried(self):
+        client = MagicMock()
+        client.transact_write_items.side_effect = [
+            _client_error("TransactionCanceledException", "None", "TransactionConflict"),
+            {},
+        ]
+        client.get_item.return_value = {}
+
+        result = apply_changes([_ENTITY], TABLE, "ns", client, stored={id(_ENTITY): {}})
+
+        assert result.errors == []
+        assert client.transact_write_items.call_count == 2
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            _client_error("TransactionCanceledException", "ValidationError", "None"),
+            _client_error("TransactionCanceledException"),
+            _client_error("ProvisionedThroughputExceededException"),
+        ],
+    )
+    def test_any_other_failure_is_reported(self, error):
+        client = MagicMock()
+        client.transact_write_items.side_effect = error
+
+        result = apply_changes([_ENTITY], TABLE, "ns", client, stored={id(_ENTITY): {}})
+
+        assert len(result.errors) == 1
+        assert client.transact_write_items.call_count == 1
+
+    def test_a_write_that_never_settles_gives_up_and_says_so(self):
+        client = MagicMock()
+        client.put_item.side_effect = _client_error("ConditionalCheckFailedException")
+        client.transact_write_items.side_effect = _client_error(
+            "TransactionCanceledException", "ConditionalCheckFailed", "None"
+        )
+        # Each read says the other path applies: counted, then not.
+        client.get_item.side_effect = [{}, {"Item": _COUNTED}, {}]
+
+        result = apply_changes([_ENTITY], TABLE, "ns", client)
+
+        assert result.errors == [
+            f"update entity user-1/{RESOURCE}: entity config user-1/{RESOURCE} kept "
+            "changing under the write; nothing was written, re-run the apply"
+        ]
+
+    def test_a_counted_delete_that_finds_the_item_gone_deletes_nothing(self):
+        delete = Change("delete", "entity", f"user-1/{RESOURCE}")
+        client = MagicMock()
+        client.transact_write_items.side_effect = _client_error(
+            "TransactionCanceledException", "ConditionalCheckFailed", "None"
+        )
+        client.get_item.return_value = {}
+        client.delete_item.return_value = {}
+
+        result = apply_changes([delete], TABLE, "ns", client, stored={id(delete): _COUNTED})
+
+        assert result.errors == []
+        assert client.delete_item.call_count == 1
+        client.update_item.assert_not_called()  # no decrement, no cleanup
+
+    def test_a_delete_that_never_settles_gives_up_and_says_so(self):
+        delete = Change("delete", "entity", f"user-1/{RESOURCE}")
+        client = MagicMock()
+        client.delete_item.side_effect = _client_error("ConditionalCheckFailedException")
+        client.transact_write_items.side_effect = _client_error(
+            "TransactionCanceledException", "ConditionalCheckFailed", "None"
+        )
+        client.get_item.side_effect = [{"Item": _COUNTED}, {}, {"Item": _COUNTED}]
+
+        result = apply_changes([delete], TABLE, "ns", client)
+
+        assert result.errors == [
+            f"delete entity user-1/{RESOURCE}: entity config user-1/{RESOURCE} kept "
+            "changing under the delete; nothing was deleted, re-run the apply"
+        ]
+
+    def test_a_delete_that_raises_otherwise_is_reported(self):
+        delete = Change("delete", "entity", f"user-1/{RESOURCE}")
+        client = MagicMock()
+        client.transact_write_items.side_effect = _client_error("InternalServerError")
+
+        result = apply_changes([delete], TABLE, "ns", client, stored={id(delete): _COUNTED})
+
+        assert len(result.errors) == 1
+
+    def test_a_failed_registry_tidy_is_logged_not_reported(self, caplog):
+        delete = Change("delete", "entity", f"user-1/{RESOURCE}")
+        client = MagicMock()
+        client.update_item.side_effect = _client_error("InternalServerError")
+
+        with caplog.at_level("WARNING"):
+            result = apply_changes([delete], TABLE, "ns", client, stored={id(delete): _COUNTED})
+
+        assert result.errors == []
+        assert result.deleted == 1
+        assert "Could not tidy the entity config registry" in caplog.text
+
+    def test_a_tidy_that_finds_the_count_still_positive_is_quiet(self, caplog):
+        delete = Change("delete", "entity", f"user-1/{RESOURCE}")
+        client = MagicMock()
+        client.update_item.side_effect = _client_error("ConditionalCheckFailedException")
+
+        with caplog.at_level("WARNING"):
+            result = apply_changes([delete], TABLE, "ns", client, stored={id(delete): _COUNTED})
+
+        assert result.errors == []
+        assert "Could not tidy" not in caplog.text
