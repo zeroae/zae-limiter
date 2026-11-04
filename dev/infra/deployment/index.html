@@ -5788,8 +5788,8 @@ costs one entry. Two consequences matter in operation:</p>
 <li>Each bucket fan-out an apply owes is recorded before its config is written, run from the
   table's live config, and removed once it lands. An interrupted or failed apply leaves only the
   unfinished ones. A later apply retries them: at once for a fan-out that failed, and for an
-  interrupted apply only after the provisioner Lambda's timeout plus a minute, when that apply is
-  certainly gone. So even a large <code>--full</code> apply cut short by the Lambda timeout resumes where it
+  interrupted apply only after the provisioner Lambda's timeout plus a minute (about 16 minutes
+  with the 900-second timeout), when that apply is certainly gone. So even a large <code>--full</code> apply cut short by the Lambda timeout resumes where it
   stopped: a <code>--full</code> / <code>FullApply</code> run that finds work an interrupted full apply left retries
   that (plus whatever the manifest changed) rather than every entry, and reports <code>resumed</code>. Any
   other unfinished fan-out never stops a full apply. <code>plan</code> and <code>diff</code> report how many are
@@ -5869,6 +5869,20 @@ it can be salvaged, and a retry is the right answer.</p>
 <li><strong>Updates</strong> the <code>#PROVISIONER</code> record with the new managed set and a SHA-256 hash of the applied manifest</li>
 </ol>
 <p>The provisioner uses the same DynamoDB config records (system <code>#CONFIG</code>, resource <code>#CONFIG</code>, entity <code>#CONFIG#{resource}</code>) as the imperative API, so limits set declaratively are immediately visible to <code>acquire()</code> calls.</p>
+<p>The function runs with 2048 MB of memory and a 900-second (15-minute, Lambda's maximum) timeout,
+sized for initial applies of manifests with thousands of limits. Stacks deployed before v0.17.1
+run it at 256 MB / 300 seconds until <code>zae-limiter upgrade</code> applies the current template;
+<code>deploy</code> on an existing stack does not change them.</p>
+<div class="admonition note">
+<p class="admonition-title">Long applies over NAT or a proxy</p>
+<p><code>limits plan</code>, <code>apply</code> and <code>diff</code> invoke the provisioner synchronously and wait for its
+answer, up to the function's timeout plus 30 seconds. A NAT gateway or proxy that drops
+connections idle for less than that (an AWS NAT gateway drops them after 350 seconds) can
+lose the response of a long apply, even though the apply itself finishes. The CLI then
+reports that it got no answer; run <code>limits diff</code> to see what was applied. Run large applies
+from a host without such a hop, or with the operating system's TCP keepalive interval below
+the idle timeout.</p>
+</div>
 <h3 id="imperative-vs-declarative">Imperative vs Declarative<a class="headerlink" href="#imperative-vs-declarative" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
