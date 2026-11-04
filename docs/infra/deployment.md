@@ -881,7 +881,12 @@ This approach lets you manage limits alongside other infrastructure in CloudForm
 
     A successful stack update is therefore not proof that every bucket was reached. Check
     `errors` in the response data, or the `{stack}-limits-provisioner` log group, which records
-    the same list. Every write is idempotent, and a failed fan-out is retried by the next
+    the same list. CloudFormation caps a custom resource's response at 4096 bytes, so the
+    response data carries counts (`created`, `updated`, `deleted`, `unchanged`, `changed`,
+    `pending`) and as many `errors` as fit, with `errors_omitted` counting the rest; the log
+    group's `ZAEL_PROVISIONER_CFN_RESULT` line holds the full result as JSON, every change and
+    error included.
+    Every write is idempotent, and a failed fan-out is retried by the next
     update; since an unchanged stack update never reaches the resource, add or toggle
     `FullApply` to run one. The `#PROVISIONER` record is written on both outcomes, so it always describes the
     config that is actually in the table.
