@@ -341,7 +341,8 @@ when no entry changed:
 
 - one whose fan-out failed is retried by the very next apply;
 - one an interrupted apply left is retried once that apply is certainly gone: after the
-  provisioner Lambda's timeout plus a minute. Until then a new apply leaves it alone, so it can
+  provisioner Lambda's timeout plus a minute (about 16 minutes with the 900-second timeout).
+  Until then a new apply leaves it alone, so it can
   never finish, or drop, work a still-running apply is doing.
 
 An interrupted `--full` apply resumes where it stopped instead of starting again: the next

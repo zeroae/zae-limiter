@@ -1124,8 +1124,8 @@ Resources:
       Description: Declarative limits provisioner for zae-limiter
       Runtime: python3.12
       Handler: zae_limiter_provisioner.handler.on_event
-      MemorySize: 256
-      Timeout: 300
+      MemorySize: 2048
+      Timeout: 900  # 15 minutes, Lambda's maximum; a large initial apply takes several minutes
       Role: !GetAtt ProvisionerRole.Arn
 
       Environment:

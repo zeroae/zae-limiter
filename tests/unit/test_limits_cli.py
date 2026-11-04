@@ -601,7 +601,7 @@ class TestInvokeProvisioner:
                 patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
             ):
                 mock_lambda = MagicMock()
-                mock_lambda.get_function_configuration.return_value = {"Timeout": 300}
+                mock_lambda.get_function_configuration.return_value = {"Timeout": 900}
                 response_payload = {"status": "planned", "changes": []}
                 mock_lambda.invoke.return_value = {
                     "Payload": io.BytesIO(json.dumps(response_payload).encode()),
@@ -631,10 +631,10 @@ class TestInvokeProvisioner:
                 assert client_args.kwargs["region_name"] == "us-east-1"
                 assert client_args.kwargs["endpoint_url"] == "http://localhost:4566"
                 # The invoke is synchronous, so the read timeout must outlast the
-                # provisioner Lambda's own 300 s timeout, and a timeout must not
+                # provisioner Lambda's own 900 s timeout, and a timeout must not
                 # trigger a second invocation.
                 config = client_args.kwargs["config"]
-                assert config.read_timeout > 300
+                assert config.read_timeout > 900
                 assert config.retries["total_max_attempts"] == 1
                 call_args = mock_lambda.invoke.call_args
                 payload = json.loads(call_args[1]["Payload"])
@@ -675,7 +675,7 @@ class TestInvokeProvisioner:
         return result, config, mock_lambda
 
     def test_invoke_read_timeout_follows_the_deployed_function(self):
-        """A stack built from an edited template may run longer than 300 s."""
+        """A stack from an older release or an edited template has its own Timeout."""
         result, config, mock_lambda = self._invoke_config(lookup_return={"Timeout": 600})
         assert result.exit_code == 0, result.output
         mock_lambda.get_function_configuration.assert_called_once_with(
@@ -685,14 +685,14 @@ class TestInvokeProvisioner:
         assert config.retries["total_max_attempts"] == 1
 
     def test_invoke_read_timeout_falls_back_when_lookup_is_denied(self):
-        """A caller without lambda:GetFunctionConfiguration still gets 300 + 30 s."""
+        """A caller without lambda:GetFunctionConfiguration still gets 900 + 30 s."""
         denied = ClientError(
             {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
             "GetFunctionConfiguration",
         )
         result, config, mock_lambda = self._invoke_config(lookup_side_effect=denied)
         assert result.exit_code == 0, result.output
-        assert config.read_timeout == 330
+        assert config.read_timeout == 930
         mock_lambda.invoke.assert_called_once()
 
     def test_invoke_lookup_not_found_says_not_deployed(self):
