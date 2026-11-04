@@ -5852,7 +5852,12 @@ listed under <code>errors</code> in the custom resource's response data, rather 
 rollback would revert a stack whose configuration had already been applied.</p>
 <p>A successful stack update is therefore not proof that every bucket was reached. Check
 <code>errors</code> in the response data, or the <code>{stack}-limits-provisioner</code> log group, which records
-the same list. Every write is idempotent, and a failed fan-out is retried by the next
+the same list. CloudFormation caps a custom resource's response at 4096 bytes, so the
+response data carries counts (<code>created</code>, <code>updated</code>, <code>deleted</code>, <code>unchanged</code>, <code>changed</code>,
+<code>pending</code>) and as many <code>errors</code> as fit, with <code>errors_omitted</code> counting the rest; the log
+group's <code>ZAEL_PROVISIONER_CFN_RESULT</code> line holds the full result as JSON, every change and
+error included.
+Every write is idempotent, and a failed fan-out is retried by the next
 update; since an unchanged stack update never reaches the resource, add or toggle
 <code>FullApply</code> to run one. The <code>#PROVISIONER</code> record is written on both outcomes, so it always describes the
 config that is actually in the table.</p>
