@@ -427,22 +427,28 @@ written either way, so it always describes the config that is actually in the ta
 ### Large Manifests and Debug Metrics
 
 On a first apply every entity entry is new, so every one owes a bucket fan-out: about nine
-DynamoDB calls per entry, seven of which depend on each other. The provisioner writes the config
-items eight at a time and runs the fan-outs eight at a time, in the same order as always (every
-`disabled` fan-out before any `cascade` one, and so on; resources before entities within each),
-all on one DynamoDB client. Set `ZAEL_PROVISIONER_WORKERS` (1-64) on the
-`{name}-limits-provisioner` function to change the eight.
+DynamoDB calls per entry, seven of which depend on each other. The provisioner reads and writes
+the config items eight at a time and runs the fan-outs eight at a time, in the same order as
+always (every `disabled` fan-out before any `cascade` one, and so on; resources before entities
+within each), all on one DynamoDB client. Set `ZAEL_PROVISIONER_WORKERS` (1-64) on the
+`{name}-limits-provisioner` function to change the eight: it sets every one of those pools, so
+a higher value also spends more of the table's write capacity at once.
 
-The function's 256 MB also means a small share of a vCPU, and botocore's per-call CPU counts at
-that size. Raising its memory raises its CPU with it. Both are function settings outside the
-manifest (`aws lambda update-function-configuration --memory-size` / `--environment`, keeping
-`TABLE_NAME`); a later stack update that touches the function puts the template's values back.
+The template runs the function at 2048 MB, which buys it a full vCPU (Lambda scales CPU with
+memory), and a 900-second timeout. A stack deployed before v0.17.1 runs it at 256 MB / 300
+seconds until `zae-limiter upgrade` applies the current template. `ZAEL_PROVISIONER_WORKERS` is
+set outside the manifest (`aws lambda update-function-configuration --environment`, keeping
+`TABLE_NAME`); a later stack update that touches the function puts the template's environment
+back.
 
 To see where an apply spends its time, pass `--debug`:
 
 ```bash
 zae-limiter limits apply -n my-app -f limits.yaml --debug 2> apply-metrics.json
 ```
+
+The report is printed to stderr as JSON. Warnings and errors go to stderr too, so the file holds
+only the report when the run prints nothing else there.
 
 The provisioner then reports, per invocation:
 
