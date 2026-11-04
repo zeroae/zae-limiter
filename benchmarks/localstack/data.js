@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793766259985,
+  "lastUpdate": 1793824320324,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -38719,6 +38719,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.007239697876749884",
             "extra": "mean: 1.0870521619999862 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "97efa41dd0799c29c273af07960e47d3c02835a3",
+          "message": "🐛 fix(provisioner): keep the CloudFormation response under 4096 bytes (#799)\n\n## Summary\n\nCloudFormation rejects a custom-resource response over 4096 bytes with\n\"Response object is too long.\", so a large `Custom::ZaeLimiterLimits`\napply failed, and so did the rollback Delete, which left the stack in\n`ROLLBACK_FAILED`.\n\n- **`Data` holds counts plus the errors that fit.** The response now\ncarries counts instead of the full change list. Errors are kept only\nwhile the body stays under the limit, and an `errors_omitted` count\nreports how many were left out.\n- **The FAILED `Reason` is shortened to fit** the same 4096-byte budget.\n- **The full result goes to CloudWatch Logs** as one\n`ZAEL_PROVISIONER_CFN_RESULT {json}` line. It is printed instead of\nlogged because Lambda leaves the root logger at WARNING, so\n`logger.info` output is dropped. The AWS run below caught this.\n- **Docs:** `docs/infra/deployment.md` and `CLAUDE.md` describe the\nresponse shape and where to find the full result.\n\n### Operational note\n\nA stack already stuck in `ROLLBACK_FAILED` or `UPDATE_ROLLBACK_FAILED`\nbecause of this bug can be recovered. Run `zae-limiter upgrade` to push\nthe fixed provisioner, then `aws cloudformation delete-stack` (for\n`ROLLBACK_FAILED`) or `continue-update-rollback` (for\n`UPDATE_ROLLBACK_FAILED`).\n\n## Test plan\n\n- [x] 6 new unit tests in\n`tests/unit/test_provisioner_handler.py::TestCfnResponseSize`\n- [x] All 189 provisioner handler tests pass\n- [x] `ruff` and `mypy` clean\n- [x] `diff-cover` 100%\n- [x] `mkdocs build --strict`\n- [x] AWS run on 2026-11-04, commit `c37e5c0e`:\n- On a stack deployed with 0.17.0, creating a `Custom::ZaeLimiterLimits`\nresource with 100 resources failed with \"Response object is too long.\".\nIts rollback Delete failed the same way, leaving the stack in\n`ROLLBACK_FAILED`.\n  - After `zae-limiter upgrade` to this branch:\n    - the stuck stack deleted cleanly\n    - the same 100-level create reached `CREATE_COMPLETE`\n- a 100-level update reached `UPDATE_COMPLETE`, and its\n`ZAEL_PROVISIONER_CFN_RESULT` line held all 100 changes\n    - the delete completed\n  - All test stacks were deleted afterwards.\n\nRefs #795. Once this merges, merging `main` into #795 keeps its debug\nreport out of the CloudFormation `Data` (see the review comment on\n`handler.py:140`).\n\nFixes #798\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-11-04T15:25:18-05:00",
+          "tree_id": "a9422ade101f90219e3865aeda5c2d3bfe12470a",
+          "url": "https://github.com/zeroae/zae-limiter/commit/97efa41dd0799c29c273af07960e47d3c02835a3"
+        },
+        "date": 1793824318214,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.359165343868153,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008237630979423292",
+            "extra": "mean: 46.81830885714281 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.985221379685463,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007875684832899148",
+            "extra": "mean: 58.87471099999983 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.929896797924556,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005780126966910615",
+            "extra": "mean: 27.831975294116727 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 36.40687807820887,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006169321188008615",
+            "extra": "mean: 27.467337294118177 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.385360029986078,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009143500149771349",
+            "extra": "mean: 42.76179621428712 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 72.11141091534755,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0020087711354058466",
+            "extra": "mean: 13.867430789475359 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 22.583349335247846,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006611173934054701",
+            "extra": "mean: 44.280411428574546 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 24.240489361664853,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008594769554970133",
+            "extra": "mean: 41.25329258333584 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 21.986416590161653,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03795392413457008",
+            "extra": "mean: 45.48262768965606 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 28.914024593970463,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004611384437541025",
+            "extra": "mean: 34.585292571430315 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 24.281565517095768,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005911733220466357",
+            "extra": "mean: 41.183506034482676 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 24.023359834636867,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007983773428328365",
+            "extra": "mean: 41.62615083333184 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.15390542363216,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003960641555904277",
+            "extra": "mean: 33.16320012121156 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9321691828776226,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0020505454697458373",
+            "extra": "mean: 517.5530221999907 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9383638639843612,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003918929638278892",
+            "extra": "mean: 515.8990108000012 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9495599337128527,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0016460403181950828",
+            "extra": "mean: 1.0531194130000017 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9256883360148216,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0061412526410568845",
+            "extra": "mean: 1.080277196000003 sec\nrounds: 5"
           }
         ]
       }
