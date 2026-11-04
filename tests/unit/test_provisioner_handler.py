@@ -4479,6 +4479,21 @@ class TestCfnResponseSize:
         # The Lambda's own return value still carries every change.
         assert len(returned["changes"]) == 661
 
+    def test_the_debug_report_stays_out_of_data(self):
+        """`Debug: true` adds metrics to the result; CloudFormation gets counts only."""
+        handler_mod = "zae_limiter_provisioner.handler"
+        event = {**self._EVENT, "ResourceProperties": {"Debug": "true"}}
+        with (
+            patch(f"{handler_mod}._handle_cfn", return_value=self._result(661)),
+            patch(f"{handler_mod}.urllib.request.urlopen") as urlopen,
+        ):
+            returned = _handle_cfn_with_response(event, MagicMock(log_stream_name="s"))
+        body = urlopen.call_args.args[0].data
+
+        assert "debug" in returned
+        assert "debug" not in json.loads(body)["Data"]
+        assert len(body) <= _CFN_RESPONSE_MAX_BYTES
+
     def test_errors_that_fit_are_all_sent(self):
         errors = ["update entity user-1/gpt-4: throttled", "delete resource gpt-3: denied"]
         _, sent, _ = self._respond(result=self._result(3, errors))
