@@ -243,6 +243,8 @@ class TestSharedClientPlumbing:
         ) == ([], [])
         with pytest.raises(ValueError, match="not found"):
             handler._resolve_namespace_id(TABLE, "missing")
+        create = Change("create", "resource", "gpt-4", {"limits": {"rpm": _limit(10)}})
+        assert applier.drop_unchanged([create], TABLE, NS) == [create]
 
     def test_an_unknown_action_is_skipped(self, table):
         from zae_limiter_provisioner.applier import apply_changes
