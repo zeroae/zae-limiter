@@ -89,12 +89,16 @@ def _handle_cfn_with_response(event: dict[str, Any], context: Any) -> dict[str, 
     try:
         result = _handle_cfn(event, context)
         physical_resource_id = result.pop("physical_resource_id", physical_resource_id)
+        # The response body is capped (_CFN_RESPONSE_MAX_BYTES), so `Data`
+        # carries counts and what fits of `errors`; the log keeps the rest.
+        # Printed, not logged: Lambda leaves the root logger at WARNING.
+        print(f"{CFN_RESULT_LOG_PREFIX} {json.dumps(result, default=str)}", flush=True)
         if "ResponseURL" in event:
             _send_cfn_response(
                 event,
                 context,
                 "SUCCESS",
-                data=result,
+                data=_cfn_data(result),
                 physical_resource_id=physical_resource_id,
             )
         return result
@@ -1420,6 +1424,85 @@ def _resolve_namespace_id(table_name: str, namespace_name: str) -> str:
     return item["namespace_id"]["S"]
 
 
+#: Prefix of the stdout line holding a CloudFormation apply's full result.
+CFN_RESULT_LOG_PREFIX = "ZAEL_PROVISIONER_CFN_RESULT"
+
+#: CloudFormation refuses a custom-resource response body larger than this
+#: ("The total size of the response body can't exceed 4096 bytes",
+#: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/crpg-ref-responses.html).
+#: A 661-level apply's full result was ~48 KB (#798).
+_CFN_RESPONSE_MAX_BYTES = 4096
+
+#: The result fields sent as `Data`: counts and flags, never a per-level list.
+_CFN_DATA_KEYS = (
+    "status",
+    "created",
+    "updated",
+    "deleted",
+    "unchanged",
+    "full",
+    "resumed",
+    "pending",
+)
+
+
+def _cfn_data(result: dict[str, Any]) -> dict[str, Any]:
+    """The part of an apply's result sent to CloudFormation as `Data`.
+
+    The counts, `changed` (how many levels the apply changed) and every error;
+    `_fit_cfn_response` drops errors that do not fit. Nothing reads `Data`
+    (no `Fn::GetAtt` targets it), and the whole result is logged.
+    """
+    data = {key: result[key] for key in _CFN_DATA_KEYS if key in result}
+    data["changed"] = len(result.get("changes", []))
+    data["errors"] = list(result.get("errors", []))
+    return data
+
+
+def _fit_cfn_response(response_body: dict[str, Any], log_stream: str) -> bytes:
+    """Serialize a response body within `_CFN_RESPONSE_MAX_BYTES`.
+
+    Errors are kept in order while they fit, and `errors_omitted` counts the
+    rest; a `Reason` that does not fit is cut and points at the log stream.
+    """
+
+    def _fits() -> bool:
+        return len(json.dumps(response_body).encode()) <= _CFN_RESPONSE_MAX_BYTES
+
+    if _fits():
+        return json.dumps(response_body).encode()
+
+    data = response_body["Data"]
+    errors: list[Any] = data.get("errors") or []
+    if errors:
+        kept: list[Any] = []
+        for error in errors:
+            data["errors"] = [*kept, error]
+            data["errors_omitted"] = len(errors) - len(kept) - 1
+            if not _fits():
+                break
+            kept.append(error)
+        data["errors"] = kept
+        data["errors_omitted"] = len(errors) - len(kept)
+        if _fits():
+            return json.dumps(response_body).encode()
+
+    # The longest prefix of `Reason` that fits, measured serialized: escaping
+    # makes characters and bytes differ.
+    reason = response_body["Reason"]
+    suffix = f"... (truncated; see CloudWatch Log Stream: {log_stream})"
+    low, high = 0, len(reason)
+    while low < high:
+        mid = (low + high + 1) // 2
+        response_body["Reason"] = reason[:mid] + suffix
+        if _fits():
+            low = mid
+        else:
+            high = mid - 1
+    response_body["Reason"] = reason[:low] + suffix
+    return json.dumps(response_body).encode()
+
+
 def _send_cfn_response(
     event: dict[str, Any],
     context: Any,
@@ -1449,7 +1532,7 @@ def _send_cfn_response(
         "Data": data or {},
     }
 
-    body = json.dumps(response_body).encode()
+    body = _fit_cfn_response(response_body, log_stream)
     req = urllib.request.Request(
         response_url,
         data=body,
