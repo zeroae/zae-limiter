@@ -41,6 +41,18 @@ def limits() -> None:
     """
 
 
+#: `--debug` on `plan`, `apply` and `diff`. (`cfn-template --debug` differs:
+#: it emits `Debug: true` into the template.)
+_debug_option = click.option(
+    "--debug",
+    is_flag=True,
+    help=(
+        "Ask the provisioner for timing metrics (phases, DynamoDB calls, fan-outs) "
+        "and print them to stderr as JSON. Also logged to CloudWatch."
+    ),
+)
+
+
 @limits.command("plan")
 @click.option("--name", "-n", required=True, help="Stack identifier.")
 @click.option("--region", help="AWS region.")
@@ -60,14 +72,7 @@ def limits() -> None:
     is_flag=True,
     help="Print only the summary, not a line per changed entry.",
 )
-@click.option(
-    "--debug",
-    is_flag=True,
-    help=(
-        "Ask the provisioner for timing metrics (phases, DynamoDB calls, fan-outs) "
-        "and print them to stderr as JSON. Also logged to CloudWatch."
-    ),
-)
+@_debug_option
 def limits_plan(
     name: str,
     region: str | None,
@@ -140,14 +145,7 @@ def limits_plan(
         "from the table. Repairs bucket items an earlier fan-out missed."
     ),
 )
-@click.option(
-    "--debug",
-    is_flag=True,
-    help=(
-        "Ask the provisioner for timing metrics (phases, DynamoDB calls, fan-outs) "
-        "and print them to stderr as JSON. Also logged to CloudWatch."
-    ),
-)
+@_debug_option
 def limits_apply(
     name: str,
     region: str | None,
@@ -227,14 +225,7 @@ def limits_apply(
     is_flag=True,
     help="Print only the summary, not a line per changed entry.",
 )
-@click.option(
-    "--debug",
-    is_flag=True,
-    help=(
-        "Ask the provisioner for timing metrics (phases, DynamoDB calls, fan-outs) "
-        "and print them to stderr as JSON. Also logged to CloudWatch."
-    ),
-)
+@_debug_option
 def limits_diff(
     name: str,
     region: str | None,
@@ -719,5 +710,6 @@ def _echo_debug(response_payload: dict[str, Any], function_name: str) -> None:
             err=True,
         )
         return
-    click.echo("Debug metrics:", err=True)
+    # The JSON alone, no header, so `2> file` holds a parseable report when the
+    # run prints nothing else to stderr (warnings and errors share it).
     click.echo(json.dumps(metrics, indent=2, sort_keys=True), err=True)

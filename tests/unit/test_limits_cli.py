@@ -1708,6 +1708,11 @@ class TestLimitsDebug:
         assert '"elapsed_ms": 12.5' in captured.err
         assert captured.out == ""
 
+    def test_stderr_holds_only_the_json(self, capsys):
+        """No header line, so `--debug 2> file` is parseable when nothing else is printed."""
+        self._invoke({"status": "applied", "debug": {"elapsed_ms": 12.5}}, True)
+        assert json.loads(capsys.readouterr().err) == {"elapsed_ms": 12.5}
+
     def test_a_run_without_metrics_points_at_the_log(self, capsys):
         with pytest.raises(SystemExit):
             self._invoke({"errorMessage": "Task timed out after 300.00 seconds"}, True)
