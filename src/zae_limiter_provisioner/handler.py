@@ -17,6 +17,7 @@ import time
 import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import groupby
 from typing import Any
@@ -35,6 +36,8 @@ from zae_limiter.schema import (
     sk_provisioner,
 )
 
+from . import applier as applier_module
+from . import pending as pending_module
 from .applier import (
     ApplyResult,
     apply_changes,
@@ -57,7 +60,7 @@ from .fanout import (
     resolve_disabled,
 )
 from .manifest import LimitsManifest
-from .metrics import NULL_METRICS, ApplyMetrics, debug_requested
+from .metrics import NULL_METRICS, ApplyMetrics, count_invocation, debug_requested
 from .pending import (
     KINDS,
     Pending,
@@ -70,35 +73,14 @@ from .pending import (
     release,
     write_ahead,
 )
+from .workers import WORKERS
 
 logger = logging.getLogger(__name__)
 
 TABLE_NAME = os.environ.get("TABLE_NAME", "rate-limits")
 
-#: Environment variable overriding how many owed fan-outs run at once.
-WORKERS_ENV = "ZAEL_PROVISIONER_WORKERS"
-_DEFAULT_WORKERS = 8
-_MAX_WORKERS = 64
-
-
-def _workers_from_env() -> int:
-    """``ZAEL_PROVISIONER_WORKERS``, clamped to 1..64; the default when unset or invalid."""
-    raw = os.environ.get(WORKERS_ENV, "").strip()
-    if not raw:
-        return _DEFAULT_WORKERS
-    try:
-        value = int(raw)
-    except ValueError:
-        logger.warning("Ignoring %s=%r: not an integer", WORKERS_ENV, raw)
-        return _DEFAULT_WORKERS
-    return max(1, min(_MAX_WORKERS, value))
-
-
-# Owed fan-outs run this many at a time. An apply is a long chain of small,
-# latency-bound DynamoDB calls (a 1270-level initial apply is ~11k of them),
-# so concurrency, not throughput, is what bounds it. The client's connection
-# pool (`_new_client`) is sized above it so no thread waits on a socket.
-_APPLY_WORKERS = _workers_from_env()
+# Owed fan-outs run this many at a time (`workers.WORKERS`).
+_APPLY_WORKERS = WORKERS
 
 
 def _new_client(metrics: Any = NULL_METRICS) -> Any:
@@ -107,15 +89,25 @@ def _new_client(metrics: Any = NULL_METRICS) -> Any:
     Built once and shared by every step and thread (boto3 clients are
     thread-safe). Each fan-out used to build its own: a botocore client
     construction plus a fresh TCP+TLS connection per owed fan-out, i.e. per
-    declared level on an initial apply. The pool also covers the fixed pools
-    of 8 in ``drop_unchanged``, ``apply_changes`` and ``pending``.
+    declared level on an initial apply. No thread pool of an apply runs
+    inside another, so the connection pool needs the largest of them plus
+    slack, and no thread waits on a socket.
     """
-    pool = max(_APPLY_WORKERS, _DEFAULT_WORKERS) + 2
+    pool = (
+        max(
+            _APPLY_WORKERS,
+            applier_module._READ_WORKERS,
+            applier_module._WRITE_WORKERS,
+            pending_module._WRITE_WORKERS,
+        )
+        + 2
+    )
     return metrics.instrument(boto3.client("dynamodb", config=Config(max_pool_connections=pool)))
 
 
 def on_event(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda entry point."""
+    count_invocation()
     if "RequestType" in event:
         return _handle_cfn_with_response(event, context)
     return _with_debug(event, context, _handle_cli)
@@ -129,7 +121,7 @@ def _with_debug(
     """Run ``handle`` with metrics when the invocation asked for them (``metrics.py``)."""
     if not debug_requested(event):
         return handle(event, context, NULL_METRICS)
-    metrics = ApplyMetrics(context)
+    metrics = ApplyMetrics(context, remaining_ms=_remaining_ms(context))
     metrics.start_heartbeat()
     try:
         result = handle(event, context, metrics)
@@ -179,78 +171,32 @@ def _handle_cli(event: dict[str, Any], context: Any, metrics: Any = NULL_METRICS
     action = event.get("action", "plan")
     table_name = event.get("table_name", TABLE_NAME)
     namespace_id = event.get("namespace_id", "")
-    manifest_data = event.get("manifest", {})
     client = _new_client(metrics)
 
     # `full` (#739 review): skip the change-only filter and fan out every
     # declared level, as every apply did before. The escape hatch for a bucket
     # a fan-out's discovery query missed (see `_apply_and_record`).
-    with metrics.phase("parse_manifest"):
-        manifest = LimitsManifest.from_dict(manifest_data)
-    with metrics.phase("read_state"):
-        previous = _read_provisioner_state(table_name, namespace_id, client=client)
-    full = event.get("full") is True
-    # Fan-outs an earlier apply left unfinished. The next apply retries them,
-    # so a plan reports how many there are.
-    with metrics.phase("read_pending"):
-        owed = read_pending(client, table_name, namespace_id)
-    pending_count = len(owed) + len(previous.get("cascade_pending", []))
-    resumed = _resumes(full, owed)
-    stored: dict[int, dict[str, Any]] = {}
-    with metrics.phase("plan"):
-        declared, changes = _plan_changes(
-            manifest,
-            previous,
-            table_name,
-            namespace_id,
-            full=full and not resumed,
-            stored_out=stored,
-            client=client,
-        )
-    unchanged = len(declared) - len(changes)
-    _count_levels(metrics, declared, changes, owed)
-
-    change_dicts = [{"action": c.action, "level": c.level, "target": c.target} for c in changes]
-
-    if action == "plan":
-        return {
-            "status": "planned",
-            "changes": change_dicts,
-            "unchanged": unchanged,
-            "full": full,
-            "resumed": resumed,
-            "pending": pending_count,
-        }
-
-    # Apply
-    result = _apply_and_record(
-        manifest,
-        changes,
+    plan = _plan(
+        event.get("manifest", {}),
         table_name,
         namespace_id,
-        previous.get("cascade_pending", []),
-        owed,
-        declared=declared,
-        full=full and not resumed,
-        stored=stored,
-        deadline_ms=deadline_for(_remaining_ms(context)),
-        mark_full=full,
+        full=event.get("full") is True,
         client=client,
         metrics=metrics,
     )
 
-    return {
-        "status": "applied",
-        "changes": change_dicts,
-        "created": result.created,
-        "updated": result.updated,
-        "deleted": result.deleted,
-        "unchanged": unchanged,
-        "full": full,
-        "resumed": resumed,
-        "pending": result.pending,
-        "errors": result.errors,
-    }
+    if action == "plan":
+        # Fan-outs an earlier apply left unfinished. The next apply retries
+        # them, so a plan reports how many there are.
+        return {
+            "status": "planned",
+            "changes": plan.change_dicts(),
+            "unchanged": plan.unchanged,
+            "full": plan.full,
+            "resumed": plan.resumed,
+            "pending": len(plan.owed) + len(plan.previous.get("cascade_pending", [])),
+        }
+    return _apply(plan, table_name, namespace_id, context, client=client, metrics=metrics)
 
 
 def _handle_cfn(event: dict[str, Any], context: Any, metrics: Any = NULL_METRICS) -> dict[str, Any]:
@@ -283,11 +229,52 @@ def _handle_cfn(event: dict[str, Any], context: Any, metrics: Any = NULL_METRICS
         and "FullApply" in properties
         and _coerce_bool(properties["FullApply"], "FullApply")
     )
+    plan = _plan(
+        manifest_data, table_name, namespace_id, full=requested_full, client=client, metrics=metrics
+    )
+    return {
+        "physical_resource_id": physical_resource_id,
+        **_apply(plan, table_name, namespace_id, context, client=client, metrics=metrics),
+    }
+
+
+@dataclass(frozen=True)
+class _Plan:
+    """What an invocation found and decided before writing anything (``_plan``)."""
+
+    manifest: LimitsManifest
+    previous: dict[str, Any]
+    owed: list[Pending]
+    declared: list[Change]
+    changes: list[Change]
+    stored: dict[int, dict[str, Any]]
+    #: The apply asked to be full (`--full` / `FullApply`).
+    full: bool
+    #: It resumes an interrupted full apply, so it plans change-only (`_resumes`).
+    resumed: bool
+
+    @property
+    def unchanged(self) -> int:
+        return len(self.declared) - len(self.changes)
+
+    def change_dicts(self) -> list[dict[str, str | None]]:
+        return [{"action": c.action, "level": c.level, "target": c.target} for c in self.changes]
+
+
+def _plan(
+    manifest_data: dict[str, Any],
+    table_name: str,
+    namespace_id: str,
+    *,
+    full: bool,
+    client: Any,
+    metrics: Any,
+) -> _Plan:
+    """Parse, read the state and pending items, and plan: shared by CLI and CloudFormation."""
     with metrics.phase("parse_manifest"):
         manifest = LimitsManifest.from_dict(manifest_data)
     with metrics.phase("read_state"):
         previous = _read_provisioner_state(table_name, namespace_id, client=client)
-    full = requested_full
     with metrics.phase("read_pending"):
         owed = read_pending(client, table_name, namespace_id)
     resumed = _resumes(full, owed)
@@ -302,35 +289,44 @@ def _handle_cfn(event: dict[str, Any], context: Any, metrics: Any = NULL_METRICS
             stored_out=stored,
             client=client,
         )
-    unchanged = len(declared) - len(changes)
     _count_levels(metrics, declared, changes, owed)
+    return _Plan(manifest, previous, owed, declared, changes, stored, full, resumed)
 
+
+def _apply(
+    plan: _Plan,
+    table_name: str,
+    namespace_id: str,
+    context: Any,
+    *,
+    client: Any,
+    metrics: Any,
+) -> dict[str, Any]:
+    """Apply a plan and report it: shared by CLI and CloudFormation."""
     result = _apply_and_record(
-        manifest,
-        changes,
+        plan.manifest,
+        plan.changes,
         table_name,
         namespace_id,
-        previous.get("cascade_pending", []),
-        owed,
-        declared=declared,
-        full=full and not resumed,
-        stored=stored,
+        plan.previous.get("cascade_pending", []),
+        plan.owed,
+        declared=plan.declared,
+        full=plan.full and not plan.resumed,
+        stored=plan.stored,
         deadline_ms=deadline_for(_remaining_ms(context)),
-        mark_full=full,
+        mark_full=plan.full,
         client=client,
         metrics=metrics,
     )
-
     return {
-        "physical_resource_id": physical_resource_id,
         "status": "applied",
-        "changes": [{"action": c.action, "level": c.level, "target": c.target} for c in changes],
+        "changes": plan.change_dicts(),
         "created": result.created,
         "updated": result.updated,
         "deleted": result.deleted,
-        "unchanged": unchanged,
-        "full": full,
-        "resumed": resumed,
+        "unchanged": plan.unchanged,
+        "full": plan.full,
+        "resumed": plan.resumed,
         "pending": result.pending,
         "errors": result.errors,
     }

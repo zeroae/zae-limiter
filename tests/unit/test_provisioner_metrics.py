@@ -140,8 +140,7 @@ class TestApplyMetrics:
 
     def test_the_context_says_how_big_the_function_is(self):
         context = MagicMock(memory_limit_in_mb="256")
-        context.get_remaining_time_in_millis.return_value = 299_000
-        report = ApplyMetrics(context).as_dict()
+        report = ApplyMetrics(context, remaining_ms=299_000).as_dict()
         assert (report["memory_limit_mb"], report["remaining_ms_at_start"]) == (256, 299_000)
 
     def test_emit_prints_one_prefixed_json_line(self, capsys):
@@ -262,8 +261,32 @@ class TestCallOutcomes:
         assert call["count"] == 1
         assert call["errors"] == {"Exception": 1, "TimeoutError": 1}
 
-    def test_a_context_that_cannot_say_its_remaining_time(self):
-        context = MagicMock(memory_limit_in_mb=None)
-        context.get_remaining_time_in_millis.side_effect = RuntimeError("no")
-        report = ApplyMetrics(context).as_dict()
+    def test_a_context_that_cannot_say_its_size(self):
+        report = ApplyMetrics(MagicMock(memory_limit_in_mb=None)).as_dict()
         assert (report["memory_limit_mb"], report["remaining_ms_at_start"]) == (None, None)
+
+
+class TestColdStart:
+    """Every invocation counts, so a warm container's first debug run is not cold."""
+
+    def test_a_debug_run_after_normal_ones_is_warm(self, monkeypatch):
+        from zae_limiter_provisioner import metrics
+
+        monkeypatch.setattr(metrics, "_invocations", 0)
+        with patch.object(handler, "_handle_cli", return_value={"status": "planned"}):
+            for _ in range(3):
+                handler.on_event({"action": "plan"}, None)
+        assert metrics._invocations == 3
+
+        report = ApplyMetrics().as_dict()
+        assert report["cold_start"] is False
+        assert report["init_to_start_ms"] is None
+
+    def test_the_first_invocation_is_cold(self, monkeypatch):
+        from zae_limiter_provisioner import metrics
+
+        monkeypatch.setattr(metrics, "_invocations", 0)
+        metrics.count_invocation()
+        report = ApplyMetrics().as_dict()
+        assert report["cold_start"] is True
+        assert report["init_to_start_ms"] >= 0

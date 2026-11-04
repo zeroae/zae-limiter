@@ -13,7 +13,7 @@ from unittest.mock import patch
 import boto3
 import pytest
 
-from zae_limiter_provisioner import handler
+from zae_limiter_provisioner import applier, handler, pending, workers
 from zae_limiter_provisioner.differ import Change
 
 TABLE = "test-provisioner-throughput"
@@ -52,15 +52,34 @@ class TestWorkers:
         ("value", "expected"),
         [(None, 8), ("", 8), ("16", 16), ("0", 1), ("1000", 64), ("many", 8)],
     )
-    def test_the_environment_sets_the_fanout_concurrency(self, value, expected, monkeypatch):
+    def test_the_environment_sets_the_concurrency(self, value, expected, monkeypatch):
         if value is None:
-            monkeypatch.delenv(handler.WORKERS_ENV, raising=False)
+            monkeypatch.delenv(workers.WORKERS_ENV, raising=False)
         else:
-            monkeypatch.setenv(handler.WORKERS_ENV, value)
-        assert handler._workers_from_env() == expected
+            monkeypatch.setenv(workers.WORKERS_ENV, value)
+        assert workers.workers_from_env() == expected
 
-    def test_the_connection_pool_covers_every_worker(self, monkeypatch):
-        monkeypatch.setattr(handler, "_APPLY_WORKERS", 32)
+    def test_every_pool_uses_the_one_setting(self):
+        """Fan-outs, the pre-read, config writes and pending writes alike."""
+        assert (
+            handler._APPLY_WORKERS
+            == applier._READ_WORKERS
+            == applier._WRITE_WORKERS
+            == pending._WRITE_WORKERS
+            == workers.WORKERS
+        )
+
+    @pytest.mark.parametrize(
+        ("module", "name"),
+        [
+            (handler, "_APPLY_WORKERS"),
+            (applier, "_READ_WORKERS"),
+            (applier, "_WRITE_WORKERS"),
+            (pending, "_WRITE_WORKERS"),
+        ],
+    )
+    def test_the_connection_pool_covers_every_worker(self, module, name, monkeypatch):
+        monkeypatch.setattr(module, name, 32)
         with patch.object(handler.boto3, "client") as client:
             handler._new_client()
         assert client.call_args.kwargs["config"].max_pool_connections == 34
@@ -146,6 +165,26 @@ class TestParallelConfigWrites:
         assert [c.target for c in result.limits_changed] == [
             c.target for i, c in enumerate(changes) if i != 5
         ]
+
+    def test_a_failure_recording_a_landed_write_is_one_error(self, table, monkeypatch):
+        """Reading what a write changed fails for one change; the rest are recorded."""
+        from zae_limiter_provisioner.applier import apply_changes
+
+        real = applier._note_changes
+
+        def note(result, change, old, new):
+            if change.target == "u2/gpt-4":
+                raise ValueError("unexpected old image")
+            real(result, change, old, new)
+
+        monkeypatch.setattr(applier, "_note_changes", note)
+        changes = [
+            Change("create", "entity", f"u{i}/gpt-4", {"limits": {"rpm": _limit(i + 1)}})
+            for i in range(4)
+        ]
+        result = apply_changes(changes, TABLE, NS)
+        assert result.created == 3
+        assert result.errors == ["create entity u2/gpt-4: unexpected old image"]
 
 
 def _limit(capacity: int) -> dict:

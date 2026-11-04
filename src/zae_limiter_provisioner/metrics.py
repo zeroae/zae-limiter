@@ -47,11 +47,19 @@ PARTIAL_PREFIX = "ZAEL_PROVISIONER_METRICS_PARTIAL"
 #: Seconds between partial snapshots.
 HEARTBEAT_SECONDS = 30.0
 
-# When this module was first imported: the first invocation of a fresh
-# execution environment reports itself as a cold start.
+# When this module was first imported, and how many invocations this
+# execution environment has served (`count_invocation`, every one, debug or
+# not): the first is the cold start.
 _IMPORTED_AT = time.perf_counter()
 _invocations = 0
 _invocations_lock = threading.Lock()
+
+
+def count_invocation() -> None:
+    """Count one invocation of this execution environment; call once per event."""
+    global _invocations
+    with _invocations_lock:
+        _invocations += 1
 
 
 def debug_requested(event: dict[str, Any]) -> bool:
@@ -88,10 +96,9 @@ class ApplyMetrics:
 
     enabled = True
 
-    def __init__(self, context: Any = None) -> None:
-        global _invocations
+    def __init__(self, context: Any = None, *, remaining_ms: int | None = None) -> None:
+        """``remaining_ms``: time left at the invocation's start (``handler._remaining_ms``)."""
         with _invocations_lock:
-            _invocations += 1
             self._invocation = _invocations
         self._start = time.perf_counter()
         self._lock = threading.Lock()
@@ -103,7 +110,7 @@ class ApplyMetrics:
         self._counts: dict[str, Any] = {}
         self._clients = 0
         self._memory_mb = _int_attr(context, "memory_limit_in_mb")
-        self._remaining_ms = _remaining(context)
+        self._remaining_ms = remaining_ms
         self._current_phase: str | None = None
         self._stop = threading.Event()
         self._heartbeat: threading.Thread | None = None
@@ -217,10 +224,12 @@ class ApplyMetrics:
             for op, errors in self._errors.items():
                 calls.setdefault(op, _summary([]))["errors"] = dict(sorted(errors.items()))
             fanouts = {key: _summary(values) for key, values in sorted(self._fanouts.items())}
+            cold = self._invocation <= 1
             return {
                 "elapsed_ms": round((time.perf_counter() - self._start) * 1000, 1),
-                "cold_start": self._invocation == 1,
-                "init_to_start_ms": round((self._start - _IMPORTED_AT) * 1000, 1),
+                "cold_start": cold,
+                # From module import, so only a cold start's says how long init took.
+                "init_to_start_ms": round((self._start - _IMPORTED_AT) * 1000, 1) if cold else None,
                 "memory_limit_mb": self._memory_mb,
                 "remaining_ms_at_start": self._remaining_ms,
                 "cpu_count": os.cpu_count(),
@@ -272,14 +281,3 @@ def _int_attr(context: Any, name: str) -> int | None:
         return int(getattr(context, name))
     except (AttributeError, TypeError, ValueError):
         return None
-
-
-def _remaining(context: Any) -> int | None:
-    remaining = getattr(context, "get_remaining_time_in_millis", None)
-    if not callable(remaining):
-        return None
-    try:
-        value = remaining()
-    except Exception:
-        return None
-    return value if isinstance(value, int) and not isinstance(value, bool) else None

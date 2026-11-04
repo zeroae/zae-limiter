@@ -53,6 +53,7 @@ from zae_limiter.version import (
 
 from .differ import Change
 from .manifest import entries_from_manifest
+from .workers import WORKERS
 
 try:
     # The provisioner zip carries no full `zae_limiter/__init__.py`, so the
@@ -340,11 +341,10 @@ def _require_readers(
     raise last_error
 
 
-# Concurrent `GetItem`s for the pre-read in `drop_unchanged`. Below botocore's
-# default connection pool of 10, so the threads never wait on a connection.
-_READ_WORKERS = 8
-# Concurrent config writes in `apply_changes`, for the same reason.
-_WRITE_WORKERS = 8
+# Concurrent `GetItem`s for the pre-read in `drop_unchanged`, and concurrent
+# config writes in `apply_changes` (`workers.WORKERS`).
+_READ_WORKERS = WORKERS
+_WRITE_WORKERS = WORKERS
 
 
 def drop_unchanged(
@@ -505,21 +505,23 @@ def apply_changes(
     for change, outcome in zip(changes, outcomes, strict=True):
         if outcome is None:
             continue
-        if isinstance(outcome, Exception):
-            logger.warning(
-                "Failed to %s %s %s: %s", change.action, change.level, change.target, outcome
-            )
-            result.errors.append(f"{change.action} {change.level} {change.target}: {outcome}")
-            continue
-        old, new = outcome
-        _note_changes(result, change, old, new)
-        _note_soft_change(result, change, old)
-        if change.action == "delete":
-            result.deleted += 1
-        elif change.action == "create":
-            result.created += 1
-        else:
-            result.updated += 1
+        # A failed write, or a failure reading what it changed, is one error for
+        # this change; the rest of the apply carries on, as a serial loop did.
+        try:
+            if isinstance(outcome, Exception):
+                raise outcome
+            old, new = outcome
+            _note_changes(result, change, old, new)
+            _note_soft_change(result, change, old)
+            if change.action == "delete":
+                result.deleted += 1
+            elif change.action == "create":
+                result.created += 1
+            else:
+                result.updated += 1
+        except Exception as e:
+            logger.warning("Failed to %s %s %s: %s", change.action, change.level, change.target, e)
+            result.errors.append(f"{change.action} {change.level} {change.target}: {e}")
 
     return result
 
