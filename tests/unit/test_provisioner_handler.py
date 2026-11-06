@@ -2146,14 +2146,16 @@ class TestCascadeFanoutChanges:
             [("entity", "old/gpt-4"), ("resource", "llm")],
         )
 
-        mock_gate.assert_called_once_with(changes, "t")
+        mock_gate.assert_called_once_with(changes, "t", _boto3.client.return_value)
         # Every owed cascade fan-out runs once, on its own, through the
         # table-driven retry (`resource llm` is both this apply's and a
-        # leftover); resources first.
-        assert [c.args for c in mock_fanout.call_args_list] == [
-            ("t", "ns", [("resource", "llm")]),
-            ("t", "ns", [("entity", "u1/llm")]),
+        # leftover); resources first. The entity levels share a phase and run
+        # concurrently, so their relative order is not fixed.
+        calls = [c.args for c in mock_fanout.call_args_list]
+        assert calls[0] == ("t", "ns", [("resource", "llm")])
+        assert sorted(calls[1:]) == [
             ("t", "ns", [("entity", "old/gpt-4")]),
+            ("t", "ns", [("entity", "u1/llm")]),
         ]
         assert "err" in result.errors
         # The legacy entries become pending items before anything is written,
@@ -4476,6 +4478,21 @@ class TestCfnResponseSize:
         }
         # The Lambda's own return value still carries every change.
         assert len(returned["changes"]) == 661
+
+    def test_the_debug_report_stays_out_of_data(self):
+        """`Debug: true` adds metrics to the result; CloudFormation gets counts only."""
+        handler_mod = "zae_limiter_provisioner.handler"
+        event = {**self._EVENT, "ResourceProperties": {"Debug": "true"}}
+        with (
+            patch(f"{handler_mod}._handle_cfn", return_value=self._result(661)),
+            patch(f"{handler_mod}.urllib.request.urlopen") as urlopen,
+        ):
+            returned = _handle_cfn_with_response(event, MagicMock(log_stream_name="s"))
+        body = urlopen.call_args.args[0].data
+
+        assert "debug" in returned
+        assert "debug" not in json.loads(body)["Data"]
+        assert len(body) <= _CFN_RESPONSE_MAX_BYTES
 
     def test_errors_that_fit_are_all_sent(self):
         errors = ["update entity user-1/gpt-4: throttled", "delete resource gpt-3: denied"]
