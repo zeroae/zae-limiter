@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793824320324,
+  "lastUpdate": 1793945531583,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -38862,6 +38862,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0061412526410568845",
             "extra": "mean: 1.080277196000003 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c65c22ee4d1242348297e8c68287dee49dfd285a",
+          "message": "⚡ perf(provisioner): concurrent fan-outs, one shared client, opt-in debug metrics (#795)\n\n## Summary\n\nA production initial apply of 1,270 limits took **7m15s** through the\nprovisioner Lambda. This PR does two things: it removes the obvious\nserial bottlenecks, and it adds an opt-in debug mode so the remaining\ntime can be measured on the deployment where it happens, since moto\ncan't reproduce it.\n\n### Where the time went\n\nOn a first apply every entity entry is new, so each one owes a bucket\nparam sync. Per entry, that cost:\n\n- **9 DynamoDB calls, 7 of them strictly sequential**: config `PutItem`,\nthen for the fan-out a consistent `GetItem`, 2 GSI3 `Query`s (two\ndiscovery passes), another `GetItem`, and the pending-item release\n(`UpdateItem` + `DeleteItem`). The pre-read and write-ahead were already\nparallel.\n- **A brand-new boto3 client per fan-out**, created in\n`_sync_bucket_param_changes` / `_fanout_*_changes`. Each new client\nmeans a botocore client construction plus a **fresh TCP+TLS\nconnection**. At 256 MB (≈0.15 vCPU) that is far from free.\n- **Everything ran one item at a time**: every config write, then every\nfan-out.\n\nThat works out to 7m15s ÷ 1,270 ≈ 340 ms per entry, which is consistent\nwith ~7 sequential round trips plus a client and TLS setup each.\n\n### ⚡ `perf(provisioner)`: share one client and run fan-outs\nconcurrently\n\n- **One DynamoDB client per invocation** (`handler._new_client`), shared\nby every step and thread. Its connection pool is sized above the worker\ncount.\n- **Config writes 8 at a time** (`apply_changes`). Results are still\nrecorded in change order.\n- **Owed fan-outs 8 at a time *within* each phase** of the order they\nalways ran in (`_run_fanouts`): by kind (`disabled` → `cascade` → `soft`\n→ `sync`), resource levels before entity levels, and each phase finishes\nbefore the next starts. Two fan-outs in one phase are different levels,\neach resolved from the live table. Two concurrent applies could already\ninterleave this way (#739's shared pending items), so this adds no\ninterleaving the design didn't already allow.\n- `ZAEL_PROVISIONER_WORKERS` (1-64) on the function tunes the\nconcurrency.\n\nSame calls, same ordering contract. With a simulated 20 ms per call on\nmoto, a 300-level initial apply went from **56.4 s → 11.9 s** (≈4.7×).\n\nmoto's backend isn't thread-safe (#656), so `mock_dynamodb` now\nserializes moto's dispatch (one request at a time, like a linearizable\nservice).\n\n### ✨ `feat(provisioner)`: opt-in debug metrics\n\n- **How to enable:**\n  - `limits plan|apply|diff --debug` (event `debug: true`)\n  - `limits cfn-template --debug` (`Debug: true` property)\n  - `ZAEL_PROVISIONER_DEBUG=1` on the function, for every invocation\n- **What it reports:** per-phase wall time, per-operation DynamoDB\nlatency p50/p95/p99/max, botocore retries and error codes (throttling\nshows up here), per-kind fan-out timings, work counts, memory size and\ncold start.\n- **Where it goes:** returned under `debug`, which the CLI prints to\nstderr, and logged as one `ZAEL_PROVISIONER_METRICS {json}` line. A\n`ZAEL_PROVISIONER_METRICS_PARTIAL` snapshot is also logged every 30 s,\nso a run killed by the function timeout still shows how far it got\n(`current_phase`).\n- **No names, by design.** The report carries no entity ids, resource\nnames or limit values, only counts, levels, operation names and timings,\nso it can be carried out of a restricted environment.\n- **Off by default.** When disabled every hook is a no-op.\n\n## Test plan\n\n- [x] `tests/unit/test_provisioner_throughput.py`: one client per apply,\nphase ordering, concurrency within a phase, serial error order, parallel\nconfig writes recorded in change order, a 30-level initial apply lands\nand releases every pending item, and a re-apply is a no-op\n- [x] `tests/unit/test_provisioner_metrics.py`: enable flags, per-call\ntiming and error codes on a real client, partial snapshots, no names in\nthe report, metrics on failure, CFN `Debug`\n- [x] `tests/unit/test_limits_cli.py::TestLimitsDebug`: `--debug`\nforwarding, stderr output, timeout message, `cfn-template --debug`\n- [x] Provisioner suites run 5× in a row with no flakes\n- [x] Full unit suite (7,782 passed), mypy, ruff; pre-push\npatch-coverage gate at 100%\n- [ ] Deploy to the high-side stack, then run `limits apply --debug` (or\nset `ZAEL_PROVISIONER_DEBUG=1`) on the 1,270-entry manifest and compare\nagainst 7m15s. If `dynamodb_calls` p50 is high and `fanouts` dominates,\ntry raising `ZAEL_PROVISIONER_WORKERS` and/or the function's memory\n\n---\n_Generated by [Claude\nCode](https://claude.ai/code/session_01WG5xqB89hh9FqPGQ8WjkMK)_",
+          "timestamp": "2026-11-06T01:04:58-05:00",
+          "tree_id": "b975f46ea173f409e4fa28e5566db07d9f03ca34",
+          "url": "https://github.com/zeroae/zae-limiter/commit/c65c22ee4d1242348297e8c68287dee49dfd285a"
+        },
+        "date": 1793945530341,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 30.89139582738032,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010456765098768719",
+            "extra": "mean: 32.37147345454874 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.211772192173342,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010780551259352256",
+            "extra": "mean: 45.02117126666576 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 24.06955457583635,
+            "unit": "iter/sec",
+            "range": "stddev: 0.059994097674840166",
+            "extra": "mean: 41.54626114285926 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 47.32732853105885,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0057319405352198455",
+            "extra": "mean: 21.12944108695558 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.68663460556063,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02217893583544635",
+            "extra": "mean: 44.07881633333548 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 89.62935575960219,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0027923213566232157",
+            "extra": "mean: 11.15705888461513 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 29.2751813083515,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013508573127166296",
+            "extra": "mean: 34.158627045453144 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 18.6059443727663,
+            "unit": "iter/sec",
+            "range": "stddev: 0.050746204178407694",
+            "extra": "mean: 53.746264095237734 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 29.529275880243627,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011025335859253806",
+            "extra": "mean: 33.86469766666522 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 28.195349688344187,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010399485829751701",
+            "extra": "mean: 35.46684155555605 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 28.233968505445425,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03039602748152031",
+            "extra": "mean: 35.4183295135125 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 20.182148025860375,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06009551932726527",
+            "extra": "mean: 49.54873974359176 msec\nrounds: 39"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.422467261860625,
+            "unit": "iter/sec",
+            "range": "stddev: 0.038755690951139427",
+            "extra": "mean: 32.87044378723544 msec\nrounds: 47"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.8276088118462794,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03429104078523413",
+            "extra": "mean: 547.1630436000055 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9426738080008639,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014380426595204856",
+            "extra": "mean: 514.7544563999986 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.8771807308574839,
+            "unit": "iter/sec",
+            "range": "stddev: 0.16215736709679177",
+            "extra": "mean: 1.1400159223999993 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.8444334744054259,
+            "unit": "iter/sec",
+            "range": "stddev: 0.058904642789933924",
+            "extra": "mean: 1.1842259103999992 sec\nrounds: 5"
           }
         ]
       }
