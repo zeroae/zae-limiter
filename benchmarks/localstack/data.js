@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793945531583,
+  "lastUpdate": 1793948605623,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -39005,6 +39005,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.058904642789933924",
             "extra": "mean: 1.1842259103999992 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1bcc38b139de8434b05eb0b1e6305e1e4e744048",
+          "message": "build(deps-dev): bump ruff from 0.17.1 to 0.17.3 in the dev-dependencies group (#796)\n\nBumps the dev-dependencies group with 1 update:\n[ruff](https://github.com/astral-sh/ruff).\n\nUpdates `ruff` from 0.17.1 to 0.17.3\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/astral-sh/ruff/releases\">ruff's\nreleases</a>.</em></p>\n<blockquote>\n<h2>0.17.3</h2>\n<h2>Release Notes</h2>\n<p>Released on 2026-10-26.</p>\n<h3>Preview features</h3>\n<ul>\n<li>[<code>suspicious</code>] Add <code>shared-clock-mock</code> (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29074\">#29074</a>)</li>\n</ul>\n<h3>Bug fixes</h3>\n<ul>\n<li>[<code>pyupgrade</code>] Avoid incorrect conversions to f-strings\n(<code>UP032</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/25485\">#25485</a>)</li>\n</ul>\n<h3>Performance</h3>\n<ul>\n<li>Buffer stdout in <code>ruff format</code> (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29631\">#29631</a>)</li>\n<li>Specialize ASCII identifier lexing (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29503\">#29503</a>)</li>\n<li>Speed up identifier and keyword lexing (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29463\">#29463</a>)</li>\n</ul>\n<h3>Documentation</h3>\n<ul>\n<li>[<code>flake8-bandit</code>] Describe what the rule actually checks\nfor <code>httpx</code> (<code>S113</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/27936\">#27936</a>)</li>\n</ul>\n<h3>Contributors</h3>\n<ul>\n<li><a\nhref=\"https://github.com/itsvedantkumar\"><code>@​itsvedantkumar</code></a></li>\n<li><a\nhref=\"https://github.com/charliermarsh\"><code>@​charliermarsh</code></a></li>\n<li><a\nhref=\"https://github.com/anishgirianish\"><code>@​anishgirianish</code></a></li>\n</ul>\n<h2>Install ruff 0.17.3</h2>\n<h3>Install prebuilt binaries via shell script</h3>\n<pre lang=\"sh\"><code>curl --proto '=https' --tlsv1.2 -LsSf\nhttps://releases.astral.sh/github/ruff/releases/download/0.17.3/ruff-installer.sh\n| sh\n</code></pre>\n<h3>Install prebuilt binaries via powershell script</h3>\n<pre lang=\"sh\"><code>powershell -ExecutionPolicy Bypass -c &quot;irm\nhttps://releases.astral.sh/github/ruff/releases/download/0.17.3/ruff-installer.ps1\n| iex&quot;\n</code></pre>\n<h2>Download ruff 0.17.3</h2>\n<table>\n<thead>\n<tr>\n<th>File</th>\n<th>Platform</th>\n<th>Checksum</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td><a\nhref=\"https://releases.astral.sh/github/ruff/releases/download/0.17.3/ruff-aarch64-apple-darwin.tar.gz\">ruff-aarch64-apple-darwin.tar.gz</a></td>\n<td>Apple Silicon macOS</td>\n<td><a\nhref=\"https://releases.astral.sh/github/ruff/releases/download/0.17.3/ruff-aarch64-apple-darwin.tar.gz.sha256\">checksum</a></td>\n</tr>\n<tr>\n<td><a\nhref=\"https://releases.astral.sh/github/ruff/releases/download/0.17.3/ruff-x86_64-apple-darwin.tar.gz\">ruff-x86_64-apple-darwin.tar.gz</a></td>\n<td>Intel macOS</td>\n<td><a\nhref=\"https://releases.astral.sh/github/ruff/releases/download/0.17.3/ruff-x86_64-apple-darwin.tar.gz.sha256\">checksum</a></td>\n</tr>\n<tr>\n<td><a\nhref=\"https://releases.astral.sh/github/ruff/releases/download/0.17.3/ruff-aarch64-pc-windows-msvc.zip\">ruff-aarch64-pc-windows-msvc.zip</a></td>\n<td>ARM64 Windows</td>\n<td><a\nhref=\"https://releases.astral.sh/github/ruff/releases/download/0.17.3/ruff-aarch64-pc-windows-msvc.zip.sha256\">checksum</a></td>\n</tr>\n</tbody>\n</table>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/astral-sh/ruff/blob/main/CHANGELOG.md\">ruff's\nchangelog</a>.</em></p>\n<blockquote>\n<h2>0.17.3</h2>\n<p>Released on 2026-10-26.</p>\n<h3>Preview features</h3>\n<ul>\n<li>[<code>suspicious</code>] Add <code>shared-clock-mock</code> (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29074\">#29074</a>)</li>\n</ul>\n<h3>Bug fixes</h3>\n<ul>\n<li>[<code>pyupgrade</code>] Avoid incorrect conversions to f-strings\n(<code>UP032</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/25485\">#25485</a>)</li>\n</ul>\n<h3>Performance</h3>\n<ul>\n<li>Buffer stdout in <code>ruff format</code> (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29631\">#29631</a>)</li>\n<li>Specialize ASCII identifier lexing (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29503\">#29503</a>)</li>\n<li>Speed up identifier and keyword lexing (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29463\">#29463</a>)</li>\n</ul>\n<h3>Documentation</h3>\n<ul>\n<li>[<code>flake8-bandit</code>] Describe what the rule actually checks\nfor <code>httpx</code> (<code>S113</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/27936\">#27936</a>)</li>\n</ul>\n<h3>Contributors</h3>\n<ul>\n<li><a\nhref=\"https://github.com/itsvedantkumar\"><code>@​itsvedantkumar</code></a></li>\n<li><a\nhref=\"https://github.com/charliermarsh\"><code>@​charliermarsh</code></a></li>\n<li><a\nhref=\"https://github.com/anishgirianish\"><code>@​anishgirianish</code></a></li>\n</ul>\n<h2>0.17.2</h2>\n<p>Released on 2026-10-22.</p>\n<h3>Preview features</h3>\n<ul>\n<li>[<code>complexity</code>] Add\n<code>unnecessary-regular-expression-compile</code> (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/25533\">#25533</a>)</li>\n</ul>\n<h3>Bug fixes</h3>\n<ul>\n<li>Avoid syntax errors for type variables with starred constraints\n(<code>UP040</code>, <code>UP046</code>, <code>UP047</code>,\n<code>RUF053</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/28362\">#28362</a>)</li>\n<li>[<code>pydocstyle</code>] Treat backslash-escaped <code>*args</code>\nand <code>**kwargs</code> as documented (<code>D417</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29536\">#29536</a>)</li>\n<li>[<code>pylint</code>] Avoid false positive on starred elements\n(<code>PLE0643</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29483\">#29483</a>)</li>\n<li>[<code>pylint</code>] Mark fixes unsafe when deleting comments\n(<code>PLR5501</code>, <code>PLW0120</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29414\">#29414</a>)</li>\n<li>[<code>pyupgrade</code>] Mark fix unsafe when deleting comments\n(<code>UP035</code>) (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29413\">#29413</a>)</li>\n</ul>\n<h3>Performance</h3>\n<ul>\n<li>Avoid intermediate names in lint name resolution (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29506\">#29506</a>)</li>\n<li>Prefilter bidirectional Unicode checks by UTF-8 leading bytes (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29561\">#29561</a>)</li>\n<li>Share postfix parsing and reduce expression copies (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/pull/29480\">#29480</a>)</li>\n</ul>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/ba65abf8ba7bfbcc059f7fb9712be5ba9cab6abc\"><code>ba65abf</code></a>\nBump version to 0.17.3 (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29745\">#29745</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/fb2f9218793e3b0e979175d43d88dcac791e92d6\"><code>fb2f921</code></a>\n[ty] Fix narrowing of strings and integers compared with enum members\n(<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29743\">#29743</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/d1812878d5f81af6f5810d193ebc44413d1b21cc\"><code>d181287</code></a>\n[ty] Index nominal union alternatives (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29196\">#29196</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/07872adbafa7c00f42f1174d8aa3c3e324033009\"><code>07872ad</code></a>\n[ty] Preserve string literals in comparisons with\n<code>LiteralString</code> (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29741\">#29741</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/95888b2edfaa34d0159732856b1466cf53b33e64\"><code>95888b2</code></a>\n[ty] Preserve narrowing after guarded match subject captures (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29558\">#29558</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/3c8166b683805aa89557b0739f5b9918ad58ea6d\"><code>3c8166b</code></a>\n[ty] Fix hang when negating recursive unions of instance types (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29652\">#29652</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/3fd20e08598ac345b8afd524d3f7086456e4e758\"><code>3fd20e0</code></a>\n[ty] Preserve generic callback specializations during return refinement\n(<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29667\">#29667</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/2f0a29ece1f1a539c65c0671c04c76bb886219fe\"><code>2f0a29e</code></a>\n[ty] Record predicate truthiness alongside expression inference (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29706\">#29706</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/60f104a1a2ec4e980198ff54c38ba6fe7045b29f\"><code>60f104a</code></a>\n[ty] Honor <a\nhref=\"https://github.com/override\"><code>@​override</code></a> on\noverload implementations in stubs (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/29470\">#29470</a>)</li>\n<li><a\nhref=\"https://github.com/astral-sh/ruff/commit/207ec3affeb118fce03a65f9333959157e228312\"><code>207ec3a</code></a>\n[ty] Add diagnostic baseline support (<a\nhref=\"https://redirect.github.com/astral-sh/ruff/issues/27636\">#27636</a>)</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/astral-sh/ruff/compare/0.17.1...0.17.3\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=ruff&package-manager=pip&previous-version=0.17.1&new-version=0.17.3)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore <dependency name> major version` will close this\ngroup update PR and stop Dependabot creating any more for the specific\ndependency's major version (unless you unignore this specific\ndependency's major version or upgrade to it yourself)\n- `@dependabot ignore <dependency name> minor version` will close this\ngroup update PR and stop Dependabot creating any more for the specific\ndependency's minor version (unless you unignore this specific\ndependency's minor version or upgrade to it yourself)\n- `@dependabot ignore <dependency name>` will close this group update PR\nand stop Dependabot creating any more for the specific dependency\n(unless you unignore this specific dependency or upgrade to it yourself)\n- `@dependabot unignore <dependency name>` will remove all of the ignore\nconditions of the specified dependency\n- `@dependabot unignore <dependency name> <ignore condition>` will\nremove the ignore condition of the specified dependency and ignore\nconditions\n\n\n</details>",
+          "timestamp": "2026-11-06T01:56:40-05:00",
+          "tree_id": "caa204c01833c6c9c2eb1c9f3413daac107ef10f",
+          "url": "https://github.com/zeroae/zae-limiter/commit/1bcc38b139de8434b05eb0b1e6305e1e4e744048"
+        },
+        "date": 1793948604215,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.88972175139335,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005438351951217663",
+            "extra": "mean: 43.6877307142944 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.43472104423071,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008254485199336631",
+            "extra": "mean: 60.84678877777745 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.2907440717295,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0039191495788233706",
+            "extra": "mean: 28.336041823529417 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 33.61926119808419,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0044132239863944565",
+            "extra": "mean: 29.7448535263168 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 20.383426590508538,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011061811296403724",
+            "extra": "mean: 49.05946483333897 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 58.887690899516244,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0031427497081065333",
+            "extra": "mean: 16.981477533333116 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.37245107194655,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00727037408671163",
+            "extra": "mean: 41.02993158332898 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 23.452616114114296,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009712638926296742",
+            "extra": "mean: 42.639166357145896 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 24.861062737433222,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005819590043916273",
+            "extra": "mean: 40.22354195238417 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 25.07417316534753,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005966135016568949",
+            "extra": "mean: 39.881674000002455 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 21.738297290909664,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008772477242997121",
+            "extra": "mean: 46.00176300000145 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 20.96255286146117,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0060521215904788175",
+            "extra": "mean: 47.70411345454306 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 27.969182345900062,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005165141957143424",
+            "extra": "mean: 35.75363725806549 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.917490217241964,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004918428985138962",
+            "extra": "mean: 521.5150466000068 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9218244700697567,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002187664093281412",
+            "extra": "mean: 520.3388840000059 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9350575544540778,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013363187232501251",
+            "extra": "mean: 1.0694528857999956 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9112549575297313,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003662822845440802",
+            "extra": "mean: 1.0973877198000026 sec\nrounds: 5"
           }
         ]
       }
