@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol, SpeculativeResult
 
 from .bucket import (
-    calculate_admittable,
     calculate_available,
     declared_statuses,
     force_consume,
@@ -4725,15 +4724,6 @@ class RateLimiter:
         written to since reports the balance the next ``acquire()`` will
         restore, per shard, rather than the burnt one still on disk.
 
-        **Past capacity.** ``available`` is capped at the capacity in force,
-        but ``acquire()`` can admit more than that in a burst: the fast path
-        debits the stored balance without crediting refill, so refill that
-        accrued while the bucket sat full is spent once that balance runs out.
-        Each status's ``admittable`` (``Availability.admittable``) estimates
-        how many single units ``acquire()`` admits back to back, without the
-        cap. On 300 per 4 hours, 45 idle minutes after 10 uses read 300
-        available and about 346 admittable.
-
         Cost: 1 GSI3 query (KEYS_ONLY) + 1 ``BatchGetItem``, plus config
         resolution (free on a cache hit), regardless of limit count or shard
         count. A limit carrying a ``reset_schedule`` adds one backwards cron
@@ -4780,9 +4770,6 @@ class RateLimiter:
         # One GSI3 pass discovers every shard of every resource for this
         # entity (GHSA-76rv); shard 0 alone holds at most capacity // N.
         totals: dict[str, int] = {}
-        # Per limit name, the sum over shards of what `acquire()` would admit
-        # back to back (`LimitStatus.admittable`), which can exceed capacity.
-        admittable: dict[str, int] = {}
         # The latest live duration-window end per limit name (ADR-139). The
         # rollover fan-out keeps every shard on one window, so there is one
         # honest `resets_at_ms` — but shards can still be staggered: by
@@ -4809,15 +4796,8 @@ class RateLimiter:
             )
             name = bucket.limit_name
             limit_for_bucket = resolved_by_name.get(name)
-            balance = self._readable_balance(bucket, limit_for_bucket, now_ms)
-            totals[name] = totals.get(name, 0) + balance
-            # Unclamped: refill accrued while a shard sat full is still spent
-            # once the fast path has used its stored balance. A quota does not
-            # refill between resets, so its readable balance is the answer.
-            admittable[name] = admittable.get(name, 0) + (
-                balance
-                if limit_for_bucket is None or limit_for_bucket.is_quota
-                else calculate_admittable(bucket, now_ms)
+            totals[name] = totals.get(name, 0) + self._readable_balance(
+                bucket, limit_for_bucket, now_ms
             )
             if (
                 bucket.topped_up_milli
@@ -4903,7 +4883,6 @@ class RateLimiter:
                     exceeded=exceeded,
                     retry_after_seconds=wait,
                     resets_at_ms=resets_at_ms,
-                    admittable=max(available, admittable.get(limit.name, available)),
                 )
             )
 

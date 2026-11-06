@@ -1425,15 +1425,6 @@ quota immediately. A **session** quota (ADR-139) reports the wait to, and `reset
 **latest** live window end across shards — `max` is the conservative "whole quota back" instant
 when shards are staggered — and `None` when no shard has a live window.
 
-**`admittable` is the uncapped count.** `available` is `min(total, ceiling)`, but the fast path
-debits the stored `tk` and leaves `rf` alone, so refill accrued while a shard sat full is still
-credited by the next materializing pass. A burst can therefore admit up to stored `tk` plus the
-clamped refill since `rf`, nearly 2× capacity after a long idle. `LimitStatus.admittable` /
-`Availability.admittable` (`bucket.calculate_admittable`, summed per shard, no entity clamp)
-estimates that count in single units so a dashboard can count down past capacity. Equal to the
-readable balance for a quota, and for a shard whose `vu` has passed (every fast-path write fails,
-the slow path clamps first). `None` on statuses inside `RateLimitExceeded`.
-
 Non-consuming and write-free, and **not** a pre-flight gate for `acquire()`: check-then-acquire
 is TOCTOU and costs an extra read, where `acquire()` answers the same question in 1 WCU (0 RCU +
 1 WCU on a fast rejection too) via `RateLimitExceeded.retry_after_seconds`. It is for *display*.

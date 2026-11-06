@@ -428,55 +428,6 @@ def calculate_available(
     return refill.new_tokens_milli // 1000
 
 
-def calculate_admittable(
-    state: BucketState,
-    now_ms: int,
-) -> int:
-    """
-    Estimate how many single units this shard admits back to back right now.
-
-    Usually :func:`calculate_available`, but it can be higher. The speculative
-    fast path debits the stored balance with a plain ``ADD`` and leaves
-    ``rf`` where it was, so refill that accrued while the bucket sat full is
-    not discarded: once the stored balance runs out, the slow path credits
-    every millisecond since ``rf``, capped at the ceiling. A shard storing
-    290 of 300 whose ``rf`` is 45 minutes old at 300 per 4 hours (56 tokens
-    accrued) reads as 300 available yet admits 290 on the fast path and then
-    56 on the slow path: 346.
-
-    That happens only while the fast path is open. When the item's ``vu`` has
-    passed, every fast-path write fails and the first acquire materializes
-    the bucket with the clamp, so the answer is the available balance. A
-    shard holding less than one unit cannot take a fast-path debit either.
-
-    An estimate, in single units: a request larger than one unit needs that
-    much on the shard it lands on, and an aggregator refill landing during
-    the burst materializes the bucket early, either of which can admit fewer.
-
-    Args:
-        state: Current bucket state, read off the item
-        now_ms: Current timestamp in epoch milliseconds
-
-    Returns:
-        Units admittable before a rejection (never below the available balance)
-    """
-    available = calculate_available(state, now_ms)
-    fast_path_closed = state.stored_vu_ms is not None and state.stored_vu_ms <= now_ms
-    if fast_path_closed or state.tokens_milli < 1000:
-        return available
-    # What the fast path spends before falling back: whole units only.
-    fast_units = state.tokens_milli // 1000
-    leftover = refill_bucket(
-        tokens_milli=state.tokens_milli - fast_units * 1000,
-        last_refill_ms=state.last_refill_ms,
-        now_ms=now_ms,
-        capacity_milli=state.ceiling_milli(now_ms),
-        refill_amount_milli=state.effective_refill_amount_milli(now_ms),
-        refill_period_ms=state.effective_refill_period_ms(now_ms),
-    )
-    return max(available, fast_units + leftover.new_tokens_milli // 1000)
-
-
 def calculate_time_until_available(
     state: BucketState,
     needed: int,

@@ -1096,21 +1096,6 @@ class LimitStatus:
     request was tried on; inside ``Availability`` it is the latest live window
     end across the entity's shards."""
 
-    admittable: int | None = None
-    """How many single units ``acquire()`` is estimated to admit back to back
-    from now before rejecting. Set by ``check_availability`` only; ``None``
-    inside ``RateLimitExceeded``.
-
-    ``available`` never exceeds the limit's capacity, but this can. The
-    speculative fast path debits the stored balance without crediting the
-    refill accrued since the bucket's last refill timestamp, so refill that
-    accrued while the bucket sat full is still spent later, once that stored
-    balance runs out. After 45 idle minutes on 300 per 4 hours (56 tokens
-    accrued) ``available`` reads 300 while about 346 are admitted, and this
-    reads 346. Equal to ``available`` for a quota, which never refills
-    between resets. An estimate: an aggregator refill landing mid-burst, or
-    requests larger than one unit, can admit fewer."""
-
     @property
     def deficit(self) -> int:
         """How many tokens short we are (0 if not exceeded)."""
@@ -1186,20 +1171,6 @@ class Availability:
     def available(self) -> dict[str, int]:
         """limit_name -> currently available tokens (negative if in debt)."""
         return {status.limit_name: status.available for status in self.statuses}
-
-    @property
-    def admittable(self) -> dict[str, int]:
-        """limit_name -> units ``acquire()`` is estimated to admit back to back.
-
-        Can exceed capacity, unlike :attr:`available`; see
-        :attr:`LimitStatus.admittable`.
-        """
-        return {
-            status.limit_name: (
-                status.admittable if status.admittable is not None else status.available
-            )
-            for status in self.statuses
-        }
 
     @property
     def needed(self) -> dict[str, int]:
