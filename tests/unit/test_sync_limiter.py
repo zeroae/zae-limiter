@@ -2320,6 +2320,98 @@ class TestAvailabilityAcrossShards:
         assert check.retry_after_seconds > 0
 
 
+class TestAdmittablePastCapacity:
+    """``LimitStatus.admittable``: what ``acquire()`` admits, uncapped.
+
+    The fast path debits the stored balance and leaves ``rf`` alone, so refill
+    that accrued while the bucket sat full is spent once that balance runs out
+    (the slow path credits everything since ``rf``, capped at the ceiling).
+    ``available`` is capped at capacity and stays pinned there; ``admittable``
+    counts down with each use. Every expected count here is checked against a
+    real burst of ``acquire()`` calls, not just against the formula.
+    """
+
+    LIMITS = [Limit.custom("rpm", capacity=300, refill_amount=300, refill_period_seconds=14400)]
+
+    @staticmethod
+    def _clock(sync_limiter):
+        repo = sync_limiter._repository
+        clock = {"now": repo._now_ms()}
+        repo._now_ms = lambda: clock["now"]
+        return clock
+
+    @staticmethod
+    def _use(sync_limiter, entity_id, times):
+        for _ in range(times):
+            with sync_limiter.acquire(entity_id, "gpt-4", consume={"rpm": 1}):
+                pass
+
+    @staticmethod
+    def _burst(sync_limiter, entity_id):
+        admitted = 0
+        while admitted < 2000:
+            try:
+                with sync_limiter.acquire(entity_id, "gpt-4", consume={"rpm": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                break
+        return admitted
+
+    def test_counts_down_while_available_stays_pinned(self, sync_limiter):
+        """10 uses, 45 idle minutes (56 tokens accrued), then 5 more uses."""
+        clock = self._clock(sync_limiter)
+        sync_limiter._repository.set_limits("user-1", self.LIMITS, resource="gpt-4")
+        self._use(sync_limiter, "user-1", 10)
+        clock["now"] += 45 * 60000
+        check = sync_limiter.check_availability("user-1", "gpt-4")
+        assert check.available == {"rpm": 300}
+        assert check.admittable == {"rpm": 346}
+        self._use(sync_limiter, "user-1", 5)
+        check = sync_limiter.check_availability("user-1", "gpt-4")
+        assert check.available == {"rpm": 300}
+        assert check.status("rpm").admittable == 341
+        assert self._burst(sync_limiter, "user-1") == 341
+        check = sync_limiter.check_availability("user-1", "gpt-4")
+        assert check.available == {"rpm": 0}
+        assert check.admittable == {"rpm": 0}
+
+    def test_long_idle_bucket_admits_up_to_twice_capacity(self, sync_limiter):
+        clock = self._clock(sync_limiter)
+        sync_limiter._repository.set_limits("user-1", self.LIMITS, resource="gpt-4")
+        self._use(sync_limiter, "user-1", 1)
+        clock["now"] += 24 * 3600000
+        check = sync_limiter.check_availability("user-1", "gpt-4")
+        assert check.available == {"rpm": 300}
+        assert check.admittable == {"rpm": 599}
+        assert self._burst(sync_limiter, "user-1") == 599
+
+    def test_equals_available_once_the_fast_path_is_closed(self, sync_limiter):
+        """A limit change stamps ``vu = 0``: the next acquire clamps first."""
+        clock = self._clock(sync_limiter)
+        sync_limiter._repository.set_limits("user-1", self.LIMITS, resource="gpt-4")
+        self._use(sync_limiter, "user-1", 10)
+        clock["now"] += 45 * 60000
+        sync_limiter._repository.set_limits("user-1", self.LIMITS, resource="gpt-4")
+        check = sync_limiter.check_availability("user-1", "gpt-4")
+        assert check.admittable == check.available == {"rpm": 300}
+        assert self._burst(sync_limiter, "user-1") == 300
+
+    def test_equals_available_for_a_quota(self, sync_limiter):
+        self._clock(sync_limiter)
+        quota = [Limit.quota("rpd", 10, cron="0 0 * * *")]
+        sync_limiter._repository.set_limits("user-1", quota, resource="gpt-4")
+        for _ in range(3):
+            with sync_limiter.acquire("user-1", "gpt-4", consume={"rpd": 1}):
+                pass
+        check = sync_limiter.check_availability("user-1", "gpt-4")
+        assert check.admittable == check.available == {"rpd": 7}
+
+    def test_fresh_entity_reports_capacity(self, sync_limiter):
+        check = sync_limiter.check_availability("user-1", "gpt-4", limits=self.LIMITS)
+        assert check.admittable == {"rpm": 300}
+        assert check.status("rpm").admittable == 300
+
+
 class TestRateLimitExceededException:
     """Tests for RateLimitExceeded exception."""
 

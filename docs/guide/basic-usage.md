@@ -199,6 +199,29 @@ are thin wrappers over this method.
 The `needed` argument is optional — omit it to ask only about current
 availability, or pass `{"tpm": 1}` for "when may I spend one more token".
 
+#### How far past the limit a user can go
+
+`available` never reads above the limit's capacity, but in a burst `acquire()`
+can admit more than that. The fast path takes a request from the stored
+balance and does not add the refill earned since the last refill, so tokens that
+refilled while the bucket was already full are not discarded. They are spent
+once the stored balance runs out. On a limit of 300 per 4 hours, a user who made
+10 requests and came back 45 minutes later sees `available` pinned at 300 for
+their next ~46 requests while about 346 are actually admitted.
+
+`admittable` reports that uncapped count, and counts down with every request:
+
+```python
+check = await limiter.check_availability(entity_id="user-1", resource="gpt-4")
+rpm = check.status("rpm")
+print(f"{rpm.available} of {rpm.limit.capacity} available")  # 300 of 300
+print(f"{rpm.admittable} more requests before limiting")  # 346
+```
+
+It is an estimate in single units: requests larger than one unit, or an
+aggregator refill landing mid-burst, can admit fewer. A quota never refills
+between resets, so its `admittable` equals `available`.
+
 !!! warning "This is for display, not for gating"
     Checking here and then calling `acquire()` is a time-of-check/time-of-use
     race, and it costs an extra read. `acquire()` already answers "may I
