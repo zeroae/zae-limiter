@@ -3109,6 +3109,83 @@ class TestAvailabilityAcrossShards:
         assert check.retry_after_seconds > 0
 
 
+class TestRefillPastCapacityOverAdmits:
+    """Refill accrued while a bucket sat full is spent later (issue #808).
+
+    A strict token bucket discards refill past ``capacity``. The speculative
+    fast path debits the stored balance with a plain ``ADD`` and leaves ``rf``
+    where it was, so once that balance runs out the slow path credits every
+    millisecond since ``rf``, capped at the ceiling, including refill that
+    accrued while the bucket was already full. A burst therefore admits the
+    stored balance **plus** up to a full ceiling of stale refill: nearly twice
+    the configured capacity after a long idle period.
+
+    The two ``xfail`` tests reproduce it; the control shows the slow path alone
+    (``speculative_writes=False``) admits exactly what the limit allows. The
+    clock is frozen during each burst, so no refill accrues inside it.
+    """
+
+    LIMITS = [Limit.custom("rpm", capacity=300, refill_amount=300, refill_period_seconds=14_400)]
+
+    @staticmethod
+    def _clock(limiter):
+        repo = limiter._repository
+        clock = {"now": repo._now_ms()}
+        repo._now_ms = lambda: clock["now"]
+        return clock
+
+    @staticmethod
+    async def _use(limiter, entity_id, times):
+        for _ in range(times):
+            async with limiter.acquire(entity_id, "gpt-4", consume={"rpm": 1}):
+                pass
+
+    @staticmethod
+    async def _burst(limiter, entity_id):
+        admitted = 0
+        while admitted < 2_000:
+            try:
+                async with limiter.acquire(entity_id, "gpt-4", consume={"rpm": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                break
+        return admitted
+
+    @pytest.mark.xfail(strict=True, reason="#808: fast path spends refill past capacity")
+    async def test_burst_after_partial_use_admits_at_most_capacity(self, limiter):
+        """300 per 4h: 10 uses, 45 idle minutes (56 accrued, bucket full again)."""
+        clock = self._clock(limiter)
+        await limiter._repository.set_limits("user-1", self.LIMITS, resource="gpt-4")
+        await self._use(limiter, "user-1", 10)
+        clock["now"] += 45 * 60_000
+
+        assert await limiter.available("user-1", "gpt-4") == {"rpm": 300}
+        # Admits 346: the 290 stored, then 56 of refill credited from the old rf.
+        assert await self._burst(limiter, "user-1") == 300
+
+    @pytest.mark.xfail(strict=True, reason="#808: fast path spends refill past capacity")
+    async def test_burst_after_long_idle_admits_at_most_capacity(self, limiter):
+        """300 per 4h: one use, then a day idle."""
+        clock = self._clock(limiter)
+        await limiter._repository.set_limits("user-1", self.LIMITS, resource="gpt-4")
+        await self._use(limiter, "user-1", 1)
+        clock["now"] += 24 * 3_600_000
+
+        assert await limiter.available("user-1", "gpt-4") == {"rpm": 300}
+        # Admits 599: the 299 stored, then a full 300 of stale refill.
+        assert await self._burst(limiter, "user-1") == 300
+
+    async def test_slow_path_alone_admits_capacity(self, limiter):
+        """Control: with the fast path off, every pass clamps and moves ``rf``."""
+        slow = RateLimiter(repository=limiter._repository, speculative_writes=False)
+        clock = self._clock(limiter)
+        await limiter._repository.set_limits("user-1", self.LIMITS, resource="gpt-4")
+        await self._use(slow, "user-1", 1)
+        clock["now"] += 24 * 3_600_000
+
+        assert await self._burst(slow, "user-1") == 300
+
+
 class TestRateLimitExceededException:
     """Tests for RateLimitExceeded exception."""
 
