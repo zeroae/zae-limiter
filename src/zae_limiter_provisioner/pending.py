@@ -56,6 +56,8 @@ from typing import Any
 
 from zae_limiter.schema import pk_system, sk_provisioner
 
+from .workers import WORKERS
+
 logger = logging.getLogger(__name__)
 
 PENDING_SK_PREFIX = f"{sk_provisioner()}#PENDING#"
@@ -63,9 +65,8 @@ PENDING_SK_PREFIX = f"{sk_provisioner()}#PENDING#"
 #: The fan-outs a level can owe, in the order the handler runs them.
 KINDS = ("disabled", "cascade", "soft", "sync")
 
-# Concurrent single-item writes. Below botocore's default connection pool of
-# 10, like `applier._READ_WORKERS`.
-_WRITE_WORKERS = 8
+# Concurrent single-item writes (`workers.WORKERS`).
+_WRITE_WORKERS = WORKERS
 
 #: The longest any Lambda invocation can run (AWS's hard limit, 15 minutes):
 #: the lease when an apply cannot tell its own deadline.

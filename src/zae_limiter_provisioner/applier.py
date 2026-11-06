@@ -53,6 +53,7 @@ from zae_limiter.version import (
 
 from .differ import Change
 from .manifest import entries_from_manifest
+from .workers import WORKERS
 
 try:
     # The provisioner zip carries no full `zae_limiter/__init__.py`, so the
@@ -340,9 +341,10 @@ def _require_readers(
     raise last_error
 
 
-# Concurrent `GetItem`s for the pre-read in `drop_unchanged`. Below botocore's
-# default connection pool of 10, so the threads never wait on a connection.
-_READ_WORKERS = 8
+# Concurrent `GetItem`s for the pre-read in `drop_unchanged`, and concurrent
+# config writes in `apply_changes` (`workers.WORKERS`).
+_READ_WORKERS = WORKERS
+_WRITE_WORKERS = WORKERS
 
 
 def drop_unchanged(
@@ -476,25 +478,47 @@ def apply_changes(
     if client is None:
         client = boto3.client("dynamodb")
 
-    for change in changes:
+    def _write(change: Change) -> tuple[dict[str, Any], dict[str, Any]] | Exception | None:
+        # The write's own ALL_OLD image says what the level held, at no
+        # extra read: only a level whose policy, `disabled` or limits
+        # actually changed has its buckets touched (ADR-146, ADR-125,
+        # #481), so a routine apply writes no more.
         try:
-            # The write's own ALL_OLD image says what the level held, at no
-            # extra read: only a level whose policy, `disabled` or limits
-            # actually changed has its buckets touched (ADR-146, ADR-125,
-            # #481), so a routine apply writes no more.
             if change.action == "delete":
-                old = _apply_delete(client, table_name, namespace_id, change)
-                _note_changes(result, change, old, {})
-                _note_soft_change(result, change, old)
+                return _apply_delete(client, table_name, namespace_id, change), {}
+            if change.action in ("create", "update"):
+                return _apply_set(client, table_name, namespace_id, change)
+            return None
+        except Exception as e:
+            return e
+
+    # Every change writes its own config item, and nothing reads them back
+    # until every write has returned (the fan-outs run after), so the writes
+    # are independent and go out `_WRITE_WORKERS` at a time. The results are
+    # recorded in change order, as a serial loop recorded them.
+    if len(changes) == 1:
+        outcomes = [_write(changes[0])]
+    else:
+        with ThreadPoolExecutor(max_workers=min(_WRITE_WORKERS, len(changes))) as pool:
+            outcomes = list(pool.map(_write, changes))
+
+    for change, outcome in zip(changes, outcomes, strict=True):
+        if outcome is None:
+            continue
+        # A failed write, or a failure reading what it changed, is one error for
+        # this change; the rest of the apply carries on, as a serial loop did.
+        try:
+            if isinstance(outcome, Exception):
+                raise outcome
+            old, new = outcome
+            _note_changes(result, change, old, new)
+            _note_soft_change(result, change, old)
+            if change.action == "delete":
                 result.deleted += 1
-            elif change.action in ("create", "update"):
-                old, new = _apply_set(client, table_name, namespace_id, change)
-                _note_changes(result, change, old, new)
-                _note_soft_change(result, change, old)
-                if change.action == "create":
-                    result.created += 1
-                else:
-                    result.updated += 1
+            elif change.action == "create":
+                result.created += 1
+            else:
+                result.updated += 1
         except Exception as e:
             logger.warning("Failed to %s %s %s: %s", change.action, change.level, change.target, e)
             result.errors.append(f"{change.action} {change.level} {change.target}: {e}")

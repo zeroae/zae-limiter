@@ -801,8 +801,8 @@ costs one entry. Two consequences matter in operation:
 - Each bucket fan-out an apply owes is recorded before its config is written, run from the
   table's live config, and removed once it lands. An interrupted or failed apply leaves only the
   unfinished ones. A later apply retries them: at once for a fan-out that failed, and for an
-  interrupted apply only after the provisioner Lambda's timeout plus a minute, when that apply is
-  certainly gone. So even a large `--full` apply cut short by the Lambda timeout resumes where it
+  interrupted apply only after the provisioner Lambda's timeout plus a minute (about 16 minutes
+  with the 900-second timeout), when that apply is certainly gone. So even a large `--full` apply cut short by the Lambda timeout resumes where it
   stopped: a `--full` / `FullApply` run that finds work an interrupted full apply left retries
   that (plus whatever the manifest changed) rather than every entry, and reports `resumed`. Any
   other unfinished fan-out never stops a full apply. `plan` and `diff` report how many are
@@ -881,7 +881,12 @@ This approach lets you manage limits alongside other infrastructure in CloudForm
 
     A successful stack update is therefore not proof that every bucket was reached. Check
     `errors` in the response data, or the `{stack}-limits-provisioner` log group, which records
-    the same list. Every write is idempotent, and a failed fan-out is retried by the next
+    the same list. CloudFormation caps a custom resource's response at 4096 bytes, so the
+    response data carries counts (`created`, `updated`, `deleted`, `unchanged`, `changed`,
+    `pending`) and as many `errors` as fit, with `errors_omitted` counting the rest; the log
+    group's `ZAEL_PROVISIONER_CFN_RESULT` line holds the full result as JSON, every change and
+    error included.
+    Every write is idempotent, and a failed fan-out is retried by the next
     update; since an unchanged stack update never reaches the resource, add or toggle
     `FullApply` to run one. The `#PROVISIONER` record is written on both outcomes, so it always describes the
     config that is actually in the table.
@@ -900,6 +905,20 @@ The provisioner is a Lambda function (`{stack}-limits-provisioner`) that:
 5. **Updates** the `#PROVISIONER` record with the new managed set and a SHA-256 hash of the applied manifest
 
 The provisioner uses the same DynamoDB config records (system `#CONFIG`, resource `#CONFIG`, entity `#CONFIG#{resource}`) as the imperative API, so limits set declaratively are immediately visible to `acquire()` calls.
+
+The function runs with 2048 MB of memory and a 900-second (15-minute, Lambda's maximum) timeout,
+sized for initial applies of manifests with thousands of limits. Stacks deployed before v0.17.1
+run it at 256 MB / 300 seconds until `zae-limiter upgrade` applies the current template;
+`deploy` on an existing stack does not change them.
+
+!!! note "Long applies over NAT or a proxy"
+    `limits plan`, `apply` and `diff` invoke the provisioner synchronously and wait for its
+    answer, up to the function's timeout plus 30 seconds. A NAT gateway or proxy that drops
+    connections idle for less than that (an AWS NAT gateway drops them after 350 seconds) can
+    lose the response of a long apply, even though the apply itself finishes. The CLI then
+    reports that it got no answer; run `limits diff` to see what was applied. Run large applies
+    from a host without such a hop, or with the operating system's TCP keepalive interval below
+    the idle timeout.
 
 ### Imperative vs Declarative
 

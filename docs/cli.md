@@ -341,7 +341,8 @@ when no entry changed:
 
 - one whose fan-out failed is retried by the very next apply;
 - one an interrupted apply left is retried once that apply is certainly gone: after the
-  provisioner Lambda's timeout plus a minute. Until then a new apply leaves it alone, so it can
+  provisioner Lambda's timeout plus a minute (about 16 minutes with the 900-second timeout).
+  Until then a new apply leaves it alone, so it can
   never finish, or drop, work a still-running apply is doing.
 
 An interrupted `--full` apply resumes where it stopped instead of starting again: the next
@@ -400,6 +401,7 @@ runs the full apply; while it stays set, every update is a full one.
 | `--namespace` | `-N` | Namespace (default: `"default"`) |
 | `--quiet` | `-q` | Print only the summary, not a line per changed entry (`plan`, `apply`, `diff`) |
 | `--full` | | Rewrite and fan out every declared entry, not only changed ones (`apply`); emit `FullApply: true` (`cfn-template`) |
+| `--debug` | | Ask the provisioner for timing metrics and print them to stderr as JSON (`plan`, `apply`, `diff`); emit `Debug: true` (`cfn-template`) |
 
 ### Partial Failures
 
@@ -421,6 +423,58 @@ a Lambda timeout by the first apply after that Lambda's timeout plus a minute, e
 manifest has not changed (unchanged entries are otherwise skipped). Two applies running at once
 cannot erase or take over each other's pending work: when both owe the same fan-out, it stays pending until each has finished its own. Right after a timeout, `limits apply` reports the fan-outs the timed-out run still holds with the same "No config changes; N bucket fan-out(s) …" line, not "up-to-date". The `#PROVISIONER` record is
 written either way, so it always describes the config that is actually in the table.
+
+### Large Manifests and Debug Metrics
+
+On a first apply every entity entry is new, so every one owes a bucket fan-out: about nine
+DynamoDB calls per entry, seven of which depend on each other. The provisioner reads and writes
+the config items eight at a time and runs the fan-outs eight at a time, in the same order as
+always (every `disabled` fan-out before any `cascade` one, and so on; resources before entities
+within each), all on one DynamoDB client. Set `ZAEL_PROVISIONER_WORKERS` (1-64) on the
+`{name}-limits-provisioner` function to change the eight: it sets every one of those pools, so
+a higher value also spends more of the table's write capacity at once.
+
+The template runs the function at 2048 MB, which buys it a full vCPU (Lambda scales CPU with
+memory), and a 900-second timeout. A stack deployed before v0.17.1 runs it at 256 MB / 300
+seconds until `zae-limiter upgrade` applies the current template. `ZAEL_PROVISIONER_WORKERS` is
+set outside the manifest (`aws lambda update-function-configuration --environment`, keeping
+`TABLE_NAME`); a later stack update that touches the function puts the template's environment
+back.
+
+To see where an apply spends its time, pass `--debug`:
+
+```bash
+zae-limiter limits apply -n my-app -f limits.yaml --debug 2> apply-metrics.json
+```
+
+The report is printed to stderr as JSON. Warnings and errors go to stderr too, so the file holds
+only the report when the run prints nothing else there.
+
+The provisioner then reports, per invocation:
+
+| Field | What it measures |
+|-------|------------------|
+| `phases_ms` | Wall time of each step: `plan` (the pre-read), `write_ahead`, `config_writes`, `fanouts`, `record_state`, ... |
+| `dynamodb_calls` | Per operation: count, total and p50 / p95 / p99 / max latency, botocore retries, error codes (throttling shows here) |
+| `fanouts` | Per fan-out kind and level (`sync:entity`, ...): count and latency |
+| `counts` | Entries declared and changed (by action and level), fan-outs owed, worker count |
+| `memory_limit_mb`, `cold_start`, `clients_created` | The function's size and state |
+
+The metrics carry no entity ids, resource names or limit values, only counts, levels, operation
+names and timings. They are printed to stderr and also logged to the function's CloudWatch log as
+one `ZAEL_PROVISIONER_METRICS {json}` line. A run cut off by the function timeout returns
+nothing, so while debug is on the function also logs a `ZAEL_PROVISIONER_METRICS_PARTIAL` snapshot
+every 30 seconds; the last one shows how far it got (`current_phase`).
+
+To turn metrics on without the CLI flag, for every invocation including CloudFormation ones, set
+`ZAEL_PROVISIONER_DEBUG=1` on the function, or generate the template with
+`limits cfn-template --debug` (a `Debug: true` property). Then:
+
+```
+fields @timestamp, @message
+| filter @message like /ZAEL_PROVISIONER_METRICS/
+| sort @timestamp desc
+```
 
 !!! note "Provisioner Lambda"
     The `plan`, `apply`, and `diff` subcommands invoke the `{name}-limits-provisioner` Lambda function. This function must be deployed as part of the main stack before using these commands. It is deployed by default; `zae-limiter deploy --no-provisioner` (or `--no-iam`, which leaves no role for it) skips it.
