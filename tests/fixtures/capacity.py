@@ -15,6 +15,8 @@ class CapacityCounter:
     Attributes:
         get_item: Number of GetItem calls (1 RCU each)
         batch_get_item: List of item counts per BatchGetItem call (issue #133)
+        batch_get_consistent: Whether each BatchGetItem call was strongly
+            consistent (1 RCU per item instead of 0.5), parallel to batch_get_item
         query: Number of Query calls (RCUs depend on data returned)
         put_item: Number of PutItem calls (1 WCU each)
         update_item: Number of UpdateItem calls (1 WCU each, issue #313)
@@ -25,6 +27,7 @@ class CapacityCounter:
 
     get_item: int = 0
     batch_get_item: list[int] = field(default_factory=list)
+    batch_get_consistent: list[bool] = field(default_factory=list)
     query: int = 0
     put_item: int = 0
     update_item: int = 0
@@ -56,6 +59,7 @@ class CapacityCounter:
         """Reset all counters to zero."""
         self.get_item = 0
         self.batch_get_item.clear()
+        self.batch_get_consistent.clear()
         self.query = 0
         self.put_item = 0
         self.update_item = 0
@@ -101,6 +105,9 @@ def _counting_client(counter: CapacityCounter, limiter: Any) -> Generator[None, 
         request_items = kwargs.get("RequestItems", {})
         total_items = sum(len(items.get("Keys", [])) for items in request_items.values())
         counter.batch_get_item.append(total_items)
+        counter.batch_get_consistent.append(
+            all(items.get("ConsistentRead", False) for items in request_items.values())
+        )
         return original_batch_get(*args, **kwargs)
 
     def counting_query(*args: Any, **kwargs: Any) -> Any:

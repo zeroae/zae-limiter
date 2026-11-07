@@ -42,6 +42,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
     BUCKET_FIELD_WS,
+    GSI3_NAME,
     bucket_attr,
     pk_bucket,
     sk_state,
@@ -2853,6 +2854,9 @@ class TestRateLimiterCheckAvailability:
 
         repo = limiter._repository
         with (
+            patch.object(
+                repo, "get_bucket_shards", wraps=repo.get_bucket_shards
+            ) as get_bucket_shards,
             patch.object(repo, "get_buckets", wraps=repo.get_buckets) as get_buckets,
             patch.object(repo, "get_bucket", wraps=repo.get_bucket) as get_bucket,
         ):
@@ -2863,7 +2867,9 @@ class TestRateLimiterCheckAvailability:
                 limits=limits,
             )
 
-        assert get_buckets.call_count == 1
+        # One read of the resource's shards (#791), not the entity-wide scan
+        get_bucket_shards.assert_called_once_with("key-1", "gpt-4")
+        get_buckets.assert_not_called()
         # ADR-114 puts every limit in one composite item, so the per-limit
         # GetItem loop the two older methods ran was a pure N+1.
         get_bucket.assert_not_called()
@@ -3107,6 +3113,90 @@ class TestAvailabilityAcrossShards:
         # time — which is the very condition this test exists to exercise.
         assert check.available == {"rpm": 0}
         assert check.retry_after_seconds > 0
+
+
+class TestCheckAvailabilitySeesAJustCreatedBucket:
+    """A bucket GSI3 has not indexed yet is not reported as full capacity (#791).
+
+    ``check_availability()`` used to discover buckets only through GSI3, which
+    DynamoDB updates eventually. Right after an ``acquire()`` created the bucket
+    the index could still be empty, and "no bucket" read as full capacity with
+    no wait (seen on real AWS). moto indexes synchronously, so the lag is
+    simulated by making every GSI3 query return nothing.
+    """
+
+    # One token per hour: refill between the acquire and the read cannot move
+    # the integer balance, so no clock pin is needed.
+    LIMIT = Limit.custom("rpm", 100, refill_amount=1, refill_period_seconds=3600)
+
+    @staticmethod
+    async def _consume(limiter, entity_id, amount):
+        async with limiter.acquire(
+            entity_id=entity_id,
+            resource="gpt-4",
+            limits=[TestCheckAvailabilitySeesAJustCreatedBucket.LIMIT],
+            consume={"rpm": amount},
+        ):
+            pass
+
+    @staticmethod
+    async def _gsi3_lagging(limiter):
+        """Patch the client so every GSI3 query comes back empty."""
+        client = await limiter._repository._get_client()
+        original_query = client.query
+
+        async def _query(**kwargs):
+            if kwargs.get("IndexName") == GSI3_NAME:
+                return {"Items": [], "Count": 0, "ScannedCount": 0}
+            return await original_query(**kwargs)
+
+        return patch.object(client, "query", _query)
+
+    async def test_check_availability_reports_the_consumed_balance(self, limiter):
+        await self._consume(limiter, "lag-1", 20)
+
+        with await self._gsi3_lagging(limiter):
+            check = await limiter.check_availability(
+                entity_id="lag-1", resource="gpt-4", needed={"rpm": 90}, limits=[self.LIMIT]
+            )
+
+        assert check.available == {"rpm": 80}
+        assert check.deficit == {"rpm": 10}
+        assert check.retry_after_seconds > 0
+
+    async def test_available_reports_the_consumed_balance(self, limiter):
+        await self._consume(limiter, "lag-2", 20)
+
+        with await self._gsi3_lagging(limiter):
+            available = await limiter.available("lag-2", "gpt-4", limits=[self.LIMIT])
+
+        assert available == {"rpm": 80}
+
+    async def test_time_until_available_waits_for_the_deficit(self, limiter):
+        await self._consume(limiter, "lag-3", 20)
+
+        with await self._gsi3_lagging(limiter):
+            wait = await limiter.time_until_available(
+                "lag-3", "gpt-4", needed={"rpm": 90}, limits=[self.LIMIT]
+            )
+
+        # 10 tokens short at one token per hour
+        assert wait > 3600
+
+    async def test_shard_zero_listed_by_gsi3_is_counted_once(self, limiter):
+        """Reading shard 0 by key beside the index must not double it."""
+        await self._consume(limiter, "lag-4", 20)
+
+        assert await limiter.available("lag-4", "gpt-4", limits=[self.LIMIT]) == {"rpm": 80}
+
+    async def test_a_backend_without_get_bucket_shards_falls_back(self, limiter):
+        """``get_bucket_shards`` is optional: the pre-#791 discovery still works."""
+        await self._consume(limiter, "lag-5", 20)
+
+        with patch.object(type(limiter._repository), "get_bucket_shards", None):
+            available = await limiter.available("lag-5", "gpt-4", limits=[self.LIMIT])
+
+        assert available == {"rpm": 80}
 
 
 class TestRateLimitExceededException:

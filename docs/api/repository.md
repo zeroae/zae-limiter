@@ -202,6 +202,15 @@ Implement this protocol to use a different storage backend (e.g., for testing).
       the setters accept `disabled="bypass"`: test `disabled is True`, never its
       truthiness.
 
+!!! note "New in v0.17.1: `get_bucket_shards` (optional, #791)"
+    `check_availability()`, `available()` and `time_until_available()` read an
+    (entity, resource) through `get_bucket_shards(entity_id, resource)`, which
+    must return a bucket written immediately before the call (the DynamoDB
+    backend reads shard 0 by key beside its eventually consistent GSI3
+    discovery, strongly consistent). It is optional: on a backend without it the
+    limiter falls back to `get_buckets(entity_id)` filtered to the resource, as
+    before, so an existing backend keeps working unchanged.
+
 ::: zae_limiter.repository_protocol.RepositoryProtocol
     options:
       show_root_heading: true
