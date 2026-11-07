@@ -386,11 +386,15 @@ class _ConflictingClient:
     (`TransactionConflict`). moto never does, so this stands in for it.
     """
 
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Any, *, wait_for_peer: bool = False) -> None:
         self._inner = inner
         self._lock = threading.Lock()
         self._in_flight = 0
         self.conflicts = 0
+        # Hold the first transaction until a second arrives, so unserialized
+        # writers overlap by construction rather than by timing.
+        self._wait_for_peer = wait_for_peer
+        self._peer_arrived = threading.Event()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -399,7 +403,11 @@ class _ConflictingClient:
         with self._lock:
             self._in_flight += 1
             overlapping = self._in_flight > 1
+            if overlapping:
+                self._peer_arrived.set()
         try:
+            if self._wait_for_peer and not overlapping:
+                self._peer_arrived.wait(timeout=5)
             time.sleep(0.005)
             if overlapping:
                 with self._lock:
@@ -444,7 +452,7 @@ class TestConcurrentCountedWrites:
         monkeypatch.setattr(applier, "_WRITE_WORKERS", 8)
         monkeypatch.setattr(applier, "_COUNTED_TRANSACTION_LOCK", contextlib.nullcontext())
         monkeypatch.setattr(applier.time, "sleep", lambda _s: None)
-        client = _ConflictingClient(boto3.client("dynamodb"))
+        client = _ConflictingClient(boto3.client("dynamodb"), wait_for_peer=True)
         changes = _entity_creates(40)
 
         apply_changes(
