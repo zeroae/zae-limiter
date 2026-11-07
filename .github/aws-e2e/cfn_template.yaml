@@ -177,16 +177,26 @@ Resources:
             Action: lambda:*
             Resource:
               - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}-*
-          - Sid: TestEventSourceMappings
+          - Sid: CreateTestEventSourceMappings
             Effect: Allow
-            Action:
-              - lambda:CreateEventSourceMapping
-              - lambda:DeleteEventSourceMapping
-              - lambda:UpdateEventSourceMapping
+            Action: lambda:CreateEventSourceMapping
             Resource: '*'
             Condition:
               ArnLike:
                 lambda:FunctionArn: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}-*
+          # A delete or update names the mapping by UUID only, so lambda:FunctionArn is
+          # absent and a FunctionArn condition denies it (first CI run: every aggregator
+          # stack stuck in DELETE_FAILED). CloudFormation tags each mapping with its
+          # stack name; other stacks' mappings live in this account too.
+          - Sid: ChangeTestEventSourceMappings
+            Effect: Allow
+            Action:
+              - lambda:DeleteEventSourceMapping
+              - lambda:UpdateEventSourceMapping
+            Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:event-source-mapping:*
+            Condition:
+              StringLike:
+                aws:ResourceTag/aws:cloudformation:stack-name: !Sub ${ResourcePrefix}-*
           - Sid: EventSourceMappingReadAndTags
             Effect: Allow
             Action:
@@ -196,9 +206,11 @@ Resources:
               - lambda:UntagResource
             Resource:
               - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:event-source-mapping:*
-          - Sid: ListEventSourceMappings
+          - Sid: LambdaList
             Effect: Allow
-            Action: lambda:ListEventSourceMappings
+            Action:
+              - lambda:ListEventSourceMappings
+              - lambda:ListFunctions
             Resource: '*'
           - Sid: TestQueues
             Effect: Allow
