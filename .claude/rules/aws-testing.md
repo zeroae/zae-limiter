@@ -84,3 +84,17 @@ AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter loadtest run \
   --name load-test --region us-east-1 \
   -f locustfiles/max_rps.py --users 10 --duration 60
 ```
+
+## AWS tests in CI (#189)
+
+`.github/workflows/aws-e2e.yml` runs the suite through GitHub OIDC with a role that can write
+only resources named `zci-*` (`.github/aws-e2e/`). Name everything an AWS test creates through
+`tests/fixtures/names.py` — the `unique_name` fixtures or `stack_name()`, `iam_name()`,
+`IAM_NAME_FORMAT`, `PERMISSION_BOUNDARY` — never a hardcoded `PowerUserPB-` or
+`PowerUserAccess`. The defaults keep the SSO profile above working; CI overrides them with
+`ZAEL_E2E_STACK_PREFIX`, `ZAEL_E2E_IAM_NAME_PREFIX` and `ZAEL_E2E_PERMISSION_BOUNDARY`. A
+hardcoded name passes locally and fails in CI with `AccessDenied`.
+
+A new AWS action a test needs goes into the role's policies in
+`.github/aws-e2e/cfn_template.yaml`, scoped to `zci-*`, and the stack is redeployed by an
+administrator (README there).

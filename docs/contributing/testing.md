@@ -241,6 +241,28 @@ pytest tests/e2e/test_localstack.py -v
 pytest tests/e2e/test_aws.py --run-aws -v
 ```
 
+#### Real AWS from CI
+
+The `AWS E2E` workflow (`.github/workflows/aws-e2e.yml`) runs `pytest -m aws --run-aws` with
+short-lived credentials from GitHub OIDC; no access keys are stored. It runs on a manual
+dispatch, on every push to a `release/v*` branch, and on a pull request labelled `aws-e2e`
+(same-repository PRs only; the label is removed when the run ends). Runs are serialized, and
+each one deletes any `zci-*` stack left behind.
+
+The role it assumes can create and delete only resources named `zci-*`, so every AWS test must
+name its stacks and IAM resources through `tests/fixtures/names.py`:
+
+| Variable | Default (SSO profile) | CI |
+|----------|-----------------------|----|
+| `ZAEL_E2E_STACK_PREFIX` | none | `zci-` |
+| `ZAEL_E2E_IAM_NAME_PREFIX` | `PowerUserPB-` | empty |
+| `ZAEL_E2E_PERMISSION_BOUNDARY` | `arn:aws:iam::aws:policy/PowerUserAccess` | the role's test boundary |
+
+A new AWS test that builds a stack name, role name or boundary ARN by hand passes locally and
+fails in CI with `AccessDenied`. Use the `unique_name` fixtures (or `stack_name()`),
+`iam_name()`, `IAM_NAME_FORMAT` and `PERMISSION_BOUNDARY`. The role, its boundary and the
+one-time setup are in `.github/aws-e2e/README.md`.
+
 ### Benchmarks
 
 Performance benchmarks measure operation latency, throughput, and DynamoDB capacity. Benchmarks are essential for detecting performance regressions when optimizing operations like config caching and cascade resolution.
