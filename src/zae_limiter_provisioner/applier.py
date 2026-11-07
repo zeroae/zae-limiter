@@ -7,6 +7,9 @@ Lambda where aiobotocore is not available.
 from __future__ import annotations
 
 import logging
+import random
+import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -32,12 +35,16 @@ from zae_limiter.schema import (
     decode_disabled,
     encode_cascade,
     encode_disabled,
+    gsi3_pk_entity_config,
+    gsi3_sk_entity,
     limit_attr,
     parse_limit_attr,
     pk_entity,
     pk_resource,
     pk_system,
     sk_config,
+    sk_entity_config_resources,
+    sk_resources,
     sk_version,
 )
 from zae_limiter.version import (
@@ -458,6 +465,7 @@ def apply_changes(
     table_name: str,
     namespace_id: str,
     client: Any | None = None,
+    stored: dict[int, dict[str, Any]] | None = None,
 ) -> ApplyResult:
     """Apply a list of changes to DynamoDB.
 
@@ -466,6 +474,9 @@ def apply_changes(
         table_name: DynamoDB table name.
         namespace_id: Opaque namespace ID (e.g., 'a7x3kq').
         client: Optional boto3 DynamoDB client (injected for testing).
+        stored: The live items ``drop_unchanged`` read (``stored_out``), keyed by
+            ``id(change)``. An entity write needs the item it replaces to keep
+            the registry count exact and reads it when it has no entry here.
 
     Returns:
         ApplyResult with counts and any errors.
@@ -484,18 +495,21 @@ def apply_changes(
         # actually changed has its buckets touched (ADR-146, ADR-125,
         # #481), so a routine apply writes no more.
         try:
+            known_old = None if stored is None else stored.get(id(change))
             if change.action == "delete":
-                return _apply_delete(client, table_name, namespace_id, change), {}
+                return _apply_delete(client, table_name, namespace_id, change, known_old), {}
             if change.action in ("create", "update"):
-                return _apply_set(client, table_name, namespace_id, change)
+                return _apply_set(client, table_name, namespace_id, change, known_old)
             return None
         except Exception as e:
             return e
 
     # Every change writes its own config item, and nothing reads them back
     # until every write has returned (the fan-outs run after), so the writes
-    # are independent and go out `_WRITE_WORKERS` at a time. The results are
-    # recorded in change order, as a serial loop recorded them.
+    # go out `_WRITE_WORKERS` at a time. The one shared item, the entity
+    # registry, is updated only by counted transactions, which serialize
+    # themselves (`_counted_transact`). The results are recorded in change
+    # order, as a serial loop recorded them.
     if len(changes) == 1:
         outcomes = [_write(changes[0])]
     else:
@@ -560,8 +574,107 @@ def _build_change_item(namespace_id: str, change: Change) -> tuple[str, str, dic
         entity_id, resource = change.target.split("/", 1)
         extra["entity_id"] = {"S": entity_id}
         extra["resource"] = {"S": resource}
+        # The sparse GSI3 entry `Repository.set_limits` writes, which is what
+        # `list_entities_with_custom_limits` (`entity list --with-custom-limits`)
+        # queries. Its presence also marks the item as counted in
+        # #ENTITY_CONFIG_RESOURCES (`_apply_entity_set`).
+        extra[GSI3_PK] = {"S": gsi3_pk_entity_config(namespace_id, resource)}
+        extra[GSI3_SK] = {"S": gsi3_sk_entity(entity_id)}
         _add_flags(extra, data)
     return pk, sk, _build_limit_item(pk, sk, namespace_id, limits, extra)
+
+
+# Entity config items carry these, the resource registry its `resources` set.
+GSI3_PK = "GSI3PK"
+GSI3_SK = "GSI3SK"
+_REGISTRY_RESOURCES = "resources"
+# A counted write that keeps losing its condition to concurrent writers.
+_COUNTED_WRITE_ATTEMPTS = 3
+
+# Every counted transaction updates the namespace's one `#ENTITY_CONFIG_RESOURCES`
+# item, and DynamoDB cancels concurrent transactions on one item
+# (`TransactionConflict`). An apply's config writes run on a thread pool
+# (`apply_changes`), so its counted transactions take this lock and run one at
+# a time; plain writes, including every update of an item already counted, do
+# not. On AWS, 8 unserialized writers had 684 of 1190 transactions cancelled
+# and 134 of 640 entity creates give up.
+_COUNTED_TRANSACTION_LOCK = threading.Lock()
+# A conflict with another writer (a concurrent apply, or the API), or a
+# throttled transaction (botocore does not retry a cancellation), is retried
+# with full jitter before it counts as a lost condition.
+_CONFLICT_RETRIES = 5
+_CONFLICT_BACKOFF_BASE_S = 0.025
+_CONFLICT_BACKOFF_CAP_S = 0.4
+
+
+def resource_registry_update(namespace_id: str, resource: str, *, add: bool) -> dict[str, Any]:
+    """The `UpdateItem` arguments that add a resource to, or drop it from, ``#RESOURCES``.
+
+    The registry `resource list` reads (`Repository.list_resources_with_defaults`),
+    kept exactly as `set_resource_defaults` / `delete_resource_defaults` keep it.
+    A String Set: adding a member twice or deleting an absent one is a no-op,
+    so neither needs a create-vs-update guard.
+    """
+    key = {"PK": {"S": pk_system(namespace_id)}, "SK": {"S": sk_resources()}}
+    member = {"SS": [resource]}
+    if not add:
+        return {
+            "Key": key,
+            "UpdateExpression": "DELETE #rs :r0",
+            "ExpressionAttributeNames": {"#rs": _REGISTRY_RESOURCES},
+            "ExpressionAttributeValues": {":r0": member},
+        }
+    return {
+        "Key": key,
+        "UpdateExpression": "SET #g4p = if_not_exists(#g4p, :g4p), "
+        "#g4s = if_not_exists(#g4s, :g4s) ADD #rs :r0",
+        "ExpressionAttributeNames": {
+            "#rs": _REGISTRY_RESOURCES,
+            "#g4p": "GSI4PK",
+            "#g4s": "GSI4SK",
+        },
+        "ExpressionAttributeValues": {
+            ":r0": member,
+            ":g4p": {"S": namespace_id},
+            ":g4s": {"S": pk_system(namespace_id)},
+        },
+    }
+
+
+def entity_registry_update(namespace_id: str, resource: str, delta: int) -> dict[str, Any]:
+    """The `UpdateItem` arguments that move a resource's ``#ENTITY_CONFIG_RESOURCES`` count.
+
+    The wide-column ref count `entity list-resources` reads
+    (`Repository.list_resources_with_entity_configs`, which lists counts > 0):
+    one attribute per resource, named by it. The name is only ever an alias
+    value, never expression text, since a resource name may carry `.` or `:`.
+    """
+    return {
+        "Key": {"PK": {"S": pk_system(namespace_id)}, "SK": {"S": sk_entity_config_resources()}},
+        "UpdateExpression": "SET #g4p = if_not_exists(#g4p, :g4p), "
+        "#g4s = if_not_exists(#g4s, :g4s) ADD #r0 :d0",
+        "ExpressionAttributeNames": {"#r0": resource, "#g4p": "GSI4PK", "#g4s": "GSI4SK"},
+        "ExpressionAttributeValues": {
+            ":d0": {"N": str(delta)},
+            ":g4p": {"S": namespace_id},
+            ":g4s": {"S": pk_system(namespace_id)},
+        },
+    }
+
+
+def entity_registry_cleanup(namespace_id: str, resource: str) -> dict[str, Any]:
+    """The `UpdateItem` arguments that drop a resource whose count reached zero.
+
+    Mirrors `Repository._cleanup_entity_config_registry`; conditional, so a
+    concurrent increment keeps the attribute.
+    """
+    return {
+        "Key": {"PK": {"S": pk_system(namespace_id)}, "SK": {"S": sk_entity_config_resources()}},
+        "UpdateExpression": "REMOVE #r0",
+        "ConditionExpression": "#r0 <= :z0",
+        "ExpressionAttributeNames": {"#r0": resource},
+        "ExpressionAttributeValues": {":z0": {"N": "0"}},
+    }
 
 
 def _apply_set(
@@ -569,11 +682,244 @@ def _apply_set(
     table_name: str,
     namespace_id: str,
     change: Change,
+    known_old: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Apply a create or update change (PutItem); return (replaced item or {}, new item)."""
+    """Apply a create or update change (PutItem); return (replaced item or {}, new item).
+
+    Keeps the registries the CLI's list commands read in step, as the
+    `Repository` setters do: a resource level joins ``#RESOURCES``, an entity
+    level is counted in ``#ENTITY_CONFIG_RESOURCES`` (`_apply_entity_set`).
+    """
+    if change.level == "entity":
+        return _apply_entity_set(client, table_name, namespace_id, change, known_old)
     _pk, _sk, item = _build_change_item(namespace_id, change)
+    if change.level == "resource":
+        assert change.target is not None
+        # Registered before the config write: a run that stops in between
+        # lists a resource with no defaults yet, never hides one that has them.
+        client.update_item(
+            TableName=table_name, **resource_registry_update(namespace_id, change.target, add=True)
+        )
     response = client.put_item(TableName=table_name, Item=item, ReturnValues="ALL_OLD")
     return _old_image(response), item
+
+
+def _read_config(client: Any, table_name: str, pk: str, sk: str) -> dict[str, Any]:
+    """The live config item, strongly consistent; {} when absent."""
+    response = client.get_item(
+        TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}}, ConsistentRead=True
+    )
+    item = response.get("Item") if isinstance(response, dict) else None
+    return item if isinstance(item, dict) else {}
+
+
+def _is_retryable_cancellation(error: ClientError) -> bool:
+    """A transaction cancelled by a conflict or a throttle, not by a condition."""
+    if error.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+        return False
+    reasons = {r.get("Code") for r in error.response.get("CancellationReasons", [])}
+    return bool(reasons & {"TransactionConflict", "ThrottlingError"}) and (
+        "ConditionalCheckFailed" not in reasons
+    )
+
+
+def _counted_transact(
+    client: Any,
+    transact_items: list[dict[str, Any]],
+    then: Callable[[], None] | None = None,
+) -> None:
+    """Run a counted transaction: one at a time per apply, conflicts retried with jitter.
+
+    A conflict or throttle still there after `_CONFLICT_RETRIES` is raised,
+    and the caller treats a conflict as a lost condition (`_lost_condition`):
+    re-read, try again. ``then`` runs under the same lock once the
+    transaction lands (the registry tidy after a delete, which writes the same
+    item and would otherwise collide with the apply's next transaction).
+    """
+    with _COUNTED_TRANSACTION_LOCK:
+        for attempt in range(_CONFLICT_RETRIES + 1):
+            try:
+                client.transact_write_items(TransactItems=transact_items)
+                break
+            except ClientError as e:
+                if attempt == _CONFLICT_RETRIES or not _is_retryable_cancellation(e):
+                    raise
+                cap = min(_CONFLICT_BACKOFF_CAP_S, _CONFLICT_BACKOFF_BASE_S * 2**attempt)
+                time.sleep(random.uniform(0, cap))
+        if then is not None:
+            then()
+
+
+def _lost_condition(error: ClientError) -> bool:
+    """A counted write lost to a concurrent one: re-read and try again.
+
+    A plain write whose condition failed, or a transaction cancelled by its
+    first item's condition or by a conflict on either item.
+    """
+    code = error.response.get("Error", {}).get("Code")
+    if code == "ConditionalCheckFailedException":
+        return True
+    if code != "TransactionCanceledException":
+        return False
+    reasons = [r.get("Code") for r in error.response.get("CancellationReasons", [])]
+    return bool(reasons) and (
+        reasons[0] == "ConditionalCheckFailed" or "TransactionConflict" in reasons
+    )
+
+
+def _apply_entity_set(
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    change: Change,
+    known_old: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Write an entity config item and keep its resource's ref count exact.
+
+    **An entity config item is counted in ``#ENTITY_CONFIG_RESOURCES`` exactly
+    when it carries ``GSI3PK``**: every writer that adds one to the count gives
+    the item its GSI3 entry in the same transaction (`Repository.set_limits`,
+    the disable/cascade stubs, and this), and a provisioner predating this
+    wrote neither. So the write that gives an item ``GSI3PK`` takes +1 with it,
+    atomically, under ``attribute_not_exists(GSI3PK)`` — a create, or the
+    first rewrite of such an older item, which is how an apply repairs one.
+    An item already carrying it is replaced under ``attribute_exists(GSI3PK)``
+    with no count.
+
+    ``known_old`` is the item `drop_unchanged` read, when it read one. Without
+    it the conditional ``PutItem`` goes first — the common case, an item
+    already counted, costs what it always did — and only a lost condition
+    reads the item (the transaction returns no old image) and takes the
+    counting path. A lost condition there (a concurrent create or delete)
+    re-reads and tries again.
+    """
+    pk, sk, item = _build_change_item(namespace_id, change)
+    resource = item["resource"]["S"]
+    names = {"#g3": GSI3_PK}
+    old = known_old
+    for _attempt in range(_COUNTED_WRITE_ATTEMPTS):
+        try:
+            if old is None or GSI3_PK in old:
+                response = client.put_item(
+                    TableName=table_name,
+                    Item=item,
+                    ReturnValues="ALL_OLD",
+                    ConditionExpression="attribute_exists(#g3)",
+                    ExpressionAttributeNames=names,
+                )
+                return _old_image(response), item
+            _counted_transact(
+                client,
+                [
+                    {
+                        "Put": {
+                            "TableName": table_name,
+                            "Item": item,
+                            "ConditionExpression": "attribute_not_exists(#g3)",
+                            "ExpressionAttributeNames": names,
+                        }
+                    },
+                    {
+                        "Update": {
+                            "TableName": table_name,
+                            **entity_registry_update(namespace_id, resource, 1),
+                        }
+                    },
+                ],
+            )
+            return old, item
+        except ClientError as e:
+            if not _lost_condition(e):
+                raise
+            old = _read_config(client, table_name, pk, sk)
+    raise RuntimeError(
+        f"entity config {change.target} kept changing under the write; "
+        "nothing was written, re-run the apply"
+    )
+
+
+def _apply_entity_delete(
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    change: Change,
+    known_old: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Delete an entity config item, taking its count with it when it was counted.
+
+    The inverse of `_apply_entity_set`: an item carrying ``GSI3PK`` is deleted
+    with −1 in one transaction, then the resource is dropped from the registry
+    once its count is zero; an item without it (written by an older
+    provisioner, never counted) is deleted alone, and so is an absent one (a
+    no-op). Returns the deleted item.
+
+    Without ``known_old`` the plain conditional delete goes first, and only a
+    lost condition (the item is counted) reads it and takes the transaction.
+    """
+    assert change.target is not None
+    resource = change.target.split("/", 1)[1]
+    pk, sk = config_key(namespace_id, change)
+    key = {"PK": {"S": pk}, "SK": {"S": sk}}
+    names = {"#g3": GSI3_PK}
+    old = known_old
+    for _attempt in range(_COUNTED_WRITE_ATTEMPTS):
+        try:
+            if old is None or GSI3_PK not in old:
+                response = client.delete_item(
+                    TableName=table_name,
+                    Key=key,
+                    ReturnValues="ALL_OLD",
+                    ConditionExpression="attribute_not_exists(#g3)",
+                    ExpressionAttributeNames=names,
+                )
+                return _old_image(response)
+            _counted_transact(
+                client,
+                [
+                    {
+                        "Delete": {
+                            "TableName": table_name,
+                            "Key": key,
+                            "ConditionExpression": "attribute_exists(#g3)",
+                            "ExpressionAttributeNames": names,
+                        }
+                    },
+                    {
+                        "Update": {
+                            "TableName": table_name,
+                            **entity_registry_update(namespace_id, resource, -1),
+                        }
+                    },
+                ],
+                then=lambda: _cleanup_entity_registry(client, table_name, namespace_id, resource),
+            )
+            return old
+        except ClientError as e:
+            if not _lost_condition(e):
+                raise
+            old = _read_config(client, table_name, pk, sk)
+    raise RuntimeError(
+        f"entity config {change.target} kept changing under the delete; "
+        "nothing was deleted, re-run the apply"
+    )
+
+
+def _cleanup_entity_registry(
+    client: Any, table_name: str, namespace_id: str, resource: str
+) -> None:
+    """Drop a resource whose entity count reached zero; best effort.
+
+    A count left at zero is invisible to the list (it shows counts > 0), so a
+    failure here, of any kind, is logged rather than reported against a delete
+    that landed.
+    """
+    try:
+        client.update_item(TableName=table_name, **entity_registry_cleanup(namespace_id, resource))
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            logger.warning("Could not tidy the entity config registry for %s: %s", resource, e)
+    except Exception as e:
+        logger.warning("Could not tidy the entity config registry for %s: %s", resource, e)
 
 
 def _add_flags(extra: dict[str, Any], data: dict[str, Any]) -> None:
@@ -738,10 +1084,25 @@ def _apply_delete(
     table_name: str,
     namespace_id: str,
     change: Change,
+    known_old: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Apply a delete change (DeleteItem); return the deleted item, or {}."""
+    """Apply a delete change (DeleteItem); return the deleted item, or {}.
+
+    Takes the level out of the registries the CLI's list commands read, as
+    `delete_resource_defaults` / `delete_limits` do (`_apply_entity_delete`).
+    """
+    if change.level == "entity":
+        return _apply_entity_delete(client, table_name, namespace_id, change, known_old)
     pk, sk = config_key(namespace_id, change)
     response = client.delete_item(
         TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}}, ReturnValues="ALL_OLD"
     )
+    if change.level == "resource":
+        assert change.target is not None
+        # After the delete: a run that stops in between leaves the resource
+        # listed with no defaults, never its defaults unlisted.
+        client.update_item(
+            TableName=table_name,
+            **resource_registry_update(namespace_id, change.target, add=False),
+        )
     return _old_image(response)

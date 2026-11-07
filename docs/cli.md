@@ -332,6 +332,14 @@ plain apply. `limits apply --full` rewrites every declared entry and pushes its 
 existing buckets again, as every apply did before change-only applies. A change to `soft` alone,
 or to `disabled: bypass` alone, is a change like any other: it is written and fanned out.
 
+An apply also keeps the indexes the list commands read — `resource list`,
+`entity list-resources` and `entity list --with-custom-limits` — exactly as `set-defaults` and
+`set-limits` do. Earlier provisioners did not, so limits applied from a manifest were enforced
+but those commands listed none of them (`get-defaults` and `get-limits -r` always showed them).
+After upgrading the stack (`zae-limiter upgrade`), run `limits apply --full` once to repair
+entries an older provisioner wrote: a plain apply repairs entity entries, but leaves resource
+entries unlisted until they change. The repair never counts an entry twice.
+
 An apply records every bucket fan-out it owes before it writes any config, and removes each one
 as soon as it lands. Every fan-out, an apply's own included, is run from what the table holds
 for that entry at that moment, not from the manifest being applied, so a stale or concurrent
