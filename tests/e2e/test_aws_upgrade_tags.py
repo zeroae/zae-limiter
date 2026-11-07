@@ -22,6 +22,7 @@ import boto3
 import pytest
 from click.testing import CliRunner
 
+from tests.fixtures.names import IAM_NAME_FORMAT, PERMISSION_BOUNDARY
 from tests.fixtures.stack_tags import retag_stack, stack_description, stack_parameters, stack_tags
 from zae_limiter import __version__
 from zae_limiter.cli import cli
@@ -38,11 +39,11 @@ pytestmark = [pytest.mark.aws, pytest.mark.e2e]
 REGION = "us-east-1"
 POWER_USER_FLAGS = [
     "--permission-boundary",
-    "arn:aws:iam::aws:policy/PowerUserAccess",
+    PERMISSION_BOUNDARY,
     "--role-name-format",
-    "PowerUserPB-{}",
+    IAM_NAME_FORMAT,
     "--policy-name-format",
-    "PowerUserPB-{}",
+    IAM_NAME_FORMAT,
 ]
 
 OLD = "0.1.0"
@@ -105,7 +106,7 @@ def test_upgrade_refreshes_stale_version_tags(unique_name):
         assert result.exit_code == 0, f"Deploy failed: {result.output}"
         parameters = stack_parameters(cfn, stack)
         assert parameters["EnableAggregator"] == "false"
-        assert parameters["PermissionBoundary"].endswith(":policy/PowerUserAccess")
+        assert parameters["PermissionBoundary"] == PERMISSION_BOUNDARY
 
         # A stack as an older release leaves it: stale tags on the stack and,
         # through propagation, on the table.
