@@ -1788,6 +1788,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="E2E Tests">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#real-aws-from-ci" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real AWS from CI
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -4112,6 +4129,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="E2E Tests">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#real-aws-from-ci" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real AWS from CI
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -4523,6 +4557,45 @@
 </span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># Real AWS E2E (costs money!)</span>
 </span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>pytest<span class="w"> </span>tests/e2e/test_aws.py<span class="w"> </span>--run-aws<span class="w"> </span>-v
 </span></code></pre></div>
+<h4 id="real-aws-from-ci">Real AWS from CI<a class="headerlink" href="#real-aws-from-ci" title="Permanent link">&para;</a></h4>
+<p>The <code>AWS E2E</code> workflow (<code>.github/workflows/aws-e2e.yml</code>) runs <code>pytest -m aws --run-aws</code> with
+short-lived credentials from GitHub OIDC; no access keys are stored. It runs on a manual
+dispatch, on every push to a <code>release/v*</code> branch, and on a pull request labelled <code>aws-e2e</code>
+(same-repository PRs only; the label is removed when the run ends). Runs are serialized, and
+each one deletes any <code>zci-*</code> stack left behind. The daily <code>AWS E2E Reaper</code> workflow deletes any
+<code>zci-*</code> stack older than a day.</p>
+<p>The role it assumes can create and delete only resources named <code>zci-*</code>, so every AWS test must
+name its stacks and IAM resources through <code>tests/fixtures/names.py</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default (SSO profile)</th>
+<th>CI</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ZAEL_E2E_STACK_PREFIX</code></td>
+<td>none</td>
+<td><code>zci-</code></td>
+</tr>
+<tr>
+<td><code>ZAEL_E2E_IAM_NAME_PREFIX</code></td>
+<td><code>PowerUserPB-</code></td>
+<td>empty</td>
+</tr>
+<tr>
+<td><code>ZAEL_E2E_PERMISSION_BOUNDARY</code></td>
+<td><code>arn:aws:iam::aws:policy/PowerUserAccess</code></td>
+<td>the role's test boundary</td>
+</tr>
+</tbody>
+</table>
+<p>A new AWS test that builds a stack name, role name or boundary ARN by hand passes locally and
+fails in CI with <code>AccessDenied</code>. Use the <code>unique_name</code> fixtures (or <code>stack_name()</code>),
+<code>iam_name()</code>, <code>IAM_NAME_FORMAT</code> and <code>PERMISSION_BOUNDARY</code>. The role, its boundary and the
+one-time setup are in <code>.github/aws-e2e/README.md</code>.</p>
 <h3 id="benchmarks">Benchmarks<a class="headerlink" href="#benchmarks" title="Permanent link">&para;</a></h3>
 <p>Performance benchmarks measure operation latency, throughput, and DynamoDB capacity. Benchmarks are essential for detecting performance regressions when optimizing operations like config caching and cascade resolution.</p>
 <p><strong>Quick Start:</strong></p>
