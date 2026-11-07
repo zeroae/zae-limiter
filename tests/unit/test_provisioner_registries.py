@@ -392,8 +392,11 @@ class _ConflictingClient:
         self._in_flight = 0
         self.conflicts = 0
         # Hold the first transaction until a second arrives, so unserialized
-        # writers overlap by construction rather than by timing.
+        # writers overlap by construction rather than by scheduling luck. Only
+        # once, and briefly: if writers really are serialized, no peer comes,
+        # and the test should fail fast rather than wait on every call.
         self._wait_for_peer = wait_for_peer
+        self._waited = False
         self._peer_arrived = threading.Event()
 
     def __getattr__(self, name: str) -> Any:
@@ -405,9 +408,14 @@ class _ConflictingClient:
             overlapping = self._in_flight > 1
             if overlapping:
                 self._peer_arrived.set()
+            wait = self._wait_for_peer and not overlapping and not self._waited
+            if wait:
+                self._waited = True
         try:
-            if self._wait_for_peer and not overlapping:
-                self._peer_arrived.wait(timeout=5)
+            if wait:
+                self._peer_arrived.wait(timeout=1)
+            # Widens the window in which an overlap is noticed. Inert where a
+            # test patches `applier.time.sleep`, which is the `time` module's.
             time.sleep(0.005)
             if overlapping:
                 with self._lock:

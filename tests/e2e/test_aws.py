@@ -1850,7 +1850,7 @@ class TestE2EAWSProvisionerCFNStack:
             while seen != expected and time.monotonic() < deadline:
                 await asyncio.sleep(1)
                 seen = await listed()
-            assert seen == expected
+            assert seen == expected, f"lists did not settle within {timeout_s:.0f} s"
 
         # An initial apply: 2 resources and 48 entity levels, every entity
         # write a counted transaction on the one registry item.
