@@ -182,7 +182,10 @@ class TestDebugApply:
         assert report["counts"]["owed_fanouts"] == 10
         assert report["fanouts"]["sync:entity"]["count"] == 10
         assert report["clients_created"] == 1
-        assert report["dynamodb_calls"]["PutItem"]["count"] == 12  # 11 levels + the record
+        # The resource level and the record are PutItems; each entity create is a
+        # transaction with its #ENTITY_CONFIG_RESOURCES count (#797).
+        assert report["dynamodb_calls"]["PutItem"]["count"] == 2
+        assert report["dynamodb_calls"]["TransactWriteItems"]["count"] == 10
         for phase in ("plan", "write_ahead", "config_writes", "fanouts", "record_state"):
             assert phase in report["phases_ms"]
         out = capsys.readouterr().out

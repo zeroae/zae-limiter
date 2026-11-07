@@ -1763,6 +1763,102 @@ class TestE2EAWSProvisionerCFNStack:
         )
         assert "gpt-4o" in state.get("managed_resources", [])
 
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_provisioner_lambda_keeps_the_list_registries(self, cfn_provisioner_stack):
+        """Limits applied by the deployed Lambda show up in every list command (#797).
+
+        The list commands do not scan config items: `resource list`, `entity
+        list-resources` and `entity list --with-custom-limits` read the
+        ``#RESOURCES`` set, the ``#ENTITY_CONFIG_RESOURCES`` counts and GSI3,
+        which the provisioner never wrote, so a manifest's limits were
+        enforced and listed nowhere.
+
+        Only this test runs the fix under real conditions:
+
+        - **Real IAM.** Entity writes became ``TransactWriteItems``, which #797
+          says the role's per-item actions authorize; a missing grant is an
+          ``AccessDeniedException`` only the deployed Lambda can raise.
+        - **Real transaction conflicts.** The apply's config writes run on a
+          thread pool, and every counted transaction updates the one
+          registry item; DynamoDB cancels concurrent ones on it, moto never
+          does. Unserialized, a 640-entity apply lost 134 creates. 48
+          entities on 8 workers is enough to collide.
+
+        A separate namespace keeps the other tests' managed state out of it.
+        """
+        import json
+
+        import boto3 as boto3_sync
+
+        repo = cfn_provisioner_stack["repo"]
+        main_stack = cfn_provisioner_stack["stack_name"]
+        await repo.register_namespace("registries")
+        scoped = await repo.namespace("registries")
+        # `.`, `/` and `:` are legal in a resource name, illegal in expression text.
+        resources = ["reg-model", "vendor/reg.model:v1"]
+        lambda_client = boto3_sync.client("lambda", region_name="us-east-1")
+
+        def apply(entities: int) -> dict:
+            manifest = {
+                "namespace": "registries",
+                "resources": {r: {"limits": {"rpm": {"capacity": 500}}} for r in resources},
+                "entities": {
+                    f"reg-user-{i:02d}": {
+                        "resources": {resources[i % 2]: {"limits": {"rpm": {"capacity": 100 + i}}}}
+                    }
+                    for i in range(entities)
+                },
+            }
+            response = lambda_client.invoke(
+                FunctionName=f"{main_stack}-limits-provisioner",
+                InvocationType="RequestResponse",
+                Payload=json.dumps(
+                    {
+                        "action": "apply",
+                        "table_name": main_stack,
+                        "namespace_id": scoped._namespace_id,
+                        "manifest": manifest,
+                    }
+                ).encode(),
+            )
+            body = json.loads(response["Payload"].read())
+            assert "FunctionError" not in response, body
+            assert body["status"] == "applied", body
+            assert body["errors"] == [], body
+            return body
+
+        async def listed() -> tuple[list[str], list[str], dict[str, list[str]]]:
+            entities = {}
+            for r in resources:
+                names, _cursor = await scoped.list_entities_with_custom_limits(r)
+                entities[r] = sorted(names)
+            return (
+                sorted(await scoped.list_resources_with_defaults()),
+                sorted(await scoped.list_resources_with_entity_configs()),
+                entities,
+            )
+
+        # An initial apply: 2 resources and 48 entity levels, every entity
+        # write a counted transaction on the one registry item.
+        body = apply(48)
+        assert body["created"] == 2 + 48
+        defaults, with_entities, entities = await listed()
+        assert defaults == sorted(resources)
+        assert with_entities == sorted(resources)
+        assert entities == {
+            r: sorted(f"reg-user-{i:02d}" for i in range(48) if resources[i % 2] == r)
+            for r in resources
+        }
+
+        # Keeping only the first entity unlists the rest, and its resource's
+        # count reaching zero drops the other resource from the entity list.
+        body = apply(1)
+        assert body["deleted"] == 47
+        defaults, with_entities, entities = await listed()
+        assert defaults == sorted(resources)
+        assert with_entities == ["reg-model"]
+        assert entities == {"reg-model": ["reg-user-00"], "vendor/reg.model:v1": []}
+
 
 class TestE2EAWSEmptyExportRegression:
     """Regression coverage for issue #445: empty CloudFormation exports.

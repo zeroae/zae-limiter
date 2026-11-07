@@ -99,14 +99,32 @@ def _setup_client(
     mock_client = MagicMock()
     default_get_item = get_item_return or {}
     if disabled_items:
+        # Only once written: the apply's own pre-read must see the level as it
+        # was before the apply (absent), not as the apply leaves it.
+        written: set[tuple[str, str]] = set()
+
+        def _record(item):
+            written.add((item["PK"]["S"], item["SK"]["S"]))
+
+        def _put_item(*_args, **kwargs):
+            _record(kwargs["Item"])
+            return {}
+
+        def _transact_write_items(*_args, **kwargs):
+            for entry in kwargs["TransactItems"]:
+                if "Put" in entry:
+                    _record(entry["Put"]["Item"])
+            return {}
 
         def _get_item(*_args, **kwargs):
             raw_key = kwargs["Key"]
             key = (raw_key["PK"]["S"], raw_key["SK"]["S"])
-            if key in disabled_items:
+            if key in disabled_items and key in written:
                 return {"Item": {"disabled": {"BOOL": disabled_items[key]}}}
             return default_get_item
 
+        mock_client.put_item.side_effect = _put_item
+        mock_client.transact_write_items.side_effect = _transact_write_items
         mock_client.get_item.side_effect = _get_item
     else:
         mock_client.get_item.return_value = default_get_item
@@ -2427,8 +2445,10 @@ class TestApplyCostsWhatChanged:
         assert (result["created"], result["updated"], result["deleted"]) == (1, 0, 0)
         assert result["unchanged"] == self.ENTITIES + 1
         assert result["errors"] == []
-        # The new config item and the #PROVISIONER record.
-        assert counting.calls["put_item"] == 2
+        # The new config item, written with its #ENTITY_CONFIG_RESOURCES count
+        # in one transaction, and the #PROVISIONER record.
+        assert counting.calls["transact_write_items"] == 1
+        assert counting.calls["put_item"] == 1
         # The pending sync: this apply's share added (write-ahead), then
         # removed once the sync landed, then the empty item deleted.
         assert counting.calls.get("update_item", 0) == 2
