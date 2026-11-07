@@ -599,7 +599,8 @@ _COUNTED_WRITE_ATTEMPTS = 3
 # not. On AWS, 8 unserialized writers had 684 of 1190 transactions cancelled
 # and 134 of 640 entity creates give up.
 _COUNTED_TRANSACTION_LOCK = threading.Lock()
-# A conflict with another writer (a concurrent apply, or the API) is retried
+# A conflict with another writer (a concurrent apply, or the API), or a
+# throttled transaction (botocore does not retry a cancellation), is retried
 # with full jitter before it counts as a lost condition.
 _CONFLICT_RETRIES = 5
 _CONFLICT_BACKOFF_BASE_S = 0.025
@@ -712,30 +713,41 @@ def _read_config(client: Any, table_name: str, pk: str, sk: str) -> dict[str, An
     return item if isinstance(item, dict) else {}
 
 
-def _is_transaction_conflict(error: ClientError) -> bool:
-    """A transaction cancelled only because another one held an item, not by a condition."""
+def _is_retryable_cancellation(error: ClientError) -> bool:
+    """A transaction cancelled by a conflict or a throttle, not by a condition."""
     if error.response.get("Error", {}).get("Code") != "TransactionCanceledException":
         return False
-    reasons = [r.get("Code") for r in error.response.get("CancellationReasons", [])]
-    return "TransactionConflict" in reasons and "ConditionalCheckFailed" not in reasons
+    reasons = {r.get("Code") for r in error.response.get("CancellationReasons", [])}
+    return bool(reasons & {"TransactionConflict", "ThrottlingError"}) and (
+        "ConditionalCheckFailed" not in reasons
+    )
 
 
-def _counted_transact(client: Any, transact_items: list[dict[str, Any]]) -> None:
+def _counted_transact(
+    client: Any,
+    transact_items: list[dict[str, Any]],
+    then: Callable[[], None] | None = None,
+) -> None:
     """Run a counted transaction: one at a time per apply, conflicts retried with jitter.
 
-    A conflict still there after `_CONFLICT_RETRIES` is raised, and the caller
-    treats it as a lost condition (`_lost_condition`): re-read, try again.
+    A conflict or throttle still there after `_CONFLICT_RETRIES` is raised,
+    and the caller treats a conflict as a lost condition (`_lost_condition`):
+    re-read, try again. ``then`` runs under the same lock once the
+    transaction lands (the registry tidy after a delete, which writes the same
+    item and would otherwise collide with the apply's next transaction).
     """
     with _COUNTED_TRANSACTION_LOCK:
         for attempt in range(_CONFLICT_RETRIES + 1):
             try:
                 client.transact_write_items(TransactItems=transact_items)
-                return
+                break
             except ClientError as e:
-                if attempt == _CONFLICT_RETRIES or not _is_transaction_conflict(e):
+                if attempt == _CONFLICT_RETRIES or not _is_retryable_cancellation(e):
                     raise
                 cap = min(_CONFLICT_BACKOFF_CAP_S, _CONFLICT_BACKOFF_BASE_S * 2**attempt)
                 time.sleep(random.uniform(0, cap))
+        if then is not None:
+            then()
 
 
 def _lost_condition(error: ClientError) -> bool:
@@ -879,8 +891,8 @@ def _apply_entity_delete(
                         }
                     },
                 ],
+                then=lambda: _cleanup_entity_registry(client, table_name, namespace_id, resource),
             )
-            _cleanup_entity_registry(client, table_name, namespace_id, resource)
             return old
         except ClientError as e:
             if not _lost_condition(e):
@@ -898,13 +910,16 @@ def _cleanup_entity_registry(
     """Drop a resource whose entity count reached zero; best effort.
 
     A count left at zero is invisible to the list (it shows counts > 0), so a
-    failure here is logged rather than reported against a delete that landed.
+    failure here, of any kind, is logged rather than reported against a delete
+    that landed.
     """
     try:
         client.update_item(TableName=table_name, **entity_registry_cleanup(namespace_id, resource))
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
             logger.warning("Could not tidy the entity config registry for %s: %s", resource, e)
+    except Exception as e:
+        logger.warning("Could not tidy the entity config registry for %s: %s", resource, e)
 
 
 def _add_flags(extra: dict[str, Any], data: dict[str, Any]) -> None:

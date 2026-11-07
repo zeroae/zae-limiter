@@ -492,3 +492,32 @@ class TestCountedTransact:
         with pytest.raises(ClientError):
             applier._counted_transact(client, [])
         assert client.transact_write_items.call_count == applier._CONFLICT_RETRIES + 1
+
+    def test_a_throttled_transaction_is_retried(self):
+        """botocore does not retry a cancellation, so a throttle would fail the change."""
+        client = MagicMock()
+        client.transact_write_items.side_effect = [
+            _client_error("TransactionCanceledException", "None", "ThrottlingError"),
+            {},
+        ]
+
+        applier._counted_transact(client, [])
+
+        assert client.transact_write_items.call_count == 2
+
+    def test_the_follow_up_runs_once_the_transaction_lands(self):
+        client = MagicMock()
+        ran: list[bool] = []
+
+        applier._counted_transact(client, [], then=lambda: ran.append(True))
+
+        assert ran == [True]
+
+    def test_a_tidy_that_fails_any_way_after_the_delete_is_logged(self, caplog):
+        """The delete and its −1 landed; a network error tidying up is not its failure."""
+        client = MagicMock()
+        client.update_item.side_effect = ConnectionError("reset by peer")
+
+        applier._cleanup_entity_registry(client, TABLE, "ns", RESOURCE)
+
+        assert "Could not tidy the entity config registry" in caplog.text
