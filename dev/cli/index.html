@@ -10893,6 +10893,13 @@ changed out of band while its config entry still matches the manifest is not rep
 plain apply. <code>limits apply --full</code> rewrites every declared entry and pushes its limits to
 existing buckets again, as every apply did before change-only applies. A change to <code>soft</code> alone,
 or to <code>disabled: bypass</code> alone, is a change like any other: it is written and fanned out.</p>
+<p>An apply also keeps the indexes the list commands read — <code>resource list</code>,
+<code>entity list-resources</code> and <code>entity list --with-custom-limits</code> — exactly as <code>set-defaults</code> and
+<code>set-limits</code> do. Earlier provisioners did not, so limits applied from a manifest were enforced
+but those commands listed none of them (<code>get-defaults</code> and <code>get-limits -r</code> always showed them).
+After upgrading the stack (<code>zae-limiter upgrade</code>), run <code>limits apply --full</code> once to repair
+entries an older provisioner wrote: a plain apply repairs entity entries, but leaves resource
+entries unlisted until they change. The repair never counts an entry twice.</p>
 <p>An apply records every bucket fan-out it owes before it writes any config, and removes each one
 as soon as it lands. Every fan-out, an apply's own included, is run from what the table holds
 for that entry at that moment, not from the manifest being applied, so a stale or concurrent
