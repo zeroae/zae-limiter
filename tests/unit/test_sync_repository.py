@@ -2801,6 +2801,20 @@ class TestEntityConfigRegistry:
         assert [lim.name for lim in repo.get_limits("racer", resource="gpt-4")] == ["rpm"]
         assert repo.list_resources_with_entity_configs() == ["gpt-4"]
 
+    def test_any_other_fallback_delete_failure_is_raised(self, repo):
+        from botocore.exceptions import ClientError
+
+        client = repo._get_client()
+        throttled = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow"}},
+            "DeleteItem",
+        )
+        with (
+            patch.object(client, "delete_item", side_effect=throttled),
+            pytest.raises(ClientError, match="ProvisionedThroughputExceeded"),
+        ):
+            repo.delete_limits("nobody", resource="gpt-4")
+
     def test_delete_limits_nonexistent_config_is_silent(self, repo):
         """delete_limits silently succeeds when config doesn't exist."""
         repo.create_entity("user-1")
