@@ -95,18 +95,9 @@ jobs:
             --junitxml=aws-e2e.xml -o junit_family=legacy $PYTEST_ARGS
       - name: Delete leftover test stacks
         if: always()
-        run: |
-          stacks=$(aws cloudformation list-stacks \
-            --query "StackSummaries[?starts_with(StackName, '${ZAEL_E2E_STACK_PREFIX}') && StackStatus != 'DELETE_COMPLETE'].StackName" \
-            --output text)
-          for stack in $stacks; do
-            echo "::warning::Deleting leftover stack $stack"
-            aws cloudformation delete-stack --stack-name "$stack"
-          done
-          for stack in $stacks; do
-            aws cloudformation wait stack-delete-complete --stack-name "$stack" \
-              || echo "::error::Could not delete $stack; delete it by hand"
-          done
+        # Cutoff 0 is safe only here: runs are serialized, so every zci-* stack
+        # left now belongs to this run. Retries a DELETE_FAILED stack once.
+        run: uv run python scripts/reap_e2e_stacks.py --older-than-days 0
       - uses: actions/upload-artifact@v7
         if: always()
         with:

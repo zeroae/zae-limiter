@@ -72,6 +72,23 @@ gh variable set AWS_E2E_PERMISSION_BOUNDARY --env aws-e2e \
 gh label create aws-e2e --color FF9900 --description "Run the AWS e2e suite on this PR"
 ```
 
+## Leftover stacks
+
+Every AWS test deletes its own stacks, and each `aws-e2e` run ends by deleting any `zci-*`
+stack still present (`scripts/reap_e2e_stacks.py --older-than-days 0`, safe only there because
+runs are serialized). The **AWS E2E Reaper** workflow (`.github/workflows/aws-e2e-reaper.yml`)
+runs the same script daily at 07:17 UTC and deletes `zci-*` stacks created more than a day
+ago: a killed runner, a cancelled job, or a local run with `ZAEL_E2E_STACK_PREFIX=zci-`. Run it
+by hand from the Actions tab with a longer cutoff or `dry-run`; it refuses a cutoff under one
+day, which could catch a live run's stacks. A stack in `DELETE_FAILED` is deleted once more
+(DynamoDB `DeleteTable` returns a transient 500 now and then); one that still fails is reported
+as an error to delete by hand.
+
+```bash
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess \
+  uv run python scripts/reap_e2e_stacks.py --older-than-days 1 --dry-run
+```
+
 ## Changing the permissions
 
 When a test needs an action the role lacks, the run fails with `AccessDenied` naming it. Add the

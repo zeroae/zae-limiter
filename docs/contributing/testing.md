@@ -247,7 +247,8 @@ The `AWS E2E` workflow (`.github/workflows/aws-e2e.yml`) runs `pytest -m aws --r
 short-lived credentials from GitHub OIDC; no access keys are stored. It runs on a manual
 dispatch, on every push to a `release/v*` branch, and on a pull request labelled `aws-e2e`
 (same-repository PRs only; the label is removed when the run ends). Runs are serialized, and
-each one deletes any `zci-*` stack left behind.
+each one deletes any `zci-*` stack left behind. The daily `AWS E2E Reaper` workflow deletes any
+`zci-*` stack older than a day.
 
 The role it assumes can create and delete only resources named `zci-*`, so every AWS test must
 name its stacks and IAM resources through `tests/fixtures/names.py`:
