@@ -3691,9 +3691,18 @@ class SyncRateLimiter:
         written to since reports the balance the next ``acquire()`` will
         restore, per shard, rather than the burnt one still on disk.
 
-        Cost: 1 GSI3 query (KEYS_ONLY) + 1 ``BatchGetItem``, plus config
-        resolution (free on a cache hit), regardless of limit count or shard
-        count. A limit carrying a ``reset_schedule`` adds one backwards cron
+        **A bucket created just now is seen (#791).** Shards are discovered
+        through GSI3, which is eventually consistent, so shard 0 is also read
+        by key and the read is strongly consistent: an ``acquire()`` that just
+        created the bucket is reflected rather than reported as full capacity.
+        A just-created shard N>0 the index has not listed yet is left out of
+        the sum (under-reporting by that shard's balance, never more than the
+        entity holds).
+
+        Cost: 1 GSI3 query (KEYS_ONLY, scoped to the resource) + 1 strongly
+        consistent ``BatchGetItem`` of the resource's shards plus shard 0 (1 RCU
+        each), plus config resolution (free on a cache hit), regardless of
+        limit count. A limit carrying a ``reset_schedule`` adds one backwards cron
         scan per shard and the forward walk adds up to eight per exceeded
         limit; an unscheduled limit adds neither.
 
@@ -3729,13 +3738,12 @@ class SyncRateLimiter:
         needed = needed or {}
         resolved_limits, _ = self._resolve_limits(entity_id, resource, limits)
         resolved_by_name = {limit.name: limit for limit in resolved_limits}
+        buckets = self._resource_bucket_shards(entity_id, resource)
         totals: dict[str, int] = {}
         window_ends: dict[str, int] = {}
         bypassed = False
         top_ups: dict[str, int] = {}
-        for bucket in self._repository.get_buckets(entity_id):
-            if bucket.resource != resource:
-                continue
+        for bucket in buckets:
             bypassed = bypassed or (
                 bucket.bypass_until_ms is not None and bucket.bypass_until_ms > now_ms
             )
@@ -3814,6 +3822,24 @@ class SyncRateLimiter:
             statuses=statuses,
             bypassed=bypassed,
         )
+
+    def _resource_bucket_shards(self, entity_id: str, resource: str) -> list[BucketState]:
+        """Every shard bucket of one (entity, resource) for the non-consuming read.
+
+        ``get_bucket_shards`` is an optional backend member (#791): a backend
+        without it is read through ``get_buckets(entity_id)`` filtered to the
+        resource, the pre-#791 discovery, which can miss a bucket its index has
+        not listed yet.
+        """
+        get_shards = getattr(self._repository, "get_bucket_shards", None)
+        if get_shards is not None:
+            shards: list[BucketState] = get_shards(entity_id, resource)
+            return shards
+        return [
+            bucket
+            for bucket in self._repository.get_buckets(entity_id)
+            if bucket.resource == resource
+        ]
 
     def available(
         self,

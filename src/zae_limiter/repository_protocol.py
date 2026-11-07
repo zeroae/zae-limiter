@@ -552,6 +552,28 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    async def get_bucket_shards(self, entity_id: str, resource: str) -> "list[BucketState]":
+        """
+        Get every shard of one (entity, resource), including one created just now (#791).
+
+        The read behind ``RateLimiter.check_availability()``. Must return a
+        bucket written immediately before the call — on DynamoDB, shard 0 is
+        read by key beside the eventually consistent GSI3 discovery, and the
+        read is strongly consistent. Omits the reserved ``wcu`` limit.
+
+        Optional: the limiter looks it up with ``getattr`` and, on a backend
+        without it, falls back to ``get_buckets(entity_id)`` filtered to the
+        resource.
+
+        Args:
+            entity_id: Entity owning the buckets
+            resource: Resource name
+
+        Returns:
+            One bucket state per application limit per existing shard
+        """
+        ...
+
     async def get_or_create_bucket(
         self,
         entity_id: str,

@@ -10,6 +10,7 @@ Note: These tests use moto (mocked DynamoDB) to enable API call counting.
 """
 
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 
@@ -297,9 +298,10 @@ class TestCapacityConsumption:
         """Verify: available() reads bucket state without writes.
 
         A sharded entity's balance is spread across its shards (GHSA-76rv), so
-        available() discovers them through the KEYS_ONLY GSI3 index and fetches
-        the items it finds — 1 Query + 1 BatchGetItem, never a per-shard
-        GetItem — then sums. Still strictly read-only.
+        available() discovers them through the KEYS_ONLY GSI3 index, scoped to
+        the resource, and fetches the items it finds plus shard 0 by key
+        (deduplicated, #791) — 1 Query + 1 strongly consistent BatchGetItem,
+        never a per-shard GetItem — then sums. Still strictly read-only.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
@@ -324,10 +326,73 @@ class TestCapacityConsumption:
 
         # Verify read-only operation
         assert capacity_counter.query == 1, "GSI3 shard discovery should be a single Query"
-        assert len(capacity_counter.batch_get_item) == 1, (
-            "Discovered shards should be fetched in one BatchGetItem"
+        assert capacity_counter.batch_get_item == [1], (
+            "Discovered shards should be fetched in one BatchGetItem; shard 0, "
+            "listed by GSI3 and added by key, is read once"
+        )
+        assert capacity_counter.batch_get_consistent == [True], (
+            "The bucket read is strongly consistent (#791): 1 RCU per item"
         )
         assert capacity_counter.total_wcus == 0, "available() should have no writes"
+
+    def test_available_check_capacity_when_gsi3_lags(self, sync_limiter, capacity_counter):
+        """Verify: a bucket GSI3 has not listed yet still costs one read (#791).
+
+        GSI3 is eventually consistent, so right after the acquire that created
+        the bucket the index can be empty. Shard 0 is read by key anyway: the
+        same 1 Query + 1 BatchGetItem of 1 key (1 RCU, strongly consistent),
+        where the index-only read issued no BatchGetItem and reported full
+        capacity.
+        """
+        limits = [Limit.custom("rpm", 100, refill_amount=1, refill_period_seconds=3600)]
+
+        with sync_limiter.acquire(
+            entity_id="cap-available-lag",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 20},
+        ):
+            pass
+
+        repo = sync_limiter._repository
+        capacity_counter.reset()
+
+        with (
+            patch.object(repo, "_discover_entity_bucket_pks", return_value=[]),
+            capacity_counter.counting(),
+        ):
+            available = sync_limiter.available(
+                entity_id="cap-available-lag",
+                resource="api",
+                limits=limits,
+            )
+
+        assert available == {"rpm": 80}
+        assert capacity_counter.batch_get_item == [1], "Shard 0 is read by key"
+        assert capacity_counter.batch_get_consistent == [True]
+        assert capacity_counter.get_item == 0
+        assert capacity_counter.total_wcus == 0, "available() should have no writes"
+
+    def test_available_check_capacity_without_a_bucket(self, sync_limiter, capacity_counter):
+        """Verify: an entity that never acquired the resource pays the shard-0 read.
+
+        1 Query (empty) + 1 BatchGetItem of shard 0's key, which does not
+        exist (1 RCU strongly consistent; DynamoDB charges a read of an absent
+        item). Full capacity is reported.
+        """
+        limits = [Limit.per_minute("rpm", 100)]
+
+        with capacity_counter.counting():
+            available = sync_limiter.available(
+                entity_id="cap-available-none",
+                resource="api",
+                limits=limits,
+            )
+
+        assert available == {"rpm": 100}
+        assert capacity_counter.query == 1
+        assert capacity_counter.batch_get_item == [1]
+        assert capacity_counter.total_wcus == 0
 
     @pytest.mark.parametrize("num_limits", [1, 2, 3])
     def test_available_check_multiple_limits_capacity(

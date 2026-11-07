@@ -1429,8 +1429,28 @@ Non-consuming and write-free, and **not** a pre-flight gate for `acquire()`: che
 is TOCTOU and costs an extra read, where `acquire()` answers the same question in 1 WCU (0 RCU +
 1 WCU on a fast rejection too) via `RateLimitExceeded.retry_after_seconds`. It is for *display*.
 
-Cost: 1 GSI3 KEYS_ONLY query + 1 `BatchGetItem` + 1 config resolution, regardless of limit
-count or shard count. A missing bucket means full capacity and no wait.
+**A just-created bucket is seen (#791).** Discovery is `Repository.get_bucket_shards(entity_id,
+resource)`: a GSI3 KEYS_ONLY query scoped to the resource (`GSI3SK begins_with
+BUCKET#{resource}#`), plus shard 0's key added to the `BatchGetItem` (deduplicated), read
+**strongly consistent**. GSI3 is eventually consistent, so the entity-wide index scan it replaced
+could miss the bucket an `acquire()` created milliseconds earlier and report full capacity (seen
+on real AWS). Shares `Repository._read_shard_items` with `reset_bucket` / `top_up` (ADR-149), but
+does **not** probe slots below shard 0's stored `shard_count` by key: shards are created lazily,
+so a sharded entity usually has slots that do not exist yet, and every display read would pay a
+second round trip and 1 RCU per absent slot. Residual: a just-created shard N>0 the index has not
+listed is left out of the sum — under-reporting by that shard's balance, never more than the
+entity holds. `get_bucket_shards` is an **optional** `RepositoryProtocol` member (the limiter uses
+`getattr`); a backend without it is read through `get_buckets(entity_id)` filtered to the
+resource, the pre-#791 discovery.
+
+Cost: 1 GSI3 KEYS_ONLY query (scoped to the resource) + 1 strongly consistent `BatchGetItem` of
+the resource's listed shards plus shard 0 (**1 RCU per shard**, shard 0 charged even when absent)
++ 1 config resolution, regardless of limit count. Before #791: the query spanned every resource
+of the entity and the `BatchGetItem` read all of them eventually consistent (0.5 RCU each), with
+no `BatchGetItem` at all when the index listed nothing. So a single-shard bucket costs +0.5 RCU;
+a GSI3 miss costs +1 RCU and reports the real balance; an entity that never used the resource
+pays +1 RCU for the absent shard 0 and reports full capacity; an entity with buckets on other
+resources no longer reads them.
 
 ### Exception Design
 - **An IAM denial is never admitted (#751).** `acquire()` raises `PermissionDenied` (a `RateLimiterUnavailable` subclass, so BLOCK handlers still catch it) whenever a botocore `ClientError` with code `AccessDeniedException` sits anywhere in the caught error's `__cause__` / `__context__` chain (`limiter._access_denied_in`), **whatever `on_unavailable` says** — the check runs in the outer `except Exception` before the ALLOW branch, the only degradation site. ALLOW covers an outage, which heals; a missing permission does not, and the denied write is the one that would create the bucket, so before this every later call took the same path and was admitted unlimited, silently (50 of 50 against 2/day). On real AWS a denied single-item write and a denied item inside `TransactWriteItems` both arrive as `AccessDeniedException`, never `TransactionCanceledException` (the #750 red run). The message is AWS's own text, which names the action, plus `exceptions.IAM_DOCS_URL`. Breaking in v0.17.0. Out of scope: other permanent errors such as `ResourceNotFoundException`
@@ -1597,6 +1617,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Get entity config (limits) | `PK={ns}/ENTITY#{id}, SK=#CONFIG#{resource}` |
 | List entities with custom limits | GSI3: `GSI3PK={ns}/ENTITY_CONFIG#{resource}` |
 | Discover buckets for entity | GSI3: `GSI3PK={ns}/ENTITY#{id}` (KEYS_ONLY, GHSA-76rv) |
+| Every shard of one (entity, resource) (`get_bucket_shards`, #791) | GSI3: `GSI3PK={ns}/ENTITY#{id}, GSI3SK begins_with BUCKET#{resource}#` → strongly consistent `BatchGetItem` of those keys plus shard 0's |
 | List resources with entity configs | `PK={ns}/SYSTEM#, SK=#ENTITY_CONFIG_RESOURCES` (wide column, issue #288) |
 | Namespace forward lookup | `PK=_/SYSTEM#, SK=#NAMESPACE#{name}` |
 | Namespace reverse lookup | `PK=_/SYSTEM#, SK=#NSID#{id}` |
