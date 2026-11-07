@@ -33,6 +33,7 @@ from unittest.mock import patch
 import boto3
 from click.testing import CliRunner
 
+from tests.fixtures.names import IAM_NAME_FORMAT, PERMISSION_BOUNDARY
 from zae_limiter import Repository, schema
 from zae_limiter.cli import cli
 from zae_limiter.sync_repository import SyncRepository
@@ -44,13 +45,13 @@ PROVISIONER = "limits-provisioner"
 
 POWER_USER_FLAGS = (
     "--permission-boundary",
-    "arn:aws:iam::aws:policy/PowerUserAccess",
+    PERMISSION_BOUNDARY,
     "--role-name-format",
-    "PowerUserPB-{}",
+    IAM_NAME_FORMAT,
     "--policy-name-format",
-    "PowerUserPB-{}",
+    IAM_NAME_FORMAT,
 )
-"""What the PowerUser SSO profile needs to create the stack's IAM resources."""
+"""IAM flags for a real-AWS deploy (``tests.fixtures.names``: SSO profile or CI role)."""
 
 T = TypeVar("T")
 

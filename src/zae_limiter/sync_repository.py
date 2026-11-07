@@ -5027,7 +5027,7 @@ class SyncRepository:
                         "Put": {
                             "TableName": self.table_name,
                             "Item": item,
-                            "ConditionExpression": "attribute_not_exists(PK)",
+                            "ConditionExpression": "attribute_not_exists(GSI3PK)",
                         }
                     },
                     {
@@ -5553,17 +5553,19 @@ class SyncRepository:
         )
         had_disabled = schema.CONFIG_FIELD_DISABLED in (existing.get("Item") or {})
         had_cascade = schema.CONFIG_FIELD_CASCADE in (existing.get("Item") or {})
+        config_key = {
+            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+            "SK": {"S": schema.sk_config(resource)},
+        }
+        counted = True
         try:
             client.transact_write_items(
                 TransactItems=[
                     {
                         "Delete": {
                             "TableName": self.table_name,
-                            "Key": {
-                                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                                "SK": {"S": schema.sk_config(resource)},
-                            },
-                            "ConditionExpression": "attribute_exists(PK)",
+                            "Key": config_key,
+                            "ConditionExpression": "attribute_exists(GSI3PK)",
                         }
                     },
                     {
@@ -5583,13 +5585,26 @@ class SyncRepository:
         except ClientError as e:
             if e.response["Error"]["Code"] == "TransactionCanceledException":
                 reasons = e.response.get("CancellationReasons", [])
-                if reasons and reasons[0].get("Code") == "ConditionalCheckFailed":
-                    return
-                else:
+                if not (reasons and reasons[0].get("Code") == "ConditionalCheckFailed"):
                     raise
             else:
                 raise
-        self._cleanup_entity_config_registry(resource)
+            try:
+                deleted = client.delete_item(
+                    TableName=self.table_name,
+                    Key=config_key,
+                    ConditionExpression="attribute_not_exists(GSI3PK)",
+                    ReturnValues="ALL_OLD",
+                )
+            except ClientError as fallback_error:
+                if fallback_error.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+                return
+            if not deleted.get("Attributes"):
+                return
+            counted = False
+        if counted:
+            self._cleanup_entity_config_registry(resource)
         self._config_cache.evict_entity(entity_id, resource)
         if had_disabled:
             if resource == schema.DEFAULT_RESOURCE:
@@ -8821,7 +8836,7 @@ class SyncRepository:
                                 "TableName": self.table_name,
                                 "Key": key,
                                 "UpdateExpression": update_expression,
-                                "ConditionExpression": "attribute_not_exists(PK)",
+                                "ConditionExpression": "attribute_not_exists(GSI3PK)",
                                 "ExpressionAttributeNames": names,
                                 "ExpressionAttributeValues": values,
                             }

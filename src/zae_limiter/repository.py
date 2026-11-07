@@ -5995,7 +5995,11 @@ class Repository:
             item[schema.CONFIG_FIELD_CASCADE] = cascade_attr
 
         # Use transaction to atomically create config + increment registry (issue #288)
-        # This prevents race conditions where concurrent creates both increment
+        # This prevents race conditions where concurrent creates both increment.
+        # An entity config item is counted exactly when it carries GSI3PK: every
+        # counting writer stamps it in the same transaction, and the provisioner
+        # once wrote items with neither. Keying the create on GSI3PK rather than
+        # PK counts such an item the first time it is rewritten here.
         try:
             await client.transact_write_items(
                 TransactItems=[
@@ -6003,7 +6007,7 @@ class Repository:
                         "Put": {
                             "TableName": self.table_name,
                             "Item": item,
-                            "ConditionExpression": "attribute_not_exists(PK)",
+                            "ConditionExpression": "attribute_not_exists(GSI3PK)",
                         }
                     },
                     {
@@ -6694,19 +6698,22 @@ class Repository:
         # The same question for the cascade policy (ADR-146), from the same read.
         had_cascade = schema.CONFIG_FIELD_CASCADE in (existing.get("Item") or {})
 
+        config_key = {
+            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+            "SK": {"S": schema.sk_config(resource)},
+        }
         # Use transaction to atomically delete config + decrement registry (issue #288)
-        # This prevents double-decrement if delete_limits is called twice
+        # This prevents double-decrement if delete_limits is called twice.
+        # Only an item carrying GSI3PK was ever counted (see set_limits).
+        counted = True
         try:
             await client.transact_write_items(
                 TransactItems=[
                     {
                         "Delete": {
                             "TableName": self.table_name,
-                            "Key": {
-                                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                                "SK": {"S": schema.sk_config(resource)},
-                            },
-                            "ConditionExpression": "attribute_exists(PK)",
+                            "Key": config_key,
+                            "ConditionExpression": "attribute_exists(GSI3PK)",
                         }
                     },
                     {
@@ -6727,16 +6734,33 @@ class Repository:
             if e.response["Error"]["Code"] == "TransactionCanceledException":
                 # Check if cancellation was due to condition failure (item doesn't exist)
                 reasons = e.response.get("CancellationReasons", [])
-                if reasons and reasons[0].get("Code") == "ConditionalCheckFailed":
-                    # Config doesn't exist - nothing to delete, skip audit
-                    return
-                else:
+                if not (reasons and reasons[0].get("Code") == "ConditionalCheckFailed"):
                     raise
             else:
                 raise
+            # Absent, or an item the provisioner wrote before it kept the
+            # registry (no GSI3PK, never counted): delete that one alone.
+            try:
+                deleted = await client.delete_item(
+                    TableName=self.table_name,
+                    Key=config_key,
+                    ConditionExpression="attribute_not_exists(GSI3PK)",
+                    ReturnValues="ALL_OLD",
+                )
+            except ClientError as fallback_error:
+                if fallback_error.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+                # A counted item appeared in between (a concurrent set_limits):
+                # this delete lost the race, exactly as if it had run first.
+                return
+            if not deleted.get("Attributes"):
+                # Config doesn't exist - nothing to delete, skip audit
+                return
+            counted = False
 
-        # Cleanup: remove registry attribute if count <= 0
-        await self._cleanup_entity_config_registry(resource)
+        if counted:
+            # Cleanup: remove registry attribute if count <= 0
+            await self._cleanup_entity_config_registry(resource)
 
         # Auto-evict from config cache so next resolve reads fresh config (ADR-122)
         self._config_cache.evict_entity(entity_id, resource)
@@ -10604,7 +10628,9 @@ class Repository:
                                 "TableName": self.table_name,
                                 "Key": key,
                                 "UpdateExpression": update_expression,
-                                "ConditionExpression": "attribute_not_exists(PK)",
+                                # Counted iff it carries GSI3PK (see set_limits):
+                                # an uncounted older item is counted here too.
+                                "ConditionExpression": "attribute_not_exists(GSI3PK)",
                                 "ExpressionAttributeNames": names,
                                 "ExpressionAttributeValues": values,
                             }
