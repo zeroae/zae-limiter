@@ -106,17 +106,20 @@ def _live(client) -> set[str]:
 class TestReap:
     def test_deletes_prefixed_stacks_past_the_cutoff(self, cfn):
         later = datetime.now(UTC) + timedelta(days=2)
-        assert reaper.reap(cfn, "zci-", timedelta(days=1), later, dry_run=False) == 0
+        result = reaper.reap(cfn, "zci-", timedelta(days=1), later, dry_run=False)
+        assert result == 0
         assert _live(cfn) == {"limiter"}
 
     def test_keeps_stacks_younger_than_the_cutoff(self, cfn, capsys):
-        assert reaper.reap(cfn, "zci-", timedelta(days=1), datetime.now(UTC), dry_run=False) == 0
+        result = reaper.reap(cfn, "zci-", timedelta(days=1), datetime.now(UTC), dry_run=False)
+        assert result == 0
         assert _live(cfn) == {"zci-test-a", "zci-test-b", "limiter"}
         assert "No zci-* stacks older than" in capsys.readouterr().out
 
     def test_dry_run_deletes_nothing(self, cfn, capsys):
         later = datetime.now(UTC) + timedelta(days=2)
-        assert reaper.reap(cfn, "zci-", timedelta(days=1), later, dry_run=True) == 0
+        result = reaper.reap(cfn, "zci-", timedelta(days=1), later, dry_run=True)
+        assert result == 0
         assert _live(cfn) == {"zci-test-a", "zci-test-b", "limiter"}
         assert capsys.readouterr().out.count("Would delete zci-test-") == 2
 
@@ -153,13 +156,15 @@ class TestDelete:
     def test_retries_a_delete_that_failed_once(self):
         cfn = _FlakyCfn(failures=1)
         stack = reaper.select([_summary("zci-x")], "zci-", NOW)[0]
-        assert reaper.delete(cfn, stack) is True
+        deleted = reaper.delete(cfn, stack)
+        assert deleted is True
         assert cfn.deletes == 2
 
     def test_gives_up_after_the_retry(self, capsys):
         cfn = _FlakyCfn(failures=5)
         stack = reaper.select([_summary("zci-x")], "zci-", NOW)[0]
-        assert reaper.delete(cfn, stack) is False
+        deleted = reaper.delete(cfn, stack)
+        assert deleted is False
         assert cfn.deletes == reaper.DELETE_ATTEMPTS
         assert "did not complete" in capsys.readouterr().err
 
@@ -171,16 +176,19 @@ class TestDelete:
                 )
 
         stack = reaper.select([_summary("zci-x")], "zci-", NOW)[0]
-        assert reaper.delete(Refused(failures=0), stack) is False
+        deleted = reaper.delete(Refused(failures=0), stack)
+        assert deleted is False
 
 
 class TestMain:
     def test_exit_code_reports_a_stack_left_behind(self, capsys):
-        assert reaper.main(["--older-than-days", "0"], cfn=_FlakyCfn(failures=5)) == 1
+        result = reaper.main(["--older-than-days", "0"], cfn=_FlakyCfn(failures=5))
+        assert result == 1
         assert "::error::Could not delete zci-test-stuck" in capsys.readouterr().out
 
     def test_exit_code_is_zero_when_everything_went(self):
-        assert reaper.main(["--older-than-days", "0"], cfn=_FlakyCfn(failures=0)) == 0
+        result = reaper.main(["--older-than-days", "0"], cfn=_FlakyCfn(failures=0))
+        assert result == 0
 
     @pytest.mark.parametrize(
         "argv",
