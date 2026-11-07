@@ -4,6 +4,7 @@
 **Date:** 2026-11-07
 **Issue:** Refs [#808](https://github.com/zeroae/zae-limiter/issues/808)
 **Related:** ADR-114, ADR-115, ADR-133, ADR-135, ADR-147, [ADR-153](153-admission-contract-for-dripping-limits.md)
+**Design:** `docs/plans/2026-11-07-fill-instant-fast-path-design.md` (the proofs, and the behaviour with many consumers)
 
 ## Context
 
@@ -19,9 +20,7 @@ operands, set constants, test attribute presence and `ADD`, and it cannot branch
 updates. With attributes affine in the bucket state, which covers `tk`/`rf`, `vu` and a stored
 fill instant, the recorded fill instant is then affine in the stored state, so it cannot follow
 the kink of `max(z, t)` across states on both sides of `z = t`. A single write that never
-over-admits must therefore record every admission on a full bucket as emptying it. The proofs,
-and the design's behaviour with many writers per shard, are in
-[the design doc](../plans/2026-11-07-fill-instant-fast-path-design.md).
+over-admits must therefore record every admission on a full bucket as emptying it.
 
 Each side alone is exact in one write: if `z ≥ t`, add `c/r` to `z`; if `z < t`, set `z` to
 `t + c/r`. One write therefore suffices whenever the client knows which side of now `z` lies
