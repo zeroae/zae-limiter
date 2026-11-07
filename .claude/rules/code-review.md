@@ -69,3 +69,11 @@ touching `rejection_cache.py` or the limiter's local-rejection path:
 - A new bucket writer, or a config change the slow path reads, must keep
   `tests/unit/test_rejection_cache.py::TestChangesElsewhere` passing; add a case there when the
   change is made from another process (a second `Repository`, or a raw `update_item`)
+
+## Config writers agree (changes to the provisioner applier or the Repository config setters)
+Limit config has two writers: `Repository.set_*` / `delete_*` and `zae_limiter_provisioner/applier.py`,
+which re-implements them. Four divergences shipped before anything compared them (#549, #777, #797).
+- `tests/unit/test_config_writer_parity.py` must pass: both writers leave identical items and list results
+- A new item, attribute or index either writer produces belongs in both, or in `EXEMPT_ITEMS` /
+  `EXEMPT_ATTRIBUTES` with the reason the difference is intended
+- A new manifest declaration field needs a step in `STEPS` (`test_every_declaration_field_is_exercised`)
