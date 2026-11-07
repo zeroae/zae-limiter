@@ -4,6 +4,10 @@
 [ADR-153](../adr/153-admission-contract-for-dripping-limits.md)
 **Date:** 2026-11-07
 
+!!! note "A proposed design"
+    This page proves properties of the design ADR-154 proposes for v0.18.0. Until that ships,
+    the fast path still stores `tk` and `rf`, and #808 still applies.
+
 ADR-153 makes the strict token bucket the admission contract for dripping limits. ADR-154
 changes how a dripping limit is stored and written so the fast path can meet it. This document
 proves the claims both ADRs rest on, for any number of consumers sharing one bucket shard:

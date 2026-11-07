@@ -20,6 +20,7 @@ pytest
 | [LocalStack](localstack.md) | Local AWS development environment |
 | [Testing](testing.md) | Test organization, pytest fixtures, CI |
 | [Architecture](architecture.md) | DynamoDB schema, token bucket algorithm |
+| [Fill-Instant Proofs](fill-instant-proofs.md) | Why one DynamoDB write cannot admit strictly, and what two writes can (ADR-153, ADR-154) |
 
 ## Detailed Reference
 

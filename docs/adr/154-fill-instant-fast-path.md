@@ -4,7 +4,7 @@
 **Date:** 2026-11-07
 **Issue:** Refs [#808](https://github.com/zeroae/zae-limiter/issues/808)
 **Related:** ADR-114, ADR-115, ADR-133, ADR-135, ADR-147, [ADR-153](153-admission-contract-for-dripping-limits.md)
-**Design:** `docs/plans/2026-11-07-fill-instant-fast-path-design.md` (the proofs, and the behaviour with many consumers)
+**Design:** [Fill-instant proofs](../contributing/fill-instant-proofs.md) (the bounds, and the behaviour with many consumers)
 
 ## Context
 
