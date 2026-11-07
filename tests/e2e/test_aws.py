@@ -34,6 +34,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
+from tests.fixtures.names import IAM_NAME_FORMAT, PERMISSION_BOUNDARY, iam_name
 from zae_limiter import Limit, RateLimiter, Repository, StackOptions
 from zae_limiter.models import BucketState
 from zae_limiter.schema import WCU_LIMIT_NAME
@@ -95,9 +96,9 @@ class TestE2EAWSFullWorkflow:
             usage_retention_days=1,  # Minimum for cost
             lambda_timeout=60,
             lambda_memory=256,
-            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-            role_name_format="PowerUserPB-{}",
-            policy_name_format="PowerUserPB-{}",
+            permission_boundary=PERMISSION_BOUNDARY,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
         )
 
         repo = await (
@@ -163,15 +164,15 @@ class TestE2EAWSFullWorkflow:
 
         iam = boto3.client("iam", region_name="us-east-1")
 
-        # The role name format "PowerUserPB-{}" produces "PowerUserPB-{name}-aggr"
+        # IAM_NAME_FORMAT produces iam_name(f"{name}-aggr")
         # The {} is replaced with the component name: {name}-aggr (ADR-116)
-        expected_role_name = f"PowerUserPB-{unique_name_class}-aggr"
+        expected_role_name = iam_name(f"{unique_name_class}-aggr")
 
         role = iam.get_role(RoleName=expected_role_name)
 
         assert role["Role"]["RoleName"] == expected_role_name
         assert role["Role"]["PermissionsBoundary"]["PermissionsBoundaryArn"] == (
-            "arn:aws:iam::aws:policy/PowerUserAccess"
+            PERMISSION_BOUNDARY
         )
 
     @pytest.mark.asyncio(loop_scope="class")
@@ -344,9 +345,9 @@ class TestE2EAWSUsageSnapshots:
             enable_alarms=False,  # Faster for snapshot tests
             snapshot_windows="hourly,daily",
             usage_retention_days=1,
-            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-            role_name_format="PowerUserPB-{}",
-            policy_name_format="PowerUserPB-{}",
+            permission_boundary=PERMISSION_BOUNDARY,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
         )
 
         repo = await (
@@ -507,9 +508,9 @@ class TestE2EAWSRateLimiting:
             enable_aggregator=False,
             enable_alarms=False,
             usage_retention_days=1,
-            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-            role_name_format="PowerUserPB-{}",
-            policy_name_format="PowerUserPB-{}",
+            permission_boundary=PERMISSION_BOUNDARY,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
         )
 
         repo = await (
@@ -627,9 +628,9 @@ class TestE2EAWSXRayTracingEnabled:
             enable_tracing=True,
             enable_alarms=False,  # Faster for tracing tests
             usage_retention_days=1,
-            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-            role_name_format="PowerUserPB-{}",
-            policy_name_format="PowerUserPB-{}",
+            permission_boundary=PERMISSION_BOUNDARY,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
         )
 
         repo = await (
@@ -676,7 +677,7 @@ class TestE2EAWSXRayTracingEnabled:
         import boto3
 
         iam = boto3.client("iam", region_name="us-east-1")
-        role_name = f"PowerUserPB-{unique_name_class}-aggr"
+        role_name = iam_name(f"{unique_name_class}-aggr")
 
         # Get inline policies
         response = iam.list_role_policies(RoleName=role_name)
@@ -859,9 +860,9 @@ class TestE2EAWSXRayTracingDisabled:
             enable_tracing=False,  # Explicitly disabled
             enable_alarms=False,
             usage_retention_days=1,
-            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-            role_name_format="PowerUserPB-{}",
-            policy_name_format="PowerUserPB-{}",
+            permission_boundary=PERMISSION_BOUNDARY,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
         )
 
         repo = await (
@@ -908,7 +909,7 @@ class TestE2EAWSXRayTracingDisabled:
         import boto3
 
         iam = boto3.client("iam", region_name="us-east-1")
-        role_name = f"PowerUserPB-{unique_name_class}-aggr"
+        role_name = iam_name(f"{unique_name_class}-aggr")
 
         # Get inline policies
         response = iam.list_role_policies(RoleName=role_name)
@@ -935,9 +936,9 @@ class TestE2EAWSSpeculativeConsume:
             enable_aggregator=False,
             enable_alarms=False,
             usage_retention_days=1,
-            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-            role_name_format="PowerUserPB-{}",
-            policy_name_format="PowerUserPB-{}",
+            permission_boundary=PERMISSION_BOUNDARY,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
         )
 
         repo = await (
@@ -1237,9 +1238,9 @@ class TestE2EAWSProvisioner:
             enable_aggregator=False,
             enable_alarms=False,
             usage_retention_days=1,
-            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-            role_name_format="PowerUserPB-{}",
-            policy_name_format="PowerUserPB-{}",
+            permission_boundary=PERMISSION_BOUNDARY,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
         )
 
         repo = await (
@@ -1481,9 +1482,9 @@ class TestE2EAWSProvisionerCFNStack:
             .enable_aggregator(False)
             .enable_alarms(False)
             .usage_retention_days(1)
-            .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
-            .role_name_format("PowerUserPB-{}")
-            .policy_name_format("PowerUserPB-{}")
+            .permission_boundary(PERMISSION_BOUNDARY)
+            .role_name_format(IAM_NAME_FORMAT)
+            .policy_name_format(IAM_NAME_FORMAT)
             .build()
         )
 
@@ -1938,8 +1939,8 @@ class TestE2EAWSBoundaryWithoutRoleNameFormat:
             Repository.builder()
             .stack(unique_name_class)
             .region("us-east-1")
-            .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
-            .policy_name_format("PowerUserPB-{}")
+            .permission_boundary(PERMISSION_BOUNDARY)
+            .policy_name_format(IAM_NAME_FORMAT)
             .create_iam_roles(False)
             .enable_aggregator(False)
             .enable_provisioner(False)
@@ -1964,7 +1965,7 @@ class TestE2EAWSBoundaryWithoutRoleNameFormat:
 
         outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
         # The boundary is set, so its export is emitted; the format is not.
-        assert outputs["PermissionBoundaryArn"] == "arn:aws:iam::aws:policy/PowerUserAccess"
+        assert outputs["PermissionBoundaryArn"] == PERMISSION_BOUNDARY
         assert "RoleNameFormat" not in outputs
 
 
@@ -2000,9 +2001,9 @@ class TestE2EAWSAcquirePolicies:
             .enable_alarms(False)
             .usage_retention_days(1)
             .create_iam_roles(True)
-            .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
-            .role_name_format("PowerUserPB-{}")
-            .policy_name_format("PowerUserPB-{}")
+            .permission_boundary(PERMISSION_BOUNDARY)
+            .role_name_format(IAM_NAME_FORMAT)
+            .policy_name_format(IAM_NAME_FORMAT)
             .build()
         )
 
@@ -2151,7 +2152,7 @@ class TestE2EAWSAcquirePolicies:
         await self._seed(acquire_policy_stack, namespace)
 
         role_arn = self._outputs(unique_name_class)["AppRoleArn"]
-        assert role_arn.endswith(f":role/PowerUserPB-{unique_name_class}-app")
+        assert role_arn.endswith(":role/" + iam_name(f"{unique_name_class}-app"))
 
         self._become(monkeypatch, self._assume(role_arn))
         await self._exercise(unique_name_class, namespace)
@@ -2177,11 +2178,11 @@ class TestE2EAWSAcquirePolicies:
         partition, account = self._caller_partition_and_account()
 
         iam = boto3.client("iam")
-        role_name = f"PowerUserPB-{unique_name_class}-nsacq"
+        role_name = iam_name(f"{unique_name_class}-nsacq")
         assert len(role_name) <= 64
         iam.create_role(
             RoleName=role_name,
-            PermissionsBoundary=f"arn:{partition}:iam::aws:policy/PowerUserAccess",
+            PermissionsBoundary=PERMISSION_BOUNDARY,
             AssumeRolePolicyDocument=json.dumps(
                 {
                     "Version": "2012-10-17",
@@ -2237,9 +2238,9 @@ class TestE2EAWSResetAndTopUp:
             .enable_alarms(False)
             .usage_retention_days(1)
             .create_iam_roles(True)
-            .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
-            .role_name_format("PowerUserPB-{}")
-            .policy_name_format("PowerUserPB-{}")
+            .permission_boundary(PERMISSION_BOUNDARY)
+            .role_name_format(IAM_NAME_FORMAT)
+            .policy_name_format(IAM_NAME_FORMAT)
             .build()
         )
 
@@ -2390,11 +2391,11 @@ class TestE2EAWSResetAndTopUp:
         partition, account = TestE2EAWSAcquirePolicies._caller_partition_and_account()
 
         iam = boto3.client("iam")
-        role_name = f"PowerUserPB-{unique_name_class}-nsfull"
+        role_name = iam_name(f"{unique_name_class}-nsfull")
         assert len(role_name) <= 64
         iam.create_role(
             RoleName=role_name,
-            PermissionsBoundary=f"arn:{partition}:iam::aws:policy/PowerUserAccess",
+            PermissionsBoundary=PERMISSION_BOUNDARY,
             AssumeRolePolicyDocument=json.dumps(
                 {
                     "Version": "2012-10-17",
@@ -2496,9 +2497,9 @@ class TestE2EAWSMultiResourceAndMove:
             .enable_alarms(False)
             .usage_retention_days(1)
             .create_iam_roles(True)
-            .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
-            .role_name_format("PowerUserPB-{}")
-            .policy_name_format("PowerUserPB-{}")
+            .permission_boundary(PERMISSION_BOUNDARY)
+            .role_name_format(IAM_NAME_FORMAT)
+            .policy_name_format(IAM_NAME_FORMAT)
             .build()
         )
 
@@ -2553,11 +2554,11 @@ class TestE2EAWSMultiResourceAndMove:
         policy_arn = TestE2EAWSAcquirePolicies._outputs(stack)[policy_output]
         partition, account = TestE2EAWSAcquirePolicies._caller_partition_and_account()
         iam = boto3.client("iam")
-        role_name = f"PowerUserPB-{stack}-{suffix}"
+        role_name = iam_name(f"{stack}-{suffix}")
         assert len(role_name) <= 64
         iam.create_role(
             RoleName=role_name,
-            PermissionsBoundary=f"arn:{partition}:iam::aws:policy/PowerUserAccess",
+            PermissionsBoundary=PERMISSION_BOUNDARY,
             AssumeRolePolicyDocument=json.dumps(
                 {
                     "Version": "2012-10-17",
@@ -2967,9 +2968,9 @@ class TestE2EAWSUpgradeAppliesTemplate:
             enable_aggregator=False,
             enable_provisioner=False,
             enable_alarms=False,
-            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-            role_name_format="PowerUserPB-{}",
-            policy_name_format="PowerUserPB-{}",
+            permission_boundary=PERMISSION_BOUNDARY,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
         )
 
         async def create() -> None:

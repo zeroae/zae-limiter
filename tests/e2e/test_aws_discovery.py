@@ -21,6 +21,7 @@ Resources are cleaned up after tests, but verify via AWS Console.
 
 import pytest
 
+from tests.fixtures.names import IAM_NAME_FORMAT, PERMISSION_BOUNDARY, stack_name
 from zae_limiter import RateLimiter, Repository, StackOptions
 from zae_limiter.infra.discovery import InfrastructureDiscovery
 from zae_limiter.infra.stack_manager import (
@@ -33,18 +34,16 @@ from zae_limiter.infra.stack_manager import (
 pytestmark = [pytest.mark.aws, pytest.mark.e2e]
 
 REGION = "us-east-1"
-PERMISSION_BOUNDARY = "arn:aws:iam::aws:policy/PowerUserAccess"
-ROLE_NAME_FORMAT = "PowerUserPB-{}"
 
 
 @pytest.fixture(scope="class")
 def discovery_name():
-    """Short unique name that fits IAM role name limits with PowerUserPB- prefix."""
+    """Short unique name that fits IAM role name limits with the IAM name prefix."""
     import time
     import uuid
 
     unique_id = uuid.uuid4().hex[:6]
-    return f"disc-{int(time.time()) % 100000}-{unique_id}"
+    return stack_name(f"disc-{int(time.time()) % 100000}-{unique_id}")
 
 
 class TestTagBasedDiscovery:
@@ -57,8 +56,8 @@ class TestTagBasedDiscovery:
             enable_aggregator=False,
             enable_alarms=False,
             permission_boundary=PERMISSION_BOUNDARY,
-            role_name_format=ROLE_NAME_FORMAT,
-            policy_name_format=ROLE_NAME_FORMAT,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
         )
 
         repo = await (
@@ -170,8 +169,8 @@ class TestDiscoveryWithUserTags:
             enable_aggregator=False,
             enable_alarms=False,
             permission_boundary=PERMISSION_BOUNDARY,
-            role_name_format=ROLE_NAME_FORMAT,
-            policy_name_format=ROLE_NAME_FORMAT,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
             tags={"env": "test", "team": "platform"},
         )
 

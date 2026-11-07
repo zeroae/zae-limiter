@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from tests.fixtures.names import IAM_NAME_FORMAT, PERMISSION_BOUNDARY, stack_name
 from zae_limiter import Limit, StackOptions, SyncRateLimiter, SyncRepository
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.aws]
@@ -50,7 +51,7 @@ def aws_unique_name():
     Max length: 16 chars to leave room for role suffixes.
     """
     unique_id = uuid.uuid4().hex[:8]
-    return f"awsbench-{unique_id}"
+    return stack_name(f"awsbench-{unique_id}")
 
 
 class TestAWSLatencyBenchmarks:
@@ -75,9 +76,9 @@ class TestAWSLatencyBenchmarks:
             enable_aggregator=False,
             enable_alarms=False,
             usage_retention_days=1,
-            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-            role_name_format="PowerUserPB-{}",
-            policy_name_format="PowerUserPB-{}",
+            permission_boundary=PERMISSION_BOUNDARY,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
         )
 
         repo = (
@@ -211,9 +212,9 @@ class TestAWSThroughputBenchmarks:
             enable_aggregator=False,
             enable_alarms=False,
             usage_retention_days=1,
-            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-            role_name_format="PowerUserPB-{}",
-            policy_name_format="PowerUserPB-{}",
+            permission_boundary=PERMISSION_BOUNDARY,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
         )
 
         repo = (
@@ -406,9 +407,9 @@ class TestAWSCascadeSpeculativeComparison:
             enable_aggregator=False,
             enable_alarms=False,
             usage_retention_days=1,
-            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-            role_name_format="PowerUserPB-{}",
-            policy_name_format="PowerUserPB-{}",
+            permission_boundary=PERMISSION_BOUNDARY,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
         )
 
         repo = (
@@ -589,9 +590,9 @@ class TestAWSCascadeBenchmarks:
             enable_aggregator=False,
             enable_alarms=False,
             usage_retention_days=1,
-            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-            role_name_format="PowerUserPB-{}",
-            policy_name_format="PowerUserPB-{}",
+            permission_boundary=PERMISSION_BOUNDARY,
+            role_name_format=IAM_NAME_FORMAT,
+            policy_name_format=IAM_NAME_FORMAT,
         )
 
         repo = (

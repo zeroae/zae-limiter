@@ -1,0 +1,164 @@
+name: AWS E2E
+
+# The real-AWS suite (`pytest -m aws --run-aws`), authenticated through GitHub OIDC
+# (#189). The role it assumes is defined in .github/aws-e2e/cfn_template.yaml: it
+# trusts only jobs in the `aws-e2e` environment and can touch only stacks named
+# `zci-*`, so every test resource is named through tests/fixtures/names.py.
+#
+# Runs on:
+# - workflow_dispatch, from any branch
+# - a push to a release branch, so a release's AWS coverage comes from CI
+# - a same-repository pull request labelled `aws-e2e` (the label is removed when
+#   the run ends; label it again to re-run). Fork PRs get no OIDC token.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pytest-args:
+        description: 'Extra pytest arguments, e.g. -k TestE2EAWSRateLimiting'
+        type: string
+        default: ''
+      run-benchmarks:
+        description: 'Also run tests/benchmark/test_aws.py and publish the results'
+        type: boolean
+        default: false
+  push:
+    branches:
+      - 'release/v*'
+      - 'release/[0-9]*'
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+# One run in the account at a time: the cleanup step deletes every zci-* stack,
+# which is only safe while no other run owns one. Never cancel a run mid-way,
+# or its stacks outlive it until the next run's cleanup.
+concurrency:
+  group: aws-e2e
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  AWS_DEFAULT_REGION: us-east-1
+  ZAEL_E2E_STACK_PREFIX: zci-
+  ZAEL_E2E_IAM_NAME_PREFIX: ''
+
+jobs:
+  e2e:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.label.name == 'aws-e2e' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    environment: aws-e2e
+    timeout-minutes: 90
+    env:
+      # Environment variables (vars) resolve only in a job that names the environment
+      ZAEL_E2E_PERMISSION_BOUNDARY: ${{ vars.AWS_E2E_PERMISSION_BOUNDARY }}
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write  # remove the aws-e2e label afterwards
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # hatch-vcs needs tags; a tagless build is refused by ratcheted stacks (#655)
+      - uses: astral-sh/setup-uv@v7
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync --all-extras
+      - name: Check the aws-e2e environment variables
+        env:
+          ROLE_ARN: ${{ vars.AWS_E2E_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE_ARN" ] || [ -z "$ZAEL_E2E_PERMISSION_BOUNDARY" ]; then
+            echo "::error::Set AWS_E2E_ROLE_ARN and AWS_E2E_PERMISSION_BOUNDARY on the aws-e2e environment (.github/aws-e2e/README.md)"
+            exit 1
+          fi
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_E2E_ROLE_ARN }}
+          role-session-name: zae-limiter-e2e-${{ github.run_id }}
+          role-duration-seconds: 7200
+          aws-region: us-east-1
+      - name: Run AWS e2e suite
+        env:
+          PYTEST_ARGS: ${{ inputs.pytest-args }}
+        # Stack creation dominates; the tests are I/O bound, so run more workers
+        # than the runner has cores.
+        run: |
+          # shellcheck disable=SC2086
+          uv run pytest -m aws --run-aws -n 8 --durations=20 \
+            --junitxml=aws-e2e.xml -o junit_family=legacy $PYTEST_ARGS
+      - name: Delete leftover test stacks
+        if: always()
+        # Cutoff 0 is safe only here: runs are serialized, so every zci-* stack
+        # left now belongs to this run. Retries a DELETE_FAILED stack once.
+        run: uv run python scripts/reap_e2e_stacks.py --older-than-days 0
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: aws-e2e-junit
+          path: aws-e2e.xml
+          if-no-files-found: ignore
+      - name: Remove the aws-e2e label
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label aws-e2e || true
+
+  benchmark:
+    needs: e2e
+    if: github.event_name == 'workflow_dispatch' && inputs.run-benchmarks
+    runs-on: ubuntu-latest
+    environment: aws-e2e
+    timeout-minutes: 60
+    env:
+      # Environment variables (vars) resolve only in a job that names the environment
+      ZAEL_E2E_PERMISSION_BOUNDARY: ${{ vars.AWS_E2E_PERMISSION_BOUNDARY }}
+    permissions:
+      contents: write  # push results to gh-pages
+      id-token: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # gh-pages access, and hatch-vcs tags
+      - uses: astral-sh/setup-uv@v7
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync --extra dev --extra plot --extra bench
+      - name: Check the aws-e2e environment variables
+        env:
+          ROLE_ARN: ${{ vars.AWS_E2E_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE_ARN" ] || [ -z "$ZAEL_E2E_PERMISSION_BOUNDARY" ]; then
+            echo "::error::Set AWS_E2E_ROLE_ARN and AWS_E2E_PERMISSION_BOUNDARY on the aws-e2e environment (.github/aws-e2e/README.md)"
+            exit 1
+          fi
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_E2E_ROLE_ARN }}
+          role-session-name: zae-limiter-bench-${{ github.run_id }}
+          role-duration-seconds: 7200
+          aws-region: us-east-1
+      - name: Run AWS benchmarks
+        run: uv run pytest tests/benchmark/test_aws.py --run-aws --benchmark-enable --benchmark-json=benchmark-aws.json -n 0
+        env:
+          GEVENT: "1"
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'pytest'
+          output-file-path: benchmark-aws.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: benchmarks/aws
+          auto-push: true
+          alert-threshold: '150%'
+          comment-on-alert: true
+          fail-on-alert: false
