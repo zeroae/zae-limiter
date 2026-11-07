@@ -14,6 +14,9 @@ provisioner wrote without either.
 
 from __future__ import annotations
 
+import contextlib
+import threading
+import time
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -24,6 +27,7 @@ from botocore.exceptions import ClientError
 from zae_limiter import Limit
 from zae_limiter.schema import pk_system, sk_entity_config_resources
 from zae_limiter.sync_repository import SyncRepository
+from zae_limiter_provisioner import applier
 from zae_limiter_provisioner.applier import _build_change_item, apply_changes
 from zae_limiter_provisioner.differ import Change
 from zae_limiter_provisioner.handler import on_event
@@ -372,3 +376,119 @@ class TestCountedWritesUnderContention:
 
         assert result.errors == []
         assert "Could not tidy" not in caplog.text
+
+
+class _ConflictingClient:
+    """A DynamoDB client that cancels overlapping transactions, as DynamoDB does.
+
+    Every counted transaction updates the namespace's one registry item, and
+    DynamoDB cancels a transaction on an item another one holds
+    (`TransactionConflict`). moto never does, so this stands in for it.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._lock = threading.Lock()
+        self._in_flight = 0
+        self.conflicts = 0
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def transact_write_items(self, **kwargs: Any) -> Any:
+        with self._lock:
+            self._in_flight += 1
+            overlapping = self._in_flight > 1
+        try:
+            time.sleep(0.005)
+            if overlapping:
+                with self._lock:
+                    self.conflicts += 1
+                raise _client_error("TransactionCanceledException", "None", "TransactionConflict")
+            return self._inner.transact_write_items(**kwargs)
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+
+
+def _entity_creates(n: int) -> list[Change]:
+    return [
+        Change(
+            "create", "entity", f"user-{i}/{RESOURCE if i % 2 else ODD_RESOURCE}", _full_rpm(i + 1)
+        )
+        for i in range(n)
+    ]
+
+
+class TestConcurrentCountedWrites:
+    """An apply's 8 config writers share one registry item (measured on AWS: 134 of
+    640 entity creates gave up before counted transactions were serialized)."""
+
+    def test_a_concurrent_initial_apply_counts_every_entity(self, repo, monkeypatch):
+        monkeypatch.setattr(applier, "_WRITE_WORKERS", 8)
+        client = _ConflictingClient(boto3.client("dynamodb"))
+        changes = _entity_creates(40)
+
+        result = apply_changes(
+            changes, TABLE, repo._namespace_id, client, stored={id(c): {} for c in changes}
+        )
+
+        assert result.errors == []
+        assert result.created == 40
+        assert client.conflicts == 0
+        assert _counts(repo) == {RESOURCE: 20, ODD_RESOURCE: 20}
+        assert len(_entities(repo, RESOURCE)) == 20
+
+    def test_the_simulator_cancels_unserialized_transactions(self, repo, monkeypatch):
+        """Without the lock the same apply conflicts, so the test above can fail."""
+        monkeypatch.setattr(applier, "_WRITE_WORKERS", 8)
+        monkeypatch.setattr(applier, "_COUNTED_TRANSACTION_LOCK", contextlib.nullcontext())
+        monkeypatch.setattr(applier.time, "sleep", lambda _s: None)
+        client = _ConflictingClient(boto3.client("dynamodb"))
+        changes = _entity_creates(40)
+
+        apply_changes(
+            changes, TABLE, repo._namespace_id, client, stored={id(c): {} for c in changes}
+        )
+
+        assert client.conflicts > 0
+
+
+class TestCountedTransact:
+    """Conflicts with other writers are retried with jitter; anything else is not."""
+
+    @pytest.fixture(autouse=True)
+    def _no_sleep(self, monkeypatch):
+        self.sleeps: list[float] = []
+        monkeypatch.setattr(applier.time, "sleep", self.sleeps.append)
+
+    def test_a_conflict_is_retried_with_backoff(self):
+        client = MagicMock()
+        conflict = _client_error("TransactionCanceledException", "None", "TransactionConflict")
+        client.transact_write_items.side_effect = [conflict, conflict, {}]
+
+        applier._counted_transact(client, [])
+
+        assert client.transact_write_items.call_count == 3
+        assert len(self.sleeps) == 2
+        assert all(0 <= s <= applier._CONFLICT_BACKOFF_CAP_S for s in self.sleeps)
+
+    def test_a_lost_condition_is_not_retried_here(self):
+        client = MagicMock()
+        client.transact_write_items.side_effect = _client_error(
+            "TransactionCanceledException", "ConditionalCheckFailed", "TransactionConflict"
+        )
+
+        with pytest.raises(ClientError):
+            applier._counted_transact(client, [])
+        assert client.transact_write_items.call_count == 1
+
+    def test_a_conflict_that_persists_is_raised(self):
+        client = MagicMock()
+        client.transact_write_items.side_effect = _client_error(
+            "TransactionCanceledException", "None", "TransactionConflict"
+        )
+
+        with pytest.raises(ClientError):
+            applier._counted_transact(client, [])
+        assert client.transact_write_items.call_count == applier._CONFLICT_RETRIES + 1

@@ -7,6 +7,9 @@ Lambda where aiobotocore is not available.
 from __future__ import annotations
 
 import logging
+import random
+import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -503,8 +506,10 @@ def apply_changes(
 
     # Every change writes its own config item, and nothing reads them back
     # until every write has returned (the fan-outs run after), so the writes
-    # are independent and go out `_WRITE_WORKERS` at a time. The results are
-    # recorded in change order, as a serial loop recorded them.
+    # go out `_WRITE_WORKERS` at a time. The one shared item, the entity
+    # registry, is updated only by counted transactions, which serialize
+    # themselves (`_counted_transact`). The results are recorded in change
+    # order, as a serial loop recorded them.
     if len(changes) == 1:
         outcomes = [_write(changes[0])]
     else:
@@ -585,6 +590,20 @@ GSI3_SK = "GSI3SK"
 _REGISTRY_RESOURCES = "resources"
 # A counted write that keeps losing its condition to concurrent writers.
 _COUNTED_WRITE_ATTEMPTS = 3
+
+# Every counted transaction updates the namespace's one `#ENTITY_CONFIG_RESOURCES`
+# item, and DynamoDB cancels concurrent transactions on one item
+# (`TransactionConflict`). An apply's config writes run on a thread pool
+# (`apply_changes`), so its counted transactions take this lock and run one at
+# a time; plain writes, including every update of an item already counted, do
+# not. On AWS, 8 unserialized writers had 684 of 1190 transactions cancelled
+# and 134 of 640 entity creates give up.
+_COUNTED_TRANSACTION_LOCK = threading.Lock()
+# A conflict with another writer (a concurrent apply, or the API) is retried
+# with full jitter before it counts as a lost condition.
+_CONFLICT_RETRIES = 5
+_CONFLICT_BACKOFF_BASE_S = 0.025
+_CONFLICT_BACKOFF_CAP_S = 0.4
 
 
 def resource_registry_update(namespace_id: str, resource: str, *, add: bool) -> dict[str, Any]:
@@ -693,6 +712,32 @@ def _read_config(client: Any, table_name: str, pk: str, sk: str) -> dict[str, An
     return item if isinstance(item, dict) else {}
 
 
+def _is_transaction_conflict(error: ClientError) -> bool:
+    """A transaction cancelled only because another one held an item, not by a condition."""
+    if error.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+        return False
+    reasons = [r.get("Code") for r in error.response.get("CancellationReasons", [])]
+    return "TransactionConflict" in reasons and "ConditionalCheckFailed" not in reasons
+
+
+def _counted_transact(client: Any, transact_items: list[dict[str, Any]]) -> None:
+    """Run a counted transaction: one at a time per apply, conflicts retried with jitter.
+
+    A conflict still there after `_CONFLICT_RETRIES` is raised, and the caller
+    treats it as a lost condition (`_lost_condition`): re-read, try again.
+    """
+    with _COUNTED_TRANSACTION_LOCK:
+        for attempt in range(_CONFLICT_RETRIES + 1):
+            try:
+                client.transact_write_items(TransactItems=transact_items)
+                return
+            except ClientError as e:
+                if attempt == _CONFLICT_RETRIES or not _is_transaction_conflict(e):
+                    raise
+                cap = min(_CONFLICT_BACKOFF_CAP_S, _CONFLICT_BACKOFF_BASE_S * 2**attempt)
+                time.sleep(random.uniform(0, cap))
+
+
 def _lost_condition(error: ClientError) -> bool:
     """A counted write lost to a concurrent one: re-read and try again.
 
@@ -751,8 +796,9 @@ def _apply_entity_set(
                     ExpressionAttributeNames=names,
                 )
                 return _old_image(response), item
-            client.transact_write_items(
-                TransactItems=[
+            _counted_transact(
+                client,
+                [
                     {
                         "Put": {
                             "TableName": table_name,
@@ -767,7 +813,7 @@ def _apply_entity_set(
                             **entity_registry_update(namespace_id, resource, 1),
                         }
                     },
-                ]
+                ],
             )
             return old, item
         except ClientError as e:
@@ -815,8 +861,9 @@ def _apply_entity_delete(
                     ExpressionAttributeNames=names,
                 )
                 return _old_image(response)
-            client.transact_write_items(
-                TransactItems=[
+            _counted_transact(
+                client,
+                [
                     {
                         "Delete": {
                             "TableName": table_name,
@@ -831,7 +878,7 @@ def _apply_entity_delete(
                             **entity_registry_update(namespace_id, resource, -1),
                         }
                     },
-                ]
+                ],
             )
             _cleanup_entity_registry(client, table_name, namespace_id, resource)
             return old
