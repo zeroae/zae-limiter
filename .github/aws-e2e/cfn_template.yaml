@@ -1,0 +1,366 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  GitHub Actions OIDC access for the zae-limiter AWS e2e suite (#189). One role,
+  assumable only from the repository's aws-e2e environment, that can create and
+  delete test stacks named <ResourcePrefix>-* and nothing else. Every IAM role it
+  creates must carry the boundary defined here, which confines that role to the
+  same test resources. Deploy once per account, with administrator credentials.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: zeroae
+  GitHubRepo:
+    Type: String
+    Default: zae-limiter
+  GitHubEnvironment:
+    Type: String
+    Default: aws-e2e
+    Description: The only GitHub environment whose jobs may assume the role.
+  ResourcePrefix:
+    Type: String
+    Default: zci
+    AllowedPattern: '^[a-z][a-z0-9]{1,9}$'
+    Description: >-
+      Test stacks and every resource they own are named <ResourcePrefix>-*. The
+      workflow sets ZAEL_E2E_STACK_PREFIX to "<ResourcePrefix>-".
+  CreateOIDCProvider:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      'false' when the account already has the
+      token.actions.githubusercontent.com provider (an account holds one per URL).
+  RoleName:
+    Type: String
+    Default: zael-github-e2e
+    Description: Must not start with <ResourcePrefix>-, or the role could edit itself.
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOIDCProvider, 'true']
+
+Resources:
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # IAM validates GitHub's certificate against its own trusted CAs and ignores
+      # these; they are kept for tooling that still expects the list.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  # Boundary on every role the CI role creates, through a stack or directly
+  # (the acquire-policy tests create roles and assume them). Without it the CI
+  # role could create a role with any policy and pass it to a Lambda.
+  TestRoleBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${RoleName}-boundary
+      Description: Ceiling for IAM roles created by the zae-limiter AWS e2e suite.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: TestTables
+            Effect: Allow
+            Action:
+              - dynamodb:BatchGetItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:ConditionCheckItem
+              - dynamodb:DeleteItem
+              - dynamodb:DescribeStream
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+              - dynamodb:GetRecords
+              - dynamodb:GetShardIterator
+              - dynamodb:PutItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:UpdateItem
+            Resource:
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ResourcePrefix}-*
+          - Sid: ListStreams
+            Effect: Allow
+            Action: dynamodb:ListStreams
+            Resource: '*'
+          - Sid: TestLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ResourcePrefix}-*
+          - Sid: TestDeadLetterQueues
+            Effect: Allow
+            Action: sqs:SendMessage
+            Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${ResourcePrefix}-*
+          - Sid: TestAuditArchives
+            Effect: Allow
+            Action: s3:PutObject
+            Resource: !Sub arn:${AWS::Partition}:s3:::${ResourcePrefix}-*/*
+          - Sid: Tracing
+            Effect: Allow
+            Action:
+              - xray:PutTelemetryRecords
+              - xray:PutTraceSegments
+            Resource: '*'
+
+  E2ERole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: Assumed by the zae-limiter aws-e2e workflow through GitHub OIDC.
+      MaxSessionDuration: 7200
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateProvider
+                - !Ref GitHubOIDCProvider
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOrg}/${GitHubRepo}:environment:${GitHubEnvironment}
+      ManagedPolicyArns:
+        - !Ref DeployPolicy
+        - !Ref IamPolicy
+
+  DeployPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${RoleName}-deploy
+      Description: Create, exercise and delete zae-limiter test stacks.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: TestStacks
+            Effect: Allow
+            Action: cloudformation:*
+            Resource:
+              - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ResourcePrefix}-*/*
+              - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/zae-limiter-upgrade-*/*
+          - Sid: StackDiscovery
+            Effect: Allow
+            Action:
+              - cloudformation:DescribeStacks
+              - cloudformation:GetTemplateSummary
+              - cloudformation:ListExports
+              - cloudformation:ListStacks
+              - cloudformation:ValidateTemplate
+              - tag:GetResources
+              - tag:GetTagKeys
+              - tag:GetTagValues
+            Resource: '*'
+          - Sid: TestTables
+            Effect: Allow
+            Action: dynamodb:*
+            Resource:
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ResourcePrefix}-*
+          - Sid: DynamoDBRead
+            Effect: Allow
+            Action:
+              - dynamodb:DescribeEndpoints
+              - dynamodb:DescribeLimits
+              - dynamodb:ListStreams
+              - dynamodb:ListTables
+            Resource: '*'
+          - Sid: TestFunctions
+            Effect: Allow
+            Action: lambda:*
+            Resource:
+              - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}-*
+          - Sid: CreateTestEventSourceMappings
+            Effect: Allow
+            Action: lambda:CreateEventSourceMapping
+            Resource: '*'
+            Condition:
+              ArnLike:
+                lambda:FunctionArn: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}-*
+          # A delete or update names the mapping by UUID only, so lambda:FunctionArn is
+          # absent and a FunctionArn condition denies it (first CI run: every aggregator
+          # stack stuck in DELETE_FAILED). CloudFormation tags each mapping with its
+          # stack name; other stacks' mappings live in this account too.
+          - Sid: ChangeTestEventSourceMappings
+            Effect: Allow
+            Action:
+              - lambda:DeleteEventSourceMapping
+              - lambda:UpdateEventSourceMapping
+            Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:event-source-mapping:*
+            Condition:
+              StringLike:
+                aws:ResourceTag/aws:cloudformation:stack-name: !Sub ${ResourcePrefix}-*
+          - Sid: EventSourceMappingTags
+            Effect: Allow
+            Action:
+              - lambda:ListTags
+              - lambda:TagResource
+              - lambda:UntagResource
+            Resource:
+              - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:event-source-mapping:*
+          # After a delete, CloudFormation polls GetEventSourceMapping until the mapping
+          # is gone. Lambda authorizes a call on a missing mapping against "*", so a
+          # grant on mapping ARNs answers AccessDenied instead of ResourceNotFound and
+          # the stack lands in DELETE_FAILED (second CI run). Read-only.
+          - Sid: LambdaRead
+            Effect: Allow
+            Action:
+              - lambda:GetEventSourceMapping
+              - lambda:ListEventSourceMappings
+              - lambda:ListFunctions
+            Resource: '*'
+          - Sid: TestQueues
+            Effect: Allow
+            Action: sqs:*
+            Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${ResourcePrefix}-*
+          - Sid: TestAlarms
+            Effect: Allow
+            Action:
+              - cloudwatch:DeleteAlarms
+              - cloudwatch:DescribeAlarms
+              - cloudwatch:DisableAlarmActions
+              - cloudwatch:EnableAlarmActions
+              - cloudwatch:ListTagsForResource
+              - cloudwatch:PutMetricAlarm
+              - cloudwatch:TagResource
+              - cloudwatch:UntagResource
+            Resource: !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ResourcePrefix}-*
+          - Sid: MetricsRead
+            Effect: Allow
+            Action:
+              - cloudwatch:DescribeAlarms
+              - cloudwatch:DescribeAlarmsForMetric
+              - cloudwatch:GetMetricData
+              - cloudwatch:GetMetricStatistics
+              - cloudwatch:ListMetrics
+            Resource: '*'
+          - Sid: TestLogGroups
+            Effect: Allow
+            Action: logs:*
+            Resource:
+              - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ResourcePrefix}-*
+          - Sid: LogGroupDiscovery
+            Effect: Allow
+            Action: logs:DescribeLogGroups
+            Resource: '*'
+          - Sid: TestAuditBuckets
+            Effect: Allow
+            Action: s3:*
+            Resource:
+              - !Sub arn:${AWS::Partition}:s3:::${ResourcePrefix}-*
+          - Sid: TracesRead
+            Effect: Allow
+            Action:
+              - xray:BatchGetTraces
+              - xray:GetServiceGraph
+              - xray:GetTraceGraph
+              - xray:GetTraceSummaries
+            Resource: '*'
+          # Nothing a test does opens a test resource to another principal.
+          - Sid: DenyResourcePolicies
+            Effect: Deny
+            Action:
+              - dynamodb:PutResourcePolicy
+              - lambda:AddPermission
+              - lambda:CreateFunctionUrlConfig
+              - lambda:UpdateFunctionUrlConfig
+              - s3:PutBucketAcl
+              - s3:PutBucketPolicy
+              - s3:PutObjectAcl
+              - sqs:AddPermission
+            Resource: '*'
+
+  IamPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${RoleName}-iam
+      Description: IAM for zae-limiter test stacks, confined by the test-role boundary.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CreateBoundedTestRoles
+            Effect: Allow
+            Action:
+              - iam:AttachRolePolicy
+              - iam:CreateRole
+              - iam:DeleteRolePolicy
+              - iam:DetachRolePolicy
+              - iam:PutRolePolicy
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ResourcePrefix}-*
+            Condition:
+              StringEquals:
+                iam:PermissionsBoundary: !Ref TestRoleBoundary
+          - Sid: ManageTestRoles
+            Effect: Allow
+            Action:
+              - iam:DeleteRole
+              - iam:GetRole
+              - iam:GetRolePolicy
+              - iam:ListAttachedRolePolicies
+              - iam:ListInstanceProfilesForRole
+              - iam:ListRolePolicies
+              - iam:ListRoleTags
+              - iam:TagRole
+              - iam:UntagRole
+              - iam:UpdateRole
+              - iam:UpdateRoleDescription
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ResourcePrefix}-*
+          - Sid: PassTestRolesToLambda
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ResourcePrefix}-*
+            Condition:
+              StringEquals:
+                iam:PassedToService: lambda.amazonaws.com
+          - Sid: AssumeTestRoles
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ResourcePrefix}-*
+          - Sid: TestManagedPolicies
+            Effect: Allow
+            Action:
+              - iam:CreatePolicy
+              - iam:CreatePolicyVersion
+              - iam:DeletePolicy
+              - iam:DeletePolicyVersion
+              - iam:GetPolicy
+              - iam:GetPolicyVersion
+              - iam:ListEntitiesForPolicy
+              - iam:ListPolicyTags
+              - iam:ListPolicyVersions
+              - iam:SetDefaultPolicyVersion
+              - iam:TagPolicy
+              - iam:UntagPolicy
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${ResourcePrefix}-*
+          - Sid: ReadReferencedPolicies
+            Effect: Allow
+            Action:
+              - iam:GetPolicy
+              - iam:GetPolicyVersion
+            Resource:
+              - !Ref TestRoleBoundary
+              - !Sub arn:${AWS::Partition}:iam::aws:policy/*
+          - Sid: KeepBoundaries
+            Effect: Deny
+            Action:
+              - iam:DeleteRolePermissionsBoundary
+              - iam:PutRolePermissionsBoundary
+            Resource: '*'
+
+Outputs:
+  RoleArn:
+    Description: role-to-assume for aws-actions/configure-aws-credentials (AWS_E2E_ROLE_ARN).
+    Value: !GetAtt E2ERole.Arn
+  PermissionBoundaryArn:
+    Description: ZAEL_E2E_PERMISSION_BOUNDARY for the workflow.
+    Value: !Ref TestRoleBoundary
+  StackPrefix:
+    Description: ZAEL_E2E_STACK_PREFIX for the workflow.
+    Value: !Sub ${ResourcePrefix}-
