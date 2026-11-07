@@ -135,3 +135,36 @@ R.pop("hist_L4", None)
 html = open("template.html").read().replace("/*__DATA__*/null", json.dumps(R))
 open("report.html", "w").write(html)
 print("report.html", len(html) // 1024, "KB")
+
+# Claude artifact variant: the Artifact tool wraps the file in its own doctype/html/head/body,
+# so emit content only, theme tokens on :root, and no theme toggle (the host owns the theme).
+art = html
+head_end = art.index("<style>")
+art = "<title>Fill-instant review</title>\n" + art[head_end:]
+for old, new in [
+    ("</head>\n", ""),
+    ('<body class="viz-root">\n', ""),
+    ("</body>\n</html>\n", ""),
+    (".viz-root {\n  color-scheme: light;", ":root {\n  color-scheme: light;"),
+    (
+        ':root:where(:not([data-theme="light"])) .viz-root {',
+        ':root:where(:not([data-theme="light"])) {',
+    ),
+    (':root[data-theme="dark"] .viz-root {', ':root[data-theme="dark"] {'),
+    ("body.viz-root {", "body {"),
+    ('<div class="toggle"><button id="theme">Toggle dark</button></div>\n', ""),
+    ('<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">', '<div class="pair">'),
+    (
+        ".toggle {",
+        ".pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }\n"
+        "@media (max-width: 600px) { .pair { grid-template-columns: 1fr; } }\n.toggle {",
+    ),
+]:
+    assert old in art, old
+    art = art.replace(old, new)
+cut = art.index('document.getElementById("theme")')
+art = art[:cut] + art[art.index("});", cut) + 4 :]
+for tag in ("<!doctype", "<html", "<head", "<body", "Toggle dark"):
+    assert tag not in art, tag
+open("artifact.html", "w").write(art)
+print("artifact.html", len(art) // 1024, "KB")

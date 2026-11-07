@@ -4,7 +4,8 @@ A review of [ADR-153](../../adr/153-admission-contract-for-dripping-limits.md),
 ADR-154, ADR-155 and `docs/contributing/fill-instant-proofs.md` as proposed on branch
 `design/808-fill-instant-fast-path` @ 6c7eb0b8 (PR #811). Refs #808.
 
-Open `report.html` in a browser. It is self-contained and works offline. It explains how the
+Open `report.html` in a browser. It is self-contained and works offline. `artifact.html` is the same page
+prepared for the Claude `Artifact` tool, which supplies its own `<html>`/`<head>`/`<body>`. It explains how the
 fill-instant fast path works, measures #808 on the real library, runs a fuzz campaign against
 the proof's bound, and lists the findings.
 
