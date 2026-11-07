@@ -197,18 +197,22 @@ Resources:
             Condition:
               StringLike:
                 aws:ResourceTag/aws:cloudformation:stack-name: !Sub ${ResourcePrefix}-*
-          - Sid: EventSourceMappingReadAndTags
+          - Sid: EventSourceMappingTags
             Effect: Allow
             Action:
-              - lambda:GetEventSourceMapping
               - lambda:ListTags
               - lambda:TagResource
               - lambda:UntagResource
             Resource:
               - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:event-source-mapping:*
-          - Sid: LambdaList
+          # After a delete, CloudFormation polls GetEventSourceMapping until the mapping
+          # is gone. Lambda authorizes a call on a missing mapping against "*", so a
+          # grant on mapping ARNs answers AccessDenied instead of ResourceNotFound and
+          # the stack lands in DELETE_FAILED (second CI run). Read-only.
+          - Sid: LambdaRead
             Effect: Allow
             Action:
+              - lambda:GetEventSourceMapping
               - lambda:ListEventSourceMappings
               - lambda:ListFunctions
             Resource: '*'
