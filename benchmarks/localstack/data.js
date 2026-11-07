@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794081565296,
+  "lastUpdate": 1794088064945,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -39291,6 +39291,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.008634761523033036",
             "extra": "mean: 1.0787790221999956 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "876141b2de891747ecbfe712e4d01c1d5af7576c",
+          "message": "👷 ci: run the AWS e2e suite through GitHub OIDC (#810)\n\n## Summary\n- **Tests name AWS resources through `tests/fixtures/names.py`.** Every\nreal-AWS test used to hardcode the SSO profile's conventions: the\n`PowerUserPB-` IAM prefix (87 references) and the `PowerUserAccess`\nboundary. Stack names, IAM role and policy names and the boundary now\ncome from `stack_name()`, `iam_name()`, `IAM_NAME_FORMAT` and\n`PERMISSION_BOUNDARY`, which can be overridden with\n`ZAEL_E2E_STACK_PREFIX`, `ZAEL_E2E_IAM_NAME_PREFIX` and\n`ZAEL_E2E_PERMISSION_BOUNDARY`. The defaults are the old values, so\nlocal SSO runs behave as before. Touches `tests/e2e/test_aws.py`,\n`test_aws_discovery.py`, `test_aws_upgrade_tags.py`,\n`tests/benchmark/test_aws.py` and `tests/fixtures/stack_pairs.py`.\n- **`.github/aws-e2e/cfn_template.yaml`** defines the GitHub OIDC\nprovider (optional), the `zael-github-e2e` role, which trusts only\n`repo:zeroae/zae-limiter:environment:aws-e2e`, its managed policies, and\na permission boundary. The role can write only `zci-*` resources in\n`us-east-1`. Every role it creates must carry the boundary, and the\nboundary confines that role to the same test resources. The role cannot\nchange or remove a boundary, cannot edit its own role or policies (they\nare named `zael-github-e2e*`), and is denied resource policies. An\naccount administrator deploys it once.\n- **`.github/workflows/aws-e2e.yml`** runs `pytest -m aws --run-aws`\nwith that role (2-hour session). Triggers: `workflow_dispatch` (inputs\n`pytest-args` and `run-benchmarks`), pushes to `release/v*` /\n`release/[0-9]*`, and same-repository PRs labelled `aws-e2e`. The label\nis removed when the run ends. Runs are serialized (`concurrency:\naws-e2e`, never cancelled) because each run deletes leftover `zci-*`\nstacks. JUnit XML is uploaded as an artifact. A preflight step fails\nwith a pointer to the README if the environment variables are not set.\n- **`benchmark-aws` moves out of `ci-tests.yml`** into this workflow,\nbehind `run-benchmarks`. In `ci-tests.yml` it was a \"TODO: Blocked on\n#189\" job that could only fail.\n- **Docs:** `.github/aws-e2e/README.md` (setup),\n`docs/contributing/testing.md`, `.claude/rules/aws-testing.md` (the\nnaming rule: a hardcoded `PowerUserPB-` passes locally and fails in CI\nwith `AccessDenied`).\n\n## Test plan\n- [x] `uv run cfn-lint .github/aws-e2e/cfn_template.yaml` is clean\n- [x] The AWS suites collect (`pytest --collect-only` on the four\n`test_aws*.py` files: 76 tests)\n- [x] No `PowerUserPB-` / `PowerUserAccess` literal is left in the AWS\ntests outside `tests/fixtures/names.py` (one docstring mention in\n`test_aws.py` remains)\n- [ ] Local SSO run still passes with the defaults:\n`AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run pytest -m aws\n--run-aws -v`\n- [ ] After the one-time setup (deploy `zael-github-e2e`, create the\n`aws-e2e` environment with `AWS_E2E_ROLE_ARN` /\n`AWS_E2E_PERMISSION_BOUNDARY`, create the `aws-e2e` label): a green\nmanual dispatch of the full suite\n- [ ] A green label-triggered run on a PR, with the label removed\nafterwards\n- [ ] A run whose cleanup step deletes a deliberately leaked `zci-*`\nstack\n\nPart of #189. The issue stays open for the one-time admin setup and the\nverification runs, which can only happen after this merges because\n`workflow_dispatch` needs the workflow on `main`.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-11-07T16:41:08-05:00",
+          "tree_id": "74ef5c55b1f2b5bb62b89b5839e6cb6f8ca58fa1",
+          "url": "https://github.com/zeroae/zae-limiter/commit/876141b2de891747ecbfe712e4d01c1d5af7576c"
+        },
+        "date": 1794088063695,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.931519953577972,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005540770434950364",
+            "extra": "mean: 43.608099333335794 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.215678461108396,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005535587462721768",
+            "extra": "mean: 58.08658672727192 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.76184972572202,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003864685546233657",
+            "extra": "mean: 27.962759411763347 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 30.557015586738306,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005897491672773981",
+            "extra": "mean: 32.72570899999796 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 18.975234203631626,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01211045040396365",
+            "extra": "mean: 52.70027179999772 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 74.13885920534356,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004845261734871645",
+            "extra": "mean: 13.488203227274974 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.592237526304135,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005974432726576379",
+            "extra": "mean: 39.07434818749955 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 25.0812673033901,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007409457163408383",
+            "extra": "mean: 39.87039362499978 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 21.99417448643013,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0395127915521316",
+            "extra": "mean: 45.46658482758585 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 24.32657653988679,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0045706369238120844",
+            "extra": "mean: 41.10730494117664 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 27.28265303578098,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005765474447470292",
+            "extra": "mean: 36.653326884614486 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 27.352495746823774,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004904084037181464",
+            "extra": "mean: 36.55973514285701 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.708023211550117,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004121552625646045",
+            "extra": "mean: 32.56477934482846 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.930687587358421,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0024675051290329562",
+            "extra": "mean: 517.9501886000139 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.938699740318651,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0017124079276220941",
+            "extra": "mean: 515.8096322000006 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9493266890489999,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0027747537779969937",
+            "extra": "mean: 1.0533781589999989 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9264082691406672,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006082801482830984",
+            "extra": "mean: 1.079437687799998 sec\nrounds: 5"
           }
         ]
       }
