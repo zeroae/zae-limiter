@@ -293,34 +293,3 @@ jobs:
           alert-threshold: '150%'
           comment-on-alert: true
           fail-on-alert: false
-
-  # TODO: Blocked on #189 (AWS OIDC authentication)
-  # Uncomment AWS credential steps once #189 lands
-  benchmark-aws:
-    needs: verify-sync
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0  # Needed for benchmark gh-pages access
-      - uses: astral-sh/setup-uv@v7
-      - name: Set up Python
-        run: uv python install 3.12
-      - name: Install dependencies
-        run: uv sync --extra dev --extra plot --extra bench
-      - name: Run AWS benchmarks
-        run: uv run pytest tests/benchmark/test_aws.py --run-aws --benchmark-enable --benchmark-json=benchmark-aws.json -n 0
-        env:
-          GEVENT: "1"
-      - name: Store benchmark result
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          tool: 'pytest'
-          output-file-path: benchmark-aws.json
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          benchmark-data-dir-path: benchmarks/aws
-          auto-push: true
-          alert-threshold: '150%'
-          comment-on-alert: true
-          fail-on-alert: false
