@@ -22,8 +22,11 @@ from zae_limiter_provisioner.differ import Change
 from zae_limiter_provisioner.fanout import fanout_cascade as real_fanout_cascade
 from zae_limiter_provisioner.fanout import fanout_entity as real_fanout_entity
 from zae_limiter_provisioner.handler import (
+    _CFN_RESPONSE_MAX_BYTES,
+    CFN_RESULT_LOG_PREFIX,
     _cfn_limits_to_manifest,
     _cfn_properties_to_manifest,
+    _handle_cfn_with_response,
     _sync_bucket_param_changes,
     on_event,
 )
@@ -2161,14 +2164,16 @@ class TestCascadeFanoutChanges:
             [("entity", "old/gpt-4"), ("resource", "llm")],
         )
 
-        mock_gate.assert_called_once_with(changes, "t")
+        mock_gate.assert_called_once_with(changes, "t", _boto3.client.return_value)
         # Every owed cascade fan-out runs once, on its own, through the
         # table-driven retry (`resource llm` is both this apply's and a
-        # leftover); resources first.
-        assert [c.args for c in mock_fanout.call_args_list] == [
-            ("t", "ns", [("resource", "llm")]),
-            ("t", "ns", [("entity", "u1/llm")]),
+        # leftover); resources first. The entity levels share a phase and run
+        # concurrently, so their relative order is not fixed.
+        calls = [c.args for c in mock_fanout.call_args_list]
+        assert calls[0] == ("t", "ns", [("resource", "llm")])
+        assert sorted(calls[1:]) == [
             ("t", "ns", [("entity", "old/gpt-4")]),
+            ("t", "ns", [("entity", "u1/llm")]),
         ]
         assert "err" in result.errors
         # The legacy entries become pending items before anything is written,
@@ -4422,3 +4427,134 @@ class TestChangeOnlyApplyNonEnforcing:
 
         assert result["changes"] == []
         assert {c.target for c in gate.call_args.args[0]} == {"gpt-4", "user-0/gpt-4"}
+
+
+class TestCfnResponseSize:
+    """A custom-resource response body fits CloudFormation's 4096 bytes (#798)."""
+
+    _EVENT = {
+        "RequestType": "Update",
+        "ResponseURL": "https://cfn-response.example.com",
+        "StackId": "arn:aws:cloudformation:us-east-1:123456789012:stack/my-app-limits/" + "0" * 36,
+        "RequestId": "0" * 36,
+        "LogicalResourceId": "Limits",
+        "PhysicalResourceId": "my-app/abcdefghijk/limits-provisioner",
+    }
+
+    @staticmethod
+    def _result(levels: int, errors: list[str] | None = None) -> dict:
+        return {
+            "physical_resource_id": "my-app/abcdefghijk/limits-provisioner",
+            "status": "applied",
+            "changes": [
+                {"action": "create", "level": "entity", "target": f"user-{i:04d}/model-{i % 20}"}
+                for i in range(levels)
+            ],
+            "created": levels,
+            "updated": 0,
+            "deleted": 0,
+            "unchanged": 0,
+            "full": False,
+            "resumed": False,
+            "pending": 0,
+            "errors": errors or [],
+        }
+
+    def _respond(self, *, result=None, error=None):
+        """Run the CFN wrapper; return the PUT body it sent and what it returned."""
+        handler_mod = "zae_limiter_provisioner.handler"
+        side = {"side_effect": error} if error else {"return_value": result}
+        with (
+            patch(f"{handler_mod}._handle_cfn", **side),
+            patch(f"{handler_mod}.urllib.request.urlopen") as urlopen,
+        ):
+            context = MagicMock(log_stream_name="2026/11/04/[$LATEST]abc")
+            returned = None
+            if error:
+                with pytest.raises(type(error)):
+                    _handle_cfn_with_response(dict(self._EVENT), context)
+            else:
+                returned = _handle_cfn_with_response(dict(self._EVENT), context)
+        body = urlopen.call_args.args[0].data
+        return body, json.loads(body), returned
+
+    def test_a_661_level_apply_fits(self):
+        """The full result was ~48 KB; Data now carries counts only."""
+        body, sent, returned = self._respond(result=self._result(661))
+
+        assert len(body) <= _CFN_RESPONSE_MAX_BYTES
+        assert sent["Status"] == "SUCCESS"
+        assert sent["Data"] == {
+            "status": "applied",
+            "created": 661,
+            "updated": 0,
+            "deleted": 0,
+            "unchanged": 0,
+            "full": False,
+            "resumed": False,
+            "pending": 0,
+            "changed": 661,
+            "errors": [],
+        }
+        # The Lambda's own return value still carries every change.
+        assert len(returned["changes"]) == 661
+
+    def test_the_debug_report_stays_out_of_data(self):
+        """`Debug: true` adds metrics to the result; CloudFormation gets counts only."""
+        handler_mod = "zae_limiter_provisioner.handler"
+        event = {**self._EVENT, "ResourceProperties": {"Debug": "true"}}
+        with (
+            patch(f"{handler_mod}._handle_cfn", return_value=self._result(661)),
+            patch(f"{handler_mod}.urllib.request.urlopen") as urlopen,
+        ):
+            returned = _handle_cfn_with_response(event, MagicMock(log_stream_name="s"))
+        body = urlopen.call_args.args[0].data
+
+        assert "debug" in returned
+        assert "debug" not in json.loads(body)["Data"]
+        assert len(body) <= _CFN_RESPONSE_MAX_BYTES
+
+    def test_errors_that_fit_are_all_sent(self):
+        errors = ["update entity user-1/gpt-4: throttled", "delete resource gpt-3: denied"]
+        _, sent, _ = self._respond(result=self._result(3, errors))
+
+        assert sent["Data"]["errors"] == errors
+        assert "errors_omitted" not in sent["Data"]
+
+    def test_errors_that_do_not_fit_are_counted(self):
+        errors = [
+            f"update entity user-{i:04d}/model-{i % 20}: ThrottlingException" for i in range(500)
+        ]
+        body, sent, _ = self._respond(result=self._result(500, errors))
+
+        assert len(body) <= _CFN_RESPONSE_MAX_BYTES
+        kept = sent["Data"]["errors"]
+        assert 0 < len(kept) < len(errors)
+        assert kept == errors[: len(kept)]
+        assert sent["Data"]["errors_omitted"] == len(errors) - len(kept)
+
+    def test_the_full_result_is_printed(self, capsys):
+        """On stdout, which Lambda always captures; its root logger drops INFO."""
+        self._respond(result=self._result(661))
+
+        lines = [
+            line
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith(f"{CFN_RESULT_LOG_PREFIX} ")
+        ]
+        assert len(lines) == 1
+        logged = json.loads(lines[0].removeprefix(f"{CFN_RESULT_LOG_PREFIX} "))
+        assert len(logged["changes"]) == 661
+
+    def test_a_long_failure_reason_is_cut(self):
+        body, sent, _ = self._respond(error=ValueError('bad "limit"\n' * 2000))
+
+        assert len(body) <= _CFN_RESPONSE_MAX_BYTES
+        assert sent["Status"] == "FAILED"
+        assert sent["Reason"].startswith('bad "limit"')
+        assert sent["Reason"].endswith("see CloudWatch Log Stream: 2026/11/04/[$LATEST]abc)")
+
+    def test_a_short_failure_reason_is_untouched(self):
+        _, sent, _ = self._respond(error=ValueError("manifest: unknown key 'foo'"))
+
+        assert sent["Reason"] == "manifest: unknown key 'foo'"
