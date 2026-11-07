@@ -1,0 +1,619 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fill-instant fast path: how it works, and does it hold?</title>
+<style>
+.viz-root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface-1: #fcfcfb; --text-primary: #0b0b0b; --text-secondary: #52514e;
+  --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --ref: #52514e;
+  --wash-1: rgba(42,120,214,0.10); --wash-2: rgba(235,104,52,0.12);
+  --good: #0ca30c; --critical: #d03b3b; --code-bg: #f0efec;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface-1: #1a1a19; --text-primary: #f0efec; --text-secondary: #c3c2b7;
+    --muted: #898781; --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --ref: #c3c2b7;
+    --wash-1: rgba(57,135,229,0.16); --wash-2: rgba(217,89,38,0.18); --code-bg: #2c2c2a;
+  }
+}
+:root[data-theme="dark"] .viz-root {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface-1: #1a1a19; --text-primary: #f0efec; --text-secondary: #c3c2b7;
+  --muted: #898781; --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --ref: #c3c2b7;
+  --wash-1: rgba(57,135,229,0.16); --wash-2: rgba(217,89,38,0.18); --code-bg: #2c2c2a;
+}
+html, body { margin: 0; }
+body.viz-root { background: var(--page); color: var(--text-primary);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 920px; margin: 0 auto; padding: 32px 20px 80px; }
+h1 { font-size: 26px; line-height: 1.25; margin: 0 0 6px; }
+h2 { font-size: 20px; margin: 44px 0 8px; }
+h3 { font-size: 16px; margin: 24px 0 6px; }
+p, li { color: var(--text-primary); }
+.sub { color: var(--text-secondary); margin: 0 0 20px; }
+code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code-bg);
+  padding: 1px 4px; border-radius: 4px; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
+  padding: 16px 18px; margin: 16px 0; }
+.card h4 { margin: 0 0 2px; font-size: 15px; }
+.card .cap { color: var(--text-secondary); font-size: 13px; margin: 2px 0 8px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--text-secondary);
+  margin: 6px 0 4px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 14px; height: 0; border-top: 2px solid; display: inline-block; }
+.sw.dash { border-top-style: dashed; }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.chart text { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--muted); }
+.chart text.val { paint-order: stroke; stroke: var(--surface-1); stroke-width: 4px; fill: var(--text-secondary); }
+.chart text.lab { fill: var(--text-secondary); font-size: 12px; }
+.tip { position: absolute; pointer-events: none; background: var(--surface-1); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-size: 12px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.12); white-space: nowrap; display: none; z-index: 2;
+  font-variant-numeric: tabular-nums; }
+.tip b { font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--grid); }
+th { color: var(--text-secondary); font-weight: 600; }
+td.num, th.num { text-align: right; }
+.verdict { border-left: 3px solid var(--series-1); }
+.finding { border-left: 3px solid var(--series-2); }
+.ok { color: var(--text-primary); }
+.tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 10px;
+  border: 1px solid var(--border); color: var(--text-secondary); margin-right: 6px; }
+details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px; margin-top: 6px; }
+.eq { font: 14px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code-bg);
+  padding: 8px 12px; border-radius: 8px; display: block; margin: 8px 0; white-space: pre-wrap; }
+.toggle { float: right; font-size: 12px; }
+.toggle button { font: inherit; background: var(--surface-1); color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+</style>
+</head>
+<body class="viz-root">
+<main>
+<div class="toggle"><button id="theme">Toggle dark</button></div>
+<h1>The fill-instant fast path: how it works, and does it hold?</h1>
+<p class="sub">An explainer for ADR-153/154/155 and <code>docs/contributing/fill-instant-proofs.md</code>
+(branch <code>design/808-fill-instant-fast-path</code> @ 6c7eb0b8, PR #811). Built 2026-11-07 from an
+independent model written to try to break the proof. That model is separate from the proof author's
+scripts. The design is not implemented; "before" numbers come from the real library on <code>main</code>,
+"after" numbers come from the model.</p>
+
+<div class="card verdict">
+<h4>Verdict</h4>
+<p style="margin:6px 0 0">The core argument is sound. On a single limit with fixed parameters, the two
+conditional writes never over-admit by more than a clock-skew term, whatever the interleaving. In 484 simulated runs of the design the worst case reached 0.61 of that term, and every deliberately broken variant was caught.
+The proof has <b>two gaps that over-admit as written</b>: positive adjustments, and requests larger than
+the capacity in force. It also has <b>one statement in ADR-153 that needs amending</b> for schedules with
+skew, and less integer headroom than the author estimated. Each has a small fix, and with the fixes the
+model passes everywhere. Details are in <a href="#findings">Findings</a>.</p>
+</div>
+
+<h2>1. The bug, measured on the real library</h2>
+<p>Issue #808. A limit of 300 per 4 hours (one token every 48 s). The entity uses 1 token, idles a day,
+then sends 700 requests at 1000/s. A strict token bucket admits about 300. The library on <code>main</code>
+admits <b id="real-total">599</b>:</p>
+<div class="card">
+<h4>Cumulative admissions after a day idle</h4>
+<div class="cap">Real library on moto with a frozen clock (one request per ms), against the fill-instant model and the strict bound <code>C + r·t</code>.</div>
+<div id="leg1" class="legend"></div><div id="c1" class="chart"></div>
+</div>
+<div class="card">
+<h4>Why: the stored balance <code>tk</code>, request by request</h4>
+<div class="cap">The fast path subtracts from <code>tk</code> but never moves <code>rf</code> (last refill), which stays a day old.
+When <code>tk</code> hits 0, the slow path credits the whole idle day, refills to 299, and the bucket is drained a second time.</div>
+<div id="c1b" class="chart"></div>
+</div>
+<p>The root cause is that a full bucket should forget how long it has been full, and the fast path does not.
+It records "300 tokens, last refilled a day ago", which the next materialising pass reads as "a day of
+refill is owed".</p>
+
+<h2>2. The idea: store <i>when the bucket will be full again</i></h2>
+<p>A dripping limit's whole state is one number, its <b>fill instant</b> <code>z</code>: the moment the
+balance is (or was) back at capacity.</p>
+<span class="eq">balance(t) = C − r · max(0, z − t)          any z ≤ t reads as full</span>
+<p>Admitting <code>c</code> tokens at time <code>t</code> (write <code>d = c/r</code>, the time the tokens take to drip back):</p>
+<span class="eq">admit iff  z ≤ t + (C − c)/r        then  z ← max(z, t) + d</span>
+<p>The <code>max</code> is the "forget the idle time" step. DynamoDB has no <code>max</code>, but each side
+of it is easy:</p>
+<table>
+<tr><th>Write</th><th>Condition (checked by DynamoDB)</th><th>Update</th><th>Exact when</th></tr>
+<tr><td><b>N</b> (not full)</td><td><code>t ≤ z ≤ t + (C−c)/r</code></td><td><code>z ← z + d</code></td><td>the bucket is not full</td></tr>
+<tr><td><b>F</b> (full)</td><td><code>z &lt; t</code></td><td><code>z ← t + d</code></td><td>the bucket is full</td></tr>
+</table>
+<p>On any admissible item exactly one of the two conditions holds, and it records exactly
+<code>max(z,t)+d</code> (Lemma 1). If the client guesses the wrong side, the write fails, nothing changes,
+and the failure returns the item, so the second write is chosen from the truth. <b>The client's guess never
+decides admission; the server's condition does.</b></p>
+
+<div class="card">
+<h4>The kink, and why one write can't do it (Theorem 2)</h4>
+<div class="cap">x-axis: where the fill instant was relative to now. y-axis: where it must be recorded after admitting <code>c = 3</code> on a bucket with
+<code>C = 10, r = 1/s</code>. A DynamoDB update is affine: a straight line. The exact answer bends at <code>z = t</code>, and no single line follows both arms.
+N is exact on the right arm, F on the left. Today's fast path uses N's line everywhere; on the left it records too early (the shaded area), and that forgotten idle time is #808.</div>
+<div id="leg2" class="legend"></div><div id="c2" class="chart"></div>
+</div>
+<p>The aqua line is the best a <i>single</i> safe write can do (Corollary 1). To never over-admit, it must
+record every admission on a full bucket as emptying it (balance 0 instead of <code>C − c</code>), which
+throws away the bucket. Hence two writes.</p>
+
+<h2>3. Why it stays safe with many consumers (Theorem 1)</h2>
+<p>Each consumer reads its own clock once per request (the stamp <code>t</code>), and its writes land at
+real instants <code>T</code>. The proof compares the item with an imaginary <b>reference bucket</b>
+<code>Y</code> fed the same applied writes at the real instant each one landed. Let <code>e = z − y</code>
+be how far the item's fill instant is from the reference's, and <code>o = t − T</code> each write's offset
+(clock skew plus time in flight), with <code>s = max |o|</code>.</p>
+<ul>
+<li>Returns and adjustments move both by the same amount, so <code>e</code> is unchanged.</li>
+<li>An admission on the same side in both views either leaves <code>e</code> alone or resets it to that write's offset <code>o</code>.</li>
+<li>An admission where the item and <code>Y</code> disagree about full lands <code>e</code> <i>between</i> its old value and <code>o</code>.</li>
+</ul>
+<p>So <code>|e|</code> can never exceed <code>s</code>, whatever the interleaving. Since every admission
+passed its condition on the item, <code>Y</code> never goes below <code>−2rs</code>, which gives the
+bound: tokens admitted in any window ≤ <code>C + r·w + 2·r·s</code>. No lock is needed, because every
+write is an exact step on whatever item it finds.</p>
+<div class="card">
+<h4><code>e / s</code> over a run: 24 consumers, 0.5 s clock skew, up to 0.2 s in flight, returns and debt</h4>
+<div class="cap">Each point is one applied write. The proof says every point stays within ±1. <code>e</code> moves only when an admission finds the bucket full in one view; during a busy burst it holds (the flat runs), and each burst after an idle gap restarts it from that write's offset.</div>
+<div id="leg3" class="legend"></div><div id="c3" class="chart"></div>
+</div>
+
+<h2>4. Does it hold? A fuzz campaign</h2>
+<p>Each scenario runs 12–40 seeds of an event-driven model: Poisson or bursty arrivals, per-consumer clock
+offsets, random flight times, leases that return tokens or add debt, retries reusing the stamp, and a cap
+answering "contended". For every run the checker takes the worst window over <b>every</b> pair of events
+(not a sample) and reports <code>excess / 2rs</code>, where excess is admitted minus <code>C + R(w)</code>.
+Up to 1 means the bound holds. The BROKEN rows run the same traffic through deliberately wrong writes, to
+show the checker catches violations.</p>
+<div class="card">
+<h4>Worst <code>excess / 2rs</code> per scenario (log scale; the bound is 1)</h4>
+<div class="cap">Values at or below 0 are drawn at 0.01. Schedule rows use the amended ceiling (Finding 3); the table below also lists the value measured against ADR-153 as written.</div>
+<div id="leg4" class="legend"></div><div id="c4" class="chart"></div>
+<details><summary>Table view</summary><div id="t4"></div></details>
+</div>
+<div class="card">
+<h4>Most tokens admitted in any window of a given width, on identical traffic</h4>
+<div class="cap">C = 100, 100/min, 16 consumers, 30 s bursts after 15 min idle. The fill-instant line stays under the strict bound at every width. Today's design roughly doubles it at short widths: the burst after idling.</div>
+<div id="leg5" class="legend"></div><div id="c5" class="chart"></div>
+</div>
+
+<h2>5. How many writes? (Theorems 3 and 4)</h2>
+<p>Other consumers' admissions only push <code>z</code> later (Lemma 2). An image showing "not full" is
+therefore always still right; only "full" can go stale. With the stamp reused on every retry, each limit
+can flip from full to not full at most once, so a request decides within <code>L + 1</code> writes when it
+guesses "full" everywhere, or <code>L + 2</code> otherwise. I built the adversary that forces every flip:
+both bounds are reached exactly.</p>
+<div class="card">
+<h4>Writes needed against the worst-case adversary, by number of limits L</h4>
+<div id="leg6" class="legend"></div><div id="c6" class="chart"></div>
+</div>
+<p><b>Returns break the cap (Theorem 3c).</b> If another consumer may return tokens between your writes,
+it can keep you undecided for ever (six writes shown; it goes on as long as B wants). Below, B admits 2 tokens before A's full write and returns them
+before A's not-full write, so A is always on the wrong side. The design's answer is a write cap and a
+"contended" 429: an under-admission, never an over-admission.</p>
+<div class="card"><div id="t3c"></div></div>
+
+<h2>6. What it costs: guessing the side</h2>
+<p>A wrong guess costs one failed write (1 WCU, one round trip). With Poisson traffic at utilisation
+<code>u</code> the bucket is not full with probability <code>u</code>, so a blind guess is wrong at
+<code>min(u, 1−u)</code>. I re-implemented the proof's §6 table (300 per 4 h, 1-token requests, 200k
+requests per cell) and got the same numbers to within about 2 points:</p>
+<div class="card">
+<h4>First-write misprediction rate</h4>
+<div class="cap">Left: 4 consumers, right: 32. The reference line is <code>min(u, 1−u)</code>. A plain image rule collapses at high load with many consumers, because a stale image almost always shows "full".</div>
+<div id="leg7" class="legend"></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div id="c7a" class="chart"></div><div id="c7b" class="chart"></div></div>
+<details><summary>Table view, with the proof's numbers</summary><div id="t7"></div></details>
+</div>
+<p>One open item the proof also flags: the "extrapolate" predictor uses the true <code>u</code>, and how a
+client would estimate it is unspecified. With bursty on/off traffic (4 h on, 12 h off, mean u = 0.5) all
+three predictors were wrong 2–12% of the time, so burstiness made things easier here, not harder.</p>
+
+<h2>7. The other writers (ADR-155)</h2>
+<h3>Shard splits</h3>
+<p>A raise from S to 2S shards reads every shard. Then, in one transaction pinned on what it read, it
+trims each shard to the new share and gives the sibling the excess. Across 200 simulated splits (1→32,
+with writes racing them), the total balance before and after differed by at most
+<b id="cons-err"></b> tokens: float rounding, so it is conserved exactly. The window bound held at
+<b id="sh-ratio"></b> of the clock term. The control, today's "new shard starts full" (ADR-133), exceeded
+it by <b id="sh-naive"></b> tokens.</p>
+<h3>Schedule boundaries</h3>
+<div class="card">
+<h4>Balance across a boundary from 0.1x to 1x (<code>per_minute(1000)</code>, drained at 05:59:00)</h4>
+<div class="cap">Today the slow path credits the whole minute at the rate in force at the end (1000 tokens at 06:00:01). Re-expressing at the boundary drips the first minute at 0.1x and caps it at 100 (116.67 at 06:00:01).</div>
+<div id="leg8" class="legend"></div><div id="c8" class="chart"></div>
+</div>
+
+<h2 id="findings">8. Findings</h2>
+
+<div class="card finding">
+<h4><span class="tag">1 · over-admits</span>A positive adjustment is not exact as written</h4>
+<p>The proof's write table, §7, and ADR-155 ("adding to the fill instant for a return, adjustment or
+top-up") treat <code>lease.adjust(+c)</code> as an unconditional <code>z ← z + d</code>. That is exact
+only if the bucket is not full. Debiting <code>c</code> from a full bucket must record
+<code>max(z, t) + d</code>, the same kink as an admission. When <code>z + d &lt; t</code>, the debt is
+forgiven entirely. Returns and top-ups are fine, because <code>min(C, b + c)</code> is exactly what
+<code>z − d</code> gives.</p>
+<p>This is the LLM reconciliation case: estimate 100 tokens, the call takes 2 minutes, the bucket refills
+to full meanwhile, then <code>adjust(+900)</code> lands. In the model, adding the adjustment that way pushed
+<code>|e|</code> to 72× <code>s</code> and the window excess to 17× the clock term. Theorem 1 misses it
+because its reference bucket uses the same <code>y ← y + d</code> rule, which is not the strict
+bucket's.</p>
+<div id="leg9" class="legend"></div><div id="c9" class="chart"></div>
+<p><b>Fix:</b> a positive adjustment is a forced debit. Send the same N/F pair as an admission, without the
+upper bound (exactly the soft-limit form). It can take two writes, and retries when returns interleave.
+Treated that way: 0.28× of the clock term, with <code>|e| ≤ s</code>.</p>
+</div>
+
+<div class="card finding">
+<h4><span class="tag">2 · over-admits</span>The full write admits a request larger than the capacity</h4>
+<p>§1 assumes <code>0 &lt; c &lt; C</code>, but <code>F</code>'s condition is only <code>z &lt; t</code>.
+If <code>c &gt; C</code>, F admits on a full bucket and leaves the balance at <code>C − c &lt; 0</code>.
+This is reachable: a schedule window with scale &lt; 1, or a sharded share <code>C/S</code> below the
+request (#475). In the model a 17-token request passed against a 0.1× window with <code>C = 10</code>
+(36× the clock term, worst of 40 seeds). <b>Fix:</b> for a hard limit, the client must refuse <code>c &gt; C</code>
+before sending F. It can, because the write is pinned on the parameters it computed <code>C</code>
+from. ADR-154's decision text should say so.</p>
+</div>
+
+<div class="card finding">
+<h4><span class="tag">3 · statement</span>ADR-153's ceiling "in force at the window's start" is wrong under skew</h4>
+<p>At a boundary that lowers capacity, a consumer with a slow clock can still spend from the old, larger
+ceiling for up to <code>s</code> after the boundary, before the re-expression trims it. Measured literally
+against the ceiling at the window's start, the schedule runs failed by 3–54×. With <b>"the largest
+ceiling in force from <code>s</code> before the window's start to its start"</b>, every run passed
+(≤ 0.08×). The design is fine; the sentence in ADR-153 (and Theorem 5) needs that wording. Theorem 1 is
+unaffected: it fixes the parameters.</p>
+</div>
+
+<div class="card finding">
+<h4><span class="tag">4 · margin</span>Integer headroom is about 1.3 orders of magnitude, not about 8</h4>
+<p>ADR-154 stores <code>z × refill amount</code>. With the #570 ceilings (<code>MAX_TOKENS 1e15</code>,
+<code>MAX_SCALE 1e6</code>) the effective refill amount reaches 1e24 millitokens. Times an epoch-ms stamp
+(1.8e12 today, 4.1e12 in 2100) that is <b>4.1e36</b>, against DynamoDB's 1e38. The proof author's
+1.8e30 leaves out schedule scale. It still fits, but those ceilings were chosen to sit 14 orders inside
+1e38, and this design spends 12 of them. A future ceiling raise, or an unbounded <code>adjust()</code>
+amount pushing <code>z</code> far into the future, would overflow (boto3 raises
+<code>decimal.Rounded</code>).</p>
+</div>
+
+<div class="card">
+<h4>Smaller notes</h4>
+<ul>
+<li><b>Lemma 2's wording:</b> "only a return moves z earlier". Resets, top-ups and re-expression
+also do. The theorems that use it (3b, 4) assume admissions only, so nothing breaks, but the lemma
+should say so.</li>
+<li><b>The lower bound's scope (M3):</b> M3 excludes more than presence-based encodings. It also
+excludes any encoding where <code>z</code> is a <i>max</i> of stored attributes (conditions can test
+<code>max(a,b) ≤ X</code> as <code>a ≤ X AND b ≤ X</code>). I tried to build one with a bounded number of
+attributes and failed: dropping a term is unsafe unless it is known to be dominated, which needs the
+same side information. This matters only for the claim that two writes are <i>optimal</i>. The safety
+proof does not depend on M2 or M3.</li>
+<li><b>BatchExecuteStatement</b> could send N and F together and let one fail, but DynamoDB rejects two
+statements on the same item in a batch (<code>DuplicateItem</code>), so it cannot beat the lower bound.</li>
+<li><b>The <code>s</code> in the bound grows with retries.</b> Every retry reuses the original stamp, so
+<code>s</code> covers clock skew plus the whole retry sequence (up to the cap × the round trip). That is
+small (tens of ms), but it is not just skew.</li>
+<li><b>A reset forgives debt</b> (<code>z ← t</code>). That matches ADR-149's reset-to-full, but is worth
+stating explicitly for dripping limits, as ADR-151 D12 does for soft quotas.</li>
+<li><b>Not modelled:</b> ADR-145 quota moves inside ADR-155's doubling transaction, top-ups and resets on
+sharded entities, and the integer arithmetic itself (the model uses floats).</li>
+</ul>
+</div>
+
+<h2>9. Reproduce</h2>
+<p>Everything is in <code>docs/plans/2026-11-07-fill-instant-review/</code>: <code>sim.py</code> (model and checker),
+<code>campaign.py</code> (every scenario; writes <code>results.json</code>, about 30 s), and
+<code>build_report.py</code> + <code>template.html</code> (this page). <code>real_808.json</code> is the real-library
+trace, recorded by <code>probe_808.py</code> on <code>main</code> @ 1bcc38b1 (see the README).</p>
+</main>
+
+<script>
+const DATA = /*__DATA__*/null;
+const NS = "http://www.w3.org/2000/svg";
+const fmt = (v, d = 2) => (v == null || !isFinite(v)) ? "–" :
+  (Math.abs(v) >= 1e5 ? v.toExponential(1) : (+v.toFixed(d)).toLocaleString());
+
+function el(tag, attrs, parent) {
+  const n = document.createElementNS(NS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function niceTicks(lo, hi, n = 5) {
+  const span = hi - lo, step0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => span / s <= n) || mag * 10;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+function logTicks(lo, hi) {
+  const out = [];
+  for (let p = Math.floor(Math.log10(lo)); p <= Math.ceil(Math.log10(hi)); p++) {
+    const v = Math.pow(10, p);
+    if (v >= lo * 0.999 && v <= hi * 1.001) out.push(v);
+  }
+  return out;
+}
+function legend(id, items) {
+  const L = document.getElementById(id);
+  L.innerHTML = items.map(s =>
+    `<span><i class="sw${s.dash ? " dash" : ""}" style="border-top-color:${s.color}"></i>${s.name}</span>`).join("");
+}
+function tickFmt(v) {
+  if (v === 0) return "0";
+  const a = Math.abs(v);
+  if (a >= 1e4 || a < 1e-2) return v.toExponential(0).replace("e+", "e");
+  return (+v.toFixed(3)).toLocaleString();
+}
+
+function lineChart(id, o) {
+  const root = document.getElementById(id);
+  root.innerHTML = "";
+  const W = root.clientWidth || 700, H = o.height || 280;
+  const m = { t: 10, r: o.rightPad || 18, b: 42, l: 58 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const all = o.series.flatMap(s => s.pts);
+  const xs = all.map(p => p[0]), ys = all.map(p => p[1]);
+  let [x0, x1] = o.xDomain || [Math.min(...xs), Math.max(...xs)];
+  let [y0, y1] = o.yDomain || [Math.min(0, ...ys), Math.max(...ys) * 1.06];
+  const X = o.xLog ? v => m.l + (Math.log10(v) - Math.log10(x0)) / (Math.log10(x1) - Math.log10(x0)) * iw
+                   : v => m.l + (v - x0) / (x1 - x0) * iw;
+  const Y = o.yLog ? v => m.t + ih - (Math.log10(Math.max(v, y0)) - Math.log10(y0)) / (Math.log10(y1) - Math.log10(y0)) * ih
+                   : v => m.t + ih - (v - y0) / (y1 - y0) * ih;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": o.aria || "" }, root);
+  for (const b of (o.bands || [])) {
+    el("rect", { x: X(b.x0), y: m.t, width: Math.max(0, X(b.x1) - X(b.x0)), height: ih, fill: b.fill }, svg);
+    if (b.label) el("text", { x: X(b.x0) + 4, y: m.t + 13, class: "lab" }, svg).textContent = b.label;
+  }
+  for (const a of (o.areas || [])) {
+    const d = a.upper.map((p, i) => `${i ? "L" : "M"}${X(p[0])},${Y(p[1])}`).join("") +
+      a.lower.slice().reverse().map(p => `L${X(p[0])},${Y(p[1])}`).join("") + "Z";
+    el("path", { d, fill: a.fill, stroke: "none" }, svg);
+    if (a.label) el("text", { x: X(a.lx), y: Y(a.ly), class: "lab" }, svg).textContent = a.label;
+  }
+  const yt = o.yLog ? logTicks(y0, y1) : niceTicks(y0, y1, o.yTicks || 5);
+  for (const v of yt) {
+    el("line", { x1: m.l, x2: m.l + iw, y1: Y(v), y2: Y(v), stroke: "var(--grid)", "stroke-width": 1 }, svg);
+    el("text", { x: m.l - 6, y: Y(v) + 4, "text-anchor": "end" }, svg).textContent = (o.yFmt || tickFmt)(v);
+  }
+  const xt = o.xLog ? logTicks(x0, x1) : niceTicks(x0, x1, o.xTicks || 6);
+  for (const v of xt) {
+    el("text", { x: X(v), y: m.t + ih + 16, "text-anchor": "middle" }, svg).textContent = (o.xFmt || tickFmt)(v);
+  }
+  el("line", { x1: m.l, x2: m.l + iw, y1: m.t + ih, y2: m.t + ih, stroke: "var(--axis)" }, svg);
+  el("text", { x: m.l + iw / 2, y: H - 6, "text-anchor": "middle", class: "lab" }, svg).textContent = o.xLabel || "";
+  const yl = el("text", { x: 14, y: m.t + ih / 2, "text-anchor": "middle", class: "lab",
+    transform: `rotate(-90 14 ${m.t + ih / 2})` }, svg);
+  yl.textContent = o.yLabel || "";
+  for (const v of (o.vlines || [])) {
+    el("line", { x1: X(v.x), x2: X(v.x), y1: m.t, y2: m.t + ih, stroke: "var(--axis)", "stroke-width": 1 }, svg);
+    if (v.label) el("text", { x: X(v.x) + (v.anchor === "end" ? -4 : 4), y: m.t + ih - 6, class: "lab",
+      "text-anchor": v.anchor || "start" }, svg).textContent = v.label;
+  }
+  for (const s of o.series) {
+    if (s.dots) {
+      for (const p of s.pts) el("circle", { cx: X(p[0]), cy: Y(p[1]), r: s.r || 2, fill: s.color, opacity: s.opacity || 1 }, svg);
+      continue;
+    }
+    const d = s.pts.map((p, i) => {
+      const px = X(p[0]), py = Y(p[1]);
+      if (s.step && i) return `H${px}V${py}`;
+      return `${i ? "L" : "M"}${px},${py}`;
+    }).join("");
+    el("path", { d, fill: "none", stroke: s.color, "stroke-width": s.width || 2, "stroke-dasharray": s.dash ? "5 4" : "",
+      "stroke-linejoin": "round", "stroke-linecap": "round", opacity: s.opacity || 1 }, svg);
+    if (s.markers) for (const p of s.pts) el("circle", { cx: X(p[0]), cy: Y(p[1]), r: 4.5, fill: s.color,
+      stroke: "var(--surface-1)", "stroke-width": 2 }, svg);
+    if (s.label) {
+      const p = s.pts[s.labelAt != null ? s.labelAt : s.pts.length - 1];
+      el("text", { x: X(p[0]) + 6, y: Y(p[1]) + (s.labelDy || 4), class: "lab" }, svg).textContent = s.label;
+    }
+  }
+  // hover layer
+  const tip = document.createElement("div"); tip.className = "tip"; root.appendChild(tip);
+  const cross = el("line", { y1: m.t, y2: m.t + ih, stroke: "var(--axis)", visibility: "hidden" }, svg);
+  const dots = o.series.filter(s => !s.noHover).map(s => el("circle", { r: 4, fill: s.color, stroke: "var(--surface-1)",
+    "stroke-width": 2, visibility: "hidden" }, svg));
+  const hov = el("rect", { x: m.l, y: m.t, width: iw, height: ih, fill: "transparent" }, svg);
+  const invX = px => o.xLog ? Math.pow(10, Math.log10(x0) + (px - m.l) / iw * (Math.log10(x1) - Math.log10(x0)))
+                            : x0 + (px - m.l) / iw * (x1 - x0);
+  const near = (pts, x) => {
+    let lo = 0, hi = pts.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (pts[mid][0] < x) lo = mid; else hi = mid; }
+    return Math.abs(pts[lo][0] - x) <= Math.abs(pts[hi][0] - x) ? pts[lo] : pts[hi];
+  };
+  hov.addEventListener("mousemove", ev => {
+    const r = svg.getBoundingClientRect(), px = (ev.clientX - r.left) * (W / r.width);
+    const x = invX(px);
+    let rows = [], cx = null;
+    o.series.filter(s => !s.noHover).forEach((s, i) => {
+      const p = near(s.pts, x); cx = cx == null ? p[0] : cx;
+      dots[i].setAttribute("cx", X(p[0])); dots[i].setAttribute("cy", Y(p[1])); dots[i].setAttribute("visibility", "visible");
+      rows.push(`<i class="sw${s.dash ? " dash" : ""}" style="border-top-color:${s.color}"></i> ${s.name}: <b>${(o.tipY || fmt)(p[1])}</b>`);
+    });
+    cross.setAttribute("x1", X(cx)); cross.setAttribute("x2", X(cx)); cross.setAttribute("visibility", "visible");
+    tip.innerHTML = `<div style="color:var(--text-secondary)">${o.xName || "x"} ${(o.tipX || fmt)(cx)}</div>` + rows.join("<br>");
+    tip.style.display = "block";
+    const tx = (X(cx) / W) * r.width;
+    tip.style.left = Math.min(tx + 12, r.width - tip.offsetWidth - 4) + "px";
+    tip.style.top = "8px";
+  });
+  hov.addEventListener("mouseleave", () => {
+    tip.style.display = "none"; cross.setAttribute("visibility", "hidden");
+    dots.forEach(d => d.setAttribute("visibility", "hidden"));
+  });
+}
+
+function barChart(id, rows) {
+  const root = document.getElementById(id); root.innerHTML = "";
+  const W = root.clientWidth || 700, rowH = 22, m = { t: 6, r: 70, b: 32, l: Math.min(330, W * 0.46) };
+  const H = m.t + m.b + rows.length * rowH, iw = W - m.l - m.r;
+  const lo = 0.01, hi = 1e6;
+  const X = v => m.l + (Math.log10(Math.max(lo, v)) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo)) * iw;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, height: H }, root);
+  for (const v of logTicks(lo, hi)) {
+    el("line", { x1: X(v), x2: X(v), y1: m.t, y2: H - m.b, stroke: "var(--grid)" }, svg);
+    el("text", { x: X(v), y: H - m.b + 14, "text-anchor": "middle" }, svg).textContent = tickFmt(v);
+  }
+  el("line", { x1: X(1), x2: X(1), y1: m.t, y2: H - m.b, stroke: "var(--ref)", "stroke-width": 1.5, "stroke-dasharray": "5 4" }, svg);
+  el("text", { x: X(1) + 4, y: H - m.b + 28, class: "lab" }, svg).textContent = "bound = 1";
+  const tip = document.createElement("div"); tip.className = "tip"; root.appendChild(tip);
+  rows.forEach((b, i) => {
+    const y = m.t + i * rowH;
+    const col = b.group === "broken" ? "var(--series-2)" : "var(--series-1)";
+    el("text", { x: m.l - 8, y: y + rowH / 2 + 4, "text-anchor": "end", class: "lab" }, svg).textContent = b.label;
+    const w = Math.max(2, X(b.value) - X(lo));
+    const rect = el("rect", { x: X(lo), y: y + 5, width: w, height: rowH - 10, rx: 4, fill: col }, svg);
+    el("text", { x: X(lo) + w + 6, y: y + rowH / 2 + 4, class: "val" }, svg).textContent = b.value <= 0 ? "≤ 0" : fmt(b.value, b.value < 10 ? 2 : 0);
+    const hit = el("rect", { x: 0, y, width: W, height: rowH, fill: "transparent" }, svg);
+    hit.addEventListener("mousemove", ev => {
+      const r = svg.getBoundingClientRect();
+      tip.innerHTML = `<b>${b.label}</b><br>worst excess / 2rs: <b>${fmt(b.value, 3)}</b>` +
+        (b.as_written != null && Math.abs(b.as_written - b.value) > 1e-9 ? `<br>vs ADR-153 as written: ${fmt(b.as_written, 2)}` : "") +
+        `<br>${b.runs} seeds` + (b.admitted ? `, ${b.admitted.toLocaleString()} admissions` : "") +
+        (b.max_writes ? `<br>max writes per request: ${b.max_writes}` : "");
+      tip.style.display = "block";
+      tip.style.left = Math.min(ev.clientX - r.left + 12, r.width - tip.offsetWidth - 4) + "px";
+      tip.style.top = (y / H * r.height + 22) + "px";
+    });
+    hit.addEventListener("mouseleave", () => tip.style.display = "none");
+  });
+}
+
+function table(id, head, rows, numeric) {
+  document.getElementById(id).innerHTML = "<table><tr>" + head.map((h, i) =>
+    `<th class="${numeric && numeric[i] ? "num" : ""}">${h}</th>`).join("") + "</tr>" +
+    rows.map(r => "<tr>" + r.map((c, i) => `<td class="${numeric && numeric[i] ? "num" : ""}">${c}</td>`).join("") + "</tr>").join("") +
+    "</table>";
+}
+
+function render() {
+  const S1 = "var(--series-1)", S2 = "var(--series-2)", S3 = "var(--series-3)", REF = "var(--ref)";
+  // 1. real #808
+  const total = DATA.real_cum[DATA.real_cum.length - 1][1];
+  document.getElementById("real-total").textContent = total;
+  const s1 = [
+    { name: `Real library on main (${total} admitted)`, color: S2, pts: DATA.real_cum },
+    { name: "Fill-instant model (301 admitted)", color: S1, pts: DATA.model_fill },
+    { name: "Strict bound C + r·t", color: REF, pts: DATA.model_bound, dash: true, width: 1.5 },
+  ];
+  legend("leg1", s1);
+  lineChart("c1", { series: s1, xLabel: "time since the burst started (ms)", yLabel: "admitted", xName: "t (ms)",
+    yDomain: [0, 650], tipY: v => fmt(v, 1), vlines: [{ x: 300, label: "slow path credits a day" }] });
+  lineChart("c1b", { series: [{ name: "tk (stored balance)", color: S2, pts: DATA.real_tk }], xLabel: "time since the burst started (ms)",
+    yLabel: "tk", xName: "t (ms)", yDomain: [0, 320], height: 200, tipY: v => fmt(v, 1) });
+  // 2. kink
+  const K = DATA.kink, kx = K.x;
+  const pts = arr => kx.map((x, i) => [x, arr[i]]);
+  const leftN = kx.map((x, i) => [x, K.N[i]]).filter(p => p[0] <= 0);
+  const leftE = kx.map((x, i) => [x, K.exact[i]]).filter(p => p[0] <= 0);
+  const s2 = [
+    { name: "Exact: max(z, t) + d", color: "var(--text-primary)", pts: pts(K.exact), width: 3 },
+    { name: "N: z + d (exact on the right)", color: S1, pts: pts(K.N) },
+    { name: "F: t + d (exact on the left)", color: S2, pts: pts(K.F), dash: true },
+    { name: "Best safe single write: t + C/r", color: S3, pts: pts(K.safe1) },
+  ];
+  legend("leg2", s2);
+  lineChart("c2", { series: s2, xLabel: "z − t (seconds): negative = bucket full", yLabel: "recorded z′ − t", xName: "z − t",
+    yDomain: [-8, 12], areas: [{ upper: leftE, lower: leftN, fill: "var(--wash-2)", label: "forgotten idle time (#808)", lx: -9.6, ly: 1.2 }],
+    vlines: [{ x: 0, label: "z = t" }, { x: K.slack, label: "inadmissible beyond →", anchor: "end" }], tipY: v => fmt(v, 2) });
+  // 3. e trace
+  const es = DATA.e_trace.s;
+  const e = DATA.e_trace.pts.map(p => [p[0], p[1] / es]);
+  const s3 = [
+    { name: "e / s (each applied write)", color: S1, pts: e, dots: true, r: 1.8, opacity: 0.8 },
+    { name: "±1 (the proof's bound)", color: REF, pts: [[e[0][0], 1], [e[e.length - 1][0], 1]], dash: true, width: 1.5, noHover: true },
+    { name: "", color: REF, pts: [[e[0][0], -1], [e[e.length - 1][0], -1]], dash: true, width: 1.5, noHover: true },
+  ];
+  legend("leg3", s3.slice(0, 2));
+  lineChart("c3", { series: s3, xLabel: "real time (s)", yLabel: "e / s", yDomain: [-1.3, 1.3], xName: "T (s)", tipY: v => fmt(v, 3) });
+  // 4. bars
+  const bars = DATA.bars.slice().sort((a, b) => (a.group === b.group ? 0 : a.group === "design" ? -1 : 1));
+  legend("leg4", [{ name: "design (with the fixes)", color: S1 }, { name: "broken control or finding", color: S2 }]);
+  barChart("c4", bars);
+  table("t4", ["scenario", "seeds", "worst excess / 2rs", "vs ADR-153 as written", "max writes"],
+    bars.map(b => [b.label, b.runs, fmt(b.value, 3), b.as_written == null ? "–" : fmt(b.as_written, 3), b.max_writes || "–"]),
+    [0, 1, 1, 1, 1]);
+  // 5. sliding
+  const SL = DATA.sliding, W = SL.widths;
+  const s5 = [
+    { name: "Fill instant", color: S1, pts: W.map((w, i) => [w, SL.fill[i]]), markers: true },
+    { name: "Today's fast + slow path", color: S2, pts: W.map((w, i) => [w, SL.today[i]]), markers: true },
+    { name: "Strict bound C + r·w", color: REF, pts: W.map(w => [w, SL.C + SL.r * w]), dash: true, width: 1.5 },
+  ];
+  legend("leg5", s5);
+  lineChart("c5", { series: s5, xLog: true, yLog: true, xDomain: [0.01, 1200], yDomain: [10, 20000],
+    xLabel: "window width (s, log)", yLabel: "most tokens admitted (log)", xName: "w (s)", tipY: v => fmt(v, 1) });
+  // 6. thm4
+  const T4 = DATA.thm4;
+  const s6 = [
+    { name: "Guess full first (measured)", color: S1, pts: T4.map(r => [r.L, r.full_first]), markers: true },
+    { name: "Guess not full first (measured)", color: S2, pts: T4.map(r => [r.L, r.notfull_first]), markers: true },
+    { name: "Bounds L + 1 and L + 2", color: REF, pts: T4.map(r => [r.L, r.L + 1]), dash: true, width: 1.5, noHover: true },
+    { name: "", color: REF, pts: T4.map(r => [r.L, r.L + 2]), dash: true, width: 1.5, noHover: true },
+  ];
+  legend("leg6", s6.slice(0, 3));
+  lineChart("c6", { series: s6, xLabel: "limits on the write (L)", yLabel: "writes", yDomain: [0, 9], xDomain: [0.8, 6.2],
+    xTicks: 6, xName: "L", height: 240, tipY: v => fmt(v, 0), tipX: v => fmt(v, 0) });
+  table("t3c", ["A's write", "A sends", "z − t when it lands", "applied?"],
+    DATA.thm3c.slice(0, 6).map(r => [r.write, r.A_sends, fmt(r.z_minus_t, 2), r.applied ? "yes" : "no: wrong side"]), [1, 0, 1, 0]);
+  // 7. predictors
+  const P = DATA.pred;
+  const proof = { "0.1-4": [7.4, 90.0, 7.7], "0.1-32": [9.7, 90.0, 9.7], "0.5-4": [33.2, 50.2, 33.3],
+    "0.5-32": [47.5, 50.2, 47.1], "0.9-4": [31.9, 10.3, 10.9], "0.9-32": [76.6, 10.3, 36.0] };
+  const s7 = n => {
+    const rows = P.filter(r => r.consumers === n);
+    return [
+      { name: "Image says full iff z < t", color: S2, pts: rows.map(r => [r.u, r.image * 100]), markers: true },
+      { name: "Always not full", color: S3, pts: rows.map(r => [r.u, r.notfull * 100]), markers: true },
+      { name: "Image extrapolated by u", color: S1, pts: rows.map(r => [r.u, r.extrapolate * 100]), markers: true },
+      { name: "min(u, 1 − u)", color: REF, pts: [[0.1, 10], [0.5, 50], [0.9, 10]], dash: true, width: 1.5, noHover: true },
+    ];
+  };
+  legend("leg7", s7(4));
+  for (const [id, n] of [["c7a", 4], ["c7b", 32]])
+    lineChart(id, { series: s7(n), xLabel: `utilisation u (${n} consumers)`, yLabel: "% first writes wrong", yDomain: [0, 100],
+      xDomain: [0, 1], height: 230, xName: "u", tipY: v => fmt(v, 1) + "%" });
+  table("t7", ["u", "consumers", "image (mine / proof)", "always not full", "extrapolate"],
+    P.map(r => { const p = proof[`${r.u}-${r.consumers}`];
+      return [r.u, r.consumers, `${fmt(r.image * 100, 1)}% / ${p[0]}%`, `${fmt(r.notfull * 100, 1)}% / ${p[1]}%`, `${fmt(r.extrapolate * 100, 1)}% / ${p[2]}%`]; }),
+    [1, 1, 1, 1, 1]);
+  document.getElementById("cons-err").textContent = DATA.shards.max_conservation_err.toExponential(1);
+  document.getElementById("sh-ratio").textContent = fmt(DATA.shards.worst_ratio, 2);
+  document.getElementById("sh-naive").textContent = fmt(DATA.shards_naive.excess, 0);
+  // 8. schedule
+  const s8 = [
+    { name: "Today: whole interval at the end rate", color: S2, pts: DATA.sched_demo.today },
+    { name: "Re-expressed at the boundary (strict)", color: S1, pts: DATA.sched_demo.integrated },
+  ];
+  legend("leg8", s8);
+  lineChart("c8", { series: s8, xLabel: "seconds relative to 06:00:00", yLabel: "balance", xName: "t (s)", yDomain: [0, 1100],
+    vlines: [{ x: 0, label: "0.1x → 1x" }], tipY: v => fmt(v, 1) });
+  // 9. adjustment
+  const s9 = [
+    { name: "Strict bucket = forced-debit fix", color: S1, pts: DATA.adjust_demo.strict },
+    { name: "Proposed adjust: z += d", color: S2, pts: DATA.adjust_demo.proposed, dash: true },
+  ];
+  legend("leg9", s9);
+  lineChart("c9", { series: s9, xLabel: "seconds (C = 1000, 1000/min): admit 100 at 0, adjust +900 at 120, request 1000 at 120.5",
+    yLabel: "balance", xName: "t (s)", yDomain: [0, 1100], height: 240, tipY: v => fmt(v, 1),
+    vlines: [{ x: 120, label: "adjust +900" }] });
+}
+render();
+let rt; window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(render, 120); });
+document.getElementById("theme").addEventListener("click", () => {
+  const cur = document.documentElement.getAttribute("data-theme");
+  const dark = cur ? cur === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
+});
+</script>
+</body>
+</html>
