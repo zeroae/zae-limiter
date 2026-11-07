@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793948605623,
+  "lastUpdate": 1794081565296,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -39148,6 +39148,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.003662822845440802",
             "extra": "mean: 1.0973877198000026 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d665c0ecb88b41e9a287337279471db04a84d497",
+          "message": "🐛 fix(provisioner): keep the registries the list commands read (#797)\n\n## Summary\n\nLimits applied with `zae-limiter limits apply` are enforced, but the CLI\nlist commands report none of them:\n\n| Command | Before | After |\n|---|---|---|\n| `resource get-defaults <r>` / `entity get-limits <e> -r <r>` | ✅ | ✅ |\n| `resource list` | ❌ empty | ✅ |\n| `entity list-resources` | ❌ empty | ✅ |\n| `entity list --with-custom-limits <r>` | ❌ empty | ✅ |\n\nThe list commands don't scan config items. They read three indexes that\nthe `Repository` setters (`set_resource_defaults`, `set_limits`)\nmaintain and the provisioner Lambda never wrote:\n\n- the `#RESOURCES` registry, a set of resource names (`resource list`);\n- the `#ENTITY_CONFIG_RESOURCES` registry, a count of entity configs per\nresource (`entity list-resources`);\n- the `GSI3PK` / `GSI3SK` entry on entity config items (`entity list\n--with-custom-limits`).\n\nReported by a user on a custom stack and namespace, and reproduced\nagainst moto.\n\n## Changes\n\n**Provisioner (`zae_limiter_provisioner/applier.py`)**\n- A resource write adds the resource to `#RESOURCES`, before the\n`PutItem`. A resource delete removes it, after the `DeleteItem`. If a\nrun stops in between, the resource is listed without defaults; its\ndefaults are never left unlisted.\n- Entity config items carry `GSI3PK`/`GSI3SK`, exactly as `set_limits`\nwrites them.\n- **Rule: an entity config item is counted in `#ENTITY_CONFIG_RESOURCES`\nexactly when it carries `GSI3PK`.**\n- The write that first gives an item `GSI3PK` adds +1 in the same\n`TransactWriteItems`, under `attribute_not_exists(GSI3PK)`.\n- An item that already carries it is replaced with a plain `PutItem`\nunder `attribute_exists(GSI3PK)`.\n- A delete subtracts 1 only from an item that carried `GSI3PK`, then\nremoves the resource from the registry once its count reaches zero (best\neffort; a failure is logged).\n- A write or delete that loses its condition to a concurrent change\nre-reads the item and retries, at most 3 times. A write that still\nhasn't settled is reported in `errors`; any other failure is reported,\nnever swallowed.\n- With no pre-read item (every entity level of a full apply), the plain\nconditional write goes first, so an update costs what it did before.\n\n**Repository (`repository.py`, sync twin regenerated)**\n- `set_limits`, the entity disable/cascade stub, and `delete_limits` now\ndecide whether an item is counted by `GSI3PK` rather than `PK`. Without\nthis, if the API touched an item an older provisioner wrote, it would\neither add `GSI3PK` without counting the item or subtract a count the\nitem never added.\n\n## Upgrade and repair\n\nThe fix runs in the provisioner Lambda, so a stack needs `zae-limiter\nupgrade` to pick it up. After that:\n- **A plain `limits apply`** repairs entity entries. They differ from\nthe new item only by the missing `GSI3PK`/`GSI3SK`, so each is rewritten\nand counted. They show up once as `~ update` in `plan` and `diff`.\n- **`limits apply --full`** also re-registers resource entries. A plain\napply skips those because they are otherwise identical to the manifest.\n- **The repair never double-counts.** Counting follows `GSI3PK`, not\nwhether the item exists.\n\n## Cost\n\n| Operation | Added cost |\n|---|---|\n| Resource write or delete | +1 WCU |\n| Entity create or delete | a 2-item transaction: 4 WCU instead of 1 |\n| Entity update | unchanged: one `PutItem` |\n| Entity write or delete with no pre-read that loses its condition | +1\nfailed write and +1 strongly consistent read |\n\nAdmin path only; nothing on `acquire()` changes. No IAM change:\n`TransactWriteItems` is authorized by the per-item `PutItem` /\n`UpdateItem` / `DeleteItem` actions the provisioner role already has.\n\n## Not in scope\n\n`delete_entity` doesn't touch the registries. That gap predates this PR\nand is left as is.\n\n## Changes pushed during review\n\n- 61e378c8: counted registry transactions take a per-process lock (one\napply's never overlap; plain writes stay concurrent), and a\n`TransactionConflict` with another writer is retried with full jitter (5\nretries, 25 ms base, 400 ms cap). moto never raises\n`TransactionConflict`, so a moto-backed client that cancels overlapping\ntransactions now drives a 40-entity, 8-worker apply in the unit tests.\nTrade-off: an initial apply's entity creates are serialized (~21 ms each\non AWS).\n- 0309b7d5: a transaction cancelled by `ThrottlingError` is retried like\na conflict (botocore does not retry cancellations); the zero-count\nregistry tidy after a counted delete runs under the same lock and logs\nany failure, since the delete already landed.\n- 8095e73e, 68067940: `delete_limits`' new fallback delete no longer\nlets a `ConditionalCheckFailedException` escape when a concurrent\n`set_limits` creates a counted item in between (it returned quietly\nbefore this PR).\n- 91678a75: the AWS e2e test above.\n- Stacked follow-up: #809 adds a parity test comparing everything both\nconfig writers leave in the table.\n\n## Test plan\n\n- [x] `tests/unit/test_provisioner_registries.py` (new). Through\n`on_event` against moto:\n- applied levels are listed, including a resource name containing `.`,\n`/` and `:`;\n  - updates and full applies do not count an item twice;\n  - removals unlist a resource only once nothing holds it;\n  - the API and the manifest share one count;\n- items in the old provisioner's format are repaired by a plain apply\n(entities) and by `--full` (resources);\n  - the API counts or deletes an old-format item correctly.\n\nPlus mock-client tests of each lost-condition, retry and give-up branch.\n- [x] `TestProvisionerRegistryWrites` in `test_expression_tokens.py`:\nthe registry expressions use positional tokens only.\n- [x]\n`TestEntityConfigRegistry::test_uncounted_config_is_deleted_without_a_decrement`\n(async source + generated sync twin).\n- [x] Updated mock-based tests: the entity create in\n`TestApplyCostsWhatChanged` is now a transaction. The `_setup_client`\nmock now returns a config item only after it has been written, as its\ndocstring describes, so the apply's pre-read no longer sees the\npost-apply state.\n- [x] Pre-push hook: full unit suite 7760 passed, gevent tests 45\npassed, diff coverage 100% against `origin/main`. ruff and mypy clean.\n- [ ] LocalStack integration run\n(`tests/integration/test_provisioner.py`): left to CI.\n- [x] Merged `main` (#794, #795, #799) into the branch (7af7bcd2);\nconflicts in `apply_changes` / the handler resolved keeping #795's\nconcurrent writes and this PR's pre-read (`known_old`)\n- [x] AWS, 2026-11-07: on a stack deployed with 0.17.0, a manifest apply\nwas enforced but `resource list`, `entity list-resources` and `entity\nlist --with-custom-limits` were empty; after `zae-limiter upgrade` to\nthis branch, a plain apply listed the entity levels and `--full` the\nresources, with exact counts (`gpt-4` = 2, `anthropic/claude-3.5:sonnet`\n= 1)\n- [x] AWS stress: a 640-entity initial apply with #795's 8 concurrent\nwriters first **failed** (684 of 1190 counted transactions cancelled by\n`TransactionConflict` on the one registry item, 134 entity creates gave\nup; counts stayed exact). Fixed in 61e378c8; re-run: 661 created, 0\nerrors, 640 transactions, counts exact, lists correct; Lambda 22.0 s\n(config writes 14.0 s, serialized)\n- [x] New AWS e2e test\n`TestE2EAWSProvisionerCFNStack::test_provisioner_lambda_keeps_the_list_registries`\n(deployed Lambda, real IAM role, 48 entities): passed with the other 4\nprovisioner AWS e2e tests (5 passed)\n\n---\n_Generated by [Claude\nCode](https://claude.ai/code/session_01WG5xqC2MjPaG2bdLdscmtm)_",
+          "timestamp": "2026-11-07T14:54:30-05:00",
+          "tree_id": "514b43225ba273289ba03f888430aa671574e4b8",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d665c0ecb88b41e9a287337279471db04a84d497"
+        },
+        "date": 1794081564185,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 28.503062591369392,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0068285205465238785",
+            "extra": "mean: 35.083949199999154 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 8.447214338245072,
+            "unit": "iter/sec",
+            "range": "stddev: 0.17952011452601166",
+            "extra": "mean: 118.382221636364 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 47.13102909771357,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0024492762256655945",
+            "extra": "mean: 21.21744462499997 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 39.20412119441124,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005379989402672666",
+            "extra": "mean: 25.5075224117651 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.989886197305765,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009229342133617582",
+            "extra": "mean: 43.49738799999768 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 78.50942791079133,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0024441269975324607",
+            "extra": "mean: 12.737323740739514 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 29.81147076828734,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006498089778073118",
+            "extra": "mean: 33.54413500000053 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 33.284472421245084,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004132845665138241",
+            "extra": "mean: 30.04403937500033 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 23.930325546779525,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05385830724589675",
+            "extra": "mean: 41.78798144827483 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 31.561482863407345,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005875699067842438",
+            "extra": "mean: 31.684189374999505 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 30.659524189485534,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009753785806535402",
+            "extra": "mean: 32.61629221052761 msec\nrounds: 38"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 29.285314713533126,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006202661700072775",
+            "extra": "mean: 34.146807360000366 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 36.30171649387259,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003728097837971363",
+            "extra": "mean: 27.546906774195957 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9235838436475357,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007477704385441652",
+            "extra": "mean: 519.8629648000065 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.936007607989517,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002964378748803102",
+            "extra": "mean: 516.5268957999956 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9548945298003253,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0038933625825965405",
+            "extra": "mean: 1.0472360756 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9269739023666418,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008634761523033036",
+            "extra": "mean: 1.0787790221999956 sec\nrounds: 5"
           }
         ]
       }
