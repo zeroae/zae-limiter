@@ -29,8 +29,7 @@ from typing import Any
 import boto3
 import pytest
 
-import zae_limiter
-from zae_limiter import Limit
+from zae_limiter import Limit, __version__
 from zae_limiter.schema import DEFAULT_RESOURCE
 from zae_limiter.sync_repository import SyncRepository
 from zae_limiter.version import get_schema_version
@@ -290,9 +289,7 @@ def namespaces(mock_dynamodb):
     setup = SyncRepository(name=TABLE, region="us-east-1", _skip_deprecation_warning=True)
     setup.create_table()
     # A deploy of this build: the soft, bypass, cascade and reset_after gates pass.
-    setup.set_version_record(
-        schema_version=get_schema_version(), lambda_version=zae_limiter.__version__
-    )
+    setup.set_version_record(schema_version=get_schema_version(), lambda_version=__version__)
     setup._register_namespace("api")
     setup._register_namespace("manifest")
     api = setup.namespace("api")
