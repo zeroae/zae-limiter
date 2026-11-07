@@ -5549,12 +5549,17 @@ class SyncRepository:
                     raise
             else:
                 raise
-            deleted = client.delete_item(
-                TableName=self.table_name,
-                Key=config_key,
-                ConditionExpression="attribute_not_exists(GSI3PK)",
-                ReturnValues="ALL_OLD",
-            )
+            try:
+                deleted = client.delete_item(
+                    TableName=self.table_name,
+                    Key=config_key,
+                    ConditionExpression="attribute_not_exists(GSI3PK)",
+                    ReturnValues="ALL_OLD",
+                )
+            except ClientError as fallback_error:
+                if fallback_error.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+                return
             if not deleted.get("Attributes"):
                 return
             counted = False

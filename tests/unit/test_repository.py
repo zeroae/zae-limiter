@@ -3560,6 +3560,28 @@ class TestEntityConfigRegistry:
         assert response["Item"]["gpt-4"] == {"N": "1"}
 
     @pytest.mark.asyncio
+    async def test_a_delete_that_loses_to_a_concurrent_set_returns_quietly(self, repo):
+        """The fallback delete finds a counted item it did not see: the set won.
+
+        The counted transaction fails on an absent item, and a concurrent
+        `set_limits` creates a counted one before the fallback's
+        ``attribute_not_exists(GSI3PK)`` delete runs. That delete lost the race,
+        exactly as if it had run first, so it must not raise.
+        """
+        client = await repo._get_client()
+        real_delete = client.delete_item
+
+        async def delete_after_a_concurrent_set(**kwargs):
+            await repo.set_limits("racer", [Limit.per_minute("rpm", 5)], resource="gpt-4")
+            return await real_delete(**kwargs)
+
+        with patch.object(client, "delete_item", side_effect=delete_after_a_concurrent_set):
+            await repo.delete_limits("racer", resource="gpt-4")
+
+        assert [lim.name for lim in await repo.get_limits("racer", resource="gpt-4")] == ["rpm"]
+        assert await repo.list_resources_with_entity_configs() == ["gpt-4"]
+
+    @pytest.mark.asyncio
     async def test_delete_limits_nonexistent_config_is_silent(self, repo):
         """delete_limits silently succeeds when config doesn't exist."""
         await repo.create_entity("user-1")

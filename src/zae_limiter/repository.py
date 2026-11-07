@@ -6700,12 +6700,19 @@ class Repository:
                 raise
             # Absent, or an item the provisioner wrote before it kept the
             # registry (no GSI3PK, never counted): delete that one alone.
-            deleted = await client.delete_item(
-                TableName=self.table_name,
-                Key=config_key,
-                ConditionExpression="attribute_not_exists(GSI3PK)",
-                ReturnValues="ALL_OLD",
-            )
+            try:
+                deleted = await client.delete_item(
+                    TableName=self.table_name,
+                    Key=config_key,
+                    ConditionExpression="attribute_not_exists(GSI3PK)",
+                    ReturnValues="ALL_OLD",
+                )
+            except ClientError as fallback_error:
+                if fallback_error.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+                # A counted item appeared in between (a concurrent set_limits):
+                # this delete lost the race, exactly as if it had run first.
+                return
             if not deleted.get("Attributes"):
                 # Config doesn't exist - nothing to delete, skip audit
                 return
