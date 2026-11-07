@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794087782791,
+  "lastUpdate": 1794091630265,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -69227,6 +69227,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.030148201894668266",
             "extra": "mean: 3.058161966 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7317be70f0056330fb7a14dd4bab6e82906c8d7a",
+          "message": "✅ test(provisioner): pin the two config writers to the same table (#809)\n\n## Summary\n- **Why:** Limit config has two writers: the `Repository` setters, and\nthe provisioner's `applier`, which re-implements them because the Lambda\nzip vendors only a stub of `zae_limiter`. Nothing compared the two.\nEvery side effect the applier lacked shipped and was later found as its\nown bug: `bx` (fd4beefe, the day after the applier landed in PR #409,\n2026-02-19), schedules (#549), GSI4SK (#777), and the three list\nregistries (#797). The registries (#238, #287, #301) predate the\nprovisioner by 17-25 days. The design doc said the provisioner would go\n\"via Repository API\", but the implementation plan switched to raw boto3,\nand since then `docs/infra/deployment.md` has said both writers \"write\nto the same DynamoDB config records\". The existing tests only did point\nreads (`get_resource_defaults`), which pass with the bug, and no test\ncalled a `list_*` method after a provisioner apply.\n- **What:** `tests/unit/test_config_writer_parity.py`.\n- `test_both_writers_leave_the_same_table` runs a create → update →\ndelete sequence through both writers, in one moto namespace each. The\nsequence covers the system level, resources (including a name with\n`.`/`/`/`:`), entity levels (including `_default_`), rate limits, a\nparameter schedule, a calendar quota, a session quota, soft, `disabled`\ntrue/false/bypass, and `cascade`. After each step it compares every item\nand attribute (with the namespace id normalised) and the three `list_*`\nresults. The intended differences are named, each with a reason:\n    - `#PROVISIONER*`: provisioner state.\n- `#AUDIT#` items: the provisioner writes none. This is a real gap,\ntracked separately.\n    - `config_version`: written by the setters, read by nothing.\n- `test_every_declaration_field_is_exercised` fails until every field of\n`SystemDecl`/`ResourceDecl`/`EntityResourceDecl`/`LimitDecl` takes a\nnon-default value in some step, so a new manifest feature also needs a\nparity step. It has already caught `LimitDecl.schedule` missing from the\nfirst draft.\n- CLAUDE.md and `.claude/rules/code-review.md` name the test.\n\n## Test plan\n- [x] Passes on this branch (stacked on #797), 3 consecutive runs under\nxdist\n- [x] Fails against `main`'s source (`git archive origin/main src`,\nplaced first on PYTHONPATH): the first step finds `#RESOURCES` /\n`#ENTITY_CONFIG_RESOURCES` items that only the API wrote, so it would\nhave caught #797's bug\n- [x] Pre-push hook (full unit suite, diff coverage) passed\n\n## Notes\n- Stacked on #797: merge #797 first, then retarget this PR's base to\n`main`.\n- Out of scope, possible follow-ups:\n- The provisioner writes no audit events. `audit list` never shows a\nmanifest change, although `docs/infra/auditing.md` says `limits_set`\ncovers all limit configurations.\n- A stronger structural fix would move the planning of config items and\nindex writes into one pure module vendored into the Lambda (like\n`bucket_ops.py`). There would then be one implementation instead of a\ntest comparing two.\n\nRefs #797\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-11-07T17:40:31-05:00",
+          "tree_id": "8a462acfedd4671901c3752045cdd970f6ceb142",
+          "url": "https://github.com/zeroae/zae-limiter/commit/7317be70f0056330fb7a14dd4bab6e82906c8d7a"
+        },
+        "date": 1794091629130,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 148.75984864584262,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013625477141167175",
+            "extra": "mean: 6.722243999997152 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 118.60329439620806,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001847832976328975",
+            "extra": "mean: 8.4314690000042 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 72.11982865309042,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006074800520259083",
+            "extra": "mean: 13.86581220000096 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 133.66066407879683,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014683012631078532",
+            "extra": "mean: 7.481632736842239 msec\nrounds: 114"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 148.62072430654803,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010612372034948366",
+            "extra": "mean: 6.728536714283401 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 149.47144623612928,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012651232391332014",
+            "extra": "mean: 6.690241013793619 msec\nrounds: 145"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 69.93312852264812,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00017369133598961546",
+            "extra": "mean: 14.299374575758412 msec\nrounds: 66"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 128.95504477550756,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00183992549058467",
+            "extra": "mean: 7.754640400000312 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 118.97141219278409,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002454844578933435",
+            "extra": "mean: 8.405380600001422 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 73.06808352501749,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016537248299900695",
+            "extra": "mean: 13.685865999997304 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 147.8417379328032,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002522969956569903",
+            "extra": "mean: 6.763989750002253 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 118.3424389950648,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00022497829895820278",
+            "extra": "mean: 8.450053999999973 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 130.54160138033276,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013627552765558754",
+            "extra": "mean: 7.660393234234208 msec\nrounds: 111"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 144.7061541664689,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014840695373824906",
+            "extra": "mean: 6.910556124998024 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 132.335906264782,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007516344703659412",
+            "extra": "mean: 7.556528142854647 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 68.77339189376342,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005675407523936572",
+            "extra": "mean: 14.540507200004527 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 71.51120671429453,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000705164935454287",
+            "extra": "mean: 13.98382219999803 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 129.5889318977572,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012445179577185266",
+            "extra": "mean: 7.71670840522845 msec\nrounds: 153"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 1.6678168927089458,
+            "unit": "iter/sec",
+            "range": "stddev: 0.11369407721184545",
+            "extra": "mean: 599.5862042000027 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 73.07555655609096,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001378441347236556",
+            "extra": "mean: 13.684466422536586 msec\nrounds: 71"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 13.574217598047264,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009580409265325083",
+            "extra": "mean: 73.66907100000049 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 14.627446129165723,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004201624777304046",
+            "extra": "mean: 68.3646339333355 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 43.99151755558461,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03540417891226237",
+            "extra": "mean: 22.731655000000167 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 72.07358986941023,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002705790289958997",
+            "extra": "mean: 13.874707806450251 msec\nrounds: 62"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 4.1973636912708665,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0033204816496167893",
+            "extra": "mean: 238.24478257141988 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 3.8251293442761223,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004458411815611795",
+            "extra": "mean: 261.4290681428559 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 72.86475725422503,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00019803716322193852",
+            "extra": "mean: 13.724055876711445 msec\nrounds: 73"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 72.09054847441456,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001710283159109747",
+            "extra": "mean: 13.871443915493403 msec\nrounds: 71"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 3.092815461590619,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003567729314026088",
+            "extra": "mean: 323.3299925000068 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 0.3207624906443566,
+            "unit": "iter/sec",
+            "range": "stddev: 0.1486245217669939",
+            "extra": "mean: 3.117571502800007 sec\nrounds: 5"
           }
         ]
       }
