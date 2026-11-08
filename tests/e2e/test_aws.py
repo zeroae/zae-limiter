@@ -135,8 +135,10 @@ class TestE2EAWSFullWorkflow:
             cascade=True,
         )
 
-        # Set limits
-        limits = [Limit.per_minute("rpm", 100)]
+        # Per day, not per minute: 100/min refills ~1.7 tokens a second, more than
+        # five acquires with half-second sleeps consume on real AWS, so the bucket
+        # read full again (`assert 100 < 100`). 100/day refills ~0.001 a second.
+        limits = [Limit.per_day("rpd", 100)]
         await aws_limiter.set_limits("aws-parent", limits)
 
         # Use rate limiting
@@ -145,17 +147,17 @@ class TestE2EAWSFullWorkflow:
                 entity_id="aws-child",
                 resource="api",
                 limits=limits,
-                consume={"rpm": 1},
+                consume={"rpd": 1},
             ):
                 await asyncio.sleep(0.5)  # Small delay
 
-        # Verify available tokens
+        # Verify available tokens: 5 consumed, refill under one token
         available = await aws_limiter.available(
             entity_id="aws-child",
             resource="api",
             limits=limits,
         )
-        assert available["rpm"] < 100
+        assert 95 <= available["rpd"] <= 96, available
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_role_has_permission_boundary(self, aws_limiter, unique_name_class):
