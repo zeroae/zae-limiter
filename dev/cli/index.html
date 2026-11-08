@@ -6304,6 +6304,9 @@ with 'upgrade'), and a missing stack is reported as NOT INITIALIZED.</p>
 <p>Delete CloudFormation stack and all resources.</p>
 <p>Removes the DynamoDB table, Lambda function, IAM roles, and all associated
 resources. This action cannot be undone - all data will be permanently lost.</p>
+<p>With --wait, a stack that ends in DELETE_FAILED is deleted once more before
+the command fails: DynamoDB occasionally answers a table delete with a
+transient internal error that a second attempt clears.</p>
 <p><strong>Examples:</strong>
     <div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Delete with confirmation prompt</span>
 </span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>zae-limiter<span class="w"> </span>delete<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--region<span class="w"> </span>us-east-1

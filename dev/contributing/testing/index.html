@@ -4588,7 +4588,8 @@
 <h4 id="real-aws-from-ci">Real AWS from CI<a class="headerlink" href="#real-aws-from-ci" title="Permanent link">&para;</a></h4>
 <p>The <code>AWS E2E</code> workflow (<code>.github/workflows/aws-e2e.yml</code>) runs <code>pytest -m aws --run-aws</code> with
 short-lived credentials from GitHub OIDC; no access keys are stored. It runs on a manual
-dispatch, on every push to a <code>release/v*</code> branch, and on a pull request labelled <code>aws-e2e</code>
+dispatch, on every push to <code>main</code> (each merge) and to a <code>release/v*</code> branch, and on a pull
+request labelled <code>aws-e2e</code>
 (same-repository PRs only; the label is removed when the run ends). Runs are serialized, and
 each one deletes any <code>zci-*</code> stack left behind. The daily <code>AWS E2E Reaper</code> workflow deletes any
 <code>zci-*</code> stack older than a day.</p>
