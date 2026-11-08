@@ -24,6 +24,28 @@ from .lambda_builder import build_lambda_package
 from .provisioner_builder import build_provisioner_package
 
 logger = logging.getLogger(__name__)
+_DELETE_ATTEMPTS = 2
+"A first stack delete and one retry when it ends in ``DELETE_FAILED`` (#812).\n\nDynamoDB ``DeleteTable`` intermittently answers HTTP 500 while CloudFormation\ndeletes the table, leaving the stack in ``DELETE_FAILED``; a second delete has\nalways cleared it."
+
+
+def _ended_in_delete_failed(error: WaiterError) -> bool:
+    """True when the delete waiter stopped because the stack is ``DELETE_FAILED``."""
+    response: Any = error.last_response
+    stacks = response.get("Stacks") if isinstance(response, dict) else None
+    return any(stack.get("StackStatus") == "DELETE_FAILED" for stack in stacks or [])
+
+
+def _failure_reason(events: list[dict[str, Any]]) -> str:
+    """The newest resource failure among ``events``, for a log line."""
+    for event in events:
+        if (
+            event.get("status") == "DELETE_FAILED"
+            and event.get("resource_type") != "AWS::CloudFormation::Stack"
+        ):
+            return f"{event.get('logical_id')}: {event.get('reason')}"
+    return "no resource failure reported"
+
+
 VERSION_TAG_PREFIX = "zae-limiter:"
 VERSION_TAG_KEY = f"{VERSION_TAG_PREFIX}version"
 LAMBDA_VERSION_TAG_KEY = f"{VERSION_TAG_PREFIX}lambda-version"
@@ -770,30 +792,43 @@ class SyncStackManager:
             stack_name: Name of the stack to delete
             wait: Wait for stack to be DELETE_COMPLETE
 
+        A stack that ends in ``DELETE_FAILED`` while waiting is deleted once
+        more before this gives up (#812): DynamoDB ``DeleteTable`` returns a
+        transient HTTP 500 now and then, and a second delete clears it. A wait
+        that times out is not retried.
+
         Raises:
             StackOperationError: If deletion fails, including a stack that
-                ends in ``DELETE_FAILED`` while waiting
+                ends in ``DELETE_FAILED`` on both attempts
         """
         client = self._get_client()
-        try:
-            client.delete_stack(StackName=stack_name)
-            if wait:
-                waiter = client.get_waiter("stack_delete_complete")
-                waiter.wait(StackName=stack_name)
-        except ClientError as e:
-            error_code = e.response["Error"]["Code"]
-            if error_code == "ValidationError" and "does not exist" in str(e):
+        for attempt in range(1, _DELETE_ATTEMPTS + 1):
+            try:
+                client.delete_stack(StackName=stack_name)
+                if wait:
+                    waiter = client.get_waiter("stack_delete_complete")
+                    waiter.wait(StackName=stack_name)
                 return
-            raise StackOperationError(
-                stack_name=stack_name,
-                reason=f"Stack deletion failed: {e.response['Error']['Message']}",
-            ) from e
-        except WaiterError as e:
-            raise StackOperationError(
-                stack_name=stack_name,
-                reason=f"Stack deletion failed: {e}",
-                events=self._get_stack_events(client, stack_name),
-            ) from e
+            except ClientError as e:
+                error_code = e.response["Error"]["Code"]
+                if error_code == "ValidationError" and "does not exist" in str(e):
+                    return
+                raise StackOperationError(
+                    stack_name=stack_name,
+                    reason=f"Stack deletion failed: {e.response['Error']['Message']}",
+                ) from e
+            except WaiterError as e:
+                events = self._get_stack_events(client, stack_name)
+                if attempt < _DELETE_ATTEMPTS and _ended_in_delete_failed(e):
+                    logger.warning(
+                        "Stack %s ended in DELETE_FAILED (%s); deleting it again",
+                        stack_name,
+                        _failure_reason(events),
+                    )
+                    continue
+                raise StackOperationError(
+                    stack_name=stack_name, reason=f"Stack deletion failed: {e}", events=events
+                ) from e
 
     def _get_stack_events(
         self, client: Any, stack_name: str, limit: int = 20
