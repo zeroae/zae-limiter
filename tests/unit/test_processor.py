@@ -2183,19 +2183,23 @@ class TestProactiveShardingFeedback:
 
     def test_self_fed_doubling_stops_at_max_shard_count(self, sync_repository) -> None:
         table, key = self._shard0_after_traffic(sync_repository)
-        rf_s = int(table.get_item(Key=key)["Item"]["rf"]) / 1000
-
-        # Clock frozen at `rf`: the projection restores nothing, so only the
-        # cap can stop it.
-        counts = self._run(table, key, now_s=rf_s, invocations=8)
+        # Clock frozen at `xi`, the instant `wcu`'s fill instant is expressed
+        # at: the projection restores nothing, so only the cap can stop it.
+        # Not `rf`, which a create stamps at commit, a moment after: under
+        # load that gap alone refilled `wcu` past the threshold (#821).
+        shard0 = table.get_item(Key=key)["Item"]
+        xi_s, rf_ms = int(shard0["xi"]) / 1000, int(shard0["rf"])
+        counts = self._run(table, key, now_s=xi_s, invocations=8)
 
         assert counts == [2, 4, 8, 16, 32, 32, 32, 32]
         items = [i for i in table.scan()["Items"] if "BUCKET#user-1#api#" in i["PK"]]
         assert len(items) == MAX_SHARD_COUNT
         assert all(int(i["shard_count"]) == MAX_SHARD_COUNT for i in items)
-        # Each raise moved `rpm`'s balance into the shards it created, minting none.
+        # Each raise moved `rpm`'s balance into the shards it created, minting
+        # none: read at `rf`, the instant every split was made at (never before
+        # the item's own expression instant).
         params = fill_instant.ShardParams(1_000_000_000, 1_000_000_000, 60_000, MAX_SHARD_COUNT)
-        now_ms = int(rf_s * 1000)
+        now_ms = rf_ms
         units = sum(fill_instant.balance_units(int(i["b_rpm_fi"]), now_ms, params) for i in items)
         assert 1_000_000_000 - 1_000 <= units // params.units_per_milli <= 1_000_000_000
 
