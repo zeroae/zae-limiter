@@ -261,6 +261,22 @@
          <lastmod>2026-11-08</lastmod>
     </url>
     <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/153-admission-contract-for-dripping-limits/</loc>
+         <lastmod>2026-11-08</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/154-fill-instant-fast-path/</loc>
+         <lastmod>2026-11-08</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/155-fill-instant-writers/</loc>
+         <lastmod>2026-11-08</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/156-dripping-shard-raises/</loc>
+         <lastmod>2026-11-08</lastmod>
+    </url>
+    <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/</loc>
          <lastmod>2026-11-08</lastmod>
     </url>
@@ -290,6 +306,10 @@
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/contributing/development/</loc>
+         <lastmod>2026-11-08</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/contributing/fill-instant-proofs/</loc>
          <lastmod>2026-11-08</lastmod>
     </url>
     <url>
