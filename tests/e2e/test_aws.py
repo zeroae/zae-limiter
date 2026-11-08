@@ -535,7 +535,10 @@ class TestE2EAWSRateLimiting:
         """
         await aws_limiter_minimal.create_entity("throughput-user")
 
-        limits = [Limit.per_minute("rpm", 1000)]
+        # Per day, not per minute: 1000/min refills ~16.7 tokens a second, more than
+        # 50 sequential round trips to DynamoDB consume, so the bucket read full
+        # again (`1000 < 1000`). 1000/day refills ~0.01 a second.
+        limits = [Limit.per_day("rpd", 1000)]
 
         # Rapid operations
         for _ in range(50):
@@ -543,21 +546,17 @@ class TestE2EAWSRateLimiting:
                 entity_id="throughput-user",
                 resource="api",
                 limits=limits,
-                consume={"rpm": 1},
+                consume={"rpd": 1},
             ):
                 pass
 
-        # Verify tokens were consumed
-        # Note: With 1000 rpm, refill rate is ~16.67 tokens/second
-        # Over ~5 seconds of test execution with network latency, significant refill occurs
         available = await aws_limiter_minimal.available(
             entity_id="throughput-user",
             resource="api",
             limits=limits,
         )
-        # Just verify that some tokens were consumed - the exact amount varies
-        # due to refill during network round trips to DynamoDB
-        assert available["rpm"] < 1000, "Should have consumed some tokens"
+        # 50 consumed; allow a token of refill over the test's runtime
+        assert 950 <= available["rpd"] <= 951, available
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_multiple_resources(self, aws_limiter_minimal):

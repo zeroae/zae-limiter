@@ -331,7 +331,7 @@ class TestCheckAvailabilityReportsOneWindow:
         repo = limiter._repository
         await repo.set_limits("user-1", list(limits), resource=RESOURCE)
         repo._now_ms = lambda: now_ms
-        with patch.object(repo, "get_buckets", AsyncMock(return_value=shards)):
+        with patch.object(repo, "get_bucket_shards", AsyncMock(return_value=shards)):
             return await limiter.check_availability("user-1", RESOURCE, needed=needed)
 
     @staticmethod

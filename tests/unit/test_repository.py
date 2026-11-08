@@ -1090,6 +1090,78 @@ class TestCompositeWritePaths:
         assert result == []
 
 
+class TestGetBucketShards:
+    """Every shard of one (entity, resource), even one GSI3 has not listed (#791)."""
+
+    LIMIT = Limit.per_minute("rpm", 100)
+
+    @staticmethod
+    async def _create(repo, entity_id, shard_id, shard_count, tokens_milli):
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit(entity_id, "gpt-4", TestGetBucketShards.LIMIT, now_ms)
+        state.tokens_milli = tokens_milli
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    entity_id,
+                    "gpt-4",
+                    [state],
+                    now_ms,
+                    shard_id=shard_id,
+                    shard_count=shard_count,
+                )
+            ]
+        )
+
+    @pytest.mark.asyncio
+    async def test_shard_zero_is_read_when_gsi3_lists_nothing(self, repo):
+        await self._create(repo, "shards-1", 0, 1, 80_000)
+
+        with patch.object(repo, "_discover_entity_bucket_pks", AsyncMock(return_value=[])):
+            buckets = await repo.get_bucket_shards("shards-1", "gpt-4")
+
+        assert [(b.limit_name, b.tokens_milli) for b in buckets] == [("rpm", 80_000)]
+
+    @pytest.mark.asyncio
+    async def test_every_listed_shard_is_read_once(self, repo):
+        await self._create(repo, "shards-2", 0, 2, 30_000)
+        await self._create(repo, "shards-2", 1, 2, 40_000)
+        # Another resource of the same entity is not read
+        now_ms = int(time.time() * 1000)
+        other = BucketState.from_limit("shards-2", "gpt-3", self.LIMIT, now_ms)
+        create_other = repo.build_composite_create("shards-2", "gpt-3", [other], now_ms)
+        await repo.transact_write([create_other])
+
+        buckets = await repo.get_bucket_shards("shards-2", "gpt-4")
+
+        assert sorted(b.tokens_milli for b in buckets) == [30_000, 40_000]
+        assert {b.resource for b in buckets} == {"gpt-4"}
+
+    @pytest.mark.asyncio
+    async def test_one_strongly_consistent_read_and_no_slot_probes(self, repo):
+        """Slots below shard 0's stored count are not probed (lazy shards)."""
+        await self._create(repo, "shards-3", 0, 4, 10_000)
+        client = await repo._get_client()
+        original = client.batch_get_item
+        requests = []
+
+        async def _batch_get_item(**kwargs):
+            requests.append(kwargs["RequestItems"][repo.table_name])
+            return await original(**kwargs)
+
+        with patch.object(client, "batch_get_item", _batch_get_item):
+            buckets = await repo.get_bucket_shards("shards-3", "gpt-4")
+
+        assert [b.tokens_milli for b in buckets] == [10_000]
+        assert len(requests) == 1
+        assert len(requests[0]["Keys"]) == 1
+        assert requests[0]["ConsistentRead"] is True
+
+    @pytest.mark.asyncio
+    async def test_no_bucket_returns_nothing(self, repo):
+        assert await repo.get_bucket_shards("shards-4", "gpt-4") == []
+
+
 class TestDurationWindowStamp:
     """Tests for stamping/reading the ADR-139 duration window on bucket items."""
 

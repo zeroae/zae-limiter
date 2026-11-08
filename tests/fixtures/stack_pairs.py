@@ -278,9 +278,11 @@ async def eventually(
     """Poll ``probe`` until ``predicate`` holds and return that value.
 
     For reads real AWS serves eventually consistently: a GSI query
-    (``get_buckets``, ``check_availability``), or a default ``GetItem`` /
-    ``Query``. Asserting presence through one of them straight after a write is
-    a flake on AWS; asserting absence needs no poll.
+    (``get_buckets``), or a default ``GetItem`` / ``Query``.
+    (``check_availability`` reads shard 0 by key, strongly consistent, #791;
+    only a just-created shard N>0 can still lag.) Asserting presence through
+    one of them straight after a write is a flake on AWS; asserting absence
+    needs no poll.
 
     This *is* the assertion: on timeout it raises ``AssertionError`` carrying
     the last value read, so a caller does not re-assert the predicate.

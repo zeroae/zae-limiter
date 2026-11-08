@@ -2437,6 +2437,46 @@ class SyncRepository:
                 buckets.extend(self._deserialize_composite_bucket(full_item))
         return [b for b in buckets if b.limit_name != schema.WCU_LIMIT_NAME]
 
+    def get_bucket_shards(self, entity_id: str, resource: str) -> list[BucketState]:
+        """Every shard of one (entity, resource), including one created just now (#791).
+
+        The read behind ``SyncRateLimiter.check_availability()``. Discovers the
+        shards through GSI3, scoped to the resource (``GSI3SK begins_with
+        BUCKET#{resource}#``), and always adds shard 0's key to the
+        ``BatchGetItem``: a GSI is eventually consistent, so the bucket an
+        ``acquire()`` created milliseconds earlier can be missing from the
+        index, and "no bucket" reads as full capacity. The ``BatchGetItem`` is
+        strongly consistent, so a caller reads its own writes.
+
+        Slots below shard 0's stored ``shard_count`` are **not** probed by key
+        (``reset_bucket`` / ``top_up`` do, ADR-149): shards are created lazily,
+        so a sharded entity usually has slots that do not exist yet, and every
+        call would pay a second round trip and a read per absent slot. A
+        just-created shard N>0 the index has not listed yet is left out of the
+        sum, which under-reports by at most that shard's balance and never
+        reports more than the entity holds.
+
+        Cost: 1 GSI3 KEYS_ONLY Query + 1 strongly consistent ``BatchGetItem``
+        of the listed shards plus shard 0 (1 RCU per item up to 4 KB; shard 0
+        is read even when it does not exist).
+
+        The internal ``wcu`` infrastructure limit is filtered out.
+
+        Args:
+            entity_id: Entity owning the bucket.
+            resource: Resource name.
+
+        Returns:
+            One BucketState per application limit per existing shard.
+        """
+        raw = self._read_shard_items(entity_id, resource, probe_below_count=False)
+        return [
+            bucket
+            for _, item in sorted(raw.items())
+            for bucket in self._deserialize_composite_bucket(item)
+            if bucket.limit_name != schema.WCU_LIMIT_NAME
+        ]
+
     def batch_get_buckets(
         self, keys: list[tuple[str, str, int]]
     ) -> dict[tuple[str, str, str], BucketState]:
@@ -9365,16 +9405,17 @@ class SyncRepository:
         item: dict[str, Any] | None = response.get("Item")
         return item
 
-    def _read_operation_shards(
-        self, entity_id: str, resource: str, now_ms: int
-    ) -> tuple[list[bucket_ops.ReadShard], dict[int, dict[str, Any]]]:
-        """Every shard of the bucket, strongly consistent, with its raw item.
+    def _read_shard_items(
+        self, entity_id: str, resource: str, *, probe_below_count: bool
+    ) -> dict[int, dict[str, Any]]:
+        """Every shard item of one (entity, resource) by shard id, strongly consistent.
 
-        GSI3 discovery is eventually consistent, so a shard created just before
-        the call can be missing from it — and a reset that skipped it would
-        leave it holding an old-period grant beside re-granted siblings. So
-        shard 0 is always read by key, and every slot below the highest stored
-        ``shard_count`` the index did not list is probed by key too.
+        GSI3 discovery (scoped to the resource) is eventually consistent, so a
+        bucket created just before the call can be missing from it. Shard 0 is
+        therefore always read by key beside whatever the index listed (#791,
+        ADR-149). With ``probe_below_count``, every slot below the highest
+        stored ``shard_count`` the index did not list is probed by key too, in
+        further round trips until nothing new turns up.
         """
         pks = set(self._discover_entity_bucket_pks(entity_id, resource))
         pks.add(schema.pk_bucket(self._namespace_id, entity_id, resource, 0))
@@ -9391,6 +9432,8 @@ class SyncRepository:
                     resource=resource,
                 ):
                     raw[schema.parse_bucket_pk(item["PK"]["S"])[3]] = item
+            if not probe_below_count:
+                break
             probed |= {schema.parse_bucket_pk(pk)[3] for pk in pks}
             top = max((self._stored_shard_count(item) for item in raw.values()), default=1)
             pks = {
@@ -9398,6 +9441,20 @@ class SyncRepository:
                 for slot in range(top)
                 if slot not in raw and slot not in probed
             }
+        return raw
+
+    def _read_operation_shards(
+        self, entity_id: str, resource: str, now_ms: int
+    ) -> tuple[list[bucket_ops.ReadShard], dict[int, dict[str, Any]]]:
+        """Every shard of the bucket, strongly consistent, with its raw item.
+
+        GSI3 discovery is eventually consistent, so a shard created just before
+        the call can be missing from it — and a reset that skipped it would
+        leave it holding an old-period grant beside re-granted siblings. So
+        shard 0 is always read by key, and every slot below the highest stored
+        ``shard_count`` the index did not list is probed by key too.
+        """
+        raw = self._read_shard_items(entity_id, resource, probe_below_count=True)
         shards = [
             bucket_ops.ReadShard(
                 shard_id=shard_id,
