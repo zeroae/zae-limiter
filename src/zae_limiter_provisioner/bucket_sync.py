@@ -23,6 +23,7 @@ from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
+from zae_limiter import fill_sync
 from zae_limiter.models import Limit
 from zae_limiter.schedule import ScheduleEntry, decode, decode_reset, encode, encode_reset
 from zae_limiter.schema import (
@@ -38,6 +39,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    BUCKET_FIELD_XI,
     BUCKET_SCHED_NONE,
     CONFIG_FIELD_SCHED_TZ,
     DEFAULT_RESOURCE,
@@ -143,6 +145,10 @@ _STALE_FIELDS = (
     BUCKET_FIELD_FI,
 )
 
+
+# How many writes one shard's sync may take when a fill instant on it keeps
+# moving between its read and its write (ADR-155), as on the client.
+_SYNC_ATTEMPTS = 8
 
 #: T for the stamps this provisioner writes (ADR-151 decision 8): a `bypass` or
 #: soft stamp stands at most this long after the config read that justified it.
@@ -432,23 +438,52 @@ def _update_one_shard(
     expr_names: dict[str, str],
     expr_values: dict[str, dict[str, str]],
 ) -> bool:
-    """Apply one shard's param update. Returns False if the shard vanished."""
-    try:
-        client.update_item(
-            TableName=table_name,
-            Key={"PK": {"S": pk}, "SK": {"S": sk_state()}},
-            UpdateExpression=update_expr,
-            ConditionExpression="attribute_exists(PK)",
-            ExpressionAttributeNames=expr_names,
-            ExpressionAttributeValues=expr_values,
+    """Apply one shard's param update. Returns False if the shard vanished.
+
+    A shard storing fill instants is re-expressed in the same write, from the
+    parameters read to the ones written, pinned on that read (ADR-155,
+    ``fill_sync``, mirroring ``Repository._sync_one_bucket_shard``): the plain
+    write refuses one (``xi``) and returns its image.
+    """
+    item: dict[str, Any] | None = None
+    for _attempt in range(_SYNC_ATTEMPTS):
+        extended = (
+            fill_sync.reexpression(item, update_expr, expr_names, expr_values, read_clock_ms())
+            if item is not None
+            else None
         )
-        return True
-    except client.exceptions.ConditionalCheckFailedException:
-        # Bucket does not exist yet, or no longer does: TTL can expire a shard
-        # between discovery and this write. A bucket created later is created
-        # with the current params, so there is nothing to reconcile.
-        logger.debug("Bucket %s vanished before param sync", pk)
-        return False
+        if extended is None:
+            request = {
+                "UpdateExpression": update_expr,
+                "ConditionExpression": "attribute_exists(PK) AND attribute_not_exists(#zsxi)",
+                "ExpressionAttributeNames": {**expr_names, "#zsxi": BUCKET_FIELD_XI},
+                "ExpressionAttributeValues": expr_values,
+            }
+        else:
+            expression, names, values, condition = extended
+            request = {
+                "UpdateExpression": expression,
+                "ConditionExpression": condition,
+                "ExpressionAttributeNames": names,
+                "ExpressionAttributeValues": values,
+            }
+        try:
+            client.update_item(
+                TableName=table_name,
+                Key={"PK": {"S": pk}, "SK": {"S": sk_state()}},
+                ReturnValuesOnConditionCheckFailure="ALL_OLD",
+                **request,
+            )
+            return True
+        except client.exceptions.ConditionalCheckFailedException as e:
+            item = getattr(e, "response", {}).get("Item")
+            if item is None:
+                # Bucket does not exist yet, or no longer does: TTL can expire a
+                # shard between discovery and this write. A bucket created later
+                # is created with the current params, so nothing to reconcile.
+                logger.debug("Bucket %s vanished before param sync", pk)
+                return False
+    raise RuntimeError("a bucket kept changing under its parameter sync")
 
 
 def _resolved_plan(

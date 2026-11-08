@@ -429,6 +429,77 @@ class TestCompositeBuilders:
         assert_expression_safe(request)
         assert " BETWEEN " in request["ConditionExpression"]
 
+    def test_param_sync_re_expression(self) -> None:
+        """#820: the parameter sync's re-expression of a fill instant (`fill_sync`)."""
+        from zae_limiter import fill_sync
+
+        item = {
+            "PK": {"S": "x"},
+            "xi": {"N": "2000"},
+            "shard_count": {"N": "1"},
+            **{
+                f"b_{name}_{field}": {"N": value}
+                for name in (DOTTED, HYPHENATED)
+                for field, value in (
+                    ("fi", "200000000"),
+                    ("cp", "100000"),
+                    ("ra", "100000"),
+                    ("rp", "60000"),
+                )
+            },
+        }
+        plan = (
+            "SET #c0 = :c0, #c1 = :c1 REMOVE #s0",
+            {"#c0": f"b_{DOTTED}_cp", "#c1": f"b_{HYPHENATED}_cp", "#s0": "b_old.x_tk"},
+            {":c0": {"N": "50000"}, ":c1": {"N": "50000"}},
+        )
+        extended = fill_sync.reexpression(item, *plan, 3_000)
+        assert extended is not None
+        expression, names, values, condition = extended
+        assert_expression_safe(
+            {
+                "UpdateExpression": expression,
+                "ConditionExpression": condition,
+                "ExpressionAttributeNames": names,
+                "ExpressionAttributeValues": values,
+            }
+        )
+
+    def test_reexpress_item(self) -> None:
+        """#820: re-expressing every fill instant on an item, pinned (form 3)."""
+        captured: dict[str, Any] = {}
+
+        class Client:
+            pass
+
+        repo = _repo()
+
+        async def fake_update(client, **kwargs):
+            captured.update(kwargs)
+            return {"Attributes": {}}
+
+        async def fake_client():
+            return Client()
+
+        repo._update_item_retrying_conflict = fake_update
+        repo._get_client = fake_client
+        state_item = {
+            "PK": {"S": "x"},
+            "entity_id": {"S": "user-1"},
+            "resource": {"S": "api"},
+            "rf": {"N": "1000"},
+            "xi": {"N": "1000"},
+            f"b_{DOTTED}_fi": {"N": "200000000"},
+            f"b_{DOTTED}_cp": {"N": "100000"},
+            f"b_{DOTTED}_ra": {"N": "100000"},
+            f"b_{DOTTED}_rp": {"N": "60000"},
+            f"b_{DOTTED}_tc": {"N": "0"},
+        }
+        import asyncio
+
+        asyncio.run(repo._reexpress_item("user-1", "api", 0, state_item, 3_000))
+        assert_expression_safe(captured)
+
     def test_fill_return(self) -> None:
         """#819: the exact return of a fill instant (ADR-155)."""
         for counter in (True, False):

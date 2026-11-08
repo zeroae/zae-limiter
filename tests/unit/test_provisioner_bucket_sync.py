@@ -347,7 +347,10 @@ class TestSyncBucketParams:
         assert keys == {_pk(shard=0), _pk(shard=1)}
         for call in client.update_item.call_args_list:
             assert call.kwargs["Key"]["SK"] == {"S": sk_state()}
-            assert call.kwargs["ConditionExpression"] == "attribute_exists(PK)"
+            # A shard storing fill instants is refused and re-expressed (#820).
+            assert call.kwargs["ConditionExpression"] == (
+                "attribute_exists(PK) AND attribute_not_exists(#zsxi)"
+            )
 
     def test_queries_gsi3_scoped_to_the_resource(self):
         client = _make_client()

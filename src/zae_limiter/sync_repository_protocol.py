@@ -15,7 +15,7 @@ from .config_cache import CacheStats as CacheStats
 from .limiter import OnUnavailable as OnUnavailable
 
 if TYPE_CHECKING:
-    from .fill_instant import WriteBudget
+    from .fill_instant import Write, WriteBudget
     from .models import (
         AuditEvent,
         BackendCapabilities,
@@ -86,6 +86,7 @@ class FillInstantWrite:
     capacity_milli: int
     refill_amount_milli: int
     refill_period_ms: int
+    pair: "Write | None" = None
 
 
 @dataclass
@@ -928,6 +929,25 @@ class SyncRepositoryProtocol(Protocol):
             One entry per item: the attributes an UpdateItem returned (when the
             item asked for ``ReturnValues``), else an empty dict. A backend may
             return ``None``; no caller depends on the result.
+        """
+        ...
+
+    def debit_fill_instants(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        debits: dict[str, int],
+        *,
+        item: dict[str, Any] | None = None,
+        attempts: int | None = None,
+    ) -> "list[BucketState] | None":
+        """Debit fill instants with no admission test: ADR-154's debit pair (ADR-155).
+
+        Each limit in ``debits`` (millitokens) records ``max(z, t) + c / r``,
+        retried with a fresh stamp until one lands. With ``attempts`` it is
+        given up after that many failed writes (returns None); without, it
+        raises ``RateLimiterUnavailable`` rather than drop the debt.
         """
         ...
 

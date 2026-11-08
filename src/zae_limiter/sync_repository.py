@@ -21,8 +21,8 @@ import boto3
 from botocore.exceptions import ClientError
 from ulid import ULID
 
-from . import bucket_ops, fill_instant, schedule, schema
-from .bucket import balance_milli_at, fill_params
+from . import bucket_ops, fill_instant, fill_sync, schedule, schema
+from .bucket import balance_milli_at, express_at, express_created, fill_params
 from .config_cache import CacheStats as CacheStats
 from .exceptions import (
     EntityExistsError,
@@ -160,6 +160,8 @@ _WRITE_BUDGET: ContextVar["fill_instant.WriteBudget | None"] = ContextVar(
     "zae_limiter_write_budget", default=None
 )
 _SOFT_DEBIT_ATTEMPTS = 4
+_SYNC_ATTEMPTS = 8
+_DEBIT_ATTEMPTS = 16
 _SEED_TOKEN = {
     schema.BUCKET_FIELD_TK: "t",
     schema.BUCKET_FIELD_TC: "c",
@@ -3397,13 +3399,30 @@ class SyncRepository:
             attr_names[f"#zp{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
             attr_names[f"#za{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RA)
             attr_names[f"#zr{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RP)
-            attr_values[f":zf{i}"] = {"N": str(write.fill_instant)}
             attr_values[f":zc{i}"] = {"N": str(write.consumed_milli)}
             attr_values[f":zp{i}"] = {"N": str(write.capacity_milli)}
             attr_values[f":za{i}"] = {"N": str(write.refill_amount_milli)}
             attr_values[f":zr{i}"] = {"N": str(write.refill_period_ms)}
-            set_parts.append(f"#zf{i} = :zf{i}")
             add_parts.append(f"#zc{i} :zc{i}")
+            if write.pair is not None:
+                pair = write.pair
+                attr_values[f":zs{i}"] = {"N": str(pair.stamp)}
+                if pair.side is fill_instant.Side.FULL:
+                    attr_values[f":zv{i}"] = {"N": str(pair.stamp + pair.span)}
+                    set_parts.append(f"#zf{i} = :zv{i}")
+                    condition_parts.append(f"#zf{i} < :zs{i}")
+                else:
+                    attr_values[f":zd{i}"] = {"N": str(pair.span)}
+                    add_parts.append(f"#zf{i} :zd{i}")
+                    if pair.upper is None:
+                        condition_parts.append(f"#zf{i} >= :zs{i}")
+                    else:
+                        attr_values[f":zu{i}"] = {"N": str(pair.upper)}
+                        condition_parts.append(f"#zf{i} BETWEEN :zs{i} AND :zu{i}")
+                condition_parts.append(f"#zp{i} = :zp{i} AND #za{i} = :za{i} AND #zr{i} = :zr{i}")
+                continue
+            attr_values[f":zf{i}"] = {"N": str(write.fill_instant)}
+            set_parts.append(f"#zf{i} = :zf{i}")
             if write.read_fill_instant is not None:
                 attr_values[f":zfr{i}"] = {"N": str(write.read_fill_instant)}
                 condition_parts.append(f"#zf{i} = :zfr{i}")
@@ -4751,13 +4770,12 @@ class SyncRepository:
             if bypass_until is not None and (not bypassed):
                 return _route(boundary)
             vu_raw = item.get(schema.BUCKET_FIELD_VU, {}).get("N")
-            if (
+            vu_closed = (
                 not bypassed
                 and vu_raw is not None
                 and (int(vu_raw) <= now_ms)
                 and (not vu_only_trims(int(vu_raw), states))
-            ):
-                return _route(boundary)
+            )
             ttl_raw = item.get("ttl", {}).get("N")
             if ttl_raw is not None and int(ttl_raw) <= now_ms // 1000:
                 return _route(boundary)
@@ -4793,6 +4811,8 @@ class SyncRepository:
             elif wcu is not None:
                 debited[schema.WCU_LIMIT_NAME] = 1000
                 counted[schema.WCU_LIMIT_NAME] = 1000
+            if vu_closed and debited:
+                return _route(boundary)
             for name in [*hard, *soft]:
                 state = by_name[name]
                 if state.sched:
@@ -4943,34 +4963,85 @@ class SyncRepository:
     ) -> list[BucketState]:
         """Debit the soft limits of an admitted request (ADR-154, ADR-151).
 
-        After admission, by ADR-155's debit pair: each soft fill instant gets
-        the not-full or full write with no upper bound, so it records
-        ``max(z, t) + c / r`` and may go into debt, retried from the failure
-        image with a fresh stamp each time (with no admission test it needs no
-        fixed one). It never rejects; after :data:`_SOFT_DEBIT_ATTEMPTS` failed
-        writes it is given up, which loses only the reporting (``tc`` and the
-        overdraw). Returns the states of the last image.
+        By :meth:`debit_fill_instants`. It never rejects; given up after
+        :data:`_SOFT_DEBIT_ATTEMPTS` failed writes, it loses only the
+        reporting (``tc`` and the overdraw). Returns the states of the last
+        image.
+        """
+        try:
+            landed = self.debit_fill_instants(
+                entity_id, resource, shard_id, soft, item=item, attempts=_SOFT_DEBIT_ATTEMPTS
+            )
+        except Exception:
+            logger.warning(
+                "soft debit failed for resource=%s shard=%d", resource, shard_id, exc_info=True
+            )
+            return states
+        if landed is None:
+            logger.warning(
+                "soft debit given up for resource=%s shard=%d: only its reporting is lost",
+                resource,
+                shard_id,
+            )
+            return states
+        return landed
+
+    def debit_fill_instants(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        debits: dict[str, int],
+        *,
+        item: dict[str, Any] | None = None,
+        attempts: int | None = None,
+    ) -> list[BucketState] | None:
+        """Debit fill instants with no admission test (ADR-155): ADR-154's debit pair.
+
+        Each limit in ``debits`` (millitokens) gets the not-full write with no
+        upper bound or the full write, so it records ``max(z, t) + c / r`` and
+        may go into debt, retried from the failure image with a fresh stamp
+        each time (with no admission test it needs no fixed one). A positive
+        lease adjustment, or a soft limit's debit after admission. ``item`` is
+        the image to start from: this process's cached image when omitted, or
+        one read. A schedule boundary since the item's ``xi`` is first
+        re-expressed by one pinned write (:meth:`_reexpress_item`).
+
+        Returns the states of the image the debit landed on. With ``attempts``
+        it gives up after that many failed writes and returns None; without, it
+        is never given up — dropping it would forgive the debt — and raises
+        ``RateLimiterUnavailable`` after :data:`_DEBIT_ATTEMPTS`, as a
+        persistent backend error does (#682).
         """
         client = self._get_client()
         fill_key = (self._namespace_id, entity_id, resource, shard_id)
-        current: dict[str, Any] | None = item
-        for _attempt in range(_SOFT_DEBIT_ATTEMPTS):
+        current = item
+        if current is None:
+            cached = self._fill_images.get(fill_key)
+            current = (
+                cached.item
+                if cached is not None
+                else self._read_bucket_item(entity_id, resource, shard_id)
+            )
+        for _attempt in range(attempts or _DEBIT_ATTEMPTS):
             if current is None or schema.BUCKET_FIELD_XI not in current:
                 break
             by_name = {s.limit_name: s for s in self._deserialize_composite_bucket(current)}
             if any(
-                by_name.get(name) is None or by_name[name].fill_instant is None for name in soft
+                by_name.get(name) is None or by_name[name].fill_instant is None for name in debits
             ):
                 break
             t_ms = self._now_ms()
             xi = int(current[schema.BUCKET_FIELD_XI]["N"])
             if any(
-                by_name[name].sched
-                and (crossed := schedule.next_boundary(by_name[name].sched, now_ms=xi)) is not None
+                state.sched
+                and (crossed := schedule.next_boundary(state.sched, now_ms=xi)) is not None
                 and (crossed <= t_ms)
-                for name in soft
+                for state in by_name.values()
+                if state.fill_instant is not None
             ):
-                break
+                current = self._reexpress_item(entity_id, resource, shard_id, current, t_ms)
+                continue
             writes = {
                 name: (
                     fill_instant.debit_write(
@@ -4981,14 +5052,14 @@ class SyncRepository:
                     ),
                     by_name[name],
                 )
-                for name, milli in soft.items()
+                for name, milli in debits.items()
             }
             request = self.build_fill_write(
                 entity_id,
                 resource,
                 shard_id,
                 writes,
-                dict(soft),
+                dict(debits),
                 {},
                 now_ms=t_ms,
                 ttl_seconds=None,
@@ -5009,24 +5080,91 @@ class SyncRepository:
                 )
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-                    logger.warning(
-                        "soft debit failed for resource=%s shard=%d",
-                        resource,
-                        shard_id,
-                        exc_info=True,
-                    )
-                    return states
+                    raise
                 current = cast(dict[str, Any] | None, e.response.get("Item"))
                 continue
             new_item = response["Attributes"]
             self._fill_images.store(fill_key, new_item)
+            self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
             return self._deserialize_composite_bucket(new_item)
-        logger.warning(
-            "soft debit given up for resource=%s shard=%d: only its reporting is lost",
-            resource,
-            shard_id,
+        if attempts is not None:
+            return None
+        raise RateLimiterUnavailable(
+            "a fill-instant debit could not land: the bucket kept changing under it",
+            stack_name=self.stack_name,
+            resource=resource,
         )
-        return states
+
+    def _read_bucket_item(
+        self, entity_id: str, resource: str, shard_id: int
+    ) -> dict[str, Any] | None:
+        """One shard's item, strongly consistent, or None when it does not exist."""
+        client = self._get_client()
+        response = client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ConsistentRead=True,
+        )
+        return cast(dict[str, Any] | None, response.get("Item"))
+
+    def _reexpress_item(
+        self, entity_id: str, resource: str, shard_id: int, item: dict[str, Any], now_ms: int
+    ) -> dict[str, Any] | None:
+        """Re-express every fill instant on ``item`` at ``now_ms`` in one pinned write (ADR-155).
+
+        Across every schedule boundary since the item's ``xi``: each window
+        drips at its own rate and caps at its own ceiling. Form 3: computed
+        from ``item`` and pinned on each fill instant, the parameters and
+        ``xi`` as read, so a write landing in between fails it. Returns the
+        item as it now stands (``ALL_NEW``, or the failure's ``ALL_OLD``).
+        """
+        client = self._get_client()
+        states = [s for s in self._deserialize_composite_bucket(item) if s.fill_instant is not None]
+        xi = int(item[schema.BUCKET_FIELD_XI]["N"])
+        names: dict[str, str] = {"#zxi": schema.BUCKET_FIELD_XI}
+        values: dict[str, Any] = {":zxi": {"N": str(now_ms)}, ":zxir": {"N": str(xi)}}
+        sets = ["#zxi = :zxi"]
+        conditions = ["attribute_exists(PK)", "#zxi = :zxir"]
+        for i, state in enumerate(states):
+            express_at(state, now_ms)
+            names[f"#zf{i}"] = schema.bucket_attr(state.limit_name, schema.BUCKET_FIELD_FI)
+            values[f":zf{i}"] = {"N": str(state.fill_instant)}
+            values[f":zfr{i}"] = {"N": str(state.stored_fill_instant)}
+            sets.append(f"#zf{i} = :zf{i}")
+            conditions.append(f"#zf{i} = :zfr{i}")
+            for token, field, value in (
+                ("zp", schema.BUCKET_FIELD_CP, state.capacity_milli),
+                ("za", schema.BUCKET_FIELD_RA, state.refill_amount_milli),
+                ("zr", schema.BUCKET_FIELD_RP, state.refill_period_ms),
+            ):
+                names[f"#{token}{i}"] = schema.bucket_attr(state.limit_name, field)
+                values[f":{token}{i}"] = {"N": str(value)}
+                conditions.append(f"#{token}{i} = :{token}{i}")
+        try:
+            response = self._update_item_retrying_conflict(
+                client,
+                TableName=self.table_name,
+                Key={
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
+                },
+                UpdateExpression="SET " + ", ".join(sets),
+                ConditionExpression=" AND ".join(conditions),
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+                ReturnValues="ALL_NEW",
+                ReturnValuesOnConditionCheckFailure="ALL_OLD",
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            return cast(dict[str, Any] | None, e.response.get("Item"))
+        return cast(dict[str, Any], response["Attributes"])
 
     def build_fill_write(
         self,
@@ -5159,8 +5297,9 @@ class SyncRepository:
                 conditions.append("#byp > :vu_now")
             else:
                 conditions.append("attribute_not_exists(#byp)")
-                names["#vu"] = schema.BUCKET_FIELD_VU
-                conditions.append("(attribute_not_exists(#vu) OR #vu > :vu_now)")
+                if debited:
+                    names["#vu"] = schema.BUCKET_FIELD_VU
+                    conditions.append("(attribute_not_exists(#vu) OR #vu > :vu_now)")
         expression = []
         if set_parts:
             expression.append("SET " + ", ".join(set_parts))
@@ -6209,20 +6348,46 @@ class SyncRepository:
             True if the item was written, False if the shard had vanished.
         """
         client = self._get_client()
-        try:
-            client.update_item(
-                TableName=self.table_name,
-                Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
-                UpdateExpression=update_expr,
-                ConditionExpression="attribute_exists(PK)",
-                ExpressionAttributeNames=expr_names,
-                ExpressionAttributeValues=expr_values,
+        item: dict[str, Any] | None = None
+        for _attempt in range(_SYNC_ATTEMPTS):
+            extended = (
+                fill_sync.reexpression(item, update_expr, expr_names, expr_values, self._now_ms())
+                if item is not None
+                else None
             )
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                return False
-            raise
-        return True
+            if extended is None:
+                request = {
+                    "UpdateExpression": update_expr,
+                    "ConditionExpression": "attribute_exists(PK) AND attribute_not_exists(#zsxi)",
+                    "ExpressionAttributeNames": {**expr_names, "#zsxi": schema.BUCKET_FIELD_XI},
+                    "ExpressionAttributeValues": expr_values,
+                }
+            else:
+                expression, names, values, condition = extended
+                request = {
+                    "UpdateExpression": expression,
+                    "ConditionExpression": condition,
+                    "ExpressionAttributeNames": names,
+                    "ExpressionAttributeValues": values,
+                }
+            try:
+                client.update_item(
+                    TableName=self.table_name,
+                    Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+                    ReturnValuesOnConditionCheckFailure="ALL_OLD",
+                    **request,
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+                item = cast(dict[str, Any] | None, e.response.get("Item"))
+                if item is None:
+                    return False
+                continue
+            return True
+        raise RateLimiterUnavailable(
+            "a bucket kept changing under its parameter sync", stack_name=self.stack_name
+        )
 
     def reconcile_bucket_to_defaults(
         self,
@@ -10072,7 +10237,13 @@ class SyncRepository:
                         for write in plan.writes
                     ),
                     self.build_operation_record(
-                        operation, operation_id, result, now_ms, token, incarnation
+                        operation,
+                        operation_id,
+                        result,
+                        now_ms,
+                        token,
+                        incarnation,
+                        splits=plan.splits,
                     ),
                 ]
             items.append(self._operation_audit(operation, result, principal))
@@ -10136,8 +10307,12 @@ class SyncRepository:
         now_ms: int,
         writer: str,
         incarnation: str,
+        splits: dict[str, dict[int, int]] | None = None,
     ) -> dict[str, Any]:
         """Build the ``Put`` of a reset or top-up's operation record (ADR-149).
+
+        ``splits`` (#820): how each named limit's amount went to each shard,
+        stored as ``splits`` (limit -> shard id -> tokens) when given.
 
         One item per call, in the shard-0 bucket's partition, conditioned on
         ``attribute_not_exists(PK)`` and written in the same transaction as the
@@ -10165,6 +10340,23 @@ class SyncRepository:
                     "ent": {"S": incarnation},
                     "shards": {"N": str(result.shards)},
                     "amounts": {"M": {name: {"N": str(n)} for name, n in result.amounts.items()}},
+                    **(
+                        {
+                            "splits": {
+                                "M": {
+                                    name: {
+                                        "M": {
+                                            str(shard): {"N": str(n)}
+                                            for shard, n in by_shard.items()
+                                        }
+                                    }
+                                    for name, by_shard in splits.items()
+                                }
+                            }
+                        }
+                        if splits
+                        else {}
+                    ),
                     "ttl": {
                         "N": str(schema.calculate_ttl(now_ms, schema.OPERATION_RECORD_TTL_SECONDS))
                     },
@@ -10350,6 +10542,8 @@ class SyncRepository:
             limit.name: BucketState.from_limit(entity_id, resource, limit, now_ms)
             for limit in resolved
         }
+        for state in states.values():
+            express_created(state, now_ms)
         by_name = {limit.name: limit for limit in resolved}
         amounts = {
             name: amount if by_name[name].is_quota else 0 for name, amount in requested.items()
@@ -10501,6 +10695,7 @@ class SyncRepository:
         set_parts = ["#rf = :rf", "#vu = :vu"]
         add_parts: list[str] = []
         remove_parts: list[str] = []
+        conditions: list[str] = []
 
         def attr(name: str, field: str) -> str:
             return schema.bucket_attr(name, field)
@@ -10544,6 +10739,30 @@ class SyncRepository:
         elif remove_ttl:
             names["#ottl"] = "ttl"
             remove_parts.append("#ottl")
+        for k, (name, (value, state)) in enumerate(sorted(write.fill_sets.items())):
+            names[f"#of{k}"] = attr(name, schema.BUCKET_FIELD_FI)
+            values[f":of{k}"] = {"N": str(value)}
+            values[f":ob{k}"] = {"N": str(state.stored_fill_instant)}
+            set_parts.append(f"#of{k} = :of{k}")
+            conditions.append(f"#of{k} = :ob{k}")
+            for token, field, pinned in (
+                ("oc", schema.BUCKET_FIELD_CP, state.capacity_milli),
+                ("oe", schema.BUCKET_FIELD_RA, state.refill_amount_milli),
+                ("oh", schema.BUCKET_FIELD_RP, state.refill_period_ms),
+            ):
+                names[f"#{token}{k}"] = attr(name, field)
+                values[f":{token}{k}"] = {"N": str(pinned)}
+                conditions.append(f"#{token}{k} = :{token}{k}")
+        if write.expressed is not None:
+            xi, read_xi = write.expressed
+            names["#oxi"] = schema.BUCKET_FIELD_XI
+            values[":oxi"] = {"N": str(xi)}
+            set_parts.append("#oxi = :oxi")
+            if read_xi is None:
+                conditions.append("attribute_not_exists(#oxi)")
+            else:
+                values[":oxir"] = {"N": str(read_xi)}
+                conditions.append("#oxi = :oxir")
         names["#osc"] = "shard_count"
         if write.shard_count_stored:
             values[":osc"] = {"N": str(write.shard_count)}
@@ -10567,7 +10786,7 @@ class SyncRepository:
                     "SK": {"S": schema.sk_state()},
                 },
                 "UpdateExpression": expression,
-                "ConditionExpression": f"#rf = :erf AND {count_condition}",
+                "ConditionExpression": " AND ".join(["#rf = :erf", count_condition, *conditions]),
                 "ExpressionAttributeNames": names,
                 "ExpressionAttributeValues": values,
             }

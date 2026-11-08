@@ -27,7 +27,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-from .bucket import force_consume
+from . import fill_instant
+from .bucket import (
+    adopt_schedule,
+    balance_milli_at,
+    express_at,
+    fill_params,
+    force_consume,
+    settle,
+)
 from .exceptions import ValidationError
 from .models import BucketState, Limit
 from .schema import WCU_LIMIT_NAME
@@ -79,6 +87,12 @@ class ShardWrite:
     # `ADD b_{name}_rn 1`: a calendar quota reset starts a period no cron edge
     # marks, so a refund of an earlier debit must see it moved (F1, #721).
     reset_numbers: set[str] = field(default_factory=set)
+    # `SET b_{name}_fi` (ADR-155, #820): each fill instant the operation moves,
+    # with the state it was read in, which the write is pinned on. Every fill
+    # instant on the shard is re-expressed at the operation's instant, so
+    # `expressed` (the `xi` to stamp, and the one read) rides with any.
+    fill_sets: dict[str, tuple[int, BucketState]] = field(default_factory=dict)
+    expressed: tuple[int, int | None] | None = None
 
 
 @dataclass
@@ -90,6 +104,9 @@ class OperationPlan:
     # bounded by its ceiling) or what a reset restored (negative when a balance
     # sat above its share).
     amounts: dict[str, int]
+    # Per named limit, per shard id, tokens: how the amount was split (#820),
+    # stored on the operation record.
+    splits: dict[str, dict[int, int]] = field(default_factory=dict)
 
     @property
     def raises_ceiling(self) -> bool:
@@ -158,6 +175,9 @@ def plan_operation(
     read_top_ups: list[dict[str, int | None]] = []
     granted: list[set[str]] = []
     materialised: list[dict[str, int]] = []
+    # Fill instants (ADR-154), per shard: re-expressed at `now_ms` and moved
+    # exactly by the operation, then written pinned on what was read (#820).
+    filled: list[dict[str, BucketState]] = []
 
     for shard in shards:
         write = ShardWrite(
@@ -171,22 +191,20 @@ def plan_operation(
         tokens: dict[str, int] = {}
         top_ups: dict[str, int | None] = {}
         regranted: set[str] = set()
+        fills: dict[str, BucketState] = {}
         for name, stored in shard.states.items():
             limit = by_name.get(name)
+            if stored.fill_instant is not None:
+                # Re-expressed at this instant, under config's schedule, so a
+                # write stamping `xi = now` skips no boundary for any of them.
+                state = replace(stored)
+                if limit is not None:
+                    adopt_schedule(state, limit.schedule, now_ms)
+                express_at(state, now_ms)
+                fills[name] = state
+                continue
             if name != WCU_LIMIT_NAME and limit is None:
                 continue  # no longer configured: left exactly as an acquire leaves it
-            if stored.fill_instant is not None:
-                # Until #820 writes a fill instant exactly, an operation never
-                # adds to `tk` beside one (ADR-154). Only reachable while
-                # `schema.WRITE_FILL_INSTANTS` is on (#818). One the operation
-                # does not name, the reserved `wcu` included, is left as it
-                # is: `rf` is not its baseline, so the write can move `rf`
-                # without touching it.
-                if name not in named:
-                    continue
-                raise NotImplementedError(
-                    f"resetting or topping up fill-instant limit {name!r} lands in #820"
-                )
             state = replace(stored)
             tokens[name] = stored.tokens_milli
             top_ups[name] = stored.topped_up_milli
@@ -210,12 +228,22 @@ def plan_operation(
         read_top_ups.append(top_ups)
         granted.append(regranted)
         materialised.append({name: state.tokens_milli for name, state in work.items()})
+        filled.append(fills)
 
     amounts: dict[str, int] = {}
+    splits: dict[str, dict[int, int]] = {}
     if operation == RESET:
         for name in named:
             limit = by_name[name]
             restored = 0
+            for fills in filled:
+                held = fills.get(name)
+                if held is None:
+                    continue
+                # Full now, debt forgiven (ADR-155): `Z = t·ra`.
+                was = balance_milli_at(held, now_ms)
+                held.fill_instant = fill_instant.reset(now_ms, fill_params(held, now_ms))
+                restored += balance_milli_at(held, now_ms) - was
             for write, work, regranted, before in zip(
                 writes, working, granted, materialised, strict=True
             ):
@@ -229,6 +257,29 @@ def plan_operation(
     else:
         for name, amount in named.items():
             limit = by_name[name]
+            fill_holders = [i for i, fills in enumerate(filled) if name in fills]
+            if fill_holders:
+                # A dripping limit gains at most its headroom (ADR-149), as a
+                # return moves its fill instant back (ADR-155): capped for free.
+                portions = split_by_headroom(
+                    amount,
+                    {
+                        i: max(
+                            0,
+                            (
+                                filled[i][name].ceiling_milli(now_ms)
+                                - balance_milli_at(filled[i][name], now_ms)
+                            )
+                            // 1000,
+                        )
+                        for i in fill_holders
+                    },
+                )
+                for i, portion in portions.items():
+                    settle(filled[i][name], -portion, now_ms)
+                amounts[name] = sum(portions.values())
+                splits[name] = {writes[i].shard_id: portion for i, portion in portions.items()}
+                continue
             holders = [i for i, work in enumerate(working) if name in work]
             if not holders:
                 # Configured after the bucket existed and not yet seeded on any
@@ -261,6 +312,7 @@ def plan_operation(
                         for i in holders
                     },
                 )
+            splits[name] = {writes[i].shard_id: portion for i, portion in portions.items()}
             for i, portion in portions.items():
                 _credit(limit, working[i][name], portion * 1000, writes[i], now_ms)
                 if limit.is_quota and name not in granted[i]:
@@ -270,9 +322,16 @@ def plan_operation(
                         writes[i].grant_counts[name] = _grant(working[i][name])
             amounts[name] = sum(portions.values())
 
-    for write, work, tokens, top_ups, regranted in zip(
-        writes, working, read_tokens, read_top_ups, granted, strict=True
+    for write, work, tokens, top_ups, regranted, fills in zip(
+        writes, working, read_tokens, read_top_ups, granted, filled, strict=True
     ):
+        for name, state in fills.items():
+            assert state.fill_instant is not None
+            if state.fill_instant != state.stored_fill_instant:
+                write.fill_sets[name] = (state.fill_instant, state)
+        if write.fill_sets:
+            read_xi = next(iter(fills.values())).stored_expressed_ms
+            write.expressed = (now_ms, read_xi)
         for name, state in work.items():
             delta = state.tokens_milli - tokens[name]
             if delta:
@@ -297,7 +356,7 @@ def plan_operation(
         # Strictly past the stored `rf`, so a writer locked on the value this
         # pass read (an aggregator refill of a stale image) always loses.
         write.written_rf = max([now_ms, write.expected_rf + 1, *write.applied_windows.values()])
-    return OperationPlan(writes=writes, amounts=amounts)
+    return OperationPlan(writes=writes, amounts=amounts, splits=splits)
 
 
 def creation_vu(limits: list[Limit], states: dict[str, BucketState], now_ms: int) -> int | None:

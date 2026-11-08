@@ -414,7 +414,6 @@ class TestRouting:
             ("SET #d = :t", {"#d": "disabled"}, {":t": {"BOOL": True}}, "DISABLED"),
             ("REMOVE #x", {"#x": "xi"}, None, "SCHEDULE_BOUNDARY"),
             ("SET #b = :past", {"#b": "bypass"}, {":past": {"N": "1"}}, "SCHEDULE_BOUNDARY"),
-            ("SET #v = :zero", {"#v": "vu"}, {":zero": {"N": "5"}}, "SCHEDULE_BOUNDARY"),
             ("SET #t = :old", {"#t": "ttl"}, {":old": {"N": "1"}}, "SCHEDULE_BOUNDARY"),
             (
                 "SET #s = :past",
@@ -423,7 +422,7 @@ class TestRouting:
                 "SCHEDULE_BOUNDARY",
             ),
         ],
-        ids=["disabled", "no-xi", "expired-bypass", "closed-vu", "expired-ttl", "expired-soft"],
+        ids=["disabled", "no-xi", "expired-bypass", "expired-ttl", "expired-soft"],
     )
     async def test_each_guard_routes_from_the_image(
         self, limiter, clock, expression, names, values, reason
@@ -434,6 +433,18 @@ class TestRouting:
         # The cached image is stale; the first write fails and its ALL_OLD routes.
         result = await self._fill(limiter)
         assert result.failure_reason is getattr(SpeculativeFailureReason, reason)
+
+    async def test_a_closed_vu_window_waits_only_for_a_quota(self, limiter, clock) -> None:
+        """ADR-155: a fill instant is never pinned on `vu`; a quota's `tk` still is."""
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM, Limit.quota("rpd", 50, cron="0 0 * * *")])
+        await _attrs(repo, "e1", "SET #v = :past", {"#v": "vu"}, {":past": {"N": "5"}})
+        repo._fill_images.clear()
+        alone = await self._fill(limiter, {"rpm": 1})
+        assert alone.success
+        await _attrs(repo, "e1", "SET #v = :past", {"#v": "vu"}, {":past": {"N": "5"}})
+        with_quota = await self._fill(limiter, {"rpm": 1, "rpd": 1})
+        assert with_quota.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY
 
     async def test_a_limit_missing_from_the_item_goes_to_the_slow_path(
         self, limiter, clock
@@ -599,28 +610,15 @@ class TestSoftDebitGivesUp:
             pass
         assert "soft debit failed" in caplog.text
 
-    @pytest.mark.parametrize("mutation", ["no-xi", "gone", "boundary"])
+    @pytest.mark.parametrize("mutation", ["no-xi", "gone"])
     async def test_it_stops_on_what_it_cannot_debit(self, limiter, clock, caplog, mutation) -> None:
         repo = await self._setup(limiter)
         item = await _raw(repo, "e1")
         states = repo._deserialize_composite_bucket(item)
         if mutation == "no-xi":
             item = {k: v for k, v in item.items() if k != "xi"}
-        elif mutation == "gone":
-            item = {k: v for k, v in item.items() if not k.startswith("b_tpm_")}
         else:
-            from zae_limiter import ScheduleEntry
-            from zae_limiter.schedule import encode
-
-            # A window opens between the item's `xi` and the debit's stamp.
-            midnight = 1_800_057_600_000
-            window = (ScheduleEntry(cron="* 0 * * *", scale=0.5),)
-            item = {
-                **item,
-                "sched": {"S": encode(window)[0]},
-                "xi": {"N": str(midnight - 60_000)},
-            }
-            clock.now = midnight + 60_000
+            item = {k: v for k, v in item.items() if not k.startswith("b_tpm_")}
         result = await repo._debit_soft_fill("e1", RESOURCE, 0, {"tpm": 1_000}, item, states)
         assert result == states
         assert "soft debit given up" in caplog.text

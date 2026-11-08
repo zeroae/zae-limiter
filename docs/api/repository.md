@@ -229,7 +229,9 @@ Implement this protocol to use a different storage backend (e.g., for testing).
     multi-resource acquire) and may return `SpeculativeFailureReason.UNDECIDED`,
     the contended 429. A backend must implement `return_fill_instants`, the
     exact return of a fill instant (`ADD b_{name}_fi -c·S·rp` pinned on what the
-    debit was computed against), which compensation and lease refunds call. The
+    debit was computed against), which compensation and lease refunds call, and
+    `debit_fill_instants`, ADR-154's debit pair with no upper bound, which a
+    positive lease adjustment calls and which must never drop a debit (#820). The
     remaining writers
     change with #819-#821, before the release; until then writing the form is
     behind an internal switch that is off.

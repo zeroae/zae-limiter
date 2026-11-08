@@ -4,7 +4,8 @@ Uses aws-lambda-builders to install dependencies (pyyaml,
 aws-lambda-powertools) for the Lambda target platform, then copies the
 ``zae_limiter_provisioner`` package and a minimal ``zae_limiter`` stub
 (``schema.py``, ``models.py``, ``exceptions.py``, ``schedule.py``,
-``version.py`` and a generated ``_version.py``) into the artifact.
+``fill_instant.py``, ``fill_sync.py``, ``version.py`` and a generated
+``_version.py``) into the artifact.
 """
 
 import importlib.metadata
@@ -56,6 +57,8 @@ def build_provisioner_package() -> bytes:
     - ``zae_limiter/models.py`` (dataclasses used by schema)
     - ``zae_limiter/exceptions.py`` (exceptions used by models)
     - ``zae_limiter/schedule.py`` (cron evaluation for scheduled limits, #222)
+    - ``zae_limiter/fill_instant.py`` and ``zae_limiter/fill_sync.py``
+      (re-expressing fill instants in the parameter sync, ADR-155, #820)
     - ``zae_limiter/version.py`` (version comparison for the #638 gate)
     - ``zae_limiter/_version.py`` (generated: this build's version, #638)
 
@@ -153,6 +156,12 @@ def build_provisioner_package() -> bytes:
             zae_limiter_path / "schedule.py",
             dest_zae_limiter / "schedule.py",
         )
+
+        # fill_instant.py + fill_sync.py — the parameter sync re-expresses a
+        # bucket's fill instants against the parameters it writes (ADR-155,
+        # #820). Both pure: fill_sync imports schema, schedule and fill_instant.
+        for module in ("fill_instant.py", "fill_sync.py"):
+            shutil.copy2(zae_limiter_path / module, dest_zae_limiter / module)
 
         # version.py + a generated _version.py — the #638 reset_after gate
         # (`applier.require_reset_after_readers`) compares the stack's

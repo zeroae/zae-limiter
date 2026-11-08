@@ -423,13 +423,16 @@ class TestGuards:
             pass
         return repo
 
-    async def test_a_positive_adjustment_refuses(self, limiter, clock, switch) -> None:
+    async def test_a_positive_adjustment_is_the_debit_pair(self, limiter, clock, switch) -> None:
         repo = await self._converted(limiter, clock, switch)
         clock.now = T0 + 1_000
-        with pytest.raises(NotImplementedError, match="#820"):
-            async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}) as lease:
-                await lease.adjust(rpm=5)
-        assert bucket_attr("rpm", BUCKET_FIELD_TK) not in await _raw(repo, "e1")
+        async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}) as lease:
+            await lease.adjust(rpm=5)
+        item = await _raw(repo, "e1")
+        assert bucket_attr("rpm", BUCKET_FIELD_TK) not in item
+        p = rpm_params()
+        after_first = fi.stamp(T0, p) + fi.span(10_000, p)
+        assert _n(item, "rpm", BUCKET_FIELD_FI) == after_first + fi.span(6_000, p)
 
     async def test_a_rollback_returns_its_debit_exactly(self, limiter, clock, switch) -> None:
         repo = await self._converted(limiter, clock, switch)
@@ -446,10 +449,20 @@ class TestGuards:
         assert _n(item, "rpm", BUCKET_FIELD_FI) == fi.stamp(T0, p) + fi.span(10_000, p)
         assert _n(item, "rpm", "tc") == tc_before
 
-    async def test_reset_refuses(self, limiter, clock, switch) -> None:
+    async def test_a_reset_forgives_debt(self, limiter, clock, switch) -> None:
         repo = await self._converted(limiter, clock, switch)
-        with pytest.raises(NotImplementedError, match="#820"):
-            await repo.reset_bucket("e1", RESOURCE)
+        p = rpm_params()
+        client = await repo._get_client()
+        await client.update_item(  # deep in debt
+            TableName=repo.table_name,
+            Key=_key(repo, "e1"),
+            UpdateExpression="SET #f = :f",
+            ExpressionAttributeNames={"#f": bucket_attr("rpm", BUCKET_FIELD_FI)},
+            ExpressionAttributeValues={":f": {"N": str(fi.stamp(T0, p) + 5 * p.capacity_units)}},
+        )
+        clock.now = T0 + 1_000
+        await repo.reset_bucket("e1", RESOURCE)
+        assert _n(await _raw(repo, "e1"), "rpm", BUCKET_FIELD_FI) == fi.reset(T0 + 1_000, p)
 
     async def test_an_operation_naming_only_a_quota_leaves_the_fill_instant(
         self, limiter, clock, switch

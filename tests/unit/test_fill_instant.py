@@ -155,9 +155,9 @@ class TestModuleBoundary:
                 assert node.id not in {"float", "Fraction", "Decimal"}, node.id
 
     def test_the_provisioner_stub_does_not_import_it(self) -> None:
-        # The provisioner zip vendors these four and not this module (#818):
-        # importing it from one of them is an ImportError at cold start until
-        # #820 vendors it there too. The aggregator zip vendors it.
+        # Both zips vendor this module (#818, #820), but these four stay free of
+        # it, so neither stub's import closure depends on which of them it
+        # carries.
         for name in ("schema.py", "models.py", "exceptions.py", "schedule.py"):
             tree = ast.parse((MODULE.parent / name).read_text())
             imported = {

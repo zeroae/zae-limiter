@@ -60,7 +60,10 @@ REPOSITORY = {
     # ADR-154's two writes (#819): a quota on the item keeps today's `tk` terms.
     "_speculative_consume_fill": (True, False),
     "build_fill_write": (True, False),
-    "_debit_soft_fill": (False, False),  # a soft fill instant's debit after admission
+    # ADR-155 (#820): the debit pair (positive adjustments, soft limits) and
+    # the pinned re-expression a boundary since `xi` needs first.
+    "debit_fill_instants": (False, False),
+    "_reexpress_item": (False, False),
     "build_fill_return": (False, False),  # the exact return of a fill instant (ADR-155)
     "return_fill_instants": (False, False),
     # (bypass shape: tc only, #311)

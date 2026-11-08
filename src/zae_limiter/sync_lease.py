@@ -14,11 +14,13 @@ from collections.abc import Callable, Iterable
 from dataclasses import InitVar, dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
+from . import fill_instant
 from .bucket import (
     ConsumeResult,
     apply_consume,
     calculate_available,
     express_at,
+    fill_params,
     retry_after_for_deficit,
     settle,
     try_consume,
@@ -1030,6 +1032,9 @@ class SyncLease:
                     consumed_milli = entry.consumed * 1000
                     if not entry._seed and entry.state.fill_instant is not None:
                         read_fi = entry.state.stored_fill_instant
+                        pair = _pair_for(entry, consumed_milli)
+                        if pair is None and entry.state.fill_instant == read_fi:
+                            continue
                         fill_writes[name] = FillInstantWrite(
                             fill_instant=entry.state.fill_instant,
                             consumed_milli=consumed_milli,
@@ -1040,6 +1045,7 @@ class SyncLease:
                             capacity_milli=entry.state.capacity_milli,
                             refill_amount_milli=entry.state.refill_amount_milli,
                             refill_period_ms=entry.state.refill_period_ms,
+                            pair=pair,
                         )
                         continue
                     if entry._seed:
@@ -1177,7 +1183,7 @@ class SyncLease:
                         pin_shard_count=min(pin, default=None),
                         rf_ms=written_rf,
                         clear_vu=not boundaries,
-                        pin_vu=read_state is not None,
+                        pin_vu=read_state is not None and (bool(consumed) or bool(seeds)),
                         expected_vu=read_state.stored_vu_ms if read_state is not None else None,
                         owner=(owner_entry._cascade, owner_entry._parent_id)
                         if owner_entry is not None
@@ -1715,13 +1721,17 @@ class SyncLease:
         returns = self._fill_returns(
             lambda entry: (entry.consumed - entry._initial_consumed) * 1000
         )
+        debits = self._fill_debits(lambda entry: (entry.consumed - entry._initial_consumed) * 1000)
         self._committed = True
         failures = self._write_credits_independently(writes)
         returned = self._send_fill_returns(returns)
+        debited = self._send_fill_debits(debits)
         if failures:
             raise failures[0][1]
         if returned:
             raise returned[0]
+        if debited:
+            raise debited[0]
 
     def _rollback(self) -> None:
         """Write compensating deltas to restore consumed tokens (Issue #309).
@@ -1781,10 +1791,6 @@ class SyncLease:
                 if delta == 0:
                     continue
                 if entry.state.fill_instant is not None and (not shape):
-                    if delta > 0:
-                        raise NotImplementedError(
-                            f"debiting fill-instant limit {entry.limit.name!r} lands in #820"
-                        )
                     continue
                 deltas[entry.limit.name] = delta
             if not deltas:
@@ -1837,6 +1843,49 @@ class SyncLease:
             )
             returns.append((entity_id, resource, shard_id, credits, xi, count))
         return returns
+
+    def _fill_debits(
+        self, delta_of: Callable[[LeaseEntry], int]
+    ) -> list[tuple[str, str, int, dict[str, int]]]:
+        """This lease's positive fill-instant adjustments, per bucket item (ADR-155).
+
+        ``(entity, resource, shard, debits)`` in millitokens: each written by
+        ADR-154's debit pair, never dropped. A bypassed item never debits.
+        """
+        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
+        for entry in self.entries:
+            groups.setdefault((entry.entity_id, entry.resource, entry._shard_id), []).append(entry)
+        debits = []
+        for (entity_id, resource, shard_id), group_entries in groups.items():
+            if _bypass_shape(group_entries):
+                continue
+            owed = {
+                e.limit.name: delta_of(e)
+                for e in group_entries
+                if e.state.fill_instant is not None and delta_of(e) > 0
+            }
+            if owed:
+                debits.append((entity_id, resource, shard_id, owed))
+        return debits
+
+    def _send_fill_debits(
+        self, debits: list[tuple[str, str, int, dict[str, int]]]
+    ) -> list[Exception]:
+        """Send each debit on its own; the errors of those that could not land (ADR-155)."""
+        repo = self.repository
+
+        def _send(debit: tuple[str, str, int, dict[str, int]]) -> Exception | None:
+            entity_id, resource, shard_id, owed = debit
+            try:
+                repo.debit_fill_instants(entity_id, resource, shard_id, owed)
+            except Exception as exc:
+                return exc
+            return None
+
+        if not debits:
+            return []
+        outcomes = self._run_in_executor(*[lambda debit=debit: _send(debit) for debit in debits])
+        return [exc for exc in outcomes if exc is not None]
 
     def _send_fill_returns(
         self, returns: list[tuple[str, str, int, dict[str, tuple[int, BucketState]], int, int]]
@@ -2240,6 +2289,30 @@ def _stamp_deadline(entry: LeaseEntry, now_ms: int, repo: Any) -> int:
     if entry._stamp_deadline_ms is not None:
         return entry._stamp_deadline_ms
     return int(repo._stamp_deadline(now_ms))
+
+
+def _pair_for(entry: LeaseEntry, consumed_milli: int) -> fill_instant.Write | None:
+    """ADR-154's write that takes ``entry``'s read fill instant to the one the pass computed.
+
+    Chosen from the read (#820): not full when the read shows ``z >= t``, full
+    otherwise, at the clock reading the pass admitted at, bounded by the slack
+    for a hard limit and unbounded for a soft one. None when no such write
+    reproduces it exactly — a conversion from ``tk``, a re-expression across a
+    schedule boundary, nothing consumed — which the pinned ``SET`` writes.
+    """
+    state = entry.state
+    read = state.stored_fill_instant
+    if read is None or consumed_milli <= 0 or state.fill_instant is None:
+        return None
+    t_ms = state.last_refill_ms
+    params = fill_params(state, t_ms)
+    if read >= fill_instant.stamp(t_ms, params):
+        pair = fill_instant.not_full_write(t_ms, consumed_milli, params, bounded=not state.soft)
+    else:
+        pair = fill_instant.full_write(t_ms, consumed_milli, params)
+    if not pair.applies(read) or pair.apply(read) != state.fill_instant:
+        return None
+    return pair
 
 
 def _expressed(group_entries: list[LeaseEntry]) -> tuple[int, int | None]:
