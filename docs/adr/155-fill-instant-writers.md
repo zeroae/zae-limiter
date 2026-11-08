@@ -21,30 +21,34 @@ parameters each fill instant was last expressed against.
 
 ADR-153's bound holds on a shard for any write that is an exact strict step on the item it
 lands on, and DynamoDB offers three ways to be exact: a write whose condition proves its case
-(ADR-154's two writes); a write exact on every item it can land on, since adding to `z` is
-exactly a return, a positive adjustment or a top-up (capped at capacity by construction,
-because every `z` before now reads as full) and setting `z` to the write's clock reading is
-exactly a reset to full; and a write computed from a read and pinned on what it read, which
-applies only to the item it was computed from. Each is exact only against the parameters it was
-computed with, so each must also pin them.
+(ADR-154's two writes); a write exact on every item it can land on, since moving `z` earlier is
+exactly a return or a top-up (capped at capacity by construction, because every `z` before now
+reads as full) and setting `z` to the write's clock reading is exactly a reset to full; and a
+write computed from a read and pinned on what it read, which applies only to the item it was
+computed from. Each is exact only against the parameters it was computed with, so each must
+also pin them. A positive adjustment is not in the second form: it is a debit, and debiting a
+full bucket must record `max(z, t) + c/r`, the same kink as an admission. Adding `c/r` to `z`
+forgives the debt whenever `z + c/r` is still before the write's clock reading, which is the
+usual case when a lease reconciles after a long call on an otherwise idle bucket.
 
 ## Decision
 
 Every write of a dripping limit's fill instant must be pinned on the parameters, schedule and
 shard count it was computed against, with `vu` after its clock reading, and must take one of
-three forms: one of ADR-154's two conditional writes; a write exact on every item it can land
-on (adding to the fill instant for a return, adjustment or top-up, or setting it to the write's
-clock reading for a reset); or a write computed from a read and pinned on the fill instants it
-read. A write that changes those parameters, schedule or shard count, or that lands after a
-boundary `vu` marks, must re-express the item's fill instants in that same write and record the
-instant it did so.
+three forms: one of ADR-154's two conditional writes, which a positive adjustment uses without
+the upper bound, as a soft limit does; a write exact on every item it can land on (moving the
+fill instant earlier for a return, a negative adjustment or a top-up, or setting it to the
+write's clock reading for a reset); or a write computed from a read and pinned on the fill
+instants it read. A write that changes those parameters, schedule or shard count, or that lands
+after a boundary `vu` marks, must re-express the item's fill instants in that same write and
+record the instant it did so.
 
 ## Consequences
 
 **Positive:**
 - ADR-153's bound holds for every writer, not only the fast path (proof §8).
-- Returns, adjustments, resets and top-ups need no read and no lock, and a return or top-up is
-  capped at capacity by construction, which is ADR-149's headroom rule for free.
+- Returns, negative adjustments, resets and top-ups need no read and no lock, and a return or
+  top-up is capped at capacity by construction, which is ADR-149's headroom rule for free.
 - Refill across schedule windows is exact: the first pass after a boundary re-expresses each
   fill instant at every boundary since its recorded instant (ADR-153, ADR-135).
 - No share is created from nothing: a doubling moves each parent's balance above its new share
@@ -68,6 +72,11 @@ instant it did so.
 - Quotas keep ADR-149's `rf`-locked deltas, so a reset or top-up on an item carrying both
   writes both forms in one transaction.
 - The item gains one attribute: the instant its fill instants were last expressed.
+- A positive adjustment (`lease.adjust()` reconciling up, the LLM case) is never rejected but
+  must choose its side: one write when predicted, two otherwise, and returns landing in between
+  can keep it undecided, so after a fixed number of writes it falls back to a read and a pinned
+  write. Written as an unconditional add instead, an independent model of this design exceeded
+  ADR-153's bound by 17 times the `2 r s` term.
 
 ## Alternatives Considered
 

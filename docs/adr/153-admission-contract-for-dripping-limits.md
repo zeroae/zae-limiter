@@ -40,10 +40,11 @@ For every dripping limit outside the exclusions above, tokens debited (by `acqui
 `lease.consume()` and positive adjustments) minus tokens returned (release, negative
 adjustment, rollback) on one (entity, resource), summed over its shards and counted from the
 start of any real-time window `w` to its last admission, must not exceed `C + R(w) + 2 r s`.
-Here `C` is the ceiling in force at the window's start, `R(w)` the refill the configured
-schedule grants across `w`, `r` the largest refill rate in force across it, and `s` the largest
-gap between a writer's clock reading and the instant its write lands (clock skew plus time in
-flight); the fast path holds the bound through ADR-154 and every other writer through ADR-155.
+Here `C` is the largest ceiling in force from `s` before the window's start to its start,
+`R(w)` the refill the configured schedule grants across `w`, `r` the largest refill rate in
+force across it, and `s` the largest gap between a writer's clock reading and the instant its
+write lands (clock skew plus time in flight); the fast path holds the bound through ADR-154 and
+every other writer through ADR-155.
 
 ## Consequences
 
@@ -70,6 +71,10 @@ flight); the fast path holds the bound through ADR-154 and every other writer th
   rejected as O(all buckets); it replaces ADR-135's and ADR-100's statement that such changes
   arrive at TTL expiry, and a namespace-wide fan-out is the decision ADR-125 deferred.
 - A refund applied twice after an ambiguous write (#731) becomes a defect.
+- Clock skew reaches the ceiling as well as the refill: a write stamped before a boundary that
+  lowers capacity can land after it and spend the old ceiling before the re-expression trims
+  it, so the bound reads `C` over the `s` before the window. Read at the window's start alone,
+  an independent model of ADR-154 and ADR-155 exceeded it by 3 to 54 times the `2 r s` term.
 - There is no version gate. The release ships with no deployments to protect, so ADR-141's
   `client_min_version` ratchet is not raised, and every client and Lambda sharing a table must
   run v0.18.0 or later.

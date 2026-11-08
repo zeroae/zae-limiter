@@ -39,10 +39,12 @@ without using the shared `rf` as its refill baseline; every fast-path admission 
 limit, one of two writes whose condition proves which side of the write's clock reading `t`
 that instant lies on (not full: add `c/r` under `t ≤ z ≤ t + (C − c)/r`; full: set `t + c/r`
 under `z < t`; a soft limit drops the upper bound), pinned on the parameters, schedule and
-shard count it was computed from and kept beside today's guards. The client predicts each limit's side from its
-images and an estimate of the shard's utilisation, retries with the same `t` from the image
-each failed write returns, and answers a request still undecided after a fixed number of writes
-as contended (#724); no image may decide an admission.
+shard count it was computed from and kept beside today's guards. The full write's condition
+does not bound the request, so for a hard limit the client must not send it when `c` exceeds
+the per-shard capacity in force; such a request is rejected without a write. The client
+predicts each limit's side from its images and an estimate of the shard's utilisation, retries
+with the same `t` from the image each failed write returns, and answers a request still
+undecided after a fixed number of writes as contended (#724); no image may decide an admission.
 
 ## Consequences
 
@@ -69,6 +71,12 @@ as contended (#724); no image may decide an admission.
 - `RepositoryProtocol`'s write builders change for dripping limits, which breaks custom
   backends (ADR-108), as ADR-151 did.
 - Quotas keep `tk` and their resets (ADR-137, ADR-145), so one item can carry both forms.
+- The scaled fill instant is a time multiplied by a refill amount. At the #570 ceilings
+  (`MAX_TOKENS`, `MAX_SCALE`) the refill amount in force reaches 1e24 millitokens, and an
+  epoch-ms stamp in 2100 is 4.1e12, so stored values reach about 4.1e36 against DynamoDB's
+  largest exact integer, just under 1e38. That leaves about 1.3 orders of the 14 those ceilings
+  were chosen to keep: raising them, or an adjustment large enough to push the fill instant far
+  into the future, would overflow (boto3 raises `decimal.Rounded`).
 
 ## Alternatives Considered
 
