@@ -1764,7 +1764,9 @@ class TestE2EAWSProvisionerCFNStack:
         assert "gpt-4o" in state.get("managed_resources", [])
 
     @pytest.mark.asyncio(loop_scope="class")
-    async def test_provisioner_lambda_keeps_the_list_registries(self, cfn_provisioner_stack):
+    async def test_provisioner_lambda_keeps_the_list_registries(
+        self, cfn_provisioner_stack, unique_namespace
+    ):
         """Limits applied by the deployed Lambda show up in every list command (#797).
 
         The list commands do not scan config items: `resource list`, `entity
@@ -1784,7 +1786,8 @@ class TestE2EAWSProvisionerCFNStack:
           does. Unserialized, a 640-entity apply lost 134 creates. 48
           entities on 8 workers is enough to collide.
 
-        A separate namespace keeps the other tests' managed state out of it.
+        A namespace of its own keeps the other tests' managed state out of it,
+        and lets it run more than once on one stack.
         """
         import json
 
@@ -1792,15 +1795,15 @@ class TestE2EAWSProvisionerCFNStack:
 
         repo = cfn_provisioner_stack["repo"]
         main_stack = cfn_provisioner_stack["stack_name"]
-        await repo.register_namespace("registries")
-        scoped = await repo.namespace("registries")
+        await repo.register_namespace(unique_namespace)
+        scoped = await repo.namespace(unique_namespace)
         # `.`, `/` and `:` are legal in a resource name, illegal in expression text.
         resources = ["reg-model", "vendor/reg.model:v1"]
         lambda_client = boto3_sync.client("lambda", region_name="us-east-1")
 
         def apply(entities: int) -> dict:
             manifest = {
-                "namespace": "registries",
+                "namespace": unique_namespace,
                 "resources": {r: {"limits": {"rpm": {"capacity": 500}}} for r in resources},
                 "entities": {
                     f"reg-user-{i:02d}": {
@@ -1838,26 +1841,43 @@ class TestE2EAWSProvisionerCFNStack:
                 entities,
             )
 
+        async def settles_to(expected: tuple, timeout_s: float = 30.0) -> None:
+            """All three lists read eventually consistent data (two `GetItem`s
+            with `ConsistentRead=False` and a GSI3 query), so poll until they
+            match rather than asserting on the first read after the apply."""
+            deadline = time.monotonic() + timeout_s
+            seen = await listed()
+            while seen != expected and time.monotonic() < deadline:
+                await asyncio.sleep(1)
+                seen = await listed()
+            assert seen == expected, f"lists did not settle within {timeout_s:.0f} s"
+
         # An initial apply: 2 resources and 48 entity levels, every entity
         # write a counted transaction on the one registry item.
         body = apply(48)
         assert body["created"] == 2 + 48
-        defaults, with_entities, entities = await listed()
-        assert defaults == sorted(resources)
-        assert with_entities == sorted(resources)
-        assert entities == {
-            r: sorted(f"reg-user-{i:02d}" for i in range(48) if resources[i % 2] == r)
-            for r in resources
-        }
+        await settles_to(
+            (
+                sorted(resources),
+                sorted(resources),
+                {
+                    r: sorted(f"reg-user-{i:02d}" for i in range(48) if resources[i % 2] == r)
+                    for r in resources
+                },
+            )
+        )
 
         # Keeping only the first entity unlists the rest, and its resource's
         # count reaching zero drops the other resource from the entity list.
         body = apply(1)
         assert body["deleted"] == 47
-        defaults, with_entities, entities = await listed()
-        assert defaults == sorted(resources)
-        assert with_entities == ["reg-model"]
-        assert entities == {"reg-model": ["reg-user-00"], "vendor/reg.model:v1": []}
+        await settles_to(
+            (
+                sorted(resources),
+                ["reg-model"],
+                {"reg-model": ["reg-user-00"], "vendor/reg.model:v1": []},
+            )
+        )
 
 
 class TestE2EAWSEmptyExportRegression:
