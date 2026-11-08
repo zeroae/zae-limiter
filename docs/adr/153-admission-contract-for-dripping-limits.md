@@ -30,8 +30,9 @@ Quotas keep ADR-145's per-period conservation (I8). Soft and bypassed limits (AD
 `on_unavailable=ALLOW` and degraded leases are non-enforcing by design and are outside the
 bound, as is the reserved `wcu` budget, which belongs to each partition (ADR-156). An operator
 reset or top-up (ADR-149) adds what it grants. Configuration and stamp
-changes take effect within the config cache TTL and `stamp_ttl`. The bound assumes every
-process sharing the table runs the release that ships it.
+changes take effect within the config cache TTL and `stamp_ttl`, except on a bucket a change's
+fan-out missed (Consequences). The bound assumes every process sharing the table runs the
+release that ships it.
 
 ## Decision
 
@@ -65,10 +66,13 @@ bound through ADR-154, every other writer through ADR-155, and shard raises thro
   one round trip when predicted), and can raise `RateLimitExceeded` (contended included) inside
   the caller's block, departing from #309 and from ADR-148's promise that the single-resource
   methods keep their meaning.
-- A lowered resource- or system-level limit must reach active buckets within the config cache
-  TTL: the slow path takes capacity and refill from config, and a fan-out ADR-136 rejected as
-  O(all buckets) replaces ADR-135's and ADR-100's arrival at TTL expiry; a namespace-wide
-  fan-out is the decision ADR-125 deferred.
+- A lowered resource- or system-level limit must reach active buckets: a fan-out ADR-136
+  rejected as O(all buckets) replaces ADR-135's and ADR-100's arrival at TTL expiry; a
+  namespace-wide fan-out is the decision ADR-125 deferred. The slow path does not take capacity
+  and refill from config, because from a cached config it wrote an older change back over a
+  newer one. A bucket created from configuration cached before a change, and missed by both of
+  its discovery passes, keeps the old parameters until the level changes again or its TTL
+  expires: an accepted residual.
 - Clock skew reaches the ceiling too: a write stamped before a boundary that lowers capacity can
   land after it and spend the old ceiling, which is why `C` covers the `s` before the window.
 - A refund applied twice after an ambiguous write (#731) becomes a defect.
