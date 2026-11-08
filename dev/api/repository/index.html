@@ -1728,6 +1728,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.get_bucket_shards" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_bucket_shards
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.batch_get_buckets" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2932,6 +2943,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_buckets
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.get_bucket_shards" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_bucket_shards
       
     </span>
   </a>
@@ -6423,6 +6445,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.get_bucket_shards" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_bucket_shards
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.batch_get_buckets" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -7627,6 +7660,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_buckets
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.get_bucket_shards" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_bucket_shards
       
     </span>
   </a>
@@ -11230,6 +11274,123 @@ returned bucket states.</p>
             <td>
               <div class="doc-md-description">
                 <p>List of BucketState objects (one per application limit).</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository.Repository.get_bucket_shards" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">get_bucket_shards</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository.Repository.get_bucket_shards" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_bucket_shards</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Every shard of one (entity, resource), including one created just now (#791).</p>
+<p>The read behind <code>RateLimiter.check_availability()</code>. Discovers the
+shards through GSI3, scoped to the resource (<code>GSI3SK begins_with
+BUCKET#{resource}#</code>), and always adds shard 0's key to the
+<code>BatchGetItem</code>: a GSI is eventually consistent, so the bucket an
+<code>acquire()</code> created milliseconds earlier can be missing from the
+index, and "no bucket" reads as full capacity. The <code>BatchGetItem</code> is
+strongly consistent, so a caller reads its own writes.</p>
+<p>Slots below shard 0's stored <code>shard_count</code> are <strong>not</strong> probed by key
+(<code>reset_bucket</code> / <code>top_up</code> do, ADR-149): shards are created lazily,
+so a sharded entity usually has slots that do not exist yet, and every
+call would pay a second round trip and a read per absent slot. A
+just-created shard N&gt;0 the index has not listed yet is left out of the
+sum, which under-reports by at most that shard's balance and never
+reports more than the entity holds.</p>
+<p>Cost: 1 GSI3 KEYS_ONLY Query + 1 strongly consistent <code>BatchGetItem</code>
+of the listed shards plus shard 0 (1 RCU per item up to 4 KB; shard 0
+is read even when it does not exist).</p>
+<p>The internal <code>wcu</code> infrastructure limit is filtered out.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity owning the bucket.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>resource</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource name.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="list">list</span>[<a class="autorefs autorefs-internal" title="            BucketState
+
+
+  
+      dataclass
+   (zae_limiter.models.BucketState)" href="../models/#zae_limiter.models.BucketState">BucketState</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>One BucketState per application limit per existing shard.</p>
               </div>
             </td>
           </tr>
@@ -18586,6 +18747,16 @@ optional: the limiter skips it on a backend without it.</p>
   truthiness.</li>
 </ul>
 </div>
+<div class="admonition note">
+<p class="admonition-title">New in v0.17.1: <code>get_bucket_shards</code> (optional, #791)</p>
+<p><code>check_availability()</code>, <code>available()</code> and <code>time_until_available()</code> read an
+(entity, resource) through <code>get_bucket_shards(entity_id, resource)</code>, which
+must return a bucket written immediately before the call (the DynamoDB
+backend reads shard 0 by key beside its eventually consistent GSI3
+discovery, strongly consistent). It is optional: on a backend without it the
+limiter falls back to <code>get_buckets(entity_id)</code> filtered to the resource, as
+before, so an existing backend keeps working unchanged.</p>
+</div>
 
 
 <div class="doc doc-object doc-class">
@@ -20271,6 +20442,112 @@ resources and shards.</p>
             <td>
               <div class="doc-md-description">
                 <p>List of bucket states</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository_protocol.RepositoryProtocol.get_bucket_shards" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">get_bucket_shards</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository_protocol.RepositoryProtocol.get_bucket_shards" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_bucket_shards</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Get every shard of one (entity, resource), including one created just now (#791).</p>
+<p>The read behind <code>RateLimiter.check_availability()</code>. Must return a
+bucket written immediately before the call — on DynamoDB, shard 0 is
+read by key beside the eventually consistent GSI3 discovery, and the
+read is strongly consistent. Omits the reserved <code>wcu</code> limit.</p>
+<p>Optional: the limiter looks it up with <code>getattr</code> and, on a backend
+without it, falls back to <code>get_buckets(entity_id)</code> filtered to the
+resource.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity owning the buckets</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>resource</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource name</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="list">list</span>[<a class="autorefs autorefs-internal" title="            BucketState
+
+
+  
+      dataclass
+   (zae_limiter.models.BucketState)" href="../models/#zae_limiter.models.BucketState">BucketState</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>One bucket state per application limit per existing shard</p>
               </div>
             </td>
           </tr>

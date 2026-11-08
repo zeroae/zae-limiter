@@ -5374,9 +5374,9 @@
 </tr>
 <tr>
 <td><code>check_availability()</code></td>
-<td>1 + shards/4</td>
+<td>1 + shards</td>
 <td>0</td>
-<td>Read-only. GSI3 KEYS_ONLY query + one <code>BatchGetItem</code> over the entity's shards (GHSA-76rv); both answers come from that one snapshot</td>
+<td>Read-only. GSI3 KEYS_ONLY query scoped to the resource + one strongly consistent <code>BatchGetItem</code> of its shards plus shard 0 by key (1 RCU each, GHSA-76rv, #791), so a bucket created just before the call is seen; both answers come from that one snapshot</td>
 </tr>
 <tr>
 <td><code>available()</code> / <code>time_until_available()</code></td>
