@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794104178301,
+  "lastUpdate": 1794106864807,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -70163,6 +70163,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.10780277839045532",
             "extra": "mean: 5.496136609000007 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f4b1b3b732be343daa543e6fb2fbb96e73a55fbf",
+          "message": "📝 docs(adr): propose ADR-153 to ADR-156 for strict dripping admission (#811)\n\n## Summary\n\nDesign only, no code. Four Proposed ADRs and a published proofs page.\n\n- **ADR-153, admission contract for dripping limits.** The strict token\nbucket becomes the bound every path must hold. On one (entity,\nresource), summed over shards and counted from the start of any window\n`w` to its last admission, tokens debited (`acquire()`,\n`lease.consume()`, positive adjustments) minus tokens returned must not\nexceed `C + R(w) + 2·r·s`, plus what operator resets and top-ups\n(ADR-149) grant in `w`. That grant term is part of the Decision. `C` is\nthe largest ceiling in force from `s` before the window's start to its\nstart: a write stamped before a boundary that lowers capacity can land\nafter it and spend the old ceiling (3–54× the `2rs` term when `C` is\nread at the start alone). `s` is the largest gap between a writer's\nclock reading and the instant its write lands, including an admission's\nretries, which keep its reading. Quotas keep ADR-145's I8. Soft and\nbypassed limits, `on_unavailable=ALLOW`, degraded leases and the\nreserved `wcu` budget (each partition's own, ADR-156) are outside the\nbound. A new shard of an existing dripping bucket is funded by moving\ntokens from the shard it splits off; only a bucket's first shard, or a\nlimit added after its item existed, starts full. This replaces the three\nreadings that conflict today: #587's long-run rate, ADR-133's 1.5x\ntransient and #808's burst bound. Partially supersedes ADR-133; amends\nADR-135, ADR-136 and ADR-148. There is no version gate: the release has\nno deployments to protect, so ADR-141's `client_min_version` ratchet is\nnot raised, and every client and Lambda on a table must run v0.18.0 or\nlater.\n- **ADR-154, fill-instant fast path.** Each dripping limit stores its\nown fill instant `z` in place of `tk`, without using the shared `rf`.\n`z` is scaled by the undivided refill amount, so every quantity is an\nexact integer and no per-shard rate floors to zero. Every fast-path\nadmission sends, per hard limit, one of two conditional writes: *not\nfull* (`z += c/r` under `t ≤ z ≤ t + (C − c)/r`) or *full* (`z = t +\nc/r` under `z < t`). A soft limit takes no part: it is debited by a\nseparate write after admission, as ADR-155 debits a positive adjustment,\nso only a hard limit can reject (amends ADR-151). The full write does\nnot bound the request, so the client must not send it when `c` exceeds\nthe per-shard capacity in force; that request is rejected without a\nwrite (36× the `2rs` term otherwise). Each write is pinned as ADR-155\nrequires and keeps today's guards. The client predicts each limit's side\nfrom its images plus a per-shard utilisation estimate, and retries from\nthe image a failed write returns. A request still undecided after a\nfixed number of writes gets the contended 429 (#724); in a\nmulti-resource acquire (ADR-148) that cap counts every resource's\nlimits. At the #570 ceilings the scaled fill instant reaches about\n4.1e36 against DynamoDB's 1e38, so amounts above `MAX_TOKENS` passed to\n`acquire()`, `consume()`, `adjust()` or `release()` are rejected with\n`ValidationError`, and a value that would still overflow is refused\nwithout ever taking the `on_unavailable=ALLOW` path, as\n`PermissionDenied` is (#751). The schema version moves to 0.11.0 for\nADR-009's tracking, which refuses no 0.x client. Partially supersedes\nADR-115; amends ADR-002, ADR-114, ADR-135, ADR-147 and ADR-151.\n- **ADR-155, every write of a fill instant is exact.** Every other\nwriter of `z` is pinned on the parameters, schedule and shard count it\nwas computed against and on the item's recorded expression instant, with\nits clock reading before the next schedule boundary after that instant.\nIt does not pin on `vu`, which quota writers also stamp (to 0, or past a\ndripping boundary). Each write takes one of three forms:\n- one of ADR-154's two conditional writes. A positive adjustment is a\ndebit and uses them without the upper bound. It takes a fresh clock\nreading on each retry until one write lands, so its lateness never\ncounts toward `s`, and it is never dropped, since dropping it would\nforgive the debt (an unconditional add measured 17× the `2rs` term);\n- a write exact on every item: move `z` earlier for a return or negative\nadjustment, or set it to the write's clock reading for a reset;\n- a write computed from a read and pinned on the fill instants it read.\nA top-up takes this form so ADR-149's operation record knows its split.\n\nA write that changes the parameters, schedule or shard count, or moves\n`vu` past a dripping boundary (the aggregator's quota re-stamp, a quota\nslow pass), re-expresses the item's fill instants in the same write.\nShard raises moved to ADR-156. Partially supersedes ADR-120 for dripping\nlimits; amends ADR-149.\n- **ADR-156, shard creation and raises for dripping limits (new).**\nPartially supersedes ADR-133 for dripping limits. A raise stamps a\nshort-lived marker with a deadline on every shard, which every write to\nthose shards refuses while it is live (an expired marker is ignored), so\nthe raise lands even on a bucket taking about 1000 writes a second. It\nthen reads every shard strongly consistently and, in one transaction\npinned on what it read, re-expresses each existing shard at the new\ncount and moves each parent's balance above its new share to the shard\nit splits off, conserving the total balance exactly. `wcu` starts full\non a new shard, because it is the partition's own write budget rather\nthan a share. A missing shard is created full only when no shard of the\nbucket exists, otherwise empty (a default-config shard swept by its TTL,\nor never created before v0.18, adds nothing and under-admits by up to\none share, once). New shards copy the parent item: owner, cascade and\n`disabled` stamps, schedules, `ttl` and ADR-151's deadlines. Session\nwindows join shard 0's per ADR-140, and quotas are planned per ADR-145,\nincluding the grant-size freeze. Cost: a marker write and a consistent\nread per shard, then one transaction as large as the new count (at most\n32 items plus ADR-150's owner check), at most five times per bucket;\nevery write to a dripping bucket gains one condition term.\n- **Proofs published at `docs/contributing/fill-instant-proofs.md`**,\nwith a Contributing nav entry and an index row. All four ADRs' Design\nlines link it, and the measured multiples live there. The proofs started\nin `docs/plans/` in the first commit; that file never reached `main`.\n\n**Independent review:**\n[`docs/808-fill-instant-review`](https://github.com/zeroae/zae-limiter/tree/docs/808-fill-instant-review/docs/plans/2026-11-07-fill-instant-review)\n(commit 2d28c105, `docs/plans/2026-11-07-fill-instant-review/`) modelled\nthe design at 6c7eb0b8. Its first three findings are the ADR amendments\nabove; the fourth is the integer headroom, now decided (below). It\nconfirmed Theorem 1 with clock skew up to 2 s (worst window excess 0.61\n× `2rs`), Theorem 4's write bounds hit exactly for `L` = 1..6, Theorem\n3(c), and that shard splits from 1 to 32 conserve the total balance.\n\n## Proofs\n\nFor any number of consumers per shard:\n\n- **Theorem 1 (safety, one shard):** over any window, tokens debited\nminus tokens returned is at most `C + r·w + 2r·s`, plus what resets and\ntop-ups grant in the window. A positive adjustment counts as a debit\nrecording `max(z, t) + d`, like an admission. `s` includes an\nadmission's retries, which keep its clock reading; a debit takes a fresh\nreading on each retry, so its lateness never enters `s`.\n- **Theorem 2:** no single DynamoDB write can record `max(z, t) + c/r`\nexactly for every state. **Corollary 1:** a single write that never\nover-admits has to record every admission on a full bucket as emptying\nit.\n- **Theorem 3:** with other consumers writing, an image that shows\n\"full\" can be overtaken but one that shows \"not full\" cannot, and\nreturns make the number of writes unbounded.\n- **Theorem 4:** when other consumers only admit, a request on `L`\nlimits is decided within `L + 2` writes (`L + 1` full-first), and within\n2 when no other write lands in between.\n- **§1 and Lemma 1:** `c ≤ C` is a precondition the client enforces\nbefore sending the full write. Lemma 2 lists every write that moves `z`\nearlier. A soft limit takes no part in the admission write.\n- **§6:** expected misprediction rates under Poisson arrivals, and why\nthe predictor has to estimate utilisation per shard.\n- **§7:** returns, debt and the aggregator. A positive adjustment goes\nthrough the pair without the upper bound, re-stamped on each retry; a\nsoft limit is debited the same way after admission; a reset forgives\ndebt.\n- **§8, Theorem 5 (every writer, summed over shards):** Lemmas 3 and 4\nshow ADR-155's forms are exact, pinned on the recorded expression\ninstant rather than `vu`. A top-up's read only feeds ADR-149's record;\nthe write itself is exact on every item. Re-expression keeps or trims a\nbalance and never raises it. Re-expressing at each schedule boundary\nsince the recorded instant integrates refill across windows; today's\ncode admitted 1000 against 117 across a 0.1x to 1x boundary. A shard\nsplit (ADR-156) stamps a raise marker first and conserves the total\nbalance; a missing shard created empty adds nothing; `wcu` is outside\nthe bound. `C` is the largest ceiling over the `s` before the window.\nTogether these give ADR-153's `C + R(w) + 2r·s` for every writer.\n- **§9, not covered:** encodings where attribute presence tracks time,\nencodings where `z` is the max of several attributes, stores with a\nserver-side `max`, and quotas.\n\nAll four ADRs stay **Proposed** until v0.18.0 ships, per `adr-rules.md`.\n\n## Decided: integer headroom\n\n- **Bounded amounts (review finding 4).** The scaled fill instant\nreaches about 4.1e36 against DynamoDB's largest exact integer near 1e38,\nabout 1.3 orders of the 14 the #570 ceilings keep. ADR-154 now rejects\namounts above `MAX_TOKENS` with `ValidationError` and never lets an\noverflow take the `on_unavailable=ALLOW` path. Storing the fill instant\nas an offset from its expression instant is kept as an alternative\n*rejected for now*: it needs an image before any write and one more pin,\nand it is the remedy if the #570 ceilings ever rise.\n\n## Test plan\n\n- [x] `mkdocs build --strict` passes (re-run on 155b81a4)\n- [x] pre-commit hooks pass on the seven changed files\n- [x] ADRs fit ADR-000's 100-line cap (153: 92 lines, 154: 97, 155: 87,\n156: 71)\n- [x] Event-level model of Theorems 1 and 4 (2 limits, 2 and 32\nconsumers, `u` = 0.5 / 0.9 / 1.5, clock offsets up to 20 ms, round trips\nup to 30 ms): window excess at most `0.124 × 2rs` (bound: 1), at most 3\nwrites per request (bounds: 4 predict, 3 full-first). The script is not\nin this PR.\n- [x] Independent model on `docs/808-fill-instant-review` (above);\nfindings 1–3 folded into the ADRs and proofs, finding 4 decided as\nbounded amounts\n- [x] `/adr review` on ADR-153 and ADR-154\n- [x] `/adr consistency` on ADR-153 and ADR-154: 16 findings, all\nresolved by these edits. Three were conflicts: ADR-135 (schedule\nevaluation), ADR-151 (soft limits) and ADR-120 (parameter sync, now\npartially superseded by ADR-155).\n- The check also found 21 pre-existing issues among accepted ADRs, 3 of\nthem conflicts: ADR-104 vs ADR-118, ADR-105 vs ADR-146, and ADR-108/109\nvs ADR-149. They are outside this PR's scope.\n- [x] Second `/adr consistency` pass, on ADR-155: 13 of the 16 earlier\nfindings resolved, 3 partly; 8 new gaps, all addressed by fb0882a3 and\n155b81a4\n- [ ] `/adr review` on ADR-155\n- [ ] `/adr consistency` on ADR-156 and the revised ADR-154 (not run\nbefore merge; the ADRs stay Proposed, so it can run on `main`)\n- [x] Owner review of the proofs (approved by the owner, 2026-11-07)\n\nRefs #808\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-11-07T21:58:52-05:00",
+          "tree_id": "b0dc8174e73d1be22d8820f7f0999ae7b7855ca9",
+          "url": "https://github.com/zeroae/zae-limiter/commit/f4b1b3b732be343daa543e6fb2fbb96e73a55fbf"
+        },
+        "date": 1794106863652,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 157.90466821473638,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00008358928798041445",
+            "extra": "mean: 6.332934999996888 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 124.78618082891299,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010121189768702724",
+            "extra": "mean: 8.01370787500133 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 75.11710004726949,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00027589415678973994",
+            "extra": "mean: 13.31254799999897 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 190.76129217521327,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000126767976653509",
+            "extra": "mean: 5.242153628743011 msec\nrounds: 167"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 153.73251477124867,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00021018555461665706",
+            "extra": "mean: 6.50480479999942 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 157.36795547110717,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010894759671909956",
+            "extra": "mean: 6.354533850340329 msec\nrounds: 147"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 76.51065452593025,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00018391100878514883",
+            "extra": "mean: 13.070075092104847 msec\nrounds: 76"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 156.19359946731893,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016835612361192236",
+            "extra": "mean: 6.4023110000050565 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 123.36251679266597,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013846088405736534",
+            "extra": "mean: 8.106190000003721 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 73.99693090331101,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00020392118933803673",
+            "extra": "mean: 13.514073999996867 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 157.029267554523,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00008475878888564128",
+            "extra": "mean: 6.368239600001857 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 124.7686032571313,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00007121196105445713",
+            "extra": "mean: 8.014836857146943 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 192.01604617752184,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00007285645776235529",
+            "extra": "mean: 5.207898089285123 msec\nrounds: 168"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 154.95916113290036,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00022725325411143674",
+            "extra": "mean: 6.453313200000821 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 156.01075101284104,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012482116514836103",
+            "extra": "mean: 6.409814666668012 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 77.50100910190712,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013423234472434846",
+            "extra": "mean: 12.903057799996986 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 71.58121837675054,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011029556209210063",
+            "extra": "mean: 13.970145000001821 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 157.83864957976886,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00042363737614853656",
+            "extra": "mean: 6.335583855173684 msec\nrounds: 145"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 1.2010267875861673,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06897889569435565",
+            "extra": "mean: 832.6208960000031 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 66.39608648118526,
+            "unit": "iter/sec",
+            "range": "stddev: 0.019111031368056166",
+            "extra": "mean: 15.061128644733769 msec\nrounds: 76"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 15.550208695771,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016823857396963159",
+            "extra": "mean: 64.30781860001389 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 15.660935438693983,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001781694774552265",
+            "extra": "mean: 63.853146187504706 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 68.57537631870395,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004465393951463755",
+            "extra": "mean: 14.582493799997565 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 78.14289390871993,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00007931913523454947",
+            "extra": "mean: 12.797068933332792 msec\nrounds: 75"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 8.938625871290473,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010923507998213079",
+            "extra": "mean: 111.87401893750248 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 6.288324969466215,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008351115818491576",
+            "extra": "mean: 159.02486033333693 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 78.34465883722378,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009341659567566141",
+            "extra": "mean: 12.764111999998544 msec\nrounds: 78"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 77.94123676935519,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00008305444809510786",
+            "extra": "mean: 12.830178753247324 msec\nrounds: 77"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 4.56556174747593,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007761262824733497",
+            "extra": "mean: 219.0310974444382 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 0.2217992159449881,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05640475388768678",
+            "extra": "mean: 4.508582213600005 sec\nrounds: 5"
           }
         ]
       }
