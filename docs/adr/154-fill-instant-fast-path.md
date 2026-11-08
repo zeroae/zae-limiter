@@ -4,8 +4,8 @@
 **Date:** 2026-11-07
 **Issue:** Refs [#808](https://github.com/zeroae/zae-limiter/issues/808)
 **Partially supersedes:** [ADR-115](115-add-based-writes-lazy-refill.md) for dripping limits (refill materialised into `tk` under the shared `rf` lock, and its write paths)
-**Amends:** [ADR-002](002-integer-arithmetic-millitokens.md) (a dripping limit's state is a scaled time, still an exact integer), [ADR-114](114-composite-bucket-items.md) (the fill instant replaces `tk` for dripping limits), [ADR-135](135-scheduled-limits.md) (the fast path evaluates the stored schedule on the client), [ADR-147](147-client-side-rejection-cache.md) (an image may choose which conditional write is sent)
-**Related:** [ADR-146](146-per-resource-cascade-policy.md), [ADR-151](151-non-enforcing-limits.md), [ADR-153](153-admission-contract-for-dripping-limits.md), [ADR-155](155-fill-instant-writers.md)
+**Amends:** [ADR-002](002-integer-arithmetic-millitokens.md) (a dripping limit's state is a scaled time, still an exact integer), [ADR-114](114-composite-bucket-items.md) (the fill instant replaces `tk` for dripping limits), [ADR-135](135-scheduled-limits.md) (the fast path evaluates the stored schedule on the client), [ADR-147](147-client-side-rejection-cache.md) (an image may choose which conditional write is sent), [ADR-151](151-non-enforcing-limits.md) (a soft limit is debited by a separate write after admission)
+**Related:** [ADR-146](146-per-resource-cascade-policy.md), [ADR-148](148-multi-resource-acquire.md), [ADR-153](153-admission-contract-for-dripping-limits.md), [ADR-155](155-fill-instant-writers.md), [ADR-156](156-dripping-shard-raises.md)
 **Design:** [Fill-instant proofs](../contributing/fill-instant-proofs.md) (the bounds, and the behaviour with many consumers)
 
 ## Context
@@ -32,43 +32,48 @@ stays right, but one showing it full can be overtaken.
 A dripping limit must store, on each bucket shard and in place of `tk`, its own fill instant
 scaled by its undivided refill amount in force so that every quantity is an exact integer,
 without using the shared `rf` as its refill baseline; every fast-path admission must use, per
-limit, one of two writes whose condition proves which side of the write's clock reading `t`
-that instant lies on (not full: add `c/r` under `t ≤ z ≤ t + (C − c)/r`; full: set `t + c/r`
-under `z < t`; a soft limit drops the upper bound), pinned on the parameters, schedule and
-shard count it was computed from and kept beside today's guards. The full write does not bound
-the request, so the client must not send it for a hard limit whose `c` exceeds the per-shard
-capacity in force (that request is rejected without a write); it predicts each limit's side
-from its images and an estimate of the shard's utilisation, retries with the same `t` from the
-image each failed write returns, and answers a request still undecided after a fixed number of
-writes as contended (#724), and no image may decide an admission.
+hard limit, one of two writes whose condition proves which side of the write's clock reading
+`t` that instant lies on (not full: add `c/r` under `t ≤ z ≤ t + (C − c)/r`; full: set
+`t + c/r` under `z < t`), pinned as ADR-155 requires and kept beside today's guards, while a
+soft limit takes no part and is debited afterwards as ADR-155 debits a positive adjustment.
+The client must not send the full write when `c` exceeds the per-shard capacity in force
+(rejecting without a write), predicts each side from its images and an estimate of the shard's
+utilisation, retries with the same `t` from the image each failed write returns, answers a
+request still undecided after a fixed number of writes as contended (#724), and never lets an
+image decide an admission.
 
 ## Consequences
 
 **Positive:**
 - Meets ADR-153's bound for any number of consumers, in one round trip whenever every limit's
   side is predicted and two when no other write lands in between; today's fallback after a
-  failed fast-path write is three.
+  failed fast-path write is three. Only a hard limit can reject (ADR-151).
 - Nothing refills a dripping limit and no write can lift it above capacity, so the aggregator's
   refill and trim (#317), the self-trimming credit (#721) and #808 go away for these limits.
-- Every admission is still decided by a condition on the item; an image only chooses the write.
 - No share is divided by the shard count, so a heavily sharded entity's per-shard rate can no
   longer floor to zero.
 
 **Negative:**
-- Every limit on the write must be predicted, the reserved `wcu` included, from a per-shard
-  utilisation estimate the client keeps beside ADR-147's cache. A bucket near full written by
-  many processes mispredicts often, a cascade parent most of all; a parent still undecided after
-  the cap refunds the child, as a failed parent write does today (ADR-146).
+- Every hard limit on the write must be predicted, the reserved `wcu` included, from a
+  per-shard utilisation estimate kept beside ADR-147's cache. A bucket near full written by many
+  processes mispredicts often, a cascade parent most of all; a parent still undecided after the
+  cap refunds the child, as a failed parent write does today (ADR-146). In a multi-resource
+  acquire (ADR-148) one wrong guess cancels the merged transaction, and the cap counts every
+  resource's limits.
 - A request whose writes keep being overtaken, which takes tokens returned between them, is
-  answered as contended though tokens may remain: an under-admission.
-- Every other writer of a fill instant changes with it (ADR-155), and `RepositoryProtocol`'s
-  write builders change, which breaks custom backends (ADR-108) as ADR-151 did. An item without a
-  fill instant is converted from its `tk` and `rf` on its next slow pass. With no version gate
-  (ADR-153), an older client or Lambda would seed `tk` beside a converted item and admit twice.
-- Quotas keep `tk` and their resets (ADR-137, ADR-145), so one item can carry both forms.
+  answered as contended though tokens may remain: an under-admission. A request naming a soft
+  limit costs one more write, and a soft debit that keeps failing loses only reporting.
+- Every other writer changes with it (ADR-155, ADR-156), and `RepositoryProtocol`'s write
+  builders change, which breaks custom backends (ADR-108). An item without a fill instant is
+  converted from its `tk` and `rf` on its next slow pass. The schema version moves to 0.11.0
+  for ADR-009's tracking, which refuses no 0.x client; with no gate (ADR-153), an older client
+  or Lambda would seed `tk` beside a converted item and admit twice.
 - At the #570 ceilings the refill amount in force reaches 1e24 millitokens, so a 2100 stamp
-  scales to about 4.1e36 against DynamoDB's largest exact integer, just under 1e38: about 1.3 of
-  the 14 orders those ceilings keep. Raising them, or a large enough adjustment, would overflow.
+  scales to about 4.1e36 against DynamoDB's largest exact integer, just under 1e38. So amounts
+  passed to `acquire()`, `consume()`, `adjust()` or `release()` above `MAX_TOKENS` are rejected
+  with `ValidationError`, and a value that would still overflow is refused without ever taking
+  the `on_unavailable=ALLOW` path, as `PermissionDenied` is (#751).
+- Quotas keep `tk` and their resets (ADR-137, ADR-145), so one item can carry both forms.
 
 ## Alternatives Considered
 
@@ -84,8 +89,9 @@ whether `tk + r × (t − rf)` has reached capacity.
 Rejected because: it costs two round trips on every request, where this design costs two only
 on a misprediction.
 
-### One write per admission that records conservatively
-Rejected because: it must record every admission on a full bucket as emptying it.
+### Store the fill instant as an offset from its expression instant
+Rejected for now because: bounded amounts already keep it storable, while an offset needs an
+image before any write and one more pin; it is the remedy if the #570 ceilings ever rise.
 
 ### A store with a server-side `max`, such as Redis
 Rejected because: it replaces the DynamoDB backend rather than fixing it (#149).

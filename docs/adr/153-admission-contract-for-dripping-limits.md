@@ -5,7 +5,7 @@
 **Issue:** Refs [#808](https://github.com/zeroae/zae-limiter/issues/808), [#587](https://github.com/zeroae/zae-limiter/issues/587), [#731](https://github.com/zeroae/zae-limiter/issues/731)
 **Partially supersedes:** [ADR-133](133-client-shard-creation.md) for dripping limits (a new shard is funded by moving tokens, and the 1.5x doubling transient becomes a defect)
 **Amends:** [ADR-135](135-scheduled-limits.md) (refill is integrated across schedule windows), [ADR-136](136-entity-config-bucket-ttl.md) (resource- and system-level changes reach active buckets within the config cache TTL), [ADR-148](148-multi-resource-acquire.md) (`lease.consume()` debits when called)
-**Related:** [ADR-100](100-centralized-config.md), [ADR-125](125-resource-disable.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-151](151-non-enforcing-limits.md), [ADR-154](154-fill-instant-fast-path.md), [ADR-155](155-fill-instant-writers.md)
+**Related:** [ADR-100](100-centralized-config.md), [ADR-125](125-resource-disable.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-151](151-non-enforcing-limits.md), [ADR-154](154-fill-instant-fast-path.md), [ADR-155](155-fill-instant-writers.md), [ADR-156](156-dripping-shard-raises.md)
 **Design:** [Fill-instant proofs](../contributing/fill-instant-proofs.md)
 
 ## Context
@@ -28,7 +28,8 @@ between.
 
 Quotas keep ADR-145's per-period conservation (I8). Soft and bypassed limits (ADR-151),
 `on_unavailable=ALLOW` and degraded leases are non-enforcing by design and are outside the
-bound. An operator reset or top-up (ADR-149) adds what it grants. Configuration and stamp
+bound, as is the reserved `wcu` budget, which belongs to each partition (ADR-156). An operator
+reset or top-up (ADR-149) adds what it grants. Configuration and stamp
 changes take effect within the config cache TTL and `stamp_ttl`. The bound assumes every
 process sharing the table runs the release that ships it.
 
@@ -37,12 +38,13 @@ process sharing the table runs the release that ships it.
 For every dripping limit outside the exclusions above, tokens debited (by `acquire()`,
 `lease.consume()` and positive adjustments) minus tokens returned (release, negative
 adjustment, rollback) on one (entity, resource), summed over its shards and counted from the
-start of any real-time window `w` to its last admission, must not exceed `C + R(w) + 2 r s`.
-Here `C` is the largest ceiling in force from `s` before the window's start to its start,
-`R(w)` the refill the configured schedule grants across `w`, `r` the largest refill rate in
-force across it, and `s` the largest gap between a writer's clock reading and the instant its
-write lands (clock skew plus time in flight); the fast path holds the bound through ADR-154 and
-every other writer through ADR-155.
+start of any real-time window `w` to its last admission, must not exceed `C + R(w) + 2 r s`
+plus what operator resets and top-ups grant in `w`. Here `C` is the largest ceiling in force
+from `s` before the window's start to its start, `R(w)` the refill the configured schedule
+grants across `w`, `r` the largest refill rate in force across it, and `s` the largest gap
+between a writer's clock reading and the instant its write lands (clock skew plus time in
+flight, including the retries of an admission, which keep its reading); the fast path holds the
+bound through ADR-154, every other writer through ADR-155, and shard raises through ADR-156.
 
 ## Consequences
 
@@ -54,8 +56,9 @@ every other writer through ADR-155.
 **Negative:**
 - #808 is a defect, and its fix is ADR-154's change of representation.
 - A new shard of an existing dripping bucket is funded by moving tokens from the shard it splits
-  off (ADR-155), so it can start nearly empty; only a bucket's first shard starts full. This
-  partially supersedes ADR-133 and reverses #587's ruling for dripping limits.
+  off (ADR-156), so it can start nearly empty; only a bucket's first shard, or a limit added
+  after its item existed, starts full. This partially supersedes ADR-133 and reverses #587's
+  ruling for dripping limits.
 - Refill is integrated across schedule windows (amending ADR-135): a limit raised at a boundary
   accrues from there instead of arriving full.
 - `lease.consume()` debits when called, one write and one round trip per call, and can raise
