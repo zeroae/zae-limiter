@@ -44,7 +44,7 @@ from .exceptions import (
     ValidationError,
     VersionMismatchError,
 )
-from .fill_instant import WriteBudget
+from .fill_instant import FillInstantOverflowError, WriteBudget
 from .models import (
     AuditEvent,
     Availability,
@@ -82,6 +82,7 @@ from .sync_lease import (
     _contention_rejection,
     _is_transaction_conflict,
     _stamp_deadline,
+    check_amounts,
     credit_ceilings,
     credit_image,
     write_credit,
@@ -123,6 +124,18 @@ def _is_custom_config(config_source: str | None) -> bool:
 
 
 _ACCESS_DENIED = "AccessDeniedException"
+
+
+def _overflow_in(error: BaseException) -> FillInstantOverflowError | None:
+    """The fill-instant overflow in ``error``'s cause chain, if there is one (#824)."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        if isinstance(current, FillInstantOverflowError):
+            return current
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def _access_denied_in(exc: BaseException) -> ClientError | None:
@@ -853,11 +866,14 @@ class SyncRateLimiter:
                 the decision evaluated, each tagged with its resource.
             ResourceDisabled: If the resource — or, with ``also``, any of the
                 resources — is disabled. Outranks ``RateLimitExceeded``.
-            RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
+            RateLimiterUnavailable: If DynamoDB unavailable and BLOCK; and,
+                under every mode, if a computed fill instant would leave
+                DynamoDB's exact integer range (#824), as for an IAM denial.
             ValidationError: If no limits configured at any level, an amount
-                in ``consume`` or ``also`` is negative, or ``also`` is invalid
-                (a bad or repeated resource name, too many resources, or
-                combined with ``limits``)
+                in ``consume`` or ``also`` is negative or above
+                ``MAX_TOKENS`` (10**15, before any I/O, #824), or ``also`` is
+                invalid (a bad or repeated resource name, too many resources,
+                or combined with ``limits``)
             VersionMismatchError: If ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638). Never subject to
                 ``on_unavailable``.
@@ -965,6 +981,15 @@ class SyncRateLimiter:
         self, error: Exception, mode: OnUnavailable, entity_id: str, resource: str
     ) -> None:
         """Map a backend error: raise it as the caller sees it, or return under ALLOW."""
+        overflow = _overflow_in(error)
+        if overflow is not None:
+            raise RateLimiterUnavailable(
+                f"{overflow} -- refused under every on_unavailable mode",
+                cause=error,
+                stack_name=self._repository.stack_name,
+                entity_id=entity_id,
+                resource=resource,
+            ) from error
         denied = _access_denied_in(error)
         if denied is not None:
             message = denied.response.get("Error", {}).get("Message") or str(denied)
@@ -2501,9 +2526,10 @@ class SyncRateLimiter:
 
         Raises:
             ValidationError: For a negative amount in ``consume`` or any
-                ``also`` entry, a bad resource name, the primary resource
-                named in ``also``, more than ``MAX_ACQUIRE_RESOURCES``
-                resources, or ``also`` combined with ``limits``.
+                ``also`` entry, or one above ``MAX_TOKENS``, a bad resource
+                name, the primary resource named in ``also``, more than
+                ``MAX_ACQUIRE_RESOURCES`` resources, or ``also`` combined with
+                ``limits``.
         """
         for part, amounts in [(resource, consume), *(also or {}).items()]:
             negative = sorted((name for name, amount in amounts.items() if amount < 0))
@@ -2513,6 +2539,7 @@ class SyncRateLimiter:
                     ", ".join(negative),
                     f"amounts must be >= 0 (resource {part!r}); use lease.release() to return capacity",
                 )
+            check_amounts(amounts, "consume")
         if not also:
             return [(resource, consume)]
         if limits is not None:

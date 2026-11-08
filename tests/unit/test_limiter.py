@@ -17267,3 +17267,96 @@ class TestConsumeWritesWhenCalled:
             hand_built = Lease(repository=repo, entries=lease.entries)
             with pytest.raises(RuntimeError, match="yielded by RateLimiter.acquire"):
                 await hand_built.consume(rpm=1)
+
+
+class TestAmountBounds:
+    """Amounts above ``MAX_TOKENS`` are refused before any I/O (ADR-154, #824)."""
+
+    @staticmethod
+    async def _spy_requests(repo):
+        client = await repo._get_client()
+        calls: list[str] = []
+        ops = ("get_item", "batch_get_item", "query", "update_item", "transact_write_items")
+        originals = {op: getattr(client, op) for op in ops}
+
+        def spy(op):
+            async def call(*args, **kwargs):
+                calls.append(op)
+                return await originals[op](*args, **kwargs)
+
+            return call
+
+        for op in ops:
+            setattr(client, op, spy(op))
+        return calls, client, originals
+
+    @pytest.mark.parametrize("mode", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    @pytest.mark.parametrize("where", ["consume", "also"])
+    async def test_acquire_refuses_an_amount_above_max_tokens_without_io(
+        self, limiter, mode, where
+    ):
+        from zae_limiter.schedule import MAX_TOKENS
+
+        repo = limiter._repository
+        await repo.set_limits("e1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        await repo.set_limits("e1", [Limit.per_minute("rpm", 1000)], resource="budget")
+        calls, client, originals = await self._spy_requests(repo)
+        consume = {"rpm": 1}
+        also = None
+        if where == "consume":
+            consume = {"rpm": MAX_TOKENS + 1}
+        else:
+            also = {"budget": {"rpm": MAX_TOKENS + 1}}
+        try:
+            with pytest.raises(ValidationError, match="MAX_TOKENS"):
+                async with limiter.acquire("e1", "gpt-4", consume, also=also, on_unavailable=mode):
+                    pass
+        finally:
+            for op, original in originals.items():
+                setattr(client, op, original)
+        assert calls == []
+
+    async def test_lease_methods_refuse_an_amount_above_max_tokens(self, limiter):
+        from zae_limiter.schedule import MAX_TOKENS
+
+        repo = limiter._repository
+        await repo.set_limits("e1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        too_large = MAX_TOKENS + 1
+        async with limiter.acquire("e1", "gpt-4", {"rpm": 1}) as lease:
+            with pytest.raises(ValidationError):
+                await lease.consume(rpm=too_large)
+            with pytest.raises(ValidationError):
+                await lease.release(rpm=too_large)
+            with pytest.raises(ValidationError):
+                await lease.adjust(rpm=too_large)
+            with pytest.raises(ValidationError):
+                await lease.adjust(rpm=-too_large)  # a magnitude
+            handle = lease.resource("gpt-4")
+            for method in (handle.consume, handle.release, handle.adjust):
+                with pytest.raises(ValidationError):
+                    await method(rpm=too_large)
+            assert lease.consumed == {"rpm": 1}  # nothing recorded
+        tokens = await _raw_bucket(repo, "e1", resource="gpt-4")
+        assert int(tokens[bucket_attr("rpm", "tc")]["N"]) == 1_000  # nothing written
+
+    async def test_exactly_max_tokens_is_accepted(self, limiter):
+        from zae_limiter.schedule import MAX_TOKENS
+
+        repo = limiter._repository
+        await repo.set_limits("e1", [Limit.per_minute("rpm", MAX_TOKENS)], resource="gpt-4")
+        async with limiter.acquire("e1", "gpt-4", {"rpm": MAX_TOKENS}) as lease:
+            await lease.adjust(rpm=MAX_TOKENS)  # into debt
+            await lease.release(rpm=MAX_TOKENS)
+        assert lease.consumed == {"rpm": MAX_TOKENS}
+
+    @pytest.mark.parametrize("mode", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    async def test_a_fill_instant_overflow_is_never_degraded(self, limiter, mode):
+        """A computed fill instant past DynamoDB's exact range is refused under
+        both modes, as an IAM denial is (#751): ALLOW would admit unlimited."""
+        repo = limiter._repository
+        await repo.set_limits("e1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        # A clock whose stamp is past 10**38 at this refill rate.
+        with patch.object(repo, "_now_ms", return_value=10**33):
+            with pytest.raises(RateLimiterUnavailable, match="exact range"):
+                async with limiter.acquire("e1", "gpt-4", {"rpm": 1}, on_unavailable=mode) as lease:
+                    assert not lease.degraded  # never reached

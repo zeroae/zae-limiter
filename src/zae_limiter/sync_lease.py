@@ -36,7 +36,7 @@ from .models import (
     QuotaDonorDebit,
     QuotaPeriodPin,
 )
-from .schedule import next_reset_edge, prev_reset_edge
+from .schedule import MAX_TOKENS, next_reset_edge, prev_reset_edge
 from .schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
@@ -117,6 +117,23 @@ class LeaseEntry:
     _bypass_until_ms: int | None = None
     _bypass_restamp: tuple[int | None, int | None] | None = None
     _stored_top_up: bool = False
+
+
+def check_amounts(amounts: dict[str, int], method: str) -> None:
+    """Refuse an amount larger than ``MAX_TOKENS`` in magnitude, before any I/O (#824).
+
+    ``MAX_TOKENS`` bounds a limit's configuration (#570); an amount past it
+    would push a fill instant out of DynamoDB's exact integer range (ADR-154).
+    A magnitude, since ``adjust()`` takes negative amounts and a return moves a
+    fill instant as far as a debit.
+    """
+    too_large = sorted((name for name, amount in amounts.items() if abs(amount) > MAX_TOKENS))
+    if too_large:
+        raise ValidationError(
+            method,
+            ", ".join(too_large),
+            f"amounts must be at most MAX_TOKENS ({MAX_TOKENS}) in magnitude",
+        )
 
 
 def credit_ceilings(
@@ -798,6 +815,8 @@ class SyncLease:
             **amounts: Mapping of limit_name -> amount to consume
 
         Raises:
+            ValidationError: If an amount is above ``MAX_TOKENS`` (#824);
+                nothing is sent.
             RateLimitExceeded: If a limit cannot cover it, or the bucket is
                 contended (``contended=True``); nothing was debited.
             ResourceDisabled: If the resource was disabled since the acquire.
@@ -805,6 +824,7 @@ class SyncLease:
             LeaseExpiredError: If the lease has already exited.
         """
         self._require_open()
+        check_amounts(amounts, "consume")
         self._check_declared(amounts, "consume")
         self._consume_in(self._primary, amounts)
 
@@ -880,8 +900,13 @@ class SyncLease:
 
         Args:
             **amounts: Mapping of limit_name -> delta (positive = consume more)
+
+        Raises:
+            ValidationError: If a delta is above ``MAX_TOKENS`` in magnitude
+                (#824); nothing is recorded.
         """
         self._require_open()
+        check_amounts(amounts, "adjust")
         self._check_declared(amounts, "adjust")
         self._apply_adjust(amounts, self._primary)
 
@@ -914,8 +939,13 @@ class SyncLease:
 
         Args:
             **amounts: Mapping of limit_name -> amount to return
+
+        Raises:
+            ValidationError: If an amount is above ``MAX_TOKENS`` in magnitude
+                (#824); nothing is recorded.
         """
         self._require_open()
+        check_amounts(amounts, "release")
         self._check_declared(amounts, "release")
         self._apply_adjust({k: -v for k, v in amounts.items()}, self._primary)
 
@@ -2176,6 +2206,7 @@ class SyncLeaseResource:
         """
         lease = self._lease
         lease._require_open()
+        check_amounts(amounts, "consume")
         lease._check_declared(amounts, "consume", self.name)
         lease._consume_in(self.name, amounts)
 
@@ -2189,6 +2220,7 @@ class SyncLeaseResource:
         """
         lease = self._lease
         lease._require_open()
+        check_amounts(amounts, "adjust")
         lease._check_declared(amounts, "adjust", self.name)
         lease._apply_adjust(amounts, self.name)
 
@@ -2200,6 +2232,7 @@ class SyncLeaseResource:
         """
         lease = self._lease
         lease._require_open()
+        check_amounts(amounts, "release")
         lease._check_declared(amounts, "release", self.name)
         lease._apply_adjust({k: -v for k, v in amounts.items()}, self.name)
 

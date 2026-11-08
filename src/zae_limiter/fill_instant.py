@@ -47,10 +47,18 @@ FILL_INSTANT_EXTRA_WRITES = 2
 NOT_FULL_FIRST_ABOVE_PERMILLE = 500
 
 
+class FillInstantOverflowError(ValueError):
+    """A computed fill instant outside DynamoDB's exact integer range (ADR-154, #824).
+
+    Never degraded under ``on_unavailable=ALLOW``: ``acquire()`` raises it as
+    ``RateLimiterUnavailable`` in every mode, as it does an IAM denial (#751).
+    """
+
+
 def _stored(value: int) -> int:
     """``value``, checked against DynamoDB's exact integer range."""
     if abs(value) > MAX_STORED_MILLI:
-        raise ValueError(
+        raise FillInstantOverflowError(
             f"fill instant value {value} is outside DynamoDB's exact range "
             f"(|value| <= {MAX_STORED_MILLI})"
         )
