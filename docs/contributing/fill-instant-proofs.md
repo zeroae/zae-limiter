@@ -23,19 +23,28 @@ on, for any number of consumers sharing a bucket:
 - **§8 Other writers.** Returns, adjustments, resets, top-ups, re-expression across schedule
   windows and shard splits keep the bound, summed over shards.
 
+An independent event-level model (branch `docs/808-fill-instant-review`) checked Theorems 1,
+3(c) and 4 and the shard split. It also found three defects in an earlier version of this page
+and the ADRs, corrected here: a positive adjustment written as a plain add (§7), a full write
+admitting `c > C` (§2), and the ceiling read at the window's start under clock skew (§8).
+
 ## 1. Definitions
 
 One bucket shard of one dripping limit has capacity `C > 0` and refill rate `r > 0` tokens per
-second (its share). A request costs `c` tokens, `0 < c < C`; write `d = c / r`.
+second (its share). A request costs `c` tokens, `0 < c ≤ C`; write `d = c / r`. A request for
+a hard limit with `c > C` can never be admitted, and ADR-154's client rejects it without a
+write (§2 says why it must).
 
 **Strict token bucket.** Between admissions the balance grows as
 `b(t) = min(C, b(t0) + r × (t − t0))`. A request at `t` is admitted iff `b(t) ≥ c`, and then
-`b ← b − c`. Returning `c` tokens sets `b ← min(C, b + c)`.
+`b ← b − c`. Returning `c` tokens sets `b ← min(C, b + c)`. Debiting `c` after the fact (a
+positive adjustment) sets `b ← b − c` with no test, so the balance may go negative.
 
 **Fill instant.** The state is one number `z`, the instant the balance is (or was) back at `C`:
 `b(t) = C − r × max(0, z − t)`. Every `z ≤ t` reads as full at `t`. In this form:
 
 - admitting `c` at `t` is allowed iff `z ≤ t + (C − c) / r`, and records `max(z, t) + d`;
+- debiting `c` records `max(z, t) + d` with no test: the same clamp as an admission;
 - returning `c` records `z − d`, which is exactly `b ← min(C, b + c)`.
 
 The `max` is the clamp: a full bucket forgets how long it has been full. Today's fast path
@@ -47,7 +56,9 @@ amount, which makes `d`, the slack and every stamp exact integers. For one of `S
 bucket whose undivided capacity is `C_b` (so the shard's share is `C = C_b / S`), `d` becomes
 `c × S × rp` and the slack `(C_b − c × S) × rp`, with capacities and the refill amount in
 millitokens and the period `rp` in milliseconds. Nothing is divided, so no rounding enters and
-the proofs hold as stated.
+the proofs hold as stated. At the ceilings #570 sets (`MAX_TOKENS`, `MAX_SCALE`) the refill
+amount in force reaches 1e24 millitokens, so a stamp in 2100 scales to about 4.1e36, just under
+DynamoDB's largest exact integer near 1e38; ADR-154 records how little headroom that leaves.
 
 ## 2. Model
 
@@ -83,20 +94,24 @@ ADR-154 stores `z` directly and uses these writes, each with the request's stamp
 |---|---|---|
 | Not full, `N_t` | `t ≤ z ≤ t + (C − c) / r` | `z ← z + d` |
 | Full, `F_t` | `z < t` | `z ← t + d` |
-| Return `c` | none | `z ← z − d` |
-| Adjust by `+c` (debt) | none | `z ← z + d` |
+| Return `c`, or adjust by `−c` | none | `z ← z − d` |
+| Adjust by `+c` (debit) | `N_t` or `F_t` without the upper bound | as `N_t` or `F_t` |
 | Top up `N` (ADR-155) | none | `z ← z − N / r` |
 | Reset (ADR-155) | none | `z ← t` |
 
 Every write is also pinned on the parameters, schedule and shard count it was computed against,
 with `vu` after its stamp (ADR-155), so `C` and `r` above are the ones `z` is expressed in.
 
-**Lemma 1 (exactness).** On an admissible item (`z ≤ t + (C − c) / r`) exactly one of `N_t`,
-`F_t` applies, and it records `max(z, t) + d`. On any other item both fail. *Immediate from
-the table.*
+**Lemma 1 (exactness).** For `c ≤ C`, on an admissible item (`z ≤ t + (C − c) / r`) exactly
+one of `N_t`, `F_t` applies, and it records `max(z, t) + d`. On any other item both fail.
+*Immediate from the table.* `F_t`'s condition does not mention `c`: with `c > C` it would apply
+to a full item and record a negative balance (an independent model measured 36 times the
+`2 r s` term), so ADR-154's client never sends it for a hard limit. Without the upper bound the
+pair applies to every item, which is the debit a positive adjustment and a soft limit need.
 
-**Lemma 2 (admissions move `z` later).** `N_t` adds `d > 0`. `F_t` applies only when `z < t`
-and sets `t + d > z`. Only a return moves `z` earlier.
+**Lemma 2 (admissions and debits move `z` later).** `N_t` adds `d > 0`. `F_t` applies only when
+`z < t` and sets `t + d > z`. A positive adjustment does one or the other. Only returns,
+negative adjustments, top-ups, resets and re-expressions (§8) move `z` earlier.
 
 Parameters (`C`, `r`, the schedule, the shard count) are fixed throughout §§3–6; §8 covers
 changes to them.
@@ -104,7 +119,8 @@ changes to them.
 ## 3. Safety with many consumers
 
 **Theorem 1.** For write `i`, let `o_i = t_i − T_i`: its stamp minus the instant it lands
-(clock offset plus time in flight, usually negative). Let `s = max |o_i|`. Then over any real
+(clock offset plus time in flight, usually negative; a retry keeps its request's stamp, so this
+includes the time spent retrying). Let `s = max |o_i|`. Then over any real
 time window of length `w`, tokens debited (admissions and positive adjustments) minus tokens
 returned, counted from the window's start to its last admission, is at most
 `C + r × w + 2 r × s`, plus what resets and top-ups grant in the window. This is ADR-153's
@@ -112,13 +128,14 @@ bound for one shard with fixed parameters.
 
 **Proof.** Compare the item with a reference bucket `Y`: a strict bucket fed every applied
 write at the instant it landed, allowed to go negative (fill instant `y`, updated by
-`y ← max(y, T_i) + d` for an admission and `y ← y ∓ d` for a return or adjustment). Let
-`e = z − y`. We show `|e| ≤ s` by induction over applied writes.
+`y ← max(y, T_i) + d` for an admission or a positive adjustment, and `y ← y − d` for a return
+or a negative adjustment). Let `e = z − y`. We show `|e| ≤ s` by induction over applied writes.
 
 - The write that creates the item records `t + d` where `Y` records `T + d`, so `e = o`.
-- A return, adjustment or top-up moves `z` and `y` by the same amount: `e` is unchanged.
+- A return, negative adjustment or top-up moves `z` and `y` by the same amount: `e` is
+  unchanged.
 - A reset sets `z` to `t` and `y` to `T`, so `e' = o`.
-- An admission with offset `o`, by which side each view is on:
+- An admission or a positive adjustment with offset `o`, by which side each view is on:
   - both not full (`z ≥ t`, `y ≥ T`): both add `d`, so `e` is unchanged;
   - both full: `z' = t + d`, `y' = T + d`, so `e' = o`;
   - item full, `Y` not (`z < t`, `y ≥ T`): `e' = t − y`. From `y ≥ T`, `e' ≤ o`; from
@@ -191,8 +208,8 @@ reachable items whose fill instants cover `(t_B, t_B + C / r)`, which contains
 `[t_B + ε, t + (C − c) / r]` because `t − t_B < d`. That interval crosses `t`. ∎
 
 **(b) A "not full" image cannot be overtaken by admissions.** If `A`'s image shows `z_A ≥ t`
-and no consumer returns tokens, then `z ≥ t` when `A`'s write lands (Lemma 2), so `A` knows its
-side.
+and nothing that moves `z` earlier lands in between (a return, a top-up, a reset or a
+re-expression), then `z ≥ t` when `A`'s write lands (Lemma 2), so `A` knows its side.
 
 **(c) Returns make the number of writes unbounded.** If other consumers may return tokens
 between a request's writes, then for every `k` there is an execution in which an exact
@@ -216,7 +233,8 @@ A request covers `L` limits, the reserved `wcu` included. Each write chooses `N`
 limit from the latest image it holds, reusing the request's stamp `t` on every retry. A fresh
 stamp would undo Theorem 3(b): `z ≥ t` does not imply `z ≥ t'` for a later `t'`.
 
-**Theorem 4.** If only admissions land between a request's writes, the request is admitted or
+**Theorem 4.** If only admissions and positive adjustments land between a request's writes,
+the request is admitted or
 rejected within `L + 2` writes, and within `L + 1` if its first write guesses "full" for every
 limit. With no write landing in between, within 2.
 
@@ -236,8 +254,8 @@ bucket is not full; §6 is why a predictor that may guess "not full" is usually 
 
 ## 6. Expected cost with many consumers
 
-With one consumer per shard and no returns, its image is exact and it never guesses wrong.
-With several and no returns, Theorem 3(b) means an image showing "not full" is always right,
+With one consumer per shard and nothing moving `z` earlier, its image is exact and it never
+guesses wrong. With several, Theorem 3(b) means an image showing "not full" is always right,
 so every wrong guess comes from an image showing "full" that another consumer has overtaken.
 
 With Poisson arrivals at aggregate utilization `u = λ × c / r < 1`, `z − t` behaves like the
@@ -277,8 +295,15 @@ per shard, or a better predictor, moves the cost toward 1.
 A return of `c` adds `−d` to `z` with no condition and gives exactly `b ← min(C, b + c)`: on a
 full bucket it moves `z` further into the past, which still reads as full. No write can lift a
 balance above `C`, so the ceiling checks of #721 have nothing left to do for dripping limits.
-An adjustment by `+c` adds `d` with no condition and may push `z` past `t + C / r`, which is
-debt. Neither is idempotent (#731).
+
+An adjustment by `+c` is a debit, not an add. On a full bucket it must record `max(z, t) + d`;
+adding `d` instead forgives the debt whenever `z + d < t`, which is the usual case for a lease
+reconciling after a long call on an otherwise idle bucket (the independent model measured 17
+times the `2 r s` term). It therefore uses `N_t` or `F_t` without the upper bound, like a soft
+limit: it is never rejected, may push `z` past `t + C / r` (debt), and is retried until one
+lands, because dropping it would forgive the debt. Returns landing between its writes can delay
+it, as Theorem 3(c) delays an admission. Neither returns nor debits are idempotent (#731), and
+a reset (§8) forgives debt.
 
 Nothing refills a dripping limit, so the aggregator writes no refill or trim for one. It still
 counts usage, and doubles a bucket that holds a dripping limit only through ADR-155's
@@ -290,10 +315,10 @@ ADR-155 allows every other write of a fill instant one of three forms, each pinn
 parameters, schedule and shard count it was computed against, with `vu` after its stamp. Under
 that pin the item's `z` is expressed in exactly the `C` and `r` the write used.
 
-**Lemma 3 (writes exact on every item).** Adding `−d` returns `c` tokens and adding `+d`
-adjusts by `c` (§1). Adding `−N / r` tops up `N` tokens, `b ← min(C, b + N)`, capped at
-capacity because every `z` before now reads as full. Setting `z ← t` resets the balance to
-`C`. None depends on `z`, so none needs a read.
+**Lemma 3 (writes exact on every item).** Adding `−d` returns `c` tokens or adjusts by `−c`
+(§1). Adding `−N / r` tops up `N` tokens, `b ← min(C, b + N)`, capped at capacity because every
+`z` before now reads as full. Setting `z ← t` resets the balance to `C`, forgiving any debt.
+None depends on `z`, so none needs a read. A positive adjustment is not among them (§7).
 
 **Lemma 4 (writes pinned on a read).** A write pinned on the fill instants it read applies only
 to an item still holding them, so a result it computes from the read lands on the state it was
@@ -321,11 +346,16 @@ total balance is exactly what it was before the raise.
 **Theorem 5 (ADR-153's bound for every writer).** If every write of a dripping limit takes one
 of ADR-155's forms, then on one (entity, resource), summed over its shards, tokens debited minus
 tokens returned, counted from the start of a window to its last admission, is at most
-`C + R(w) + 2 r s` plus what resets and top-ups grant in the window, where `R(w)` is the refill
-the schedule grants across the window and `r` the largest rate in force across it.
+`C + R(w) + 2 r s` plus what resets and top-ups grant in the window, where `C` is the largest
+ceiling in force from `s` before the window's start to its start, `R(w)` the refill the
+schedule grants across the window, and `r` the largest rate in force across it.
 
 *Proof sketch.* Apply Theorem 1's window argument to the total balance over shards. It starts
-the window at most `C`, since every shard holds at most its share and the shares sum to `C`.
+the window at most `C`: every shard holds at most its share and the shares sum to the ceiling
+in force, and a write stamped up to `s` before a boundary that lowers capacity can still land
+after it and spend the old ceiling until a re-expression trims it. That is why `C` is taken
+over the `s` before the window; read at the window's start alone, the independent model
+exceeded the bound by 3 to 54 times the `2 r s` term.
 It gains at most `R(w)` of refill: within a schedule window the shards' rates sum to the rate
 in force, and across boundaries each shard drips at each window's own rate. A split conserves
 it, a re-expression keeps or lowers it, returns add at most what they return, and resets and
@@ -339,6 +369,11 @@ most `r`. ∎
   depends on anything but arithmetic, presence changes only on writes, and the client chooses
   attribute names before it sees the item. M3 excludes such encodings; none is known that works
   with a bounded number of attributes.
+- **An encoding where `z` is the max of several attributes.** A condition can test each one, so
+  `max(a, b) ≤ K` is expressible, and recording `max(z, t) + d` as one more candidate keeps a
+  write exact. But every full-side write adds a candidate, and no single write can tell which
+  are dominated, so the count grows unless something prunes it. M3 excludes such encodings; no
+  bounded one is known.
 - **A store with a server-side `max` or branching**, such as GCRA in Redis/Lua or SQL
   `GREATEST`. One round trip is exact there; the bound is a property of DynamoDB's update
   language.
