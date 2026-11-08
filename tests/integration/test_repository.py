@@ -19,6 +19,7 @@ import time
 
 import pytest
 
+from tests.fixtures.legacy import as_legacy_item
 from zae_limiter import Limit, StackOptions
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
@@ -114,6 +115,8 @@ class TestRepositoryLocalStackTransactions:
         now_ms = int(time.time() * 1000)
         state = BucketState.from_limit("entity-1", "api", limit, now_ms)
         await test_repo.transact_write([test_repo.build_bucket_put_item(state)])
+        # `build_bucket_update_item` writes `tk`: a pre-#821 item's form.
+        await as_legacy_item(test_repo, "entity-1", "api")
 
         # Get current bucket state
         bucket = await test_repo.get_bucket("entity-1", "api", "rpm")
@@ -773,6 +776,8 @@ class TestSpeculativeConsume:
         # Create composite bucket with 100 rpm
         limit = Limit.per_minute("rpm", 100)
         now_ms = int(time.time() * 1000)
+        # Hold the clock: a fill instant's balance moves with it (#821).
+        repo._now_ms = lambda: now_ms
         state = BucketState.from_limit("spec-entity-1", "api", limit, now_ms)
         put_item = repo.build_composite_create("spec-entity-1", "api", [state], now_ms)
         await repo.transact_write([put_item])
@@ -802,6 +807,8 @@ class TestSpeculativeConsume:
         rpm_limit = Limit.per_minute("rpm", 100)
         tpm_limit = Limit.per_minute("tpm", 10_000)
         now_ms = int(time.time() * 1000)
+        # Hold the clock: a fill instant's balance moves with it (#821).
+        repo._now_ms = lambda: now_ms
         rpm_state = BucketState.from_limit("spec-entity-2", "api", rpm_limit, now_ms)
         tpm_state = BucketState.from_limit("spec-entity-2", "api", tpm_limit, now_ms)
         put_item = repo.build_composite_create(
@@ -988,6 +995,8 @@ class TestSpeculativeConsume:
 
         limit = Limit.per_minute("rpm", 150)
         now_ms = int(time.time() * 1000)
+        # Hold the clock: a fill instant's balance moves with it (#821).
+        repo._now_ms = lambda: now_ms
         state = BucketState.from_limit("spec-fields", "api", limit, now_ms)
         put_item = repo.build_composite_create("spec-fields", "api", [state], now_ms)
         await repo.transact_write([put_item])
@@ -1016,6 +1025,8 @@ class TestSpeculativeConsume:
 
         limit = Limit.per_minute("rpm", 10)
         now_ms = int(time.time() * 1000)
+        # Hold the clock: a fill instant's balance moves with it (#821).
+        repo._now_ms = lambda: now_ms
         state = BucketState.from_limit("spec-drain", "api", limit, now_ms)
         put_item = repo.build_composite_create("spec-drain", "api", [state], now_ms)
         await repo.transact_write([put_item])

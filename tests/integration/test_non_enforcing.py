@@ -7,6 +7,7 @@ LocalStack's DynamoDB (review D14). Every test reads the item back raw.
 
 import pytest
 
+from tests.fixtures.balances import balance_milli, empty_fill_instant, stored_fill_instant
 from zae_limiter import RateLimitExceeded, schema
 from zae_limiter.models import Limit
 
@@ -41,7 +42,7 @@ async def test_a_soft_limit_is_debited_into_debt_on_the_fast_path(localstack_lim
             pass
     assert lease.overdrawn == ["tpm"]
     item = await _item(test_repo, "u", "llm")
-    assert _n(item, "b_tpm_tk") < 0
+    assert balance_milli(test_repo, item, "tpm", test_repo._now_ms()) < 0
     assert _n(item, "b_tpm_tc") == 24_000
     assert _n(item, "b_tpm_soft") > test_repo._now_ms()  # a live deadline
 
@@ -57,20 +58,21 @@ async def test_a_soft_limit_lease_adjusts_into_debt(localstack_limiter, test_rep
         await lease.release(tpm=1)
     item = await _item(test_repo, "u", "meter")
     assert _n(item, "b_tpm_tc") == (5 + 20 + 3 - 1) * 1000
-    assert _n(item, "b_tpm_tk") < 0
+    assert balance_milli(test_repo, item, "tpm", test_repo._now_ms()) < 0
 
 
 async def test_a_bypassed_bucket_counts_and_debits_nothing(localstack_limiter, test_repo):
     await test_repo.set_resource_defaults("api", [Limit.per_minute("rpm", 2)])
     async with localstack_limiter.acquire("u", "api", {"rpm": 1}):
         pass
+    debited = stored_fill_instant(await _item(test_repo, "u", "api"), "rpm")
     await test_repo.bypass_resource("api")
     for _ in range(5):
         async with localstack_limiter.acquire("u", "api", {"rpm": 1}) as lease:
             assert lease.bypassed is True
     item = await _item(test_repo, "u", "api")
     assert _n(item, "b_rpm_tc") == 6_000
-    assert _n(item, "b_rpm_tk") <= 1_000  # the balance was not touched by the bypass
+    assert stored_fill_instant(item, "rpm") == debited  # the balance was not touched by the bypass
 
 
 async def test_an_expired_or_boolean_stamp_is_enforced(localstack_limiter, test_repo):
@@ -85,11 +87,13 @@ async def test_an_expired_or_boolean_stamp_is_enforced(localstack_limiter, test_
         "SK": {"S": schema.sk_state()},
     }
     for stale in ({"N": str(test_repo._now_ms() - 1)}, {"BOOL": True}):
+        # Spent: the fill instant that leaves the share empty now (ADR-154).
+        spent = empty_fill_instant(await _item(test_repo, "u", "old"), "rpm", test_repo._now_ms())
         await client.update_item(
             TableName=test_repo.table_name,
             Key=key,
-            UpdateExpression="SET bypass = :v, b_rpm_tk = :z",
-            ExpressionAttributeValues={":v": stale, ":z": {"N": "0"}},
+            UpdateExpression="SET bypass = :v, b_rpm_fi = :z",
+            ExpressionAttributeValues={":v": stale, ":z": {"N": str(spent)}},
         )
         with pytest.raises(RateLimitExceeded):
             async with localstack_limiter.acquire("u", "old", {"rpm": 1}):

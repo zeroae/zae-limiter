@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from tests.fixtures.capacity import CapacityCounter, _counting_client
-from zae_limiter import Limit, RateLimitExceeded
+from zae_limiter import Limit, RateLimiter, RateLimitExceeded
 from zae_limiter import fill_instant as fi
 from zae_limiter.fill_instant import FILL_INSTANT_EXTRA_WRITES, Side
 from zae_limiter.repository_protocol import SpeculativeFailureReason, SpeculativeResult
@@ -757,6 +757,48 @@ class TestImageCache:
         assert cache.get(("ns", "e", "r", 0)) is None
         cache.observe(("ns", "e", "r", 0), "rpm", True)  # an evicted shard learns nothing
         assert cache.utilisation(("ns", "e", "r", 0), "rpm") is None
+
+
+class TestSlowPathImage:
+    """A shard this process wrote on the slow path is known to its fast path (#821)."""
+
+    async def test_the_first_fast_request_after_a_create_is_one_write(self, limiter, clock) -> None:
+        await limiter._repository.set_limits("e1", [RPM], resource=RESOURCE)
+        async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}):  # the slow path creates it
+            pass
+        counter = CapacityCounter()
+        with _counting_client(counter, limiter):
+            async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}):
+                pass
+        assert counter.update_item == 1  # not today's write first, refused on `xi`
+        assert counter.batch_get_item == counter.transact_write_items == []
+
+    async def test_a_slow_update_leaves_the_item_it_wrote(self, limiter, clock) -> None:
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM])
+        key = (repo._namespace_id, "e1", RESOURCE, 0)
+        repo._fill_images.forget(key)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        clock.now = T0 + 1_000
+        async with slow.acquire("e1", RESOURCE, consume={"rpm": 1}):
+            pass
+        image = repo._fill_images.get(key)
+        assert image is not None and image.item == await _raw(repo, "e1")
+
+    def test_only_bucket_items_storing_fill_instants_are_kept(self) -> None:
+        from zae_limiter.fill_images import FillImageCache
+        from zae_limiter.lease import _remember_fill_images
+
+        class Backend:
+            _fill_images = FillImageCache()
+
+        legacy = {"PK": {"S": "ns/BUCKET#e#r#0"}, "SK": {"S": "#STATE"}}  # no `xi`
+        other = {"PK": {"S": "ns/ENTITY#e"}, "SK": {"S": "#META"}, "xi": {"N": "1"}}
+        backend = Backend()
+        _remember_fill_images(backend, [{"Put": {"Item": legacy}}], other)
+        assert len(backend._fill_images) == 0
+        # A backend without the cache keeps nothing, and does not fail.
+        _remember_fill_images(object(), [{"Put": {"Item": legacy}}], None)
 
 
 class TestMixedForms:

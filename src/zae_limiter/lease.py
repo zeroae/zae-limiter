@@ -55,6 +55,7 @@ from .schema import (
     calculate_ttl,
     decode_stamp,
     explicit_schedule_overrides,
+    parse_bucket_pk,
     raise_deadline,
 )
 
@@ -2028,7 +2029,8 @@ class Lease:
         attempt = 0
         while True:
             try:
-                await self.repository.transact_write(items)
+                written = await self.repository.transact_write(items)
+                _remember_fill_images(self.repository, items, written)
                 return None
             except Exception as exc:
                 # ConditionalCheckFailed takes priority over TransactionConflict:
@@ -2951,6 +2953,31 @@ def _soft_trusted(group: list[LeaseEntry]) -> frozenset[str]:
     return frozenset(
         e.limit.name for e in group if e._soft_trusted and e.state.soft and not e._seed
     )
+
+
+def _remember_fill_images(
+    repo: "RepositoryProtocol", items: list[dict[str, Any]], written: dict[str, Any] | None
+) -> None:
+    """Keep what a landed commit wrote as the fast path's image of its shards (#821).
+
+    A create's ``Put`` is the item exactly, and so is a single update's
+    ``ALL_NEW``. Without it, the first fast-path request after this process's
+    own slow pass on a shard storing fill instants sent today's write only to
+    have it refused and learn the image (+1 WCU). An image decides no
+    admission (``fill_images``), so a stale one costs at most a failed write.
+    A backend without the cache keeps nothing.
+    """
+    cache = getattr(repo, "_fill_images", None)
+    if cache is None:
+        return
+    images = [item["Put"]["Item"] for item in items if "Put" in item]
+    if written is not None:
+        images.append(written)
+    for image in images:
+        pk = image.get("PK", {}).get("S", "")
+        if BUCKET_FIELD_XI not in image or "/BUCKET#" not in pk:
+            continue
+        cache.store(parse_bucket_pk(pk), image)
 
 
 async def _transact_retrying_conflict(

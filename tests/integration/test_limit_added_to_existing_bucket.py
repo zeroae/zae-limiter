@@ -12,6 +12,7 @@ evaluation rather than moto's.
 
 import pytest
 
+from tests.fixtures.balances import balance_milli
 from zae_limiter import Limit, RateLimiter
 from zae_limiter.schema import (
     BUCKET_FIELD_CP,
@@ -77,16 +78,17 @@ class TestLimitAddedToExistingBucket:
             pass
 
         item = await _raw(repo, entity_id, resource)
-        assert item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"] == "999000"
+        assert balance_milli(repo, item, "tpm", T0 + 1_000) == 999_000
         assert item[bucket_attr("tpm", BUCKET_FIELD_CP)]["N"] == "1000000"
 
         # Seeded once: the next acquire takes the fast path and leaves `rf`.
+        # A second of refill (1000/min) has topped `tpm` back up first.
         repo._now_ms = lambda: T0 + 2_000
         async with localstack_limiter.acquire(entity_id, resource, consume={"tpm": 1}):
             pass
         after = await _raw(repo, entity_id, resource)
         assert after[BUCKET_FIELD_RF] == item[BUCKET_FIELD_RF]
-        assert after[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"] == "998000"
+        assert balance_milli(repo, after, "tpm", T0 + 2_000) == 999_000
 
     @pytest.mark.parametrize("level", ["resource", "entity"])
     async def test_slow_path_not_consuming_the_new_limit_seeds_it_full(
@@ -101,7 +103,7 @@ class TestLimitAddedToExistingBucket:
             pass
 
         item = await _raw(repo, entity_id, resource)
-        assert item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+        assert balance_milli(repo, item, "tpm", T0 + 1_000) == 1_000_000
         assert item[bucket_attr("tpm", BUCKET_FIELD_CP)]["N"] == "1000000"
         # One second of refill (100/min) has topped `rpm` back up to 99.
         assert await slow.available(entity_id, resource) == {"rpm": 99, "tpm": 1000}
