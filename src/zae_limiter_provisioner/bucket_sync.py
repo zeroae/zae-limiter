@@ -439,15 +439,25 @@ def _update_one_shard(
     update_expr: str,
     expr_names: dict[str, str],
     expr_values: dict[str, dict[str, str]],
+    image: dict[str, Any] | None = None,
 ) -> bool:
     """Apply one shard's param update. Returns False if the shard vanished.
 
     A shard storing fill instants is re-expressed in the same write, from the
     parameters read to the ones written, pinned on that read (ADR-155,
     ``fill_sync``, mirroring ``Repository._sync_one_bucket_shard``): the plain
-    write refuses one (``xi``) and returns its image.
+    write refuses one (``xi``) and returns its image. ``image`` is the item as
+    the caller just read it, strongly consistent, which the first write is
+    built from instead (1 RCU instead of a refused write's 1 WCU).
     """
-    item: dict[str, Any] | None = None
+    item = image
+    if item is not None:
+        now_ms = read_clock_ms()
+        deadline = raise_deadline(item, now_ms)
+        if deadline is not None:
+            # A raise holds the shard (ADR-156): wait it out; the image is stale.
+            time.sleep(min(deadline - now_ms, RAISE_MARKER_MS) / 1000)
+            item = None
     for _attempt in range(_SYNC_ATTEMPTS):
         extended = (
             fill_sync.reexpression(item, update_expr, expr_names, expr_values, read_clock_ms())

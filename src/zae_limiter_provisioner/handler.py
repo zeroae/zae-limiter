@@ -55,6 +55,7 @@ from .differ import Change, compute_diff
 from .fanout import (
     fanout_cascade,
     fanout_entity,
+    fanout_params,
     fanout_resource,
     fanout_soft,
     resolve_disabled,
@@ -594,14 +595,14 @@ def _apply_and_record(
             )
     metrics.count("owed_fanouts", len(owed_keys))
     soft_changed = {(lv, t or ""): names for lv, t, names in result.soft_changed}
-    # The limits each changed entity level held before this apply, from the
+    # The limits each changed level held before this apply, from the
     # pre-read: its sync strips from its buckets those the level no longer
-    # gives them (#739 re-review 2 #6, re-review 3 (a)/(b)). A change carries
-    # only the new side.
+    # gives them (#739 re-review 2 #6, re-review 3 (a)/(b); a default level's,
+    # #823). A change carries only the new side.
     previous_limits = {
         (c.level, c.target or ""): _stored_limits(stored[id(c)])
         for c in changes
-        if c.level == "entity" and stored and stored.get(id(c))
+        if stored and stored.get(id(c))
     }
 
     # Re-asserted `disabled` levels (the ADR-125 missed-bucket repair) hold no
@@ -1057,7 +1058,7 @@ def _sync_bucket_param_changes(
     on_done: Callable[[str, str, str], None] | None = None,
     client: Any | None = None,
 ) -> tuple[list[str], list[Change]]:
-    """Push entity-level limit changes out to existing bucket items (#481).
+    """Push limit changes out to existing bucket items (#481, #823).
 
     Runs AFTER ``apply_changes``, so ``resolve_effective_limits`` sees the
     config this apply has already written — the same ordering contract
@@ -1065,9 +1066,9 @@ def _sync_bucket_param_changes(
     stored limits changed (``ApplyResult.limits_changed``) plus any whose sync
     failed on an earlier apply.
 
-    **Entity level only.** Resource and system defaults deliberately never
-    touch buckets: a bucket on defaults carries a TTL and is recreated with
-    current params when it expires (#271, #296).
+    A resource- or system-level change fans out to every bucket it decides
+    (``fanout.fanout_params``, ADR-153): left to their TTL, active buckets
+    never took it (#271, #296 had relied on the TTL).
 
     Returns ``(errors, failed)``: a human-readable failure and the change for
     each entity change that could not be synced, rather than raising on the
@@ -1085,6 +1086,29 @@ def _sync_bucket_param_changes(
     failed: list[Change] = []
 
     for change in changes:
+        if change.level in ("resource", "system"):
+            declared = (change.data or {}).get("limits", {}) if change.action != "delete" else {}
+            previous = (change.data or {}).get("previous_limits", {})
+            try:
+                fanout_params(
+                    client,
+                    table_name,
+                    namespace_id,
+                    change.target if change.level == "resource" else None,
+                    (set(previous) - set(declared)) or None,
+                )
+                if on_done is not None:
+                    on_done("sync", change.level, change.target or "")
+            except Exception as e:
+                logger.warning(
+                    "bucket param sync failed for %s %s: %s", change.level, change.target, e
+                )
+                errors.append(
+                    f"bucket param sync {change.level} {change.target or ''}: {e}"
+                    " (retried on the next apply)"
+                )
+                failed.append(change)
+            continue
         if change.level != "entity" or change.target is None:
             continue
         entity_id, resource = change.target.split("/", 1)

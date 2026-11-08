@@ -967,6 +967,10 @@ def fanouts_for(change: Change, old: dict[str, Any], new: dict[str, Any]) -> set
     kinds: set[str] = set()
     if change.level in ("system", "resource") and _soft_names(old) != _soft_names(new):
         kinds.add("soft")
+    # Any other change to a default level reaches active buckets too (ADR-153,
+    # #823): left to their TTL it never reaches one used once per TTL period.
+    if change.level in ("system", "resource") and _param_attrs(old) != _param_attrs(new):
+        kinds.add("sync")
     if change.target is None:
         return kinds
     if decode_cascade(old) != decode_cascade(new):
@@ -988,8 +992,8 @@ def fanouts_needed(namespace_id: str, change: Change, stored: dict[str, Any] | N
     write's image already shows the new state (#739 review, finding 2).
     """
     every = {
-        "system": {"soft"},
-        "resource": {"disabled", "cascade", "soft"},
+        "system": {"soft", "sync"},
+        "resource": {"disabled", "cascade", "soft", "sync"},
         "entity": {"disabled", "cascade", "sync"},
     }.get(change.level, set())
     if stored is None:
@@ -1033,6 +1037,16 @@ def _limit_attrs(item: dict[str, Any]) -> dict[str, Any]:
         name: value
         for name, value in item.items()
         if name == CONFIG_FIELD_SCHED_TZ or parse_limit_attr(name) is not None
+    }
+
+
+def _param_attrs(item: dict[str, Any]) -> dict[str, Any]:
+    """A config item's limit attributes but their soft-ness (#823): the ``soft``
+    fan-out answers for that."""
+    return {
+        name: value
+        for name, value in _limit_attrs(item).items()
+        if (parse_limit_attr(name) or ("", ""))[1] != "soft"
     }
 
 

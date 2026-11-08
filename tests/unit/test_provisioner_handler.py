@@ -388,7 +388,9 @@ class TestProvisionerHandler:
                 "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}},
             },
         }
-        on_event(event, MagicMock())
+        # The new level's parameter fan-out (#823) has its own tests.
+        with patch("zae_limiter_provisioner.handler.fanout_params"):
+            on_event(event, MagicMock())
 
         assert _bucket_queries(mock_client) == []
         assert _bucket_updates(mock_client) == []
@@ -654,7 +656,9 @@ class TestProvisionerHandler:
             "RequestId": "test-request-id",
             "LogicalResourceId": "TenantLimits",
         }
-        result = on_event(event, MagicMock())
+        # The new level's parameter fan-out (#823) has its own tests.
+        with patch("zae_limiter_provisioner.handler.fanout_params"):
+            result = on_event(event, MagicMock())
         assert result["status"] == "applied"
 
         # Two passes over the discovery query (Finding 2); the single discovered
@@ -691,7 +695,9 @@ class TestProvisionerHandler:
             "RequestId": "test-request-id",
             "LogicalResourceId": "TenantLimits",
         }
-        result = on_event(event, MagicMock())
+        # The new level's parameter fan-out (#823) has its own tests.
+        with patch("zae_limiter_provisioner.handler.fanout_params"):
+            result = on_event(event, MagicMock())
         assert result["status"] == "applied"
         assert _bucket_queries(mock_client) == []
         assert _bucket_updates(mock_client) == []
@@ -847,15 +853,49 @@ class TestSyncBucketParamChanges:
             _sync_bucket_param_changes("tbl", "ns123", changes)
         sync.assert_not_called()
 
-    def test_resource_and_system_levels_are_never_synced(self, mock_handler_boto3):
-        """Buckets on defaults carry a TTL and are recreated (#271, #296)."""
+    def test_resource_and_system_levels_fan_out_to_their_buckets(self, mock_handler_boto3):
+        """A default level's change reaches active buckets (ADR-153, #823).
+
+        Left to the TTL (#271, #296) it never reached a bucket used once per
+        TTL period. The limits the level held before the apply and no longer
+        declares are dropped from its buckets.
+        """
+        previous = {"rpm": {"capacity": 9}, "tpm": {"capacity": 9}}
         changes = [
-            Change(action="update", level="resource", target="gpt-4", data={"limits": {}}),
-            Change(action="update", level="system", target=None, data={"limits": {}}),
+            Change(
+                action="update",
+                level="resource",
+                target="gpt-4",
+                data={"limits": {"rpm": {"capacity": 5}}, "previous_limits": previous},
+            ),
+            Change(
+                action="delete", level="system", target=None, data={"previous_limits": previous}
+            ),
         ]
-        with patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync:
-            _sync_bucket_param_changes("tbl", "ns123", changes)
+        done = []
+        with (
+            patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync,
+            patch("zae_limiter_provisioner.handler.fanout_params") as fanout,
+        ):
+            errors, failed = _sync_bucket_param_changes(
+                "tbl", "ns123", changes, on_done=lambda *key: done.append(key)
+            )
         sync.assert_not_called()
+        assert [c.args[1:] for c in fanout.call_args_list] == [
+            ("tbl", "ns123", "gpt-4", {"tpm"}),
+            ("tbl", "ns123", None, {"rpm", "tpm"}),
+        ]
+        assert (errors, failed) == ([], [])
+        assert done == [("sync", "resource", "gpt-4"), ("sync", "system", "")]
+
+    def test_a_failed_default_level_sync_is_kept_for_the_next_apply(self, mock_handler_boto3):
+        change = Change(action="update", level="resource", target="gpt-4", data={"limits": {}})
+        with patch(
+            "zae_limiter_provisioner.handler.fanout_params", side_effect=RuntimeError("throttled")
+        ):
+            errors, failed = _sync_bucket_param_changes("tbl", "ns123", [change])
+        assert failed == [change]
+        assert "bucket param sync resource gpt-4: throttled" in errors[0]
 
     def test_entity_id_containing_a_slash_splits_once(self, mock_handler_boto3):
         changes = [
@@ -3448,7 +3488,8 @@ class TestChangeOnlyApplyStaysSafe:
         ):
             with pytest.raises(_Killed):
                 self._apply(self._manifest(entities=entities))
-        assert len(self._owed(counting)) == len(entities)
+        # One per entity level, and the resource level's own (#823).
+        assert len(self._owed(counting)) == len(entities) + 1
         self._later()
 
         with patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync:
