@@ -18,8 +18,11 @@ The operations and how each is driven — every one through the real path:
   is seeded, a pending reset is applied — whatever the real path does. A
   speculative probe of another shard (#633 misclassifies a missing limit as
   exhausted) draws from the test's own seeded RNG.
-- **double** — ``Repository.bump_shard_count``: the client's own doubling of
-  shard 0, which propagates the new count to the existing shards.
+- **double** — ``Repository.raise_shards``, the raise the limiter sends for a
+  bucket holding a dripping limit (ADR-156; every bucket here holds ``rpm``):
+  every shard raised and every new shard created in one transaction, the
+  quota left off the new shards for their first pass to seed (ADR-145), each
+  legacy quota's grant size frozen.
 - **late seed** — ``set_limits`` adding the quota to an entity whose shards
   already exist (the #633 case); only for seeds that start without it.
 - **next period** — the frozen clock advanced past the next reset: midnight
@@ -218,8 +221,8 @@ async def run_fuzz(limiter, seed: int, kind: str, quota_in_also: bool = False) -
             quota_on = True
             trace.append("seed")
         elif roll < 0.2:
-            await repo.bump_shard_count(eid, RESOURCE, count)
-            model.double()
+            if await repo.raise_shards(eid, RESOURCE, count) > count:
+                model.double()
             trace.append("double")
         elif roll < 0.27 and quota_on:
             now[0] += period_ms
@@ -271,8 +274,11 @@ async def run_fuzz(limiter, seed: int, kind: str, quota_in_also: bool = False) -
         if over.random() < 0.2:
             shard = over.randrange(_cached_count(repo, eid))
             with drawn(shard, over):
-                async with slow.acquire(eid, RESOURCE, {"rpm": 1}, limits=[RPM]):
-                    pass
+                # A shard this pass creates while others exist starts empty
+                # (ADR-156) and rejects; it is still created.
+                with contextlib.suppress(RateLimitExceeded):
+                    async with slow.acquire(eid, RESOURCE, {"rpm": 1}, limits=[RPM]):
+                        pass
             trace.append(f"override({shard})")
         now[0] += 1  # every op at its own instant; never across a boundary
 

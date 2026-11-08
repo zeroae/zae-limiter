@@ -331,7 +331,11 @@ def plan_operation(
                 write.fill_sets[name] = (state.fill_instant, state)
         if write.fill_sets:
             read_xi = next(iter(fills.values())).stored_expressed_ms
-            write.expressed = (now_ms, read_xi)
+            # Every fill instant here is expressed at `max(now, xi as read)`:
+            # a clock behind the item's `xi` must not move it back, or the next
+            # reader re-applies the boundaries in between a second time.
+            expressed = [s.expressed_ms for s in fills.values() if s.expressed_ms is not None]
+            write.expressed = (max([now_ms, *expressed]), read_xi)
         for name, state in work.items():
             delta = state.tokens_milli - tokens[name]
             if delta:

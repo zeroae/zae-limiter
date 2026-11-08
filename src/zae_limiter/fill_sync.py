@@ -61,7 +61,7 @@ def _number(item: dict[str, Any], attr: str) -> int | None:
     return int(raw) if raw is not None else None
 
 
-def _schedule(item: dict[str, Any], name: str) -> tuple[schedule.ScheduleEntry, ...]:
+def limit_schedule(item: dict[str, Any], name: str) -> tuple[schedule.ScheduleEntry, ...]:
     """One limit's parameter schedule on ``item``: its override, else the item default."""
     if name == schema.WCU_LIMIT_NAME:
         return ()
@@ -75,7 +75,7 @@ def _schedule(item: dict[str, Any], name: str) -> tuple[schedule.ScheduleEntry, 
     return schedule.decode(compact, tz)
 
 
-def _expressed_now(
+def expressed_now(
     item: dict[str, Any], name: str, now_ms: int
 ) -> tuple[int, fill_instant.ShardParams] | None:
     """A fill instant on ``item`` re-expressed at ``now_ms``, and the parameters then in force."""
@@ -87,7 +87,7 @@ def _expressed_now(
     if fi is None or cp is None or ra is None or rp is None or xi is None or ra <= 0:
         return None
     shards = 1 if name == schema.WCU_LIMIT_NAME else (_number(item, "shard_count") or 1)
-    sched = _schedule(item, name)
+    sched = limit_schedule(item, name)
     z = fi
     if sched and now_ms > xi:
         z, _last = fill_instant.re_express_across(fi, xi, now_ms, cp, ra, rp, sched, shards)
@@ -109,7 +109,9 @@ def reexpression(
     the parameters read to the ones the plan writes, and ``xi`` to ``now_ms``.
     The condition pins every fill instant, ``cp`` / ``ra`` / ``rp`` it was read
     under and ``xi`` as read: a write landing in between fails it, and the
-    caller retries from that failure's image. Positional tokens (#634):
+    caller retries from that failure's image. It also refuses a live raise
+    marker (``schema.raise_guard``, ADR-156): the caller waits for the raise
+    and retries. Positional tokens (#634):
     ``#yf{k}`` / ``:yf{k}`` / ``:yb{k}`` and ``#yc`` / ``#ya`` / ``#yr`` with
     their values, and ``#yxi`` / ``:yxi`` / ``:yxir``.
     """
@@ -123,16 +125,17 @@ def reexpression(
         if attr.startswith(schema.BUCKET_ATTR_PREFIX)
         and attr.endswith(f"_{schema.BUCKET_FIELD_FI}")
     )
-    names = dict(names)
-    values = dict(values)
+    guard, guard_names, guard_values = schema.raise_guard(now_ms)
+    names = {**names, **guard_names}
+    values = {**values, **guard_values}
     sets: list[str] = []
-    conditions = ["attribute_exists(PK)"]
+    conditions = ["attribute_exists(PK)", guard]
     k = 0
     for name in fill_names:
         fi_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_FI)
         if fi_attr not in after:
             continue  # removed by the plan: stale, or now a quota
-        before = _expressed_now(item, name, now_ms)
+        before = expressed_now(item, name, now_ms)
         new_cp = _number(after, schema.bucket_attr(name, schema.BUCKET_FIELD_CP))
         new_ra = _number(after, schema.bucket_attr(name, schema.BUCKET_FIELD_RA))
         new_rp = _number(after, schema.bucket_attr(name, schema.BUCKET_FIELD_RP))
@@ -140,7 +143,9 @@ def reexpression(
             continue  # nothing to express it against; the next slow pass decides
         z, old = before
         shards = 1 if name == schema.WCU_LIMIT_NAME else (_number(after, "shard_count") or 1)
-        new = fill_instant.params_at(now_ms, new_cp, new_ra, new_rp, _schedule(after, name), shards)
+        new = fill_instant.params_at(
+            now_ms, new_cp, new_ra, new_rp, limit_schedule(after, name), shards
+        )
         names[f"#yf{k}"] = fi_attr
         values[f":yf{k}"] = {"N": str(fill_instant.re_express(z, now_ms, old, new))}
         values[f":yb{k}"] = {"N": item[fi_attr]["N"]}

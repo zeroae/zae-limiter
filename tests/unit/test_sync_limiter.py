@@ -6,6 +6,7 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
+import copy
 import time
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
@@ -14,6 +15,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from botocore.exceptions import ClientError
 
+from tests.fixtures.balances import balance_milli, empty_fill_instant
 from tests.fixtures.windows import FIVE_HOURS_MS, SESSION_10, T0
 from zae_limiter import (
     CacheStats,
@@ -39,6 +41,7 @@ from zae_limiter.models import BucketState, CreditCeiling
 from zae_limiter.schedule import ScheduleEntry, retry_after_with_schedule
 from zae_limiter.schema import (
     BUCKET_FIELD_CP,
+    BUCKET_FIELD_FI,
     BUCKET_FIELD_GC,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RF,
@@ -88,33 +91,153 @@ def freeze_clock(repo) -> int:
 
 def exhaust_wcu(repo, entity_id: str, resource: str, shard_id: int = 0) -> None:
     """Leave a shard exactly as ``WCU_LIMIT_CAPACITY`` fast-path writes of
-    ``{"rpm": 1}`` would, in two writes instead of a thousand.
+    ``{"rpm": 1}`` at one instant would, in two writes instead of a thousand.
 
     The first write is a real ``_speculative_consume_single`` so every side
     effect of the fast path (entity cache, shard-count learning) still happens.
-    The rest are folded into one ``ADD`` of the same ``tk``/``tc`` deltas the
-    fast path applies per write, so the item's balances and counters land
-    where the loop left them.
+    The rest are folded into one ``ADD`` of the same deltas the fast path
+    applies per write, so the item's balances and counters land where the loop
+    left them: ``-1000`` on a limit stored as ``tk``, or the debit's span
+    ``1000 x S x rp`` on a fill instant (ADR-154), which every bucket created
+    since #821 stores. A fill instant is projected exactly, so a drained
+    ``wcu`` stays drained only while the clock is frozen.
     """
     from zae_limiter import schema
 
     repo._speculative_consume_single(entity_id, resource, {"rpm": 1}, shard_id=shard_id)
     rest_milli = (schema.WCU_LIMIT_CAPACITY - 1) * 1000
     client = repo._get_client()
+    key = {
+        "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard_id)},
+        "SK": {"S": schema.sk_state()},
+    }
+    item = client.get_item(TableName=repo.table_name, Key=key, ConsistentRead=True)["Item"]
+    names: dict[str, str] = {}
+    values = {":pos": {"N": str(rest_milli)}}
+    adds: list[str] = []
+    for i, name in enumerate(("rpm", schema.WCU_LIMIT_NAME)):
+        names[f"#c{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
+        fill = schema.bucket_attr(name, schema.BUCKET_FIELD_FI)
+        if fill in item:
+            shards = (
+                1
+                if name == schema.WCU_LIMIT_NAME
+                else int(item.get("shard_count", {"N": "1"})["N"])
+            )
+            period = int(item[schema.bucket_attr(name, schema.BUCKET_FIELD_RP)]["N"])
+            names[f"#t{i}"] = fill
+            values[f":d{i}"] = {"N": str(rest_milli * shards * period)}
+        else:
+            names[f"#t{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+            values[f":d{i}"] = {"N": str(-rest_milli)}
+        adds += [f"#t{i} :d{i}", f"#c{i} :pos"]
     client.update_item(
         TableName=repo.table_name,
+        Key=key,
+        UpdateExpression="ADD " + ", ".join(adds),
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
+
+
+def owner_stamp(repo, entity_id: str) -> dict:
+    """The owner generation and incarnation a bucket the limiter creates carries (ADR-150).
+
+    ``build_composite_create`` keywords for a test that builds a bucket itself.
+    A raise pins every shard's stamp on the owner's META (ADR-156, #821), so a
+    bucket built without them is never raised.
+    """
+    from zae_limiter import schema
+
+    client = repo._get_client()
+    meta = client.get_item(
+        TableName=repo.table_name,
         Key={
-            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard_id)},
-            "SK": {"S": schema.sk_state()},
+            "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+            "SK": {"S": schema.sk_meta()},
         },
-        UpdateExpression="ADD #rtk :neg, #rtc :pos, #wtk :neg, #wtc :pos",
-        ExpressionAttributeNames={
-            "#rtk": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK),
-            "#rtc": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TC),
-            "#wtk": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK),
-            "#wtc": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TC),
-        },
-        ExpressionAttributeValues={":neg": {"N": str(-rest_milli)}, ":pos": {"N": str(rest_milli)}},
+        ConsistentRead=True,
+    )["Item"]
+    return {
+        "pgen": int(meta[schema.ENTITY_FIELD_PGEN]["N"]),
+        "pinc": schema.entity_incarnation(meta),
+    }
+
+
+def as_legacy(repo, entity_id: str, resource: str, shard_id: int = 0) -> None:
+    """Rewrite a bucket into the shape it had before fill instants (#818).
+
+    Nothing creates one since #821. Every limit stored as a fill instant is
+    stored as ``tk`` instead, holding its balance at the item's ``rf``, and
+    ``xi`` goes: the legacy speculative write applies to it again, and its next
+    slow pass converts it.
+    """
+    from zae_limiter import schema
+    from zae_limiter.bucket import balance_milli_at
+
+    client = repo._get_client()
+    key = {
+        "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard_id)},
+        "SK": {"S": schema.sk_state()},
+    }
+    item = client.get_item(TableName=repo.table_name, Key=key, ConsistentRead=True)["Item"]
+    rf = int(item[schema.BUCKET_FIELD_RF]["N"])
+    names = {"#xi": schema.BUCKET_FIELD_XI}
+    values: dict[str, dict[str, str]] = {}
+    sets: list[str] = []
+    removes = ["#xi"]
+    filled = [s for s in repo._deserialize_composite_bucket(item) if s.fill_instant is not None]
+    for i, state in enumerate(filled):
+        names[f"#t{i}"] = schema.bucket_attr(state.limit_name, schema.BUCKET_FIELD_TK)
+        names[f"#f{i}"] = schema.bucket_attr(state.limit_name, schema.BUCKET_FIELD_FI)
+        values[f":t{i}"] = {"N": str(balance_milli_at(state, rf))}
+        sets.append(f"#t{i} = :t{i}")
+        removes.append(f"#f{i}")
+    update = f"REMOVE {', '.join(removes)}"
+    if sets:
+        update = f"SET {', '.join(sets)} {update}"
+    client.update_item(
+        TableName=repo.table_name,
+        Key=key,
+        UpdateExpression=update,
+        ExpressionAttributeNames=names,
+        **{"ExpressionAttributeValues": values} if values else {},
+    )
+
+
+def drain_wcu_at(repo, entity_id: str, resource: str, shard_id: int, rf_ms: int) -> None:
+    """Zero a shard's ``wcu`` as of ``rf_ms`` and pin the item's shared ``rf`` there.
+
+    A ``wcu`` stored as a fill instant (#821) is set to the one that is empty
+    at ``rf_ms`` (ADR-154); one stored as ``tk`` is set to 0. Either refills
+    from there, so it stays drained only while the clock stays at ``rf_ms``.
+    """
+    from zae_limiter import schema
+
+    client = repo._get_client()
+    key = {
+        "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard_id)},
+        "SK": {"S": schema.sk_state()},
+    }
+    item = client.get_item(TableName=repo.table_name, Key=key, ConsistentRead=True)["Item"]
+    wcu = schema.WCU_LIMIT_NAME
+    names = {"#rf": schema.BUCKET_FIELD_RF}
+    values = {":rf": {"N": str(rf_ms)}}
+    sets = ["#rf = :rf"]
+    fill = schema.bucket_attr(wcu, schema.BUCKET_FIELD_FI)
+    if fill in item:
+        names["#w"] = fill
+        values[":w"] = {"N": str(empty_fill_instant(item, wcu, rf_ms))}
+    else:
+        names["#w"] = schema.bucket_attr(wcu, schema.BUCKET_FIELD_TK)
+        values[":w"] = {"N": "0"}
+    sets.append("#w = :w")
+    client.update_item(
+        TableName=repo.table_name,
+        Key=key,
+        UpdateExpression=f"SET {', '.join(sets)}",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
     )
 
 
@@ -734,6 +857,7 @@ class TestLeaseRetryPath:
         state.report_top_up_milli = 0
         state.soft_until_ms = None
         state.fill_instant = None
+        state.raise_until_ms = None
         entry = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -789,6 +913,7 @@ class TestWriteOnEnter:
         state.stored_item_sched_raw = (None, None, None)
         state.stored_sched_raw = (None, None)
         state.fill_instant = None
+        state.raise_until_ms = None
         state.limit_name = "rpm"
         return LeaseEntry(
             entity_id=entity_id,
@@ -1586,12 +1711,13 @@ class TestWriteOnEnter:
     def test_acquire_writes_on_enter(self, sync_limiter):
         """Tokens are consumed in DynamoDB immediately on context enter."""
         limits = [Limit.per_minute("rpm", 100)]
+        freeze_clock(sync_limiter._repository)
         with sync_limiter.acquire(
             entity_id="enter-test", resource="gpt-4", limits=limits, consume={"rpm": 10}
         ):
             buckets = sync_limiter._repository.get_buckets(entity_id="enter-test", resource="gpt-4")
             bucket = next(b for b in buckets if b.limit_name == "rpm")
-            assert bucket.tokens_milli <= 90000
+            assert bucket.tokens_milli == 90000
 
     def test_acquire_rollback_restores_on_error(self, sync_limiter):
         """Rollback writes compensating transaction on error."""
@@ -2414,14 +2540,8 @@ class TestRefillPastCapacityOverAdmits:
     ``max(z, t) + c / r``, so time a bucket sat full is never credited. The
     control shows the slow path alone (``speculative_writes=False``) admits the
     same. The clock is frozen during each burst, so no refill accrues inside
-    it. Until #821 removes it, only tests turn ``WRITE_FILL_INSTANTS`` on.
+    it.
     """
-
-    @pytest.fixture(autouse=True)
-    def _fill_instants_on(self, monkeypatch):
-        from zae_limiter import schema
-
-        monkeypatch.setattr(schema, "WRITE_FILL_INSTANTS", True)
 
     LIMITS = [Limit.custom("rpm", capacity=300, refill_amount=300, refill_period_seconds=14400)]
 
@@ -5598,23 +5718,13 @@ class TestSpeculativeAcquire:
         sync_limiter.create_entity("parent-1")
         sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
         sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        now_ms = freeze_clock(sync_limiter._repository)
         with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
             pass
         buckets_before = sync_limiter._fetch_buckets(["child-1"], "gpt-4", 0)
         child_key = ("child-1", "gpt-4", "rpm")
         tokens_before = buckets_before[child_key].tokens_milli
         sync_limiter._speculative_writes = True
-        now_ms = int(__import__("time").time() * 1000)
-        child_bucket = BucketState(
-            entity_id="child-1",
-            resource="gpt-4",
-            limit_name="rpm",
-            tokens_milli=tokens_before - 10000,
-            last_refill_ms=now_ms,
-            capacity_milli=1000000,
-            refill_amount_milli=1000000,
-            refill_period_ms=60000,
-        )
         parent_bucket_old = BucketState(
             entity_id="parent-1",
             resource="gpt-4",
@@ -5637,11 +5747,14 @@ class TestSpeculativeAcquire:
             nonlocal spec_call_count
             spec_call_count += 1
             if spec_call_count == 1:
-                original_speculative(
+                debit = original_speculative(
                     entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
                 )
                 return SpeculativeResult(
-                    success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
+                    success=True,
+                    buckets=[b for b in debit.buckets if b.entity_id == "child-1"],
+                    cascade=True,
+                    parent_id="parent-1",
                 )
             if spec_call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
@@ -6364,9 +6477,11 @@ class TestShardRetry:
                 assert rpm_entry is not None
 
     def test_acquire_doubles_shards_on_wcu_exhaustion(self, sync_limiter):
-        """When wcu is exhausted, shard_count doubles and acquire falls to slow path."""
-        from zae_limiter import schema
+        """When wcu is exhausted, shard_count doubles and acquire falls to slow path.
 
+        The bucket holds a dripping limit, so the doubling is a raise (ADR-156,
+        #821): the new shard is created by it, holding shard 0's surplus.
+        """
         repo = sync_limiter._repository
         ns = repo._namespace_id
         sync_limiter.create_entity("user-1")
@@ -6376,24 +6491,17 @@ class TestShardRetry:
             BucketState.from_limit("user-1", "gpt-4", Limit.per_minute("rpm", 100000), now_ms)
         ]
         put_item = repo.build_composite_create(
-            "user-1", "gpt-4", states, now_ms, shard_id=0, shard_count=1
+            "user-1",
+            "gpt-4",
+            states,
+            now_ms,
+            shard_id=0,
+            shard_count=1,
+            **owner_stamp(repo, "user-1"),
         )
         repo.transact_write([put_item])
         repo._entity_cache[ns, "user-1"] = (False, None, {"gpt-4": 1})
-        client = repo._get_client()
-        client.update_item(
-            TableName=repo.table_name,
-            Key={
-                "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 0)},
-                "SK": {"S": schema.sk_state()},
-            },
-            UpdateExpression="SET #rp = :hour, #ra = :one",
-            ExpressionAttributeNames={
-                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
-                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
-            },
-            ExpressionAttributeValues={":hour": {"N": "3600000"}, ":one": {"N": "1"}},
-        )
+        freeze_clock(repo)
         exhaust_wcu(repo, "user-1", "gpt-4")
         sync_limiter._speculative_writes = True
         with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
@@ -6433,6 +6541,11 @@ class TestClientShardCreation:
     wrote a shard N>0 item, so with ``--no-aggregator`` the GHSA-76rv write
     sharding mitigation never engaged: the slow path read and wrote shard 0
     regardless of which shard the speculative write had selected.
+
+    Since #821 a dripping shard the slow path creates while others exist starts
+    empty, and a ``wcu`` exhaustion raises the bucket, moving balance into the
+    shards it creates (ADR-156). Seeds are fill instants carrying their owner's
+    stamp, as the limiter writes them.
     """
 
     CAPACITY = 100000
@@ -6444,11 +6557,17 @@ class TestClientShardCreation:
         sync_limiter.create_entity("user-1")
         sync_limiter.set_system_defaults([limit])
         now_ms = int(time.time() * 1000)
-        states = [BucketState.from_limit("user-1", "gpt-4", limit, now_ms)]
+        states = [BucketState.from_limit("user-1", "gpt-4", limit, now_ms, shard_count)]
         repo.transact_write(
             [
                 repo.build_composite_create(
-                    "user-1", "gpt-4", states, now_ms, shard_id=0, shard_count=shard_count
+                    "user-1",
+                    "gpt-4",
+                    states,
+                    now_ms,
+                    shard_id=0,
+                    shard_count=shard_count,
+                    **owner_stamp(repo, "user-1"),
                 )
             ]
         )
@@ -6477,14 +6596,29 @@ class TestClientShardCreation:
         return int(item[schema.bucket_attr(limit_name, field)]["N"])
 
     @staticmethod
+    def _raw_parent(repo) -> dict | None:
+        from zae_limiter import schema
+
+        client = repo._get_client()
+        resp = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "parent-1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return resp.get("Item")
+
+    @staticmethod
     def _seed_shards(sync_limiter, shard_count: int, limit, *, tokens_milli: int, rf_ms: int):
         """Create every shard 0..shard_count-1 at the same balance and rf."""
         repo = sync_limiter._repository
         ns = repo._namespace_id
         sync_limiter.create_entity("user-1")
         sync_limiter.set_system_defaults([limit])
+        owner = owner_stamp(repo, "user-1")
         for shard_id in range(shard_count):
-            state = BucketState.from_limit("user-1", "gpt-4", limit, rf_ms)
+            state = BucketState.from_limit("user-1", "gpt-4", limit, rf_ms, shard_count)
             state.tokens_milli = tokens_milli
             repo.transact_write(
                 [
@@ -6495,6 +6629,7 @@ class TestClientShardCreation:
                         rf_ms,
                         shard_id=shard_id,
                         shard_count=shard_count,
+                        **owner,
                     )
                 ]
             )
@@ -6510,11 +6645,10 @@ class TestClientShardCreation:
         shard_count x capacity in steady state. Per-shard refill is what the
         aggregator's try_refill_bucket does; the client must match it.
         """
-        from zae_limiter import schema
         from zae_limiter.exceptions import RateLimitExceeded
 
         limit = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
-        now_ms = int(time.time() * 1000)
+        now_ms = freeze_clock(sync_limiter._repository)
         repo = self._seed_shards(sync_limiter, 2, limit, tokens_milli=0, rf_ms=now_ms - 120000)
         sync_limiter._speculative_writes = False
         with patch("zae_limiter.sync_repository.random.randrange", return_value=0):
@@ -6528,52 +6662,65 @@ class TestClientShardCreation:
                 pass
         for shard_id in (0, 1):
             item = self._raw_item(repo, shard_id)
-            assert self._n(item, "rpm", schema.BUCKET_FIELD_TK) == 0
+            assert balance_milli(repo, item, "rpm", now_ms) == 0
 
     def test_slow_path_creates_the_selected_shard(self, sync_limiter):
-        """BUCKET_MISSING on shard 1 creates shard 1; shard 0 is not touched."""
+        """BUCKET_MISSING on shard 1 creates shard 1; shard 0 is not touched.
+
+        Created empty (ADR-156, #821): shard 0 already holds the bucket's
+        balance, and a full shard 1 would add a share nothing paid for. The
+        rejected pass still writes the create, so the shard exists to refill.
+        """
         from zae_limiter import schema
+        from zae_limiter.exceptions import RateLimitExceeded
 
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = self._seed_shard0(sync_limiter, shard_count=2, limit=limit)
+        now_ms = freeze_clock(repo)
+        shard0_before = self._raw_item(repo, 0)
         with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
-            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
-                assert {e._shard_id for e in lease.entries} == {1}
+            with pytest.raises(RateLimitExceeded):
+                with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                    pass
         shard1 = self._raw_item(repo, 1)
         assert shard1 is not None, "the client slow path must create the shard it selected"
         assert shard1["shard_count"]["N"] == "2"
         cp_milli = self.CAPACITY * 1000
-        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
+        assert balance_milli(repo, shard1, "rpm", now_ms) == 0
         assert self._n(shard1, "rpm", schema.BUCKET_FIELD_CP) == cp_milli
         assert self._n(shard1, "rpm", schema.BUCKET_FIELD_RA) == 1000
         assert (
-            self._n(shard1, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            balance_milli(repo, shard1, schema.WCU_LIMIT_NAME, now_ms)
             == schema.WCU_LIMIT_CAPACITY * 1000
         )
-        shard0 = self._raw_item(repo, 0)
-        assert self._n(shard0, "rpm", schema.BUCKET_FIELD_TK) == cp_milli, (
+        assert self._raw_item(repo, 0) == shard0_before, (
             "shard 0 served nothing and must not be debited"
         )
 
     def test_wcu_exhaustion_creates_the_new_shard(self, sync_limiter):
-        """After doubling, the slow path lands on the brand-new shard and creates it."""
+        """After doubling, the slow path lands on the brand-new shard.
+
+        The raise created it (ADR-156, #821), holding shard 0's balance above
+        the new share, and trimmed shard 0 to that share.
+        """
         from zae_limiter import schema
 
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = self._seed_shard0(sync_limiter, shard_count=1, limit=limit)
-        self._slow_wcu_refill(repo)
+        now_ms = freeze_clock(repo)
         exhaust_wcu(repo, "user-1", "gpt-4")
         cp_milli = self.CAPACITY * 1000
-        shard0_before = self._n(self._raw_item(repo, 0), "rpm", schema.BUCKET_FIELD_TK)
+        shard0_before = balance_milli(repo, self._raw_item(repo, 0), "rpm", now_ms)
         assert shard0_before == cp_milli - schema.WCU_LIMIT_CAPACITY * 1000
+        moved = shard0_before - cp_milli // 2
         with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
             assert {e._shard_id for e in lease.entries} == {1}
         shard1 = self._raw_item(repo, 1)
         assert shard1 is not None, "write sharding must engage without the aggregator"
         assert shard1["shard_count"]["N"] == "2"
-        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
-        shard0_after = self._n(self._raw_item(repo, 0), "rpm", schema.BUCKET_FIELD_TK)
-        assert shard0_after == shard0_before, "the hot shard must not absorb the write"
+        assert balance_milli(repo, shard1, "rpm", now_ms) == moved - 1000
+        shard0_after = balance_milli(repo, self._raw_item(repo, 0), "rpm", now_ms)
+        assert shard0_after == cp_milli // 2, "the hot shard must not absorb the write"
         slow_path_calls: list[int | None] = []
         original = sync_limiter._do_acquire
 
@@ -6586,61 +6733,69 @@ class TestClientShardCreation:
             with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
                 assert {e._shard_id for e in lease.entries} == {1}
         assert slow_path_calls == [], "a created shard must not BUCKET_MISSING-fallback"
-        assert (
-            self._n(self._raw_item(repo, 1), "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 2000
-        )
+        assert balance_milli(repo, self._raw_item(repo, 1), "rpm", now_ms) == moved - 2000
 
     def test_retry_on_a_missing_shard_creates_it(self, sync_limiter):
         """Shard 0 drained, shard 1 never created: the retry's BUCKET_MISSING
-        sends the slow path to shard 1 instead of fast-rejecting the caller."""
+        sends the slow path to shard 1 instead of fast-rejecting the caller.
+
+        The slow path creates it empty (ADR-156, #821), so this request is
+        still rejected, but by the pass that created the shard.
+        """
         import random as _random
 
-        from zae_limiter import schema
+        from zae_limiter.exceptions import RateLimitExceeded
 
         limit = Limit.custom("rpm", 10, refill_amount=1, refill_period_seconds=3600)
         repo = self._seed_shard0(sync_limiter, shard_count=2, limit=limit)
-        repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 10}, shard_id=0)
+        now_ms = freeze_clock(repo)
+        repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 5}, shard_id=0)
         with (
             patch("zae_limiter.sync_repository.random.randrange", return_value=0),
             patch.object(_random, "choice", lambda seq: seq[0]),
+            pytest.raises(RateLimitExceeded),
         ):
-            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
-                assert {e._shard_id for e in lease.entries} == {1}
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
         shard1 = self._raw_item(repo, 1)
         assert shard1 is not None
-        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == 10000 // 2 - 1000
+        assert balance_milli(repo, shard1, "rpm", now_ms) == 0
 
     def test_cold_cache_retry_sizes_the_new_shard_from_the_failure_image(self, sync_limiter):
         """A failed speculative write never updates the entity cache, so with a
         cold cache the retry knows shard_count=2 (ALL_OLD) but the slow path
         used to size the new shard from the cache: full tokens, shard_count=1.
-        The count observed on the failure image must reach the create."""
-        from zae_limiter import schema
+        The count observed on the failure image must reach the create.
+
+        The shard is created empty (ADR-156, #821), so the request is rejected;
+        the count it is stamped and expressed at is the observed one.
+        """
+        from zae_limiter.exceptions import RateLimitExceeded
 
         limit = Limit.custom("rpm", 10, refill_amount=1, refill_period_seconds=3600)
         repo = self._seed_shard0(sync_limiter, shard_count=2, limit=limit)
+        now_ms = freeze_clock(repo)
         del repo._entity_cache[repo._namespace_id, "user-1"]
-        repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 10}, shard_id=0)
-        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
-            assert {e._shard_id for e in lease.entries} == {1}
+        repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 5}, shard_id=0)
+        with pytest.raises(RateLimitExceeded):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
         shard1 = self._raw_item(repo, 1)
         assert shard1 is not None
         assert shard1["shard_count"]["N"] == "2"
-        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == 10000 // 2 - 1000
+        assert balance_milli(repo, shard1, "rpm", now_ms) == 0
 
     def test_child_compensation_credits_the_shard_that_was_debited(self, sync_limiter):
         """Child succeeds speculatively on shard 3, parent is BUCKET_MISSING:
         the compensating credit must land on shard 3, not on shard 0. Crediting
         shard 0 leaves shard 3 double-debited and mints tokens on shard 0."""
-        from zae_limiter import schema
-
         repo = sync_limiter._repository
         ns = repo._namespace_id
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         sync_limiter.create_entity("parent-1")
         sync_limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
         sync_limiter.set_system_defaults([limit])
-        now_ms = int(time.time() * 1000)
+        now_ms = freeze_clock(repo)
         for shard_id in range(4):
             state = BucketState.from_limit("user-1", "gpt-4", limit, now_ms, shard_count=4)
             repo.transact_write(
@@ -6660,26 +6815,37 @@ class TestClientShardCreation:
         repo._entity_cache[ns, "user-1"] = (True, "parent-1", {"gpt-4": 4})
         sync_limiter._speculative_writes = True
         share = self.CAPACITY * 1000 // 4
+        shard0_before = self._raw_item(repo, 0)
         with patch("zae_limiter.sync_repository.random.randrange", return_value=3):
             with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
                 assert {e._shard_id for e in lease.entries if e.entity_id == "user-1"} == {3}
-        assert self._n(self._raw_item(repo, 3), "rpm", schema.BUCKET_FIELD_TK) == share - 1000
-        assert self._n(self._raw_item(repo, 0), "rpm", schema.BUCKET_FIELD_TK) == share, (
+        shard3 = self._raw_item(repo, 3)
+        assert balance_milli(repo, shard3, "rpm", now_ms) == share - 1000
+        assert self._raw_item(repo, 0) == shard0_before, (
             "shard 0 served nothing; a credit here mints capacity"
         )
 
     def _seed_cascade_child(self, sync_limiter, limit, *, parent_tokens_milli: int):
-        """Parent bucket at the given balance; child with 2 shards, shard 0 drained."""
+        """Parent bucket at the given balance; child with 2 shards, shard 0 drained.
+
+        The clock is frozen: a fill instant is read exactly at any instant
+        (#821), so only a frozen one keeps every balance where it was written.
+        """
         repo = sync_limiter._repository
-        now_ms = int(time.time() * 1000)
+        now_ms = freeze_clock(repo)
         sync_limiter.create_entity("parent-1")
         sync_limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
         sync_limiter.set_system_defaults([limit])
         parent_state = BucketState.from_limit("parent-1", "gpt-4", limit, now_ms)
         parent_state.tokens_milli = parent_tokens_milli
         repo.transact_write(
-            [repo.build_composite_create("parent-1", "gpt-4", [parent_state], now_ms)]
+            [
+                repo.build_composite_create(
+                    "parent-1", "gpt-4", [parent_state], now_ms, **owner_stamp(repo, "parent-1")
+                )
+            ]
         )
+        child_owner = owner_stamp(repo, "user-1")
         for shard_id in range(2):
             state = BucketState.from_limit("user-1", "gpt-4", limit, now_ms, shard_count=2)
             if shard_id == 0:
@@ -6695,6 +6861,7 @@ class TestClientShardCreation:
                         parent_id="parent-1",
                         shard_id=shard_id,
                         shard_count=2,
+                        **child_owner,
                     )
                 ]
             )
@@ -6705,7 +6872,6 @@ class TestClientShardCreation:
         """Cold cache: child shard 0 drained, parent exhausted. The shard retry
         used to succeed on child shard 1 and hand back a child-only lease,
         admitting unbounded child traffic past the parent's limit."""
-        from zae_limiter import schema
         from zae_limiter.exceptions import RateLimitExceeded
 
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
@@ -6715,7 +6881,8 @@ class TestClientShardCreation:
             with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
                 pass
         share = self.CAPACITY * 1000 // 2
-        assert self._n(self._raw_item(repo, 1), "rpm", schema.BUCKET_FIELD_TK) == share, (
+        shard1 = self._raw_item(repo, 1)
+        assert balance_milli(repo, shard1, "rpm", repo._now_ms()) == share, (
             "nothing may be consumed from the child when the parent rejects"
         )
 
@@ -6723,13 +6890,18 @@ class TestClientShardCreation:
         """Warm cache: the parallel parent debit was compensated after the
         child failed on shard 0 (where a refill would help, so no fast
         rejection); the shard retry must not then admit the child alone. The
-        slow path commits child shard 1 and the parent together."""
+        slow path commits child shard 1 and the parent together.
+
+        Child shard 0 is a legacy item: a fill instant is read exactly (#821),
+        so "a refill would help" only arises on one still stored as ``tk``.
+        """
         from zae_limiter import schema
 
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=3600, refill_period_seconds=3600)
         cp_milli = self.CAPACITY * 1000
         repo = self._seed_cascade_child(sync_limiter, limit, parent_tokens_milli=cp_milli)
         ns = repo._namespace_id
+        as_legacy(repo, "user-1", "gpt-4", 0)
         client = repo._get_client()
         client.update_item(
             TableName=repo.table_name,
@@ -6739,7 +6911,7 @@ class TestClientShardCreation:
             },
             UpdateExpression="SET #rf = :rf",
             ExpressionAttributeNames={"#rf": schema.BUCKET_FIELD_RF},
-            ExpressionAttributeValues={":rf": {"N": str(int(time.time() * 1000) - 100000)}},
+            ExpressionAttributeValues={":rf": {"N": str(repo._now_ms() - 100000)}},
         )
         repo._entity_cache[ns, "user-1"] = (True, "parent-1", {"gpt-4": 2})
         with patch("zae_limiter.sync_repository.random.randrange", return_value=0):
@@ -6747,17 +6919,21 @@ class TestClientShardCreation:
                 assert {e.entity_id for e in lease.entries} == {"user-1", "parent-1"}
         parent = repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
         assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli - 1000
-        assert (
-            self._n(self._raw_item(repo, 1), "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
-        )
+        shard1 = self._raw_item(repo, 1)
+        assert balance_milli(repo, shard1, "rpm", repo._now_ms()) == cp_milli // 2 - 1000
 
     def test_new_child_shard_survives_a_parent_rf_conflict(self, sync_limiter):
         """Cascade slow path creating child shard 1 while the parent's rf lock
         is lost to a concurrent refill: the acquire must succeed and shard 1
-        must exist afterwards (the Put is re-issued, not retried as a debit)."""
+        must exist afterwards (the Put is re-issued, not retried as a debit).
+
+        On a quota since #821: a dripping shard 1 is created empty (ADR-156),
+        and a lost lock on a debited fill instant re-plans the pass
+        (``FillInstantLostError``) instead of taking the retry.
+        """
         from zae_limiter import schema
 
-        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        limit = Limit.quota("rpd", self.CAPACITY, cron="0 0 * * *")
         cp_milli = self.CAPACITY * 1000
         repo = self._seed_cascade_child(sync_limiter, limit, parent_tokens_milli=cp_milli)
         ns = repo._namespace_id
@@ -6785,31 +6961,34 @@ class TestClientShardCreation:
                     },
                     UpdateExpression="SET #rf = :rf",
                     ExpressionAttributeNames={"#rf": schema.BUCKET_FIELD_RF},
-                    ExpressionAttributeValues={":rf": {"N": str(int(time.time() * 1000) + 5)}},
+                    ExpressionAttributeValues={":rf": {"N": str(repo._now_ms() + 5)}},
                 )
             return original_transact(items)
 
         repo.transact_write = parent_refilled_first
         with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
-            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpd": 1}) as lease:
                 assert {e.entity_id for e in lease.entries} == {"user-1", "parent-1"}
         assert bumped
         shard1 = self._raw_item(repo, 1)
         assert shard1 is not None, "the innocent Put must be re-issued after the rollback"
-        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
-        parent = repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
-        assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli - 1000
+        assert self._n(shard1, "rpd", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
+        parent = self._raw_parent(repo)
+        assert self._n(parent, "rpd", schema.BUCKET_FIELD_TK) == cp_milli - 1000
 
     def test_parent_only_slow_path_reuses_the_parent_shard_it_judged(self, sync_limiter):
         """The "refill would help" decision was made on the ALL_OLD image of
         the parent shard the speculative write hit; the parent-only slow path
-        must read and debit that same shard rather than draw a new one."""
-        from zae_limiter import schema
+        must read and debit that same shard rather than draw a new one.
 
+        The parent shards are legacy items: a fill instant is read exactly
+        (#821), so "a refill would help" only arises on one still stored as
+        ``tk``.
+        """
         repo = sync_limiter._repository
         ns = repo._namespace_id
         limit = Limit.custom("rpm", 100000, refill_amount=3600, refill_period_seconds=3600)
-        now_ms = int(time.time() * 1000)
+        now_ms = freeze_clock(repo)
         sync_limiter.create_entity("parent-1")
         sync_limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
         sync_limiter.set_system_defaults([limit])
@@ -6828,6 +7007,7 @@ class TestClientShardCreation:
                     )
                 ]
             )
+            as_legacy(repo, "parent-1", "gpt-4", shard_id)
         child = BucketState.from_limit("user-1", "gpt-4", limit, now_ms)
         repo.transact_write(
             [
@@ -6857,23 +7037,21 @@ class TestClientShardCreation:
         assert next(b for b in shard0 if b.limit_name == "rpm").tokens_milli == 0, (
             "parent shard 0 was never judged and must not be written"
         )
-        item1 = repo._get_client().get_item(
-            TableName=repo.table_name,
-            Key={
-                "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", 1)},
-                "SK": {"S": schema.sk_state()},
-            },
-        )
-        assert int(item1["Item"][schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK)]["N"]) > 0
+        shard1 = repo.get_buckets("parent-1", resource="gpt-4", shard_id=1)
+        assert next(b for b in shard1 if b.limit_name == "rpm").tokens_milli == 40000
 
     def test_reissued_put_that_loses_the_create_race_is_downgraded(self, sync_limiter):
         """First transaction: parent rf conflict rolls back the innocent child
         Put. The Put is re-issued, but the aggregator creates the shard in
         between, so the retry transaction cancels on the Put. That must be
-        downgraded to a consumption-only debit, not surfaced as a rejection."""
+        downgraded to a consumption-only debit, not surfaced as a rejection.
+
+        On a quota since #821, for the reasons
+        ``test_new_child_shard_survives_a_parent_rf_conflict`` gives.
+        """
         from zae_limiter import schema
 
-        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        limit = Limit.quota("rpd", self.CAPACITY, cron="0 0 * * *")
         cp_milli = self.CAPACITY * 1000
         repo = self._seed_cascade_child(sync_limiter, limit, parent_tokens_milli=cp_milli)
         ns = repo._namespace_id
@@ -6901,10 +7079,10 @@ class TestClientShardCreation:
                     },
                     UpdateExpression="SET #rf = :rf",
                     ExpressionAttributeNames={"#rf": schema.BUCKET_FIELD_RF},
-                    ExpressionAttributeValues={":rf": {"N": str(int(time.time() * 1000) + 5)}},
+                    ExpressionAttributeValues={":rf": {"N": str(repo._now_ms() + 5)}},
                 )
             elif calls == 2:
-                now_ms = int(time.time() * 1000)
+                now_ms = repo._now_ms()
                 state = BucketState.from_limit("user-1", "gpt-4", limit, now_ms, 2)
                 original_transact(
                     [
@@ -6917,13 +7095,13 @@ class TestClientShardCreation:
 
         repo.transact_write = hostile_environment
         with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
-            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpd": 1}) as lease:
                 assert {e.entity_id for e in lease.entries} == {"user-1", "parent-1"}
         assert calls == 3
         shard1 = self._raw_item(repo, 1)
-        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
-        parent = repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
-        assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli - 1000
+        assert self._n(shard1, "rpd", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
+        parent = self._raw_parent(repo)
+        assert self._n(parent, "rpd", schema.BUCKET_FIELD_TK) == cp_milli - 1000
 
     def test_sharded_cascade_child_still_fast_rejects(self, sync_limiter):
         """Refill would not help on the child's shard: reject from the ALL_OLD
@@ -6964,13 +7142,18 @@ class TestClientShardCreation:
     def test_missing_parent_shard_is_created_where_the_fast_path_looked(self, sync_limiter):
         """Parent cache says 2 shards; the speculative parent write hit shard 1
         and found it missing. The slow path must create parent shard 1, not
-        draw a fresh parent shard (which could be 0)."""
+        draw a fresh parent shard (which could be 0).
+
+        A shard created at a count above 1 starts empty (ADR-156, #821), so
+        the request is rejected; the rejected pass still writes the create.
+        """
         from zae_limiter import schema
+        from zae_limiter.exceptions import RateLimitExceeded
 
         repo = sync_limiter._repository
         ns = repo._namespace_id
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
-        now_ms = int(time.time() * 1000)
+        now_ms = freeze_clock(repo)
         sync_limiter.create_entity("parent-1")
         sync_limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
         sync_limiter.set_system_defaults([limit])
@@ -6982,13 +7165,21 @@ class TestClientShardCreation:
                 )
             ]
         )
+        child_before = self._raw_item(repo, 0)
         repo._entity_cache.pop((ns, "user-1"), None)
         repo._entity_cache[ns, "parent-1"] = (False, None, {"gpt-4": 2})
         sync_limiter._speculative_writes = True
-        with patch("zae_limiter.sync_repository.random.randrange", side_effect=[1, 0, 0]):
-            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
-                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
-                assert parent_entry._shard_id == 1
+        with (
+            patch("zae_limiter.sync_repository.random.randrange", side_effect=[1, 0, 0]),
+            pytest.raises(RateLimitExceeded) as exc_info,
+        ):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+        assert {s.entity_id for s in exc_info.value.violations} == {"parent-1"}
+        child_after = self._raw_item(repo, 0)
+        assert balance_milli(repo, child_after, "rpm", now_ms) == balance_milli(
+            repo, child_before, "rpm", now_ms
+        ), "the child is refunded: nothing a rejected request asked for is debited"
         client = repo._get_client()
         for shard_id, expect in ((1, True), (0, False)):
             resp = client.get_item(
@@ -7009,79 +7200,55 @@ class TestClientShardCreation:
         assert item1["Item"]["shard_count"]["N"] == "2"
 
     @staticmethod
-    def _slow_wcu_refill(repo, shard_id: int = 0) -> None:
-        """Model sustained pressure: this shard's wcu refills once an hour, so
-        a drained wcu is a hot partition rather than a stale balance."""
-        from zae_limiter import schema
-
-        client = repo._get_client()
-        client.update_item(
-            TableName=repo.table_name,
-            Key={
-                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user-1", "gpt-4", shard_id)},
-                "SK": {"S": schema.sk_state()},
-            },
-            UpdateExpression="SET #rp = :hour, #ra = :one",
-            ExpressionAttributeNames={
-                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
-                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
-            },
-            ExpressionAttributeValues={":hour": {"N": "3600000"}, ":one": {"N": "1"}},
-        )
-
-    @staticmethod
     def _drain_wcu(repo, shard_id: int, rf_ms: int) -> None:
         """Zero the wcu balance on a shard and pin the shared rf."""
-        from zae_limiter import schema
-
-        client = repo._get_client()
-        client.update_item(
-            TableName=repo.table_name,
-            Key={
-                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user-1", "gpt-4", shard_id)},
-                "SK": {"S": schema.sk_state()},
-            },
-            UpdateExpression="SET #wcu = :zero, #rf = :rf",
-            ExpressionAttributeNames={
-                "#wcu": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK),
-                "#rf": schema.BUCKET_FIELD_RF,
-            },
-            ExpressionAttributeValues={":zero": {"N": "0"}, ":rf": {"N": str(rf_ms)}},
-        )
+        drain_wcu_at(repo, "user-1", "gpt-4", shard_id, rf_ms)
 
     def test_slow_path_refills_wcu_as_an_undeclared_carrier(self, sync_limiter):
         """Without the aggregator nobody refilled wcu. The slow path must refill
         it from its stored ra/rp like any undeclared limit — never gated,
-        never a status, never visible through the lease."""
+        never a status, never visible through the lease.
+
+        On a legacy item: a fill instant reads its refill exactly at any
+        instant (#821), so only a ``wcu`` still stored as ``tk`` needs the
+        pass, which converts it.
+        """
         from zae_limiter import schema
 
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
-        now_ms = int(time.time() * 1000)
+        now_ms = freeze_clock(sync_limiter._repository)
         repo = self._seed_shards(
             sync_limiter, 1, limit, tokens_milli=self.CAPACITY * 1000, rf_ms=now_ms
         )
+        as_legacy(repo, "user-1", "gpt-4")
         self._drain_wcu(repo, 0, now_ms - 2000)
         sync_limiter._speculative_writes = False
         with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
             assert lease.consumed == {"rpm": 1}
             assert {e.limit.name for e in lease.entries if e._declared} == {"rpm"}
         item = self._raw_item(repo, 0)
+        assert schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_FI) in item
         assert (
-            self._n(item, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            balance_milli(repo, item, schema.WCU_LIMIT_NAME, now_ms)
             == schema.WCU_LIMIT_CAPACITY * 1000
         )
 
     def test_exhausted_wcu_that_would_refill_does_not_double(self, sync_limiter):
         """wcu exhausted an instant ago is not a hot partition: the image's
         refill would restore it, so take the slow path on the same shard
-        (which refills wcu) instead of doubling toward the cap."""
+        (which refills wcu) instead of doubling toward the cap.
+
+        On a legacy item, for the reason the test above gives: a ``wcu`` stored
+        as a fill instant is not exhausted once its refill has restored it.
+        """
         from zae_limiter import schema
 
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
-        now_ms = int(time.time() * 1000)
+        now_ms = freeze_clock(sync_limiter._repository)
         repo = self._seed_shards(
             sync_limiter, 1, limit, tokens_milli=self.CAPACITY * 1000, rf_ms=now_ms
         )
+        as_legacy(repo, "user-1", "gpt-4")
         self._drain_wcu(repo, 0, now_ms - 2000)
         ns = repo._namespace_id
         with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
@@ -7089,11 +7256,12 @@ class TestClientShardCreation:
         assert repo._entity_cache[ns, "user-1"][2]["gpt-4"] == 1, "no doubling"
         assert self._raw_item(repo, 1) is None
         item = self._raw_item(repo, 0)
+        assert schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_FI) in item
         assert (
-            self._n(item, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            balance_milli(repo, item, schema.WCU_LIMIT_NAME, now_ms)
             == schema.WCU_LIMIT_CAPACITY * 1000
         )
-        assert self._n(item, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 - 1000
+        assert balance_milli(repo, item, "rpm", now_ms) == self.CAPACITY * 1000 - 1000
 
     def test_rejected_acquire_never_doubles_the_shard_count(self, sync_limiter):
         """The non-cascade twin of #474 (issue #480): a doubling on the way to a
@@ -7108,10 +7276,9 @@ class TestClientShardCreation:
         from zae_limiter.exceptions import RateLimitExceeded
 
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
-        now_ms = int(time.time() * 1000)
+        now_ms = freeze_clock(sync_limiter._repository)
         repo = self._seed_shards(sync_limiter, 1, limit, tokens_milli=0, rf_ms=now_ms)
         ns = repo._namespace_id
-        self._slow_wcu_refill(repo)
         self._drain_wcu(repo, 0, now_ms)
         for _ in range(3):
             with pytest.raises(RateLimitExceeded):
@@ -7121,22 +7288,24 @@ class TestClientShardCreation:
         item = self._raw_item(repo, 0)
         assert item["shard_count"]["N"] == "1", "a rejected acquire must not shard the entity"
         assert self._raw_item(repo, 1) is None
-        assert self._n(item, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK) == 0
+        assert balance_milli(repo, item, schema.WCU_LIMIT_NAME, now_ms) == 0
 
     def test_wcu_exhaustion_with_room_to_admit_still_doubles(self, sync_limiter):
         """The other half of the #480 gate, and the GHSA-76rv mitigation itself:
         the *same* drained wcu on an entity whose declared limit can still admit
         must double and move off the hot shard. Differs from the test above in
-        one input — the rpm balance."""
-        from zae_limiter import schema
+        one input — the rpm balance.
 
+        The doubling is a raise (ADR-156, #821): shard 1 is created by it,
+        holding shard 0's balance above the new share. The frozen clock keeps
+        the drained wcu drained.
+        """
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
-        now_ms = int(time.time() * 1000)
+        now_ms = freeze_clock(sync_limiter._repository)
         repo = self._seed_shards(
             sync_limiter, 1, limit, tokens_milli=self.CAPACITY * 1000, rf_ms=now_ms
         )
         ns = repo._namespace_id
-        self._slow_wcu_refill(repo)
         self._drain_wcu(repo, 0, now_ms)
         with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
             assert {e._shard_id for e in lease.entries} == {1}
@@ -7144,72 +7313,70 @@ class TestClientShardCreation:
         shard1 = self._raw_item(repo, 1)
         assert shard1 is not None, "the hot shard's wcu must still spread the entity"
         assert shard1["shard_count"]["N"] == "2"
-        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 // 2 - 1000
+        assert balance_milli(repo, shard1, "rpm", now_ms) == self.CAPACITY * 1000 // 2 - 1000
 
     def test_create_race_lost_to_aggregator_consumes_once(self, sync_limiter):
-        """If the aggregator's Path 2 wins the create, the client retries as a
-        consumption-only conditional write on that shard: one debit, no
-        over-admission, no second fallback."""
-        from zae_limiter import schema
+        """If another writer wins the create, the client debits the bucket it
+        created: one debit, no over-admission, no second fallback.
 
+        Since #821 the race is on the bucket's first shard: a dripping shard
+        N>0 the slow path creates starts empty (ADR-156), and the aggregator no
+        longer clones one. The lost create re-plans from a fresh read
+        (``FillInstantLostError``) instead of taking the consumption-only retry.
+        """
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
-        repo = self._seed_shard0(sync_limiter, shard_count=2, limit=limit)
+        repo = sync_limiter._repository
+        sync_limiter.create_entity("user-1")
+        sync_limiter.set_system_defaults([limit])
+        now_ms = freeze_clock(repo)
+        sync_limiter._speculative_writes = True
         cp_milli = self.CAPACITY * 1000
         original_transact = repo.transact_write
         raced = False
 
-        def aggregator_wins(items):
+        def another_writer_wins(items):
             nonlocal raced
             if not raced and any("Put" in item for item in items):
                 raced = True
-                now_ms = int(time.time() * 1000)
                 state = BucketState.from_limit("user-1", "gpt-4", limit, now_ms)
-                state.tokens_milli = cp_milli // 2
                 original_transact(
                     [
                         repo.build_composite_create(
-                            "user-1", "gpt-4", [state], now_ms, shard_id=1, shard_count=2
+                            "user-1", "gpt-4", [state], now_ms, **owner_stamp(repo, "user-1")
                         )
                     ]
                 )
             return original_transact(items)
 
-        repo.transact_write = aggregator_wins
-        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
-            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
-                assert {e._shard_id for e in lease.entries} == {1}
+        repo.transact_write = another_writer_wins
+        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {0}
         assert raced
-        shard1 = self._raw_item(repo, 1)
-        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
+        shard0 = self._raw_item(repo, 0)
+        assert balance_milli(repo, shard0, "rpm", now_ms) == cp_milli - 1000
 
     def test_bump_lost_race_still_moves_off_the_hot_shard(self, sync_limiter):
         """If another client doubled first, our conditional bump loses. The
         loser must learn the winner's shard_count from the failed write's
         ALL_OLD image and draw from the newly added range, not cache its own
-        stale count and land back on the exhausted shard 0."""
-        from zae_limiter import schema
+        stale count and land back on the exhausted shard 0.
 
+        The doubling is a raise (ADR-156, #821), whose loser learns the
+        winner's count from the shard it stores.
+        """
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = self._seed_shard0(sync_limiter, shard_count=1, limit=limit)
         ns = repo._namespace_id
-        self._slow_wcu_refill(repo)
+        freeze_clock(repo)
         exhaust_wcu(repo, "user-1", "gpt-4")
-        client = repo._get_client()
-        original_bump = repo.bump_shard_count
+        original_raise = repo.raise_shards
 
-        def winner_doubles_first(entity_id, resource, current_count):
-            client.update_item(
-                TableName=repo.table_name,
-                Key={
-                    "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 0)},
-                    "SK": {"S": schema.sk_state()},
-                },
-                UpdateExpression="SET shard_count = :two",
-                ExpressionAttributeValues={":two": {"N": "2"}},
-            )
-            return original_bump(entity_id, resource, current_count)
+        def winner_raises_first(entity_id, resource, current_count):
+            assert original_raise(entity_id, resource, current_count) == 2
+            repo._entity_cache[ns, "user-1"] = (False, None, {"gpt-4": current_count})
+            return original_raise(entity_id, resource, current_count)
 
-        repo.bump_shard_count = winner_doubles_first
+        repo.raise_shards = winner_raises_first
         slow_path_shards: list[int | None] = []
         original_do_acquire = sync_limiter._do_acquire
 
@@ -7228,12 +7395,16 @@ class TestClientShardCreation:
     def test_bump_without_increase_stays_on_the_selected_shard(self, sync_limiter):
         """If the bump cannot report a larger count (shard 0 vanished between
         the failed write and the bump), there is no new range to draw from;
-        the slow path keeps the shard it already selected."""
+        the slow path keeps the shard it already selected.
+
+        The bucket holds a dripping limit, so it is the raise that reports no
+        larger count (ADR-156, #821), as it does when it gives up.
+        """
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = self._seed_shard0(sync_limiter, shard_count=1, limit=limit)
-        self._slow_wcu_refill(repo)
+        freeze_clock(repo)
         exhaust_wcu(repo, "user-1", "gpt-4")
-        repo.bump_shard_count = MagicMock(return_value=1)
+        repo.raise_shards = MagicMock(return_value=1)
         slow_path_shards: list[int | None] = []
         original_do_acquire = sync_limiter._do_acquire
 
@@ -7312,58 +7483,16 @@ class TestCascadeParentSharding:
         return resp.get("Item")
 
     @staticmethod
-    def _slow_wcu_refill(repo, entity_id: str, shard_id: int) -> None:
-        """Model sustained pressure: this shard's wcu refills once an hour, so
-        a drained wcu is a hot partition rather than a stale balance."""
-        from zae_limiter import schema
-
-        client = repo._get_client()
-        client.update_item(
-            TableName=repo.table_name,
-            Key={
-                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
-                "SK": {"S": schema.sk_state()},
-            },
-            UpdateExpression="SET #rp = :hour, #ra = :one",
-            ExpressionAttributeNames={
-                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
-                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
-            },
-            ExpressionAttributeValues={":hour": {"N": "3600000"}, ":one": {"N": "1"}},
-        )
-
-    @staticmethod
     def _drain_wcu(repo, entity_id: str, shard_id: int) -> None:
-        """Zero this shard's wcu and slow its refill to once an hour.
+        """Zero this shard's wcu as of now.
 
         A drained balance that refill cannot restore is what the client reads
         as a hot partition (ADR-133); the stock 1000/s rate would restore a
-        write on any elapsed millisecond. ``rf`` is shared by every limit on
-        the item, so pinning it to now also freezes the app limits.
+        write on any elapsed millisecond, so every test here runs on the clock
+        ``_seed`` freezes. ``rf`` is shared by every limit on the item, so
+        pinning it to now also freezes the app limits.
         """
-        from zae_limiter import schema
-
-        client = repo._get_client()
-        client.update_item(
-            TableName=repo.table_name,
-            Key={
-                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
-                "SK": {"S": schema.sk_state()},
-            },
-            UpdateExpression="SET #wcu = :zero, #rf = :rf, #ra = :one, #rp = :hour",
-            ExpressionAttributeNames={
-                "#wcu": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK),
-                "#rf": schema.BUCKET_FIELD_RF,
-                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
-                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
-            },
-            ExpressionAttributeValues={
-                ":zero": {"N": "0"},
-                ":rf": {"N": str(int(time.time() * 1000))},
-                ":one": {"N": "1"},
-                ":hour": {"N": "3600000"},
-            },
-        )
+        drain_wcu_at(repo, entity_id, "gpt-4", shard_id, repo._now_ms())
 
     def _seed(
         self,
@@ -7379,15 +7508,19 @@ class TestCascadeParentSharding:
 
         Only ``parent_shards`` exist as items, so a draw onto another one is a
         ``BUCKET_MISSING`` the slow path has to create. The child's cache entry
-        is warm, which is what selects the parallel cascade path.
+        is warm, which is what selects the parallel cascade path. Every bucket
+        is a fill instant carrying its owner's stamp, as the limiter writes it
+        since #821, and the clock is frozen: a fill instant is read exactly at
+        any instant, so only a frozen clock keeps a balance where it was put.
         """
         repo = sync_limiter._repository
         ns = repo._namespace_id
-        now_ms = int(time.time() * 1000)
+        now_ms = freeze_clock(repo)
         rf_ms = parent_rf_ms if parent_rf_ms is not None else now_ms
         sync_limiter.create_entity("parent-1")
         sync_limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
         sync_limiter.set_system_defaults([limit])
+        parent_owner = owner_stamp(repo, "parent-1")
         for shard_id in parent_shards:
             state = BucketState.from_limit("parent-1", "gpt-4", limit, rf_ms, parent_shard_count)
             if parent_tokens_milli is not None:
@@ -7401,6 +7534,7 @@ class TestCascadeParentSharding:
                         rf_ms,
                         shard_id=shard_id,
                         shard_count=parent_shard_count,
+                        **parent_owner,
                     )
                 ]
             )
@@ -7408,7 +7542,13 @@ class TestCascadeParentSharding:
         repo.transact_write(
             [
                 repo.build_composite_create(
-                    "user-1", "gpt-4", [child], now_ms, cascade=True, parent_id="parent-1"
+                    "user-1",
+                    "gpt-4",
+                    [child],
+                    now_ms,
+                    cascade=True,
+                    parent_id="parent-1",
+                    **owner_stamp(repo, "user-1"),
                 )
             ]
         )
@@ -7420,8 +7560,6 @@ class TestCascadeParentSharding:
     def test_parallel_cascade_debits_the_parents_own_shard(self, sync_limiter):
         """The parent's shard comes from the parent's cached shard_count, drawn
         exactly once — not from the child's, and never hardcoded to 0."""
-        from zae_limiter import schema
-
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = self._seed(sync_limiter, limit, parent_shard_count=4, parent_shards=range(4))
         share = self.CAPACITY * 1000 // 4
@@ -7429,10 +7567,11 @@ class TestCascadeParentSharding:
             with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
                 parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
                 assert parent_entry._shard_id == 3
+        now_ms = repo._now_ms()
         item3 = self._raw_item(repo, "parent-1", 3)
-        assert self._n(item3, "rpm", schema.BUCKET_FIELD_TK) == share - 1000
+        assert balance_milli(repo, item3, "rpm", now_ms) == share - 1000
         item0 = self._raw_item(repo, "parent-1", 0)
-        assert self._n(item0, "rpm", schema.BUCKET_FIELD_TK) == share, (
+        assert balance_milli(repo, item0, "rpm", now_ms) == share, (
             "parent shard 0 must not absorb every cascade write"
         )
 
@@ -7470,22 +7609,28 @@ class TestCascadeParentSharding:
             with pytest.raises(RateLimitExceeded):
                 with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
                     pass
+        now_ms = repo._now_ms()
         shard2 = self._raw_item(repo, "parent-1", 2)
-        assert self._n(shard2, "rpm", schema.BUCKET_FIELD_TK) == share
+        assert balance_milli(repo, shard2, "rpm", now_ms) == share
         assert (
-            self._n(shard2, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            balance_milli(repo, shard2, schema.WCU_LIMIT_NAME, now_ms)
             == (schema.WCU_LIMIT_CAPACITY - 1) * 1000
         )
         shard0 = self._raw_item(repo, "parent-1", 0)
         assert (
-            self._n(shard0, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            balance_milli(repo, shard0, schema.WCU_LIMIT_NAME, now_ms)
             == schema.WCU_LIMIT_CAPACITY * 1000
         )
 
     def test_parent_only_fallback_reuses_the_drawn_parent_shard(self, sync_limiter):
         """The "refill would help" decision was made on the ALL_OLD image of
         the parent shard the parallel write hit; the parent-only slow path must
-        read and debit that same shard rather than draw a new one."""
+        read and debit that same shard rather than draw a new one.
+
+        The parent shards are legacy items: a fill instant is read exactly
+        (#821), so "a refill would help" only arises on one still stored as
+        ``tk``.
+        """
         from zae_limiter import schema
 
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=3600, refill_period_seconds=3600)
@@ -7498,6 +7643,8 @@ class TestCascadeParentSharding:
             parent_tokens_milli=0,
             parent_rf_ms=now_ms - 100000,
         )
+        for shard_id in range(4):
+            as_legacy(repo, "parent-1", "gpt-4", shard_id)
         parent_reads: list[int] = []
         original_fetch = sync_limiter._fetch_entity_and_buckets
 
@@ -7513,7 +7660,7 @@ class TestCascadeParentSharding:
                 assert parent_entry._shard_id == 2
         assert parent_reads == [2]
         item2 = self._raw_item(repo, "parent-1", 2)
-        assert self._n(item2, "rpm", schema.BUCKET_FIELD_TK) > 0
+        assert balance_milli(repo, item2, "rpm", repo._now_ms()) > 0
         item0 = self._raw_item(repo, "parent-1", 0)
         assert self._n(item0, "rpm", schema.BUCKET_FIELD_TK) == 0, (
             "a parent shard the fast path never judged must not be written"
@@ -7527,10 +7674,9 @@ class TestCascadeParentSharding:
         ``meta`` from such an item downgrades the parent's cache entry and the
         next ``acquire(parent)`` silently stops debiting the grandparent for
         the life of the process — ``_entity_cache`` has no TTL."""
-        from zae_limiter import schema
-
         repo = sync_limiter._repository
         ns = repo._namespace_id
+        now_ms = freeze_clock(repo)
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         sync_limiter.create_entity("grandparent-1")
         sync_limiter.create_entity("parent-1", parent_id="grandparent-1", cascade=True)
@@ -7542,7 +7688,6 @@ class TestCascadeParentSharding:
         assert repo._entity_cache[ns, "parent-1"][:2] == (True, "grandparent-1")
         with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
             pass
-        now_ms = int(time.time() * 1000)
         state = BucketState.from_limit("parent-1", "gpt-4", limit, now_ms, 2)
         repo.transact_write(
             [
@@ -7551,6 +7696,7 @@ class TestCascadeParentSharding:
                 )
             ]
         )
+        as_legacy(repo, "parent-1", "gpt-4", 1)
         repo._entity_cache[ns, "parent-1"] = (True, "grandparent-1", {"gpt-4": 2})
         with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
             with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
@@ -7558,12 +7704,10 @@ class TestCascadeParentSharding:
             assert repo._entity_cache[ns, "parent-1"][:2] == (True, "grandparent-1"), (
                 "a bucket item must not rewrite the parent's cascade metadata"
             )
-            before = self._n(
-                self._raw_item(repo, "grandparent-1", 0), "rpm", schema.BUCKET_FIELD_TK
-            )
+            before = balance_milli(repo, self._raw_item(repo, "grandparent-1", 0), "rpm", now_ms)
             with sync_limiter.acquire("parent-1", "gpt-4", {"rpm": 1}) as lease:
                 assert "grandparent-1" in {e.entity_id for e in lease.entries}
-        after = self._n(self._raw_item(repo, "grandparent-1", 0), "rpm", schema.BUCKET_FIELD_TK)
+        after = balance_milli(repo, self._raw_item(repo, "grandparent-1", 0), "rpm", now_ms)
         assert after == before - 1000, "the grandparent must still be debited"
 
     def test_exhausted_parent_shard_does_not_pin_the_slow_path(self, sync_limiter):
@@ -7578,6 +7722,8 @@ class TestCascadeParentSharding:
         now_ms = int(time.time() * 1000)
         repo = self._seed(sync_limiter, limit, parent_shard_count=4, parent_shards=range(4))
         ns = repo._namespace_id
+        as_legacy(repo, "parent-1", "gpt-4", 2)
+        as_legacy(repo, "user-1", "gpt-4", 0)
         client = repo._get_client()
         client.update_item(
             TableName=repo.table_name,
@@ -7617,19 +7763,24 @@ class TestCascadeParentSharding:
     def test_missing_parent_shard_is_still_created_where_it_was_sought(self, sync_limiter):
         """The one reason that does pin the slow path: a parent shard the fast
         path found missing must be created there, not re-drawn. Guards the
-        narrowing above — the patched draw raises StopIteration on a re-draw."""
-        from zae_limiter import schema
+        narrowing above — the patched draw raises StopIteration on a re-draw.
 
+        Created empty while its shard 0 exists (ADR-156, #821), so the request
+        is rejected; the rejected pass still writes the create.
+        """
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = self._seed(sync_limiter, limit, parent_shard_count=4)
-        with patch("zae_limiter.sync_repository.random.randrange", side_effect=[2]):
-            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
-                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
-                assert parent_entry._shard_id == 2
+        with (
+            patch("zae_limiter.sync_repository.random.randrange", side_effect=[2]),
+            pytest.raises(RateLimitExceeded) as exc_info,
+        ):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+        assert {s.entity_id for s in exc_info.value.violations} == {"parent-1"}
         shard2 = self._raw_item(repo, "parent-1", 2)
         assert shard2 is not None, "the missing parent shard must be created where it was sought"
         assert shard2["shard_count"]["N"] == "4"
-        assert self._n(shard2, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 // 4 - 1000
+        assert balance_milli(repo, shard2, "rpm", repo._now_ms()) == 0
 
     def test_cold_cache_cascade_spreads_the_parent_too(self, sync_limiter):
         """The sequential (cache-miss) cascade branch must handle a parent
@@ -7693,19 +7844,25 @@ class TestCascadeParentSharding:
         assert repo._entity_cache[ns, "parent-1"][2]["gpt-4"] == 1
         item = self._raw_item(repo, "parent-1", 0)
         assert item["shard_count"]["N"] == "1", "a rejected acquire must not shard the parent"
-        assert self._n(item, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK) == 0
+        assert balance_milli(repo, item, schema.WCU_LIMIT_NAME, repo._now_ms()) == 0
 
     def test_parent_wcu_exhaustion_doubles_the_parents_shard_count(self, sync_limiter):
         """A hot cascade parent must spread: the parent's own wcu exhaustion
         doubles the parent's shard_count and routes the fallback to one of the
-        shards the doubling added, which the slow path then creates."""
+        shards the doubling added.
+
+        The doubling is a raise (ADR-156, #821): it creates shard 1 holding the
+        parent's balance above the new share, which the slow path then debits.
+        """
         from zae_limiter import schema
 
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = self._seed(sync_limiter, limit, parent_shard_count=1)
         ns = repo._namespace_id
-        self._slow_wcu_refill(repo, "parent-1", 0)
         exhaust_wcu(repo, "parent-1", "gpt-4")
+        cp_milli = self.CAPACITY * 1000
+        now_ms = repo._now_ms()
+        held = balance_milli(repo, self._raw_item(repo, "parent-1", 0), "rpm", now_ms)
         with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
             parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
             assert parent_entry._shard_id == 1
@@ -7713,7 +7870,8 @@ class TestCascadeParentSharding:
         shard1 = self._raw_item(repo, "parent-1", 1)
         assert shard1 is not None, "the parent must spread off its hot shard"
         assert shard1["shard_count"]["N"] == "2"
-        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 // 2 - 1000
+        assert held == cp_milli - schema.WCU_LIMIT_CAPACITY * 1000
+        assert balance_milli(repo, shard1, "rpm", now_ms) == held - cp_milli // 2 - 1000
 
 
 class TestWcuHiddenFromUser:
@@ -7773,6 +7931,9 @@ class TestScheduleBoundaryRouting:
     until the slow path materialises, an exhausted-and-expired bucket still
     ends in RateLimitExceeded either way. What changes is who decides — the
     stale image, or a fresh read that can see the new window.
+
+    On legacy items since #821: a fill instant never waits on ``vu``
+    (ADR-155), so only a limit still stored as ``tk`` is gated by it.
     """
 
     LIMITS = [Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=60)]
@@ -7832,6 +7993,7 @@ class TestScheduleBoundaryRouting:
         now_ms = freeze_clock(repo)
         with sync_limiter.acquire("vu-route", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
             pass
+        as_legacy(repo, "vu-route", "gpt-4")
         self._drain(repo, "vu-route", "gpt-4")
         self._expire_vu(repo, "vu-route", "gpt-4", now_ms)
         calls = self._spy_slow_path(sync_limiter)
@@ -7850,6 +8012,7 @@ class TestScheduleBoundaryRouting:
         freeze_clock(repo)
         with sync_limiter.acquire("vu-noroute", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
             pass
+        as_legacy(repo, "vu-noroute", "gpt-4")
         self._drain(repo, "vu-noroute", "gpt-4")
         calls = self._spy_slow_path(sync_limiter)
         with pytest.raises(RateLimitExceeded):
@@ -7874,6 +8037,7 @@ class TestScheduleBoundaryRouting:
         for _ in range(2):
             with sync_limiter.acquire("vu-child", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
                 pass
+        as_legacy(repo, "vu-parent", "gpt-4")
         self._drain(repo, "vu-parent", "gpt-4")
         self._expire_vu(repo, "vu-parent", "gpt-4", now_ms)
         before = repo.get_buckets("vu-child", resource="gpt-4")
@@ -7912,6 +8076,8 @@ class TestScheduleBoundaryRouting:
             ]
         )
         self._stamp(repo, "vu-shard", "gpt-4", "SET shard_count = :two", {}, {":two": {"N": "2"}})
+        for shard_id in (0, 1):
+            as_legacy(repo, "vu-shard", "gpt-4", shard_id)
         self._drain(repo, "vu-shard", "gpt-4")
         self._expire_vu(repo, "vu-shard", "gpt-4", now_ms, shard_id=1)
 
@@ -8053,17 +8219,20 @@ class TestSlowPathMaterialisesVu:
         touched. ``vu`` must be a function of the schedule and the window, not
         of the instant — otherwise two shards of one entity open their fast
         paths at different times and the entity's ceiling changes piecewise.
+
+        Nothing consumed: a shard the slow path creates at a count above 1
+        starts empty (ADR-156, #821).
         """
         repo = sync_limiter._repository
         self._pin(repo, self.NOW)
         slow = self._slow(sync_limiter)
         lease = slow._do_acquire(
-            "vu-shards", "gpt-4", [self.RPM], {"rpm": 1}, shard_id=0, shard_count=2
+            "vu-shards", "gpt-4", [self.RPM], {"rpm": 0}, shard_id=0, shard_count=2
         )
         lease._commit_initial()
         self._pin(repo, self.NOW + 90000)
         lease = slow._do_acquire(
-            "vu-shards", "gpt-4", [self.RPM], {"rpm": 1}, shard_id=1, shard_count=2
+            "vu-shards", "gpt-4", [self.RPM], {"rpm": 0}, shard_id=1, shard_count=2
         )
         lease._commit_initial()
         shard0 = self._raw(repo, "vu-shards", shard=0)
@@ -8140,16 +8309,15 @@ class TestSlowPathMaterialisesVu:
         with slow.acquire("vu-scale", "gpt-4", limits=[self.RPM], consume={"rpm": 1}):
             pass
         item = self._raw(repo, "vu-scale")
-        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == str(500000 - 1000)
+        assert balance_milli(repo, item, "rpm", self.NOW) == 500000 - 1000
         assert item[bucket_attr("rpm", "cp")]["N"] == "1000000"
 
     def test_the_slow_path_trims_a_surplus_left_by_a_closing_window(self, sync_limiter):
         """Entering a ``0.5x`` window with a full base balance, the very next
-        slow pass must bring ``tk`` down to the scheduled ceiling.
+        slow pass must bring the balance down to the scheduled ceiling.
 
-        This is the delta at ``lease.py``'s refill computation going *negative*
-        (#496 clamps inside ``refill_bucket``); an explicit clamp there would
-        double-apply it.
+        A fill instant reads it trimmed already, re-expressed across the
+        boundary (ADR-155, #821); the pass stores it expressed at its instant.
         """
         repo = sync_limiter._repository
         outside = int(datetime(2026, 9, 15, 3, 0, tzinfo=UTC).timestamp() * 1000)
@@ -8158,12 +8326,14 @@ class TestSlowPathMaterialisesVu:
         with slow.acquire("vu-trim", "gpt-4", limits=[self.RPM], consume={"rpm": 0}):
             pass
         item = self._raw(repo, "vu-trim")
-        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+        assert balance_milli(repo, item, "rpm", outside) == 1000000
         self._pin(repo, self.NOW)
+        assert balance_milli(repo, item, "rpm", self.NOW) == 500000
         with slow.acquire("vu-trim", "gpt-4", limits=[self.RPM], consume={"rpm": 0}):
             pass
         item = self._raw(repo, "vu-trim")
-        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "500000"
+        assert balance_milli(repo, item, "rpm", self.NOW) == 500000
+        assert item["xi"]["N"] == str(self.NOW)
 
 
 class TestFanOutVuSelfClears:
@@ -8180,6 +8350,10 @@ class TestFanOutVuSelfClears:
     vu > now)` failed on every subsequent acquire. The entity was permanently
     demoted from 1 round trip to 3, at $1.375/M instead of $0.625/M, and
     entity-level buckets carry no TTL so nothing would ever have recycled it.
+
+    On legacy items since #821: a fill instant never waits on ``vu``
+    (ADR-155), and the param sync re-expresses it exactly instead (#820), so
+    only an item still stored as ``tk`` takes the forced pass.
     """
 
     NOW = int(datetime(2026, 9, 15, 10, 5, tzinfo=UTC).timestamp() * 1000)
@@ -8203,6 +8377,7 @@ class TestFanOutVuSelfClears:
             "vu-clear", "gpt-4", limits=[Limit.per_minute("rpm", 1000)], consume={"rpm": 1}
         ):
             pass
+        as_legacy(repo, "vu-clear", "gpt-4")
         repo.set_limits("vu-clear", [Limit.per_minute("rpm", 10)], resource="gpt-4")
         assert self._raw(repo, "vu-clear")[BUCKET_FIELD_VU]["N"] == "0"
         with sync_limiter.acquire("vu-clear", "gpt-4", consume={"rpm": 1}):
@@ -8225,6 +8400,7 @@ class TestFanOutVuSelfClears:
                 pass
             with sync_limiter.acquire("vu-race", "gpt-4", consume={"rpm": 999}):
                 pass
+        as_legacy(repo, "vu-race", "gpt-4")
         client = repo._get_client()
         real_write = repo.transact_write
         fired = []
@@ -8268,10 +8444,12 @@ class TestFanOutVuSelfClears:
         """#469's scenario end to end: shrink 1000 -> 10 on a full bucket."""
         repo = sync_limiter._repository
         repo.create_entity("vu-trim-shrink")
+        now_ms = freeze_clock(repo)
         with sync_limiter.acquire(
             "vu-trim-shrink", "gpt-4", limits=[Limit.per_minute("rpm", 1000)], consume={"rpm": 0}
         ):
             pass
+        as_legacy(repo, "vu-trim-shrink", "gpt-4")
         assert (
             self._raw(repo, "vu-trim-shrink")[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "1000000"
         )
@@ -8279,7 +8457,8 @@ class TestFanOutVuSelfClears:
         with sync_limiter.acquire("vu-trim-shrink", "gpt-4", consume={"rpm": 0}):
             pass
         item = self._raw(repo, "vu-trim-shrink")
-        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "10000"
+        assert bucket_attr("rpm", BUCKET_FIELD_FI) in item, "the pass converts the item"
+        assert balance_milli(repo, item, "rpm", now_ms) == 10000
         assert BUCKET_FIELD_VU not in item
 
     def test_the_fast_path_is_restored_after_one_pass(self, sync_limiter):
@@ -8317,6 +8496,7 @@ class TestFanOutVuSelfClears:
         repo.create_entity("vu-sched")
         with sync_limiter.acquire("vu-sched", "gpt-4", limits=[scheduled], consume={"rpm": 1}):
             pass
+        as_legacy(repo, "vu-sched", "gpt-4")
         repo.set_limits("vu-sched", [scheduled], resource="gpt-4")
         assert self._raw(repo, "vu-sched")[BUCKET_FIELD_VU]["N"] == "0"
         with sync_limiter.acquire("vu-sched", "gpt-4", consume={"rpm": 1}):
@@ -8342,6 +8522,7 @@ class TestFanOutVuSelfClears:
                     )
                 ]
             )
+            as_legacy(repo, "vu-shards", "gpt-4", shard_id)
         repo.set_limits("vu-shards", [Limit.per_minute("rpm", 500)], resource="gpt-4")
         result = repo.speculative_consume("vu-shards", "gpt-4", {"rpm": 1}, shard_id=0)
         assert not result.success, "vu = 0 must close the fast path"
@@ -8361,6 +8542,10 @@ class TestAStampedShardIsTrimmedWhereItIs:
     clears `vu`. When the fast path draws the stamped shard, the slow pass it
     leads to must run there, or the stamp stays and every later draw of that
     shard fails its write first (1 WCU and a round trip each time).
+
+    On legacy items since #821: a fill instant's credit is capped for free and
+    it never waits on `vu` (ADR-155), so only an item still stored as `tk`
+    carries such a stamp. The slow pass converts it.
     """
 
     NOW = int(datetime(2026, 9, 15, 10, 5, tzinfo=UTC).timestamp() * 1000)
@@ -8382,9 +8567,15 @@ class TestAStampedShardIsTrimmedWhereItIs:
         )
         return response.get("Item")
 
-    @staticmethod
-    def _tk(item) -> int:
-        return int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"])
+    def _tk(self, repo, item) -> int:
+        """The rpm balance at ``NOW``, as a ``tk`` or as the fill instant a pass converted it to."""
+        return balance_milli(repo, item, "rpm", self.NOW)
+
+    def _assert_trimmed(self, repo, item) -> None:
+        """Converted by the slow pass: a fill instant, which holds no more than its share."""
+        assert bucket_attr("rpm", BUCKET_FIELD_FI) in item
+        assert bucket_attr("rpm", BUCKET_FIELD_TK) not in item
+        assert self._tk(repo, item) <= self.CEILING_MILLI
 
     @staticmethod
     def _set_tk(repo, entity_id, shard, tk_milli, *, stamp, limit_name="rpm"):
@@ -8413,9 +8604,10 @@ class TestAStampedShardIsTrimmedWhereItIs:
         )
 
     def _two_shards(self, sync_limiter, entity_id, limit=None, *, also=(), **create):
-        """`entity_id` with both of its two shards created, at a frozen clock.
+        """`entity_id` raised to two shards, at a frozen clock, as legacy items.
 
-        ``also`` adds limits beside rpm; each acquire consumes 1 of every one.
+        ``also`` adds limits beside rpm; the first acquire consumes 1 of every
+        one. The raise creates shard 1 holding shard 0's surplus (ADR-156).
         """
         repo = sync_limiter._repository
         repo._now_ms = lambda: self.NOW
@@ -8425,11 +8617,9 @@ class TestAStampedShardIsTrimmedWhereItIs:
         consume = {each.name: 1 for each in limits}
         with sync_limiter.acquire(entity_id, "gpt-4", consume=consume):
             pass
-        repo.bump_shard_count(entity_id, "gpt-4", 1)
-        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
-            with sync_limiter.acquire(entity_id, "gpt-4", consume=consume):
-                pass
-        assert self._raw(repo, entity_id, 1) is not None
+        assert repo.raise_shards(entity_id, "gpt-4", 1) == 2
+        for shard in (0, 1):
+            as_legacy(repo, entity_id, "gpt-4", shard)
 
     def test_a_released_credit_is_trimmed_on_the_shard_it_landed_on(self, sync_limiter):
         """Non-cascade: the draw that hits the stamped shard runs the slow pass there."""
@@ -8440,13 +8630,13 @@ class TestAStampedShardIsTrimmedWhereItIs:
                 lease.release(rpm=50)
         stamped = self._raw(repo, "solo", 1)
         assert stamped[BUCKET_FIELD_VU]["N"] == "0"
-        assert self._tk(stamped) > self.CEILING_MILLI
+        assert int(stamped[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) > self.CEILING_MILLI
         with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
             with sync_limiter.acquire("solo", "gpt-4", consume={"rpm": 1}):
                 pass
         shard1 = self._raw(repo, "solo", 1)
         assert BUCKET_FIELD_VU not in shard1
-        assert self._tk(shard1) <= self.CEILING_MILLI
+        self._assert_trimmed(repo, shard1)
 
     def test_a_soft_limit_in_debt_does_not_hide_the_stamp(self, sync_limiter):
         """A soft limit in debt beside the stamped hard one is still a stamp failure.
@@ -8466,7 +8656,7 @@ class TestAStampedShardIsTrimmedWhereItIs:
                 pass
         shard1 = self._raw(repo, "metered", 1)
         assert BUCKET_FIELD_VU not in shard1
-        assert self._tk(shard1) <= self.CEILING_MILLI
+        self._assert_trimmed(repo, shard1)
 
     def test_a_probe_that_hits_the_stamped_shard_runs_the_slow_pass_there(self, sync_limiter):
         """Non-cascade: shard 0 is drained, so the shard retry probes the stamped shard.
@@ -8484,8 +8674,8 @@ class TestAStampedShardIsTrimmedWhereItIs:
                 pass
         shard1 = self._raw(repo, "probe", 1)
         assert BUCKET_FIELD_VU not in shard1
-        assert self._tk(shard1) == self.CEILING_MILLI - 1000
-        assert self._tk(self._raw(repo, "probe", 0)) == 0
+        assert self._tk(repo, shard1) == self.CEILING_MILLI - 1000
+        assert self._tk(repo, self._raw(repo, "probe", 0)) == 0
 
     def test_a_cascading_child_is_trimmed_on_its_stamped_shard(self, sync_limiter):
         repo = sync_limiter._repository
@@ -8500,7 +8690,7 @@ class TestAStampedShardIsTrimmedWhereItIs:
                 pass
         shard1 = self._raw(repo, "child", 1)
         assert BUCKET_FIELD_VU not in shard1
-        assert self._tk(shard1) <= self.CEILING_MILLI
+        self._assert_trimmed(repo, shard1)
 
     def _sharded_parent(self, sync_limiter, limit):
         """`kid` (one shard, cascading) under `boss` (two shards, 1 stamped)."""
@@ -8535,7 +8725,7 @@ class TestAStampedShardIsTrimmedWhereItIs:
         self._acquire_drawing_parent_shard_1_first(sync_limiter)
         shard1 = self._raw(repo, "boss", 1)
         assert BUCKET_FIELD_VU not in shard1
-        assert self._tk(shard1) <= self.CEILING_MILLI
+        self._assert_trimmed(repo, shard1)
 
     def test_a_stamped_parent_shard_is_pinned_when_the_child_goes_slow(self, sync_limiter):
         """The warm parallel path: the child must take the slow path as well.
@@ -8550,6 +8740,7 @@ class TestAStampedShardIsTrimmedWhereItIs:
         with patch("zae_limiter.sync_repository.random.randrange", return_value=0):
             with sync_limiter.acquire("kid", "gpt-4", consume={"rpm": 1}):
                 pass
+        as_legacy(repo, "kid", "gpt-4")
         client = repo._get_client()
         client.update_item(
             TableName=repo.table_name,
@@ -8567,7 +8758,7 @@ class TestAStampedShardIsTrimmedWhereItIs:
         self._acquire_drawing_parent_shard_1_first(sync_limiter)
         shard1 = self._raw(repo, "boss", 1)
         assert BUCKET_FIELD_VU not in shard1
-        assert self._tk(shard1) == self.CEILING_MILLI - 1000
+        assert self._tk(repo, shard1) == self.CEILING_MILLI - 1000
 
     def test_a_scheduled_cascade_parent_is_materialised_on_its_stamped_shard(self, sync_limiter):
         """A `vu = 0` on a scheduled parent shard reads as a closed window.
@@ -8582,7 +8773,7 @@ class TestAStampedShardIsTrimmedWhereItIs:
         self._acquire_drawing_parent_shard_1_first(sync_limiter)
         shard1 = self._raw(repo, "boss", 1)
         assert int(shard1[BUCKET_FIELD_VU]["N"]) > self.NOW
-        assert self._tk(shard1) <= self.CEILING_MILLI
+        self._assert_trimmed(repo, shard1)
 
 
 RESET_NY = ZoneInfo("America/New_York")
@@ -9431,7 +9622,14 @@ def _stored_ws(repo, entity_id, resource, limit_name, shard=0):
 
 
 def _stored_tk(repo, entity_id, resource, limit_name, shard=0):
+    """One shard's balance of ``limit_name``, millitokens.
+
+    A quota's (or a legacy item's) stored ``tk`` as is; a dripping limit is a
+    fill instant since #821 (ADR-154), read at the repository's clock.
+    """
     item = _raw_bucket(repo, entity_id, resource, shard)
+    if bucket_attr(limit_name, BUCKET_FIELD_FI) in item:
+        return balance_milli(repo, item, limit_name, repo._now_ms())
     return int(item[bucket_attr(limit_name, BUCKET_FIELD_TK)]["N"])
 
 
@@ -9779,7 +9977,7 @@ class TestOverrideMaterialisesItemLimits:
         repo.bump_shard_count("o", "r", 1)
         with patch.object(repo, "select_shard", lambda *a, **k: (1, 2)):
             repo._now_ms = lambda: T0 + 1000
-            with slow.acquire("o", "r", consume={"rpm": 1}):
+            with slow.acquire("o", "r", consume={"rpm": 0}):
                 pass
             if stripped:
                 _strip_window(repo, "o", "r", "session", shard=1)
@@ -10126,24 +10324,29 @@ class TestRfNeverMovesBackward:
         assert _stored_tk(repo, "user-1", "gpt-4", "session", shard=1) == 3000
 
     def test_a_drip_limit_behind_rf_gets_no_negative_refill(self, sync_limiter):
-        """`refill_bucket` treats a non-positive elapsed time as zero, and the
-        write keeps `rf` where it was rather than rewinding it."""
+        """A lagging clock is credited no refill it has not reached, and the
+        write keeps `rf` where it was rather than rewinding it.
+
+        A fill instant is read at the writer's own clock (#821): one 10 s
+        behind sees 10 s less refill than one in step, never more.
+        """
         repo = sync_limiter._repository
         slow = SyncRateLimiter(repository=repo, speculative_writes=False)
         repo.set_limits("user-1", [Limit.per_minute("rpm", 60)], resource="gpt-4")
         repo._now_ms = lambda: T0
         with slow.acquire("user-1", "gpt-4", consume={"rpm": 30}):
             pass
-        repo._now_ms = lambda: T0 - 30000
+        repo._now_ms = lambda: T0 - 10000
         with slow.acquire("user-1", "gpt-4", consume={"rpm": 1}):
             pass
-        assert _stored_tk(repo, "user-1", "gpt-4", "rpm") == 29000
         item = _raw_bucket(repo, "user-1")
+        assert balance_milli(repo, item, "rpm", T0) == 29000
         assert int(item[BUCKET_FIELD_RF]["N"]) == T0
         repo._now_ms = lambda: T0 + 1000
         with slow.acquire("user-1", "gpt-4", consume={"rpm": 1}):
             pass
-        assert _stored_tk(repo, "user-1", "gpt-4", "rpm") == 29000
+        item = _raw_bucket(repo, "user-1")
+        assert balance_milli(repo, item, "rpm", T0 + 1000) == 29000
 
     def test_a_lagging_clock_before_the_edge_cannot_re_apply_a_calendar_reset(self, sync_limiter):
         """(#635) The general form of the bug above, for a calendar
@@ -10197,7 +10400,9 @@ class TestLimitNamesWithDotsAndHyphens:
 
     The clock is frozen and advanced one second between acquires, which is
     what tells the paths apart on the stored item: a fast-path success never
-    touches `rf`, the slow path's rf-locked write stamps it.
+    touches `rf`, the slow path's rf-locked write stamps it. Each balance is a
+    fill instant read exactly (#821): the second's refill is credited on every
+    path, capped at the ceiling.
     """
 
     T0 = 1800000000000
@@ -10219,8 +10424,8 @@ class TestLimitNamesWithDotsAndHyphens:
             pass
         item = _raw_bucket(repo, "dots-fast")
         assert int(item[BUCKET_FIELD_RF]["N"]) == self.T0, "the fast path took the write"
-        assert _stored_tk(repo, "dots-fast", "gpt-4", "rpm.v2") == 98000
-        assert _stored_tk(repo, "dots-fast", "gpt-4", "req-min") == 980000
+        assert _stored_tk(repo, "dots-fast", "gpt-4", "rpm.v2") == 99000
+        assert _stored_tk(repo, "dots-fast", "gpt-4", "req-min") == 990000
 
     def test_slow_path(self, sync_limiter):
         slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
@@ -10236,16 +10441,16 @@ class TestLimitNamesWithDotsAndHyphens:
         repo = self._seed(sync_limiter, "dots-adjust")
         with sync_limiter.acquire("dots-adjust", "gpt-4", consume=self.CONSUME) as lease:
             lease.adjust(**{"rpm.v2": 4, "req-min": -5})
-        assert _stored_tk(repo, "dots-adjust", "gpt-4", "rpm.v2") == 100000 - 2000 - 4000
-        assert _stored_tk(repo, "dots-adjust", "gpt-4", "req-min") == 1000000 - 20000 + 5000
+        assert _stored_tk(repo, "dots-adjust", "gpt-4", "rpm.v2") == 100000 - 1000 - 4000
+        assert _stored_tk(repo, "dots-adjust", "gpt-4", "req-min") == 1000000 - 10000 + 5000
 
     def test_rollback(self, sync_limiter):
         repo = self._seed(sync_limiter, "dots-rollback")
         with pytest.raises(RuntimeError, match="boom"):
             with sync_limiter.acquire("dots-rollback", "gpt-4", consume=self.CONSUME):
                 raise RuntimeError("boom")
-        assert _stored_tk(repo, "dots-rollback", "gpt-4", "rpm.v2") == 99000
-        assert _stored_tk(repo, "dots-rollback", "gpt-4", "req-min") == 990000
+        assert _stored_tk(repo, "dots-rollback", "gpt-4", "rpm.v2") == 100000
+        assert _stored_tk(repo, "dots-rollback", "gpt-4", "req-min") == 1000000
 
 
 class TestSlowPathCommitErrorsHonourOnUnavailable:
@@ -10416,12 +10621,17 @@ class TestRetryRejectionReportsTheRealWait:
 
     def test_retry_rejection_reports_the_real_wait(self, sync_limiter):
         """A consumption-only retry that fails reports the item's real balance
-        and the wait to refill it, not the in-memory ``0.0``."""
+        and the wait to refill it, not the in-memory ``0.0``.
+
+        On a daily quota since #821: a dripping debit that loses its lock
+        re-plans instead of taking the retry (ADR-155). Its real wait is the
+        next reset edge.
+        """
         slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
         repo = sync_limiter._repository
         repo._now_ms = lambda: T0
-        repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
-        with slow.acquire("real-wait", "gpt-4", consume={"rpm": 1}):
+        repo.set_resource_defaults("gpt-4", [Limit.quota("rpd", 100, cron="0 0 * * *")])
+        with slow.acquire("real-wait", "gpt-4", consume={"rpd": 1}):
             pass
         stale = slow._fetch_entity_and_buckets("real-wait", "gpt-4", 0)
         client = repo._get_client()
@@ -10433,7 +10643,7 @@ class TestRetryRejectionReportsTheRealWait:
             },
             UpdateExpression="SET #tk = :z, #rf = :rf",
             ExpressionAttributeNames={
-                "#tk": bucket_attr("rpm", BUCKET_FIELD_TK),
+                "#tk": bucket_attr("rpd", BUCKET_FIELD_TK),
                 "#rf": BUCKET_FIELD_RF,
             },
             ExpressionAttributeValues={":z": {"N": "0"}, ":rf": {"N": str(T0 + 1)}},
@@ -10441,12 +10651,12 @@ class TestRetryRejectionReportsTheRealWait:
         repo._now_ms = lambda: T0 + 1
         with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
             with pytest.raises(RateLimitExceeded) as exc_info:
-                with slow.acquire("real-wait", "gpt-4", consume={"rpm": 1}):
+                with slow.acquire("real-wait", "gpt-4", consume={"rpd": 1}):
                     pass
         status = exc_info.value.statuses[0]
         assert status.exceeded
         assert status.available == 0
-        assert status.retry_after_seconds == pytest.approx(0.6, abs=0.01)
+        assert status.retry_after_seconds == pytest.approx(30400, abs=0.01)
 
 
 class TestLimitAddedToExistingBucket:
@@ -10505,18 +10715,18 @@ class TestLimitAddedToExistingBucket:
         with acq.acquire(entity_id, "gpt-4", consume=consume):
             pass
         item = _raw_bucket(repo, entity_id)
-        assert int(item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"]) == 999000
+        assert balance_milli(repo, item, "tpm", T0) == 999000
         assert item[bucket_attr("tpm", "cp")]["N"] == "1000000"
         assert item[bucket_attr("tpm", "tc")]["N"] == "1000"
         rpm_left = 98000 if "rpm" in consume else 99000
-        assert int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == rpm_left
+        assert balance_milli(repo, item, "rpm", T0) == rpm_left
         assert acq.available(entity_id, "gpt-4") == {"rpm": rpm_left // 1000, "tpm": 999}
         repo._now_ms = lambda: T0 + 1000
         with sync_limiter.acquire(entity_id, "gpt-4", consume=consume):
             pass
         after = _raw_bucket(repo, entity_id)
         assert after[BUCKET_FIELD_RF] == item[BUCKET_FIELD_RF]
-        assert int(after[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"]) == 998000
+        assert balance_milli(repo, after, "tpm", T0 + 1000) == 999000
 
     @pytest.mark.parametrize("level", ["resource", "entity", "system"])
     def test_slow_path_not_consuming_the_new_limit_seeds_it_full(self, sync_limiter, level):
@@ -10528,7 +10738,7 @@ class TestLimitAddedToExistingBucket:
         with slow.acquire(entity_id, "gpt-4", consume={"rpm": 1}):
             pass
         item = _raw_bucket(repo, entity_id)
-        assert item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+        assert balance_milli(repo, item, "tpm", T0) == 1000000
         assert item[bucket_attr("tpm", "cp")]["N"] == "1000000"
         assert item[bucket_attr("tpm", "ra")]["N"] == "1000000"
         assert item[bucket_attr("tpm", "rp")]["N"] == "60000"
@@ -10542,19 +10752,22 @@ class TestLimitAddedToExistingBucket:
         repo = self._item_then_new_limit(sync_limiter, "entity", "mode2-rpd", [self.RPM, rpd])
         with sync_limiter.acquire("mode2-rpd", "gpt-4", consume={"rpm": 1}):
             pass
-        assert _stored_tk(repo, "mode2-rpd", "gpt-4", "rpd") == 1000000
+        assert bucket_attr("rpd", BUCKET_FIELD_TK) not in _raw_bucket(repo, "mode2-rpd")
         with sync_limiter.acquire("mode2-rpd", "gpt-4", consume={"rpd": 1}):
             pass
         assert _stored_tk(repo, "mode2-rpd", "gpt-4", "rpd") == 999000
 
     def test_entity_level_session_quota_is_seeded_with_its_window(self, sync_limiter):
+        """Seeded by its first use: a fill instant never waits on the sync's
+        `vu = 0` (ADR-155, #821), so an acquire not naming it takes the fast
+        path and leaves it unseeded."""
         repo = self._item_then_new_limit(
             sync_limiter, "entity", "mode2-session", [self.RPM, SESSION_10]
         )
-        with sync_limiter.acquire("mode2-session", "gpt-4", consume={"rpm": 1}):
+        with sync_limiter.acquire("mode2-session", "gpt-4", consume={"rpm": 1, "session": 1}):
             pass
         item = _raw_bucket(repo, "mode2-session")
-        assert item[bucket_attr("session", BUCKET_FIELD_TK)]["N"] == "10000"
+        assert item[bucket_attr("session", BUCKET_FIELD_TK)]["N"] == "9000"
         assert int(item[bucket_attr("session", BUCKET_FIELD_WS)]["N"]) == T0
         assert int(item[bucket_attr("session", BUCKET_FIELD_RSA)]["N"]) == FIVE_HOURS_MS // 1000
         assert int(item[BUCKET_FIELD_VU]["N"]) == T0 + FIVE_HOURS_MS
@@ -10563,7 +10776,7 @@ class TestLimitAddedToExistingBucket:
             pass
         after = _raw_bucket(repo, "mode2-session")
         assert after[BUCKET_FIELD_RF] == item[BUCKET_FIELD_RF]
-        assert after[bucket_attr("session", BUCKET_FIELD_TK)]["N"] == "9000"
+        assert after[bucket_attr("session", BUCKET_FIELD_TK)]["N"] == "8000"
 
     def test_new_limit_resolved_first_still_credits_refill(self, sync_limiter):
         """Mode 3: the `rf` lock is taken from a limit the item really has."""
@@ -10584,7 +10797,7 @@ class TestLimitAddedToExistingBucket:
                 pass
             item = _raw_bucket(repo, "mode3")
             assert int(item[BUCKET_FIELD_RF]["N"]) == now, f"minute {minute}: rf-locked write"
-            assert int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == 9000
+            assert balance_milli(repo, item, "rpm", now) == 9000
 
     def test_repairs_an_item_damaged_by_an_older_client(self, sync_limiter):
         """An item holding ``b_tpm_tk`` without ``b_tpm_cp`` (mode 2 on an old
@@ -10609,13 +10822,18 @@ class TestLimitAddedToExistingBucket:
         with slow.acquire("damaged", "gpt-4", consume={"rpm": 1, "tpm": 1}):
             pass
         item = _raw_bucket(repo, "damaged")
-        assert item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"] == "999000"
+        assert balance_milli(repo, item, "tpm", T0) == 999000
         assert item[bucket_attr("tpm", "cp")]["N"] == "1000000"
 
     def test_retry_seeds_when_the_lock_is_lost_to_a_writer_that_does_not(self, sync_limiter):
         """The rf-locked seed can lose its lock to a writer that moves `rf`
-        without seeding (an aggregator refill); the consumption-only retry
-        then seeds the limit itself instead of rejecting on a missing one."""
+        without seeding (an aggregator refill); the limit is then seeded rather
+        than rejected on as missing.
+
+        Since #821 the seed is a fill instant, so the lost write re-plans from a
+        fresh read (``FillInstantLostError``, ADR-155) instead of taking the
+        consumption-only retry, and the re-plan's locked write seeds it.
+        """
         slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
         repo = self._item_then_new_limit(slow, "resource", "lost-lock", [self.RPM, self.TPM])
         stale = slow._fetch_entity_and_buckets("lost-lock", "gpt-4", 0)
@@ -10631,12 +10849,20 @@ class TestLimitAddedToExistingBucket:
             ExpressionAttributeValues={":rf": {"N": str(T0 + 1)}},
         )
         repo._now_ms = lambda: T0 + 1
-        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
+        fresh = slow._fetch_entity_and_buckets
+        reads: list[int] = []
+
+        def stale_first(*args, **kwargs):
+            reads.append(1)
+            return stale if len(reads) == 1 else fresh(*args, **kwargs)
+
+        with patch.object(slow, "_fetch_entity_and_buckets", stale_first):
             with slow.acquire("lost-lock", "gpt-4", consume={"tpm": 1}):
                 pass
+        assert len(reads) == 2, "re-planned from a fresh read"
         item = _raw_bucket(repo, "lost-lock")
-        assert int(item[BUCKET_FIELD_RF]["N"]) == T0 + 1, "the retry, not the locked write"
-        assert item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"] == "999000"
+        assert int(item[BUCKET_FIELD_RF]["N"]) == T0 + 1
+        assert balance_milli(repo, item, "tpm", T0 + 1) == 999000
         assert item[bucket_attr("tpm", "cp")]["N"] == "1000000"
 
     def _lose_the_lock(self, slow, repo, entity_id):
@@ -10660,12 +10886,20 @@ class TestLimitAddedToExistingBucket:
     def test_the_retry_leaves_a_scheduled_seed_to_the_next_locked_pass(self, sync_limiter):
         """The retry stamps no `vu`, so it must not seed a quota: a quota seeded
         there could be spent by the fast path past its reset edge. One extra
-        rejection, then the next rf-locked pass seeds it with its `vu`."""
+        rejection, then the next rf-locked pass seeds it with its `vu`.
+
+        Every read here is the stale one, so the #771 redo loses its lock too.
+        Each is a copy: a pass settles the states it read in memory.
+        """
         slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
         rpd = Limit.quota("rpd", 1000, cron="0 0 * * *")
         repo = self._item_then_new_limit(slow, "resource", "retry-quota", [self.RPM, rpd])
         stale = self._lose_the_lock(slow, repo, "retry-quota")
-        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
+
+        def stale_read(*args, **kwargs):
+            return copy.deepcopy(stale)
+
+        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(side_effect=stale_read)):
             with pytest.raises(RateLimitExceeded) as exc_info:
                 with slow.acquire("retry-quota", "gpt-4", consume={"rpd": 1}):
                     pass
@@ -10681,9 +10915,19 @@ class TestLimitAddedToExistingBucket:
         """A stray `tk = 0` without `cp` (an older client's mode 2) on a limit
         the retry does not debit is left alone, so the next locked pass can
         still recognise and repair it; writing `cp` beside it would make it
-        read as a genuinely spent balance."""
+        read as a genuinely spent balance.
+
+        The item holds a quota where it held ``rpm``: since #821 only a write
+        debiting no fill instant takes the retry (ADR-155).
+        """
         slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
-        repo = self._item_then_new_limit(slow, "resource", "retry-damaged", [self.RPM, self.TPM])
+        rpd = Limit.quota("rpd", 1000, cron="0 0 * * *")
+        repo = sync_limiter._repository
+        repo._now_ms = lambda: T0
+        self._configure(repo, "resource", "retry-damaged", [rpd])
+        with slow.acquire("retry-damaged", "gpt-4", consume={"rpd": 1}):
+            pass
+        self._configure(repo, "resource", "retry-damaged", [rpd, self.TPM])
         client = repo._get_client()
         client.update_item(
             TableName=repo.table_name,
@@ -10697,13 +10941,13 @@ class TestLimitAddedToExistingBucket:
         )
         stale = self._lose_the_lock(slow, repo, "retry-damaged")
         with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
-            with slow.acquire("retry-damaged", "gpt-4", consume={"rpm": 1}):
+            with slow.acquire("retry-damaged", "gpt-4", consume={"rpd": 1}):
                 pass
         assert bucket_attr("tpm", "cp") not in _raw_bucket(repo, "retry-damaged")
-        with slow.acquire("retry-damaged", "gpt-4", consume={"rpm": 1}):
+        with slow.acquire("retry-damaged", "gpt-4", consume={"rpd": 1}):
             pass
         item = _raw_bucket(repo, "retry-damaged")
-        assert item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+        assert balance_milli(repo, item, "tpm", T0 + 1) == 1000000
         assert item[bucket_attr("tpm", "cp")]["N"] == "1000000"
 
 
@@ -11014,7 +11258,7 @@ class TestLimitAddedToExistingShards:
         assert shard1[bucket_attr("rpd", "tc")]["N"] == "0"
         assert shard1[bucket_attr("rpd", "gc")]["N"] == "2"
         assert BUCKET_FIELD_VU in shard1, "the reset edge still forces a pass"
-        assert shard1[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "50000"
+        assert balance_milli(repo, shard1, "rpm", T0) == 50000
         assert shard1[bucket_attr("rpm", "tc")]["N"] == "0"
         self._acquire_on(sync_limiter, "r2-reject", 1, {"rpd": 1})
         assert _stored_tk(repo, "r2-reject", "gpt-4", "rpd", shard=1) == 499000
@@ -11071,13 +11315,22 @@ class TestLimitAddedToExistingShards:
         """R8, design §6 step 6: a second loss is not `RateLimiterUnavailable`
         (under ALLOW that admits without limit). The third pass seeds the
         covered slot with nothing and no move: a request against it is
-        rejected, and neither lost attempt wrote anything."""
+        rejected, and neither lost attempt wrote anything.
+
+        Every read is a copy of the stale one: a pass settles the states it
+        read in memory, and the next must still read them as the table held
+        them before ``rf`` moved.
+        """
         repo = self._two_shards(sync_limiter, "r2-twice", extra_on_shard0=(700000, 300000))
         slow = SyncRateLimiter(repository=repo, speculative_writes=False)
         stale = slow._fetch_entity_and_buckets("r2-twice", "gpt-4", 1)
         _set_rf(repo, "r2-twice", 1, T0 + 1)
         repo._now_ms = lambda: T0 + 1
-        fetch = MagicMock(return_value=stale)
+
+        def stale_read(*args, **kwargs):
+            return copy.deepcopy(stale)
+
+        fetch = MagicMock(side_effect=stale_read)
         with patch.object(slow, "_fetch_entity_and_buckets", fetch):
             with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
                 with pytest.raises(RateLimitExceeded):
@@ -11306,9 +11559,14 @@ class TestCreditAboveCapacity:
     rollback returns consumption after refill may have accrued. The speculative
     fast path is a pure ``ADD`` with no cap, so an excess was admitted there while
     the slow path clamped it and ``check_availability`` reported the cap.
+
+    On a quota since #821: a dripping limit is a fill instant, whose credit is
+    capped at capacity for free (ADR-155); a quota's ``tk`` credit is still
+    conditioned on its ceiling (#721). The clock is frozen in each test, so no
+    reset edge lands inside one.
     """
 
-    SLOW = Limit.custom("q", capacity=100, refill_amount=1, refill_period_seconds=86400)
+    SLOW = Limit.quota("q", 100, cron="0 0 * * *")
 
     @staticmethod
     def _raw(repo, entity_id, resource="r", shard=0):
@@ -11324,6 +11582,7 @@ class TestCreditAboveCapacity:
 
     def test_a_release_above_capacity_is_not_spent_by_the_fast_path(self, sync_limiter):
         repo = sync_limiter._repository
+        freeze_clock(repo)
         repo.set_limits("over", [self.SLOW], resource="r")
         with sync_limiter.acquire("over", "r", consume={"q": 10}) as lease:
             lease.release(q=500)
@@ -11335,6 +11594,7 @@ class TestCreditAboveCapacity:
     def test_an_overshoot_from_a_fast_path_lease_is_caught_too(self, sync_limiter):
         """A warm bucket: the lease's state is the speculative ALL_NEW image, not a read."""
         repo = sync_limiter._repository
+        freeze_clock(repo)
         repo.set_limits("warm", [self.SLOW], resource="r")
         with sync_limiter.acquire("warm", "r", consume={"q": 1}):
             pass
@@ -11347,6 +11607,7 @@ class TestCreditAboveCapacity:
 
     def test_the_forced_pass_trims_the_excess_to_the_ceiling(self, sync_limiter):
         repo = sync_limiter._repository
+        freeze_clock(repo)
         repo.set_limits("trim", [self.SLOW], resource="r")
         with sync_limiter.acquire("trim", "r", consume={"q": 10}) as lease:
             lease.release(q=500)
@@ -11359,9 +11620,11 @@ class TestCreditAboveCapacity:
     def test_a_credit_within_capacity_costs_nothing_extra(self, sync_limiter):
         """The common LLM reconcile (estimate high, return the rest) stays on the fast path."""
         repo = sync_limiter._repository
+        freeze_clock(repo)
         repo.set_limits("within", [self.SLOW], resource="r")
-        with sync_limiter.acquire("within", "r", consume={"q": 1}):
-            pass
+        for _ in range(2):
+            with sync_limiter.acquire("within", "r", consume={"q": 1}):
+                pass
         client = repo._get_client()
         calls: list[str] = []
         original = client.update_item
@@ -11377,11 +11640,12 @@ class TestCreditAboveCapacity:
         finally:
             client.update_item = original
         assert len(calls) == 2
-        assert BUCKET_FIELD_VU not in self._raw(repo, "within")
+        assert self._raw(repo, "within")[BUCKET_FIELD_VU]["N"] != "0"
 
     def test_a_rollback_that_overshoots_is_trimmed(self, sync_limiter):
         """Returning consumption after a refill landed can overshoot as well."""
         repo = sync_limiter._repository
+        freeze_clock(repo)
         repo.set_limits("rollback", [self.SLOW], resource="r")
         client = repo._get_client()
         tk = bucket_attr("q", BUCKET_FIELD_TK)
@@ -11409,6 +11673,7 @@ class TestCreditAboveCapacity:
         committed, so the initial consumption stays and nothing rolls it back.
         """
         repo = sync_limiter._repository
+        freeze_clock(repo)
         repo.set_limits("ghost-trim", [self.SLOW], resource="r")
         original = repo.write_each
 
@@ -11423,7 +11688,7 @@ class TestCreditAboveCapacity:
                 lease.release(q=500)
         item = self._raw(repo, "ghost-trim")
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "90000"
-        assert BUCKET_FIELD_VU not in item
+        assert item[BUCKET_FIELD_VU]["N"] != "0"
 
     def test_write_each_of_nothing_returns_nothing(self, sync_limiter):
         assert sync_limiter._repository.write_each([]) == []
@@ -11438,6 +11703,7 @@ class TestCreditAboveCapacity:
         import logging
 
         repo = sync_limiter._repository
+        freeze_clock(repo)
         repo.set_limits("broken-check", [self.SLOW], resource="r")
 
         def boom(self, now_ms):
@@ -11648,6 +11914,8 @@ class TestSelfTrimmingRefunds:
         r1 = l1._repository
         with l1.acquire("solo", "budget", {"q": 2}):
             pass
+        with l1.acquire("solo", "budget", {"q": 0}):
+            pass
         calls: list[dict] = []
         client = r1._get_client()
         original = client.update_item
@@ -11699,12 +11967,19 @@ class TestSelfTrimmingRefunds:
 
     SLOW = Limit.custom("q", capacity=100, refill_amount=1, refill_period_seconds=86400)
 
-    def _bucket_rf_and_shard_moved(self, l1, entity_id, during):
-        """Debit 10 of 100, run `during` inside the body, then roll back."""
+    def _bucket_rf_and_shard_moved(self, l1, entity_id, during, limit=None, *, legacy=False):
+        """Debit 10 of 100, run `during` inside the body, then roll back.
+
+        ``legacy`` rewrites the created bucket as a legacy item: a dripping
+        limit stored as a fill instant is returned exactly, capped for free
+        (ADR-155, #821), so only a ``tk`` credit has a ceiling to overshoot.
+        """
         r1 = l1._repository
-        r1.set_limits(entity_id, [self.SLOW], resource="r")
+        r1.set_limits(entity_id, [limit or self.SLOW], resource="r")
         with l1.acquire(entity_id, "r", {"q": 1}):
             pass
+        if legacy:
+            as_legacy(r1, entity_id, "r")
         with pytest.raises(RuntimeError):
             with l1.acquire(entity_id, "r", {"q": 10}):
                 during()
@@ -11729,7 +12004,7 @@ class TestSelfTrimmingRefunds:
                 ExpressionAttributeValues={":two": {"N": "2"}},
             )
 
-        item = self._bucket_rf_and_shard_moved(l1, "dbl", double)
+        item = self._bucket_rf_and_shard_moved(l1, "dbl", double, legacy=True)
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
         assert item[BUCKET_FIELD_VU]["N"] == "0"
         spend = r1.speculative_consume("dbl", "r", {"q": 60}, shard_id=0)
@@ -11819,7 +12094,7 @@ class TestSelfTrimmingRefunds:
         with l2.acquire("d", "r", {"q": 1}):
             pass
         item = self._raw(r1, "d", resource="r")
-        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
+        assert balance_milli(r1, item, "q", now[0]) == 99000
         assert bucket_attr("q", BUCKET_FIELD_CP) in item
 
     @staticmethod
@@ -11839,11 +12114,15 @@ class TestSelfTrimmingRefunds:
     def test_cost_rollback_after_create(self, two):
         """A refund of the lease that created the bucket fits: one conditional write
         and `vu` left alone (#730 review). Its pin is the create's own `Put`; before,
-        the lease knew nothing after a create and every such refund stamped `vu = 0`."""
+        the lease knew nothing after a create and every such refund stamped `vu = 0`.
+
+        On a quota since #821: a dripping limit's refund is an exact return,
+        with no ceiling to check (ADR-155).
+        """
         l1, _, now = two
         now[0] = self.T10
         r1 = l1._repository
-        r1.set_limits("c", [Limit.per_minute("q", 1000)], resource="r")
+        r1.set_limits("c", [Limit.quota("q", 1000, cron="0 0 * * *")], resource="r")
         calls, stop = self._update_items(r1)
         try:
             with pytest.raises(RuntimeError):
@@ -11855,11 +12134,11 @@ class TestSelfTrimmingRefunds:
         assert len(refunds) == 1
         assert refunds[0]["UpdateExpression"].startswith("ADD")
         assert "#bt0 <= :bm0" in refunds[0]["ConditionExpression"]
-        assert BUCKET_FIELD_VU not in self._raw(r1, "c", resource="r")
-        r1.set_limits("c2", [Limit.per_minute("q", 1000)], resource="r")
+        assert self._raw(r1, "c", resource="r")[BUCKET_FIELD_VU]["N"] != "0"
+        r1.set_limits("c2", [Limit.quota("q", 1000, cron="0 0 * * *")], resource="r")
         with l1.acquire("c2", "r", {"q": 100}) as lease:
             lease.adjust(q=-80)
-        assert BUCKET_FIELD_VU not in self._raw(r1, "c2", resource="r")
+        assert self._raw(r1, "c2", resource="r")[BUCKET_FIELD_VU]["N"] != "0"
 
     def test_cost_retry_lease_credit_trims(self, two):
         """A lease committed by the consumption-only retry (it lost the `rf` lock)
@@ -11994,67 +12273,7 @@ class TestSelfTrimmingRefunds:
                 raise RuntimeError("body failed")
         item = self._raw(r1, "m", resource="r")
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "10000"
-        assert int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) >= 99000
-
-    def test_retry_image_vs_stale_ceiling(self, two):
-        """After the consumption-only retry, the refund's ceiling is the read's, so
-        its pins must be the read's too (#730 third review). Another client doubles
-        the entity and clamps shard 0 to its 50 before this lease commits; the retry's
-        `ALL_NEW` image shows `shard_count = 2` while the ceiling was computed at 1
-        (100). Pinned from that image, the refund lifted shard 0 to 60 with no `vu`,
-        and the fast path spent 60 against 50."""
-        l1, _, now = two
-        now[0] = self.T10
-        r1 = l1._repository
-        slow = SyncRateLimiter(repository=r1, speculative_writes=False)
-        r1.set_limits("dbl", [Limit.per_minute("q", 100)], resource="r")
-        with slow.acquire("dbl", "r", {"q": 1}):
-            pass
-        client = r1._get_client()
-        key = {"PK": {"S": pk_bucket(r1._namespace_id, "dbl", "r", 0)}, "SK": {"S": sk_state()}}
-        tk = bucket_attr("q", BUCKET_FIELD_TK)
-        original = r1.transact_write
-        raced: list[int] = []
-
-        def racing(items):
-            if not raced:
-                raced.append(1)
-                client.update_item(
-                    TableName=r1.table_name,
-                    Key=key,
-                    UpdateExpression="SET shard_count = :two, #tk = :half ADD rf :one",
-                    ExpressionAttributeNames={"#tk": tk},
-                    ExpressionAttributeValues={
-                        ":two": {"N": "2"},
-                        ":half": {"N": "50000"},
-                        ":one": {"N": "1"},
-                    },
-                )
-            return original(items)
-
-        r1.transact_write = racing
-        try:
-            with pytest.raises(RuntimeError):
-                with slow.acquire("dbl", "r", {"q": 10}):
-                    client.update_item(
-                        TableName=r1.table_name,
-                        Key=key,
-                        UpdateExpression="SET #tk = :half ADD rf :one",
-                        ExpressionAttributeNames={"#tk": tk},
-                        ExpressionAttributeValues={":half": {"N": "50000"}, ":one": {"N": "1"}},
-                    )
-                    raise RuntimeError("body failed")
-        finally:
-            r1.transact_write = original
-        assert raced
-        assert self._raw(r1, "dbl", resource="r")[BUCKET_FIELD_VU]["N"] == "0"
-        admitted = 0
-        while admitted <= 100:
-            result = r1.speculative_consume("dbl", "r", {"q": 1}, shard_id=0)
-            if not result.success:
-                break
-            admitted += 1
-        assert admitted <= 50
+        assert balance_milli(r1, item, "rpm", now[0]) >= 99000
 
     def _lose_the_rf_lock(self, repo, entity_id, *, image=True):
         """Make the next commit lose its `rf` lock once, so it takes the retry.
@@ -12180,20 +12399,22 @@ class TestSelfTrimmingRefunds:
 
     def test_a_lowered_limit_clamped_before_the_refund(self, two):
         """The limit drops to 50 and another process's slow pass clamps to it (moving
-        `rf`) before the refund: the in-memory ceiling is still 100."""
+        `rf`) before the refund: the in-memory ceiling is still 100.
+
+        On a quota since #821: the clamping pass converts a legacy item, and a
+        fill instant's return is capped for free (ADR-155).
+        """
         l1, l2, _ = two
         r1 = l1._repository
 
         def lower_and_clamp():
-            r1.set_limits(
-                "low",
-                [Limit.custom("q", capacity=50, refill_amount=1, refill_period_seconds=86400)],
-                resource="r",
-            )
+            r1.set_limits("low", [Limit.quota("q", 50, cron="0 0 * * *")], resource="r")
             with l2.acquire("low", "r", {"q": 0}):
                 pass
 
-        item = self._bucket_rf_and_shard_moved(l1, "low", lower_and_clamp)
+        item = self._bucket_rf_and_shard_moved(
+            l1, "low", lower_and_clamp, Limit.quota("q", 100, cron="0 0 * * *")
+        )
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "60000"
         assert item[BUCKET_FIELD_VU]["N"] == "0"
         spend = r1.speculative_consume("low", "r", {"q": 55}, shard_id=0)
@@ -12347,9 +12568,12 @@ class TestAdjustmentCommitFailure:
         """Make the next independent write to these entities' buckets raise, once.
 
         Later writes land, so a refund the fix must not make would be visible.
+        A fill instant's positive adjustment is its own debit write (#820), so
+        that is intercepted beside ``write_each``.
         """
         failing = {pk_bucket(repo._namespace_id, e, "gpt-4", 0) for e in entity_ids}
         real_write_each = repo.write_each
+        real_debit = repo.debit_fill_instants
 
         def write_each(items):
             results = []
@@ -12360,7 +12584,14 @@ class TestAdjustmentCommitFailure:
                 results.extend(real_write_each([item]))
             return results
 
+        def debit_fill_instants(entity_id, resource, shard_id, debits, **kwargs):
+            if pk_bucket(repo._namespace_id, entity_id, resource, shard_id) in failing:
+                failing.clear()
+                raise RuntimeError("throttled")
+            return real_debit(entity_id, resource, shard_id, debits, **kwargs)
+
         repo.write_each = write_each
+        repo.debit_fill_instants = debit_fill_instants
 
     def test_a_failed_parent_adjustment_leaves_the_child_credited_once(self, sync_limiter):
         repo = sync_limiter._repository
@@ -12506,7 +12737,9 @@ class TestTransactionConflictIsContention:
 
         ``speculative_only`` limits it to the fast path's conditional
         ``UpdateItem`` (the only write carrying ``:thresh_wcu``);
-        ``refunds_only`` to every other ``UpdateItem`` (refunds, commits).
+        ``refunds_only`` to every other ``UpdateItem`` (refunds, commits) except
+        a debit of a fill instant, which carries its stamp ``:zs{i}`` (#819):
+        on an item storing fill instants the fast path's admission is one.
         """
         client = repo._get_client()
         original = client.update_item
@@ -12514,9 +12747,11 @@ class TestTransactionConflictIsContention:
 
         def conflicted(**kwargs):
             pk = kwargs.get("Key", {}).get("PK", {}).get("S", "")
-            speculative = ":thresh_wcu" in kwargs.get("ExpressionAttributeValues", {})
+            values = kwargs.get("ExpressionAttributeValues", {})
+            speculative = ":thresh_wcu" in values
+            debit = any(token.startswith(":zs") and token[3:].isdigit() for token in values)
             if refunds_only:
-                targeted = not speculative
+                targeted = not speculative and (not debit)
             else:
                 targeted = speculative or not speculative_only
             if f"/BUCKET#{entity_id}#" in pk and targeted and (state["left"] > 0):
@@ -12759,13 +12994,9 @@ class TestTransactionConflictIsContention:
         assert self._available(sync_limiter, refunded) == 9
         assert self._available(sync_limiter, stuck) == 8
         failures = [
-            r.getMessage()
-            for r in caplog.records
-            if r.getMessage().startswith("Failed to roll back consumed tokens")
+            r.getMessage() for r in caplog.records if r.getMessage().startswith("Failed to re")
         ]
-        assert failures == [
-            "Failed to roll back consumed tokens for resource=gpt-4 shard=0 (ClientError)"
-        ]
+        assert failures == ["Failed to return a fill instant on rollback (ClientError)"]
 
     def test_a_contended_commit_reports_the_undebited_balance(self, sync_limiter):
         """The commit wrote nothing, so the 429 reports the 5 the bucket still
@@ -13654,17 +13885,21 @@ class TestRetryDebitsOnlyAGrantedBalance:
     balance nothing granted that every later pass read as present and so never
     seeded; a hard one failed ``tk >= c`` on the missing attribute and the
     request was rejected for a limit holding its whole allowance.
+
+    The item's other limit is a quota too since #821: a dripping limit's debit
+    that loses its lock re-plans the pass (``FillInstantLostError``) and never
+    takes the retry (ADR-155), so only a write debiting quotas alone does.
     """
 
-    RPM = Limit.per_minute("rpm", 100)
+    RPD = Limit.quota("rpd", 100, cron="0 0 * * *")
 
     def _with_quota_added(self, sync_limiter, entity_id, quota):
-        """A warm item carrying ``rpm`` only, then ``quota`` added at entity level."""
+        """A warm item carrying ``rpd`` only, then ``quota`` added at entity level."""
         repo = sync_limiter._repository
-        repo.set_limits(entity_id, [self.RPM], resource="r")
-        with sync_limiter.acquire(entity_id, "r", {"rpm": 1}):
+        repo.set_limits(entity_id, [self.RPD], resource="r")
+        with sync_limiter.acquire(entity_id, "r", {"rpd": 1}):
             pass
-        repo.set_limits(entity_id, [self.RPM, quota], resource="r")
+        repo.set_limits(entity_id, [self.RPD, quota], resource="r")
         item = _raw_bucket(repo, entity_id, resource="r")
         assert bucket_attr("q", BUCKET_FIELD_CP) in item
         assert bucket_attr("q", BUCKET_FIELD_TK) not in item
@@ -13701,7 +13936,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
         slow = SyncRateLimiter(repository=repo, speculative_writes=False)
         raced, undo = self._lose_the_rf_lock(repo, "soft")
         try:
-            with slow.acquire("soft", "r", {"rpm": 1, "q": 3}) as lease:
+            with slow.acquire("soft", "r", {"rpd": 1, "q": 3}) as lease:
                 assert lease.consumed["q"] == 3
         finally:
             undo()
@@ -13742,7 +13977,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
                 patch.object(repo, "build_composite_retry", spy),
                 patch.object(SyncLease, "_commit_initial", commit),
             ):
-                with slow.acquire("trust", "r", {"rpm": 1, "q": 3}):
+                with slow.acquire("trust", "r", {"rpd": 1, "q": 3}):
                     pass
         finally:
             undo()
@@ -13763,7 +13998,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
     ):
         """The second door (#771 review): this pass creates the bucket, and
         another writer (a process with a stale config, or an aggregator clone
-        of a pre-seed image) creates it first carrying ``rpm`` only. The lost
+        of a pre-seed image) creates it first carrying ``rpd`` only. The lost
         ``Put`` is downgraded to the consumption-only retry, whose quota is
         trusted soft (config read fresh on a create) — no condition at all —
         so its ``ADD`` landed on the winner's item: ``tk = -3000`` with no
@@ -13774,7 +14009,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
         not stand in for one and turn the re-plan into a 429."""
         repo = sync_limiter._repository
         quota = Limit.quota("q", 10, cron="0 0 * * *", soft=soft)
-        repo.set_limits("race", [self.RPM, quota], resource="r")
+        repo.set_limits("race", [self.RPD, quota], resource="r")
         slow = SyncRateLimiter(repository=repo, speculative_writes=False)
         original = repo.transact_write
         raced: list[int] = []
@@ -13783,25 +14018,28 @@ class TestRetryDebitsOnlyAGrantedBalance:
             if not raced and "Put" in repr(items):
                 raced.append(1)
                 now_ms = repo._now_ms()
-                state = BucketState.from_limit("race", "r", self.RPM, now_ms)
+                state = BucketState.from_limit("race", "r", self.RPD, now_ms)
                 original([repo.build_composite_create("race", "r", [state], now_ms)])
                 if wcu_spent:
                     client = repo._get_client()
+                    winner = _raw_bucket(repo, "race", resource="r")
                     client.update_item(
                         TableName=repo.table_name,
                         Key={
                             "PK": {"S": pk_bucket(repo._namespace_id, "race", "r", 0)},
                             "SK": {"S": sk_state()},
                         },
-                        UpdateExpression="SET #w = :zero",
-                        ExpressionAttributeNames={"#w": bucket_attr("wcu", BUCKET_FIELD_TK)},
-                        ExpressionAttributeValues={":zero": {"N": "0"}},
+                        UpdateExpression="SET #w = :empty",
+                        ExpressionAttributeNames={"#w": bucket_attr("wcu", BUCKET_FIELD_FI)},
+                        ExpressionAttributeValues={
+                            ":empty": {"N": str(empty_fill_instant(winner, "wcu", now_ms))}
+                        },
                     )
             return original(items)
 
         repo.transact_write = winner_first
         try:
-            with slow.acquire("race", "r", {"rpm": 1, "q": 3}):
+            with slow.acquire("race", "r", {"rpd": 1, "q": 3}):
                 pass
         finally:
             repo.transact_write = original
@@ -13819,7 +14057,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
         decision 1 forbids. It now re-plans, and the fresh pass seeds it."""
         quota = Limit.quota("q", 10, cron="0 0 * * *", soft=True)
         repo = self._with_quota_added(sync_limiter, "gone", quota)
-        with sync_limiter.acquire("gone", "r", {"rpm": 1, "q": 1}):
+        with sync_limiter.acquire("gone", "r", {"rpd": 1, "q": 1}):
             pass
         slow = SyncRateLimiter(repository=repo, speculative_writes=False)
         client = repo._get_client()
@@ -13847,7 +14085,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
 
         repo.transact_write = remove_q_first
         try:
-            with slow.acquire("gone", "r", {"rpm": 1, "q": 3}):
+            with slow.acquire("gone", "r", {"rpd": 1, "q": 3}):
                 pass
         finally:
             repo.transact_write = original
@@ -13857,9 +14095,9 @@ class TestRetryDebitsOnlyAGrantedBalance:
         assert item[bucket_attr("q", BUCKET_FIELD_GC)]["N"] == "1"
 
     def test_a_real_shortfall_outranks_the_missing_limits_replan(self, sync_limiter):
-        """The lock is lost to a writer that also spent ``rpm``: the retry's
-        image shows the quota still missing **and** ``rpm`` genuinely short.
-        The rejection is the real one, ``rpm`` exceeded — not a re-plan that
+        """The lock is lost to a writer that also spent ``rpd``: the retry's
+        image shows the quota still missing **and** ``rpd`` genuinely short.
+        The rejection is the real one, ``rpd`` exceeded — not a re-plan that
         would only find the same shortfall, nor a contended 429."""
         quota = Limit.quota("q", 10, cron="0 0 * * *")
         repo = self._with_quota_added(sync_limiter, "short", quota)
@@ -13868,7 +14106,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
         original = repo.transact_write
         raced: list[int] = []
 
-        def spend_rpm_first(items):
+        def spend_rpd_first(items):
             if not raced and ":expected_rf" in repr(items):
                 raced.append(1)
                 client.update_item(
@@ -13878,12 +14116,12 @@ class TestRetryDebitsOnlyAGrantedBalance:
                         "SK": {"S": sk_state()},
                     },
                     UpdateExpression="SET #tk = :zero ADD rf :one",
-                    ExpressionAttributeNames={"#tk": bucket_attr("rpm", BUCKET_FIELD_TK)},
+                    ExpressionAttributeNames={"#tk": bucket_attr("rpd", BUCKET_FIELD_TK)},
                     ExpressionAttributeValues={":zero": {"N": "0"}, ":one": {"N": "1"}},
                 )
             return original(items)
 
-        repo.transact_write = spend_rpm_first
+        repo.transact_write = spend_rpd_first
         fetches: list[int] = []
         real_fetch = slow._fetch_entity_and_buckets
 
@@ -13894,7 +14132,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
         try:
             with patch.object(slow, "_fetch_entity_and_buckets", counting):
                 with pytest.raises(RateLimitExceeded) as exc_info:
-                    with slow.acquire("short", "r", {"rpm": 1, "q": 3}):
+                    with slow.acquire("short", "r", {"rpd": 1, "q": 3}):
                         pass
         finally:
             repo.transact_write = original
@@ -13902,13 +14140,13 @@ class TestRetryDebitsOnlyAGrantedBalance:
         assert len(fetches) == 1, "not re-planned"
         rejection = exc_info.value
         assert rejection.contended is False
-        assert any(s.limit_name == "rpm" and s.exceeded for s in rejection.statuses)
+        assert any(s.limit_name == "rpd" and s.exceeded for s in rejection.statuses)
 
     @pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
     def test_a_limit_missing_from_the_failed_item_is_not_reported_exceeded(
         self, sync_limiter, soft
     ):
-        """The rejection above stands on ``rpm``; the quota the item does not
+        """The rejection above stands on ``rpd``; the quota the item does not
         carry yet is no part of it (#775). Its report came from memory, which
         marked every debited limit exceeded: a soft one listed in
         ``violations`` (ADR-151 decision 1 forbids it) and a hard one holding
@@ -13921,7 +14159,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
         original = repo.transact_write
         raced: list[int] = []
 
-        def spend_rpm_first(items):
+        def spend_rpd_first(items):
             if not raced and ":expected_rf" in repr(items):
                 raced.append(1)
                 client.update_item(
@@ -13931,21 +14169,21 @@ class TestRetryDebitsOnlyAGrantedBalance:
                         "SK": {"S": sk_state()},
                     },
                     UpdateExpression="SET #tk = :zero ADD rf :one",
-                    ExpressionAttributeNames={"#tk": bucket_attr("rpm", BUCKET_FIELD_TK)},
+                    ExpressionAttributeNames={"#tk": bucket_attr("rpd", BUCKET_FIELD_TK)},
                     ExpressionAttributeValues={":zero": {"N": "0"}, ":one": {"N": "1"}},
                 )
             return original(items)
 
-        repo.transact_write = spend_rpm_first
+        repo.transact_write = spend_rpd_first
         try:
             with pytest.raises(RateLimitExceeded) as exc_info:
-                with slow.acquire(entity_id, "r", {"rpm": 1, "q": 3}):
+                with slow.acquire(entity_id, "r", {"rpd": 1, "q": 3}):
                     pass
         finally:
             repo.transact_write = original
         assert raced == [1]
         rejection = exc_info.value
-        assert [s.limit_name for s in rejection.violations] == ["rpm"]
+        assert [s.limit_name for s in rejection.violations] == ["rpd"]
         assert rejection.violations[0].retry_after_seconds > 0
         q_status = next(s for s in rejection.statuses if s.limit_name == "q")
         assert q_status.exceeded is False
@@ -13953,30 +14191,25 @@ class TestRetryDebitsOnlyAGrantedBalance:
         assert q_status.available == 10
         assert rejection.retry_after_seconds == rejection.violations[0].retry_after_seconds
 
-    @pytest.mark.parametrize(
-        "soft_limit",
-        [Limit.per_minute("s", 5, soft=True), Limit.quota("s", 5, cron="0 0 * * *", soft=True)],
-        ids=["soft-rate", "soft-quota"],
-    )
-    def test_a_soft_limit_the_item_carries_is_never_reported_exceeded(
-        self, sync_limiter, soft_limit
-    ):
-        """The retry's rejection stands on ``rpm``. The soft limit is on the
+    def test_a_soft_limit_the_item_carries_is_never_reported_exceeded(self, sync_limiter):
+        """The retry's rejection stands on ``rpd``. The soft limit is on the
         item and is driven past its balance by this request, which is
         admitted on a soft limit (ADR-151 decision 1). Its status came from
         the image's ``tk`` against the debit alone, so it was listed in
-        ``violations`` beside ``rpm`` (review of #776)."""
-        entity_id = f"soft-on-item-{soft_limit.is_quota}"
+        ``violations`` beside ``rpd`` (review of #776). A soft quota only
+        since #821: a soft dripping limit's debit re-plans (ADR-155)."""
+        soft_limit = Limit.quota("s", 5, cron="0 0 * * *", soft=True)
+        entity_id = "soft-on-item"
         repo = sync_limiter._repository
-        repo.set_limits(entity_id, [self.RPM, soft_limit], resource="r")
-        with sync_limiter.acquire(entity_id, "r", {"rpm": 1, "s": 1}):
+        repo.set_limits(entity_id, [self.RPD, soft_limit], resource="r")
+        with sync_limiter.acquire(entity_id, "r", {"rpd": 1, "s": 1}):
             pass
         slow = SyncRateLimiter(repository=repo, speculative_writes=False)
         client = repo._get_client()
         original = repo.transact_write
         raced: list[int] = []
 
-        def spend_rpm_first(items):
+        def spend_rpd_first(items):
             if not raced and ":expected_rf" in repr(items):
                 raced.append(1)
                 client.update_item(
@@ -13986,21 +14219,21 @@ class TestRetryDebitsOnlyAGrantedBalance:
                         "SK": {"S": sk_state()},
                     },
                     UpdateExpression="SET #tk = :zero ADD rf :one",
-                    ExpressionAttributeNames={"#tk": bucket_attr("rpm", BUCKET_FIELD_TK)},
+                    ExpressionAttributeNames={"#tk": bucket_attr("rpd", BUCKET_FIELD_TK)},
                     ExpressionAttributeValues={":zero": {"N": "0"}, ":one": {"N": "1"}},
                 )
             return original(items)
 
-        repo.transact_write = spend_rpm_first
+        repo.transact_write = spend_rpd_first
         try:
             with pytest.raises(RateLimitExceeded) as exc_info:
-                with slow.acquire(entity_id, "r", {"rpm": 1, "s": 10}):
+                with slow.acquire(entity_id, "r", {"rpd": 1, "s": 10}):
                     pass
         finally:
             repo.transact_write = original
         assert raced == [1]
         rejection = exc_info.value
-        assert [s.limit_name for s in rejection.violations] == ["rpm"]
+        assert [s.limit_name for s in rejection.violations] == ["rpd"]
         s_status = next(s for s in rejection.statuses if s.limit_name == "s")
         assert s_status.exceeded is False
         assert s_status in rejection.passed
@@ -14009,8 +14242,8 @@ class TestRetryDebitsOnlyAGrantedBalance:
         """The rf-locked write loses its lock; the retry then fails with no
         image, as from a backend that returns none, so the 429 is built from
         memory."""
-        repo.set_limits(entity_id, [self.RPM, soft_limit], resource="r")
-        with SyncRateLimiter(repository=repo).acquire(entity_id, "r", {"rpm": 1, "s": 1}):
+        repo.set_limits(entity_id, [self.RPD, soft_limit], resource="r")
+        with SyncRateLimiter(repository=repo).acquire(entity_id, "r", {"rpd": 1, "s": 1}):
             pass
         slow = SyncRateLimiter(repository=repo, speculative_writes=False)
         client = repo._get_client()
@@ -14045,19 +14278,16 @@ class TestRetryDebitsOnlyAGrantedBalance:
         assert calls == ["locked", "retry"]
         return exc_info.value
 
-    @pytest.mark.parametrize(
-        "soft_limit",
-        [Limit.per_minute("s", 5, soft=True), Limit.quota("s", 5, cron="0 0 * * *", soft=True)],
-        ids=["soft-rate", "soft-quota"],
-    )
-    def test_a_soft_limit_is_never_reported_exceeded_from_memory(self, sync_limiter, soft_limit):
+    def test_a_soft_limit_is_never_reported_exceeded_from_memory(self, sync_limiter):
         """With no image the 429 is built from memory, which marked every
         debited limit exceeded: a soft one was listed in ``violations``
-        (ADR-151 decision 1, review of #776)."""
+        (ADR-151 decision 1, review of #776). A soft quota only since #821, as
+        above."""
+        soft_limit = Limit.quota("s", 5, cron="0 0 * * *", soft=True)
         rejection = self._retry_fails_without_an_image(
-            sync_limiter._repository, f"mem-{soft_limit.is_quota}", soft_limit, {"rpm": 1, "s": 10}
+            sync_limiter._repository, "mem", soft_limit, {"rpd": 1, "s": 10}
         )
-        assert [s.limit_name for s in rejection.violations] == ["rpm"]
+        assert [s.limit_name for s in rejection.violations] == ["rpd"]
         s_status = next(s for s in rejection.statuses if s.limit_name == "s")
         assert s_status.exceeded is False
         assert s_status in rejection.passed
@@ -14067,7 +14297,10 @@ class TestRetryDebitsOnlyAGrantedBalance:
         the write failed for a reason the 429 cannot name. Contended (#724),
         never a ``ValueError`` from a rejection with no violation."""
         rejection = self._retry_fails_without_an_image(
-            sync_limiter._repository, "only-soft", Limit.per_minute("s", 5, soft=True), {"s": 10}
+            sync_limiter._repository,
+            "only-soft",
+            Limit.quota("s", 5, cron="0 0 * * *", soft=True),
+            {"s": 10},
         )
         assert rejection.contended is True
         assert not rejection.violations
@@ -14079,7 +14312,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
         slow = SyncRateLimiter(repository=repo, speculative_writes=False)
         raced, undo = self._lose_the_rf_lock(repo, "hard")
         try:
-            with slow.acquire("hard", "r", {"rpm": 1, "q": 3}):
+            with slow.acquire("hard", "r", {"rpd": 1, "q": 3}):
                 pass
         finally:
             undo()
@@ -14102,7 +14335,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
         raced, undo = self._lose_the_rf_lock(repo, "twice", times=2)
         try:
             with pytest.raises(RateLimitExceeded) as exc_info:
-                with slow.acquire("twice", "r", {"rpm": 1, "q": 3}):
+                with slow.acquire("twice", "r", {"rpd": 1, "q": 3}):
                     pass
         finally:
             undo()
@@ -14113,9 +14346,9 @@ class TestRetryDebitsOnlyAGrantedBalance:
         assert rejection.retry_after_seconds == pytest.approx(0.1)
         item = _raw_bucket(repo, "twice", resource="r")
         assert bucket_attr("q", BUCKET_FIELD_TK) not in item
-        rpm_tk = bucket_attr("rpm", BUCKET_FIELD_TK)
-        assert item[rpm_tk] == before[rpm_tk]
-        with slow.acquire("twice", "r", {"rpm": 1, "q": 3}):
+        rpd_tk = bucket_attr("rpd", BUCKET_FIELD_TK)
+        assert item[rpd_tk] == before[rpd_tk]
+        with slow.acquire("twice", "r", {"rpd": 1, "q": 3}):
             pass
         item = _raw_bucket(repo, "twice", resource="r")
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "7000"
@@ -14169,7 +14402,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
         def short(group, item):
             return _genuinely_short([(key, group)], {key: item}, now_ms)
 
-        assert short([entry("rpm")], image("rpm")) is True
+        assert short([entry("rpd")], image("rpd")) is True
         assert short([entry("wcu", declared=False)], image("wcu")) is False
         assert short([entry("tpm", trusted=True)], image("tpm")) is False
         assert short([entry("tpm")], image("tpm", stamp=now_ms + 1)) is False
@@ -14182,16 +14415,16 @@ class TestRetryDebitsOnlyAGrantedBalance:
         repo = sync_limiter._repository
         repo.create_entity("org")
         repo.create_entity("kid", parent_id="org", cascade=True)
-        repo.set_limits("org", [self.RPM], resource="r")
-        repo.set_limits("kid", [self.RPM], resource="r")
-        with sync_limiter.acquire("kid", "r", {"rpm": 1}):
+        repo.set_limits("org", [self.RPD], resource="r")
+        repo.set_limits("kid", [self.RPD], resource="r")
+        with sync_limiter.acquire("kid", "r", {"rpd": 1}):
             pass
         quota = Limit.quota("q", 10, cron="0 0 * * *", soft=True)
-        repo.set_limits("kid", [self.RPM, quota], resource="r")
+        repo.set_limits("kid", [self.RPD, quota], resource="r")
         slow = SyncRateLimiter(repository=repo, speculative_writes=False)
         raced, undo = self._lose_the_rf_lock(repo, "kid")
         try:
-            with slow.acquire("kid", "r", {"rpm": 1, "q": 3}):
+            with slow.acquire("kid", "r", {"rpd": 1, "q": 3}):
                 pass
         finally:
             undo()
@@ -14200,8 +14433,8 @@ class TestRetryDebitsOnlyAGrantedBalance:
         assert kid[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "7000"
         assert kid[bucket_attr("q", BUCKET_FIELD_GC)]["N"] == "1"
         org = _raw_bucket(repo, "org", resource="r")
-        assert int(org[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) < 100000
-        assert int(org[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) >= 98000
+        assert int(org[bucket_attr("rpd", BUCKET_FIELD_TK)]["N"]) < 100000
+        assert int(org[bucket_attr("rpd", BUCKET_FIELD_TK)]["N"]) >= 98000
 
     def test_a_soft_session_quota_is_seeded_in_its_window(self, sync_limiter):
         """A session window cannot be seeded by the retry either (no `vu`)."""
@@ -14210,7 +14443,7 @@ class TestRetryDebitsOnlyAGrantedBalance:
         slow = SyncRateLimiter(repository=repo, speculative_writes=False)
         raced, undo = self._lose_the_rf_lock(repo, "sess")
         try:
-            with slow.acquire("sess", "r", {"rpm": 1, "q": 3}):
+            with slow.acquire("sess", "r", {"rpd": 1, "q": 3}):
                 pass
         finally:
             undo()

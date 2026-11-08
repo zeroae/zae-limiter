@@ -58,6 +58,7 @@ from .schema import (
     calculate_ttl,
     decode_stamp,
     explicit_schedule_overrides,
+    raise_deadline,
 )
 
 # TransactionConflict retry constants (Issue #332)
@@ -193,6 +194,11 @@ class LeaseEntry:
     # limit). `_commit_initial` appends it to the same transaction, after
     # every bucket item, so the move is atomic (I5).
     _donor_debit: QuotaDonorDebit | None = None
+    # A dripping limit on a shard this pass creates empty, because others of
+    # its bucket exist (ADR-156). A rejected pass still writes the create, with
+    # nothing consumed, or the shard would never exist to refill: every later
+    # request drawn to it would create it empty again and be rejected.
+    _created_empty: bool = False
     # #467: soft-ness was decided on authority trusted over the item's stamp
     # (config read fresh, or an `acquire(limits=...)` override), so a soft
     # limit's balance condition is omitted from the write.
@@ -1118,6 +1124,14 @@ class Lease:
 
         now_ms = self.repository._now_ms()
         repo = self.repository
+        if any(
+            entry.state.raise_until_ms is not None and entry.state.raise_until_ms > now_ms
+            for entry in (*self.entries, *self._carriers)
+        ):
+            # A raise holds a bucket this pass would write (ADR-156): every
+            # write it could send is refused until the raise lands. Nothing
+            # was written; the caller retries shortly.
+            raise _contention_rejection(self.entries, now_ms)
 
         # Group entries by (entity_id, resource, shard) — one item per bucket,
         # and the shard is part of a bucket's identity (GHSA-76rv). Carriers
@@ -1672,12 +1686,17 @@ class Lease:
             raise BypassLostError(lost_bypass) from condition_exc
 
         if condition_failed and any(
-            e.state.fill_instant is not None for group in groups.values() for e in group
+            e.state.fill_instant is not None and e.consumed > 0
+            for group in groups.values()
+            for e in group
         ):
             # A fill instant is written exactly from the read, so a lost pin or
             # lock means it moved: re-plan from a fresh read rather than take
             # the consumption-only retry, which writes `tk` (#818). The whole
-            # transaction rolled back, so nothing was written.
+            # transaction rolled back, so nothing was written. Only one this
+            # write debits: the `wcu` carrier, and any fill instant nothing
+            # moved, is not debited by the retry either, so a quota-only item
+            # keeps it (#821).
             raise FillInstantLostError(
                 _contention_rejection(self.entries, now_ms).statuses
             ) from condition_exc
@@ -1877,6 +1896,12 @@ class Lease:
                         images = _retry_failure_images(
                             retry_exc, [key for key, _group in retry_groups]
                         )
+                        if any(
+                            raise_deadline(image, now_ms) is not None for image in images.values()
+                        ):
+                            # A raise took the item between the read and the
+                            # retry (ADR-156): refused, nothing debited.
+                            raise _contention_rejection(self.entries, now_ms) from retry_exc
                         if _still_unseeded(
                             retry_unseeded, images, bool(retry_maybe_missing)
                         ) and not _genuinely_short(retry_groups, images, now_ms):

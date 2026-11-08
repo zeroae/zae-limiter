@@ -67,6 +67,9 @@ REPOSITORY = {
     "build_fill_return": (False, False),  # the exact return of a fill instant (ADR-155)
     "return_fill_instants": (False, False),
     # (bypass shape: tc only, #311)
+    # ADR-156 (#821): marker, then one transaction re-expressing every shard
+    # and creating the new ones with no quota; freezes a legacy quota's gc.
+    "raise_shards": (False, True),
     "bump_shard_count": (False, False),  # shard_count on shard 0
     "_propagate_shard_count": (False, False),  # shard_count on siblings (R6 residual)
     "_freeze_and_raise_shard_counts": (False, True),  # the planner's raise, with the freeze
@@ -119,6 +122,7 @@ AGGREGATOR = {
     "_repair_quota_clones": (False, True),  # raise clones a doubling overtook, freeze
     "propagate_shard_count": (True, True),  # Path 1 raise + Path 2 clone transaction
     "try_proactive_shard": (False, False),  # shard_count on shard 0
+    "raise_bucket_shards": (False, True),  # ADR-156's raise (#821), as raise_shards
     "update_snapshot": NOT_BUCKET,  # usage snapshot items
 }
 
@@ -199,13 +203,101 @@ def test_only_grant_writers_write_gc():
         "_build_quota_count_freeze",
         "_freeze_and_raise_shard_counts",
         "repair_created_quota_shard",
+        "raise_shards",
         "get_or_create_bucket",
         "purge_namespace",
         "try_refill_bucket",
         "_quota_count_freeze",
         "_repair_quota_clones",
         "propagate_shard_count",
+        "raise_bucket_shards",
     }
+
+
+# Every bucket writer and the raise marker (ADR-156, #821): ``True`` when its
+# own write refuses a live marker (``schema.raise_guard``), the name of the
+# guarded builder or writer it sends through, or why it need not refuse one.
+# A raise is pinned on everything it read, so a writer that is not held off
+# only cancels it; the hot ones are held off so a raise is not starved.
+_PINNED = "not held off: the raise is pinned on what it writes, and cancels"
+_NEVER_DRIPPING = "never on a bucket holding a dripping limit: the raise replaces it"
+_QUOTA_ONLY = "moves only a quota's tk or gc, which the raise neither moves nor copies"
+_CREATE = "a create under attribute_not_exists(PK): the raise creates its own shards"
+RAISE_MARKER = {
+    "build_bucket_put_item": _CREATE,
+    "build_composite_create": _CREATE,
+    "get_or_create_bucket": _CREATE,
+    "build_bucket_update_item": "the legacy single-limit write, unused by acquire",
+    "build_composite_normal": True,
+    "build_composite_retry": True,
+    "build_composite_adjust": _PINNED + " (a quota's tk, or a legacy dripping tk it converts)",
+    "build_bypass_consume": "moves only tc, which the raise neither reads nor pins",
+    "build_stamp_fix": _PINNED,
+    "build_bucket_operation": True,
+    "build_quota_donor_debits": _QUOTA_ONLY,
+    "_build_quota_count_freeze": _PINNED + " (shard_count, only on a lagging sibling)",
+    "_freeze_and_raise_shard_counts": _PINNED + " (shard_count, only on a lagging sibling)",
+    "repair_created_quota_shard": _PINNED + " (shard_count, only on a created quota shard)",
+    "_build_bucket_param_update": _PINNED + " (cp / ra / rp / schedules, on a tk item)",
+    "_speculative_consume_once": True,
+    "_speculative_consume_fill": "build_fill_write",
+    "build_fill_write": True,
+    "debit_fill_instants": "build_fill_write",
+    "_reexpress_item": True,
+    "build_fill_return": True,
+    "return_fill_instants": "build_fill_return",
+    "raise_shards": "the raise itself: its marker refuses another's",
+    "bump_shard_count": _NEVER_DRIPPING,
+    "_propagate_shard_count": _NEVER_DRIPPING,
+    "_propagate_window_start": _QUOTA_ONLY + " (a session window's ws, and vu)",
+    "_stamp_bucket_disabled": _PINNED,
+    "_stamp_bucket_cascade": _PINNED,
+    "_stamp_bucket_soft": _PINNED,
+    "fix_bucket_stamps": _PINNED,
+    "_sync_one_bucket_shard": "fill_sync.reexpression",
+    "purge_namespace": "deletes the namespace's items",
+    "try_refill_bucket": True,
+    "_donor_update_items": _NEVER_DRIPPING,
+    "_quota_count_freeze": _NEVER_DRIPPING,
+    "_repair_quota_clones": _NEVER_DRIPPING,
+    "propagate_shard_count": _NEVER_DRIPPING,
+    "try_proactive_shard": _NEVER_DRIPPING + " (it calls raise_bucket_shards for one)",
+    "raise_bucket_shards": "the raise itself: its marker refuses another's",
+}
+
+
+def _source(name: str) -> str:
+    if name == "fill_sync.reexpression":
+        from zae_limiter import fill_sync
+
+        return inspect.getsource(fill_sync.reexpression)
+    owner = processor if name in AGGREGATOR else Repository
+    return inspect.getsource(getattr(owner, name))
+
+
+def test_every_bucket_writer_declares_the_raise_marker():
+    """ADR-156: each bucket writer refuses a live raise marker, or says why not."""
+    writers = {
+        name for table in (REPOSITORY, AGGREGATOR) for name, v in table.items() if v is not None
+    }
+    assert writers == set(RAISE_MARKER), (
+        f"undeclared: {sorted(writers - set(RAISE_MARKER))}; "
+        f"declared but gone: {sorted(set(RAISE_MARKER) - writers)}"
+    )
+
+
+def test_guarded_writers_carry_the_guard():
+    """A writer declared ``True`` builds the guard; one naming another sends through it."""
+    for name, declared in RAISE_MARKER.items():
+        if declared is True:
+            source = _source(name)
+            assert "raise_guard(" in source or "#rx" in source, name
+        elif declared in RAISE_MARKER or declared == "fill_sync.reexpression":
+            assert declared.split(".")[-1] in _source(name), (name, declared)
+            if declared in RAISE_MARKER:
+                assert RAISE_MARKER[declared] is True, (name, declared)
+            else:
+                assert "raise_guard(" in _source(declared), declared
 
 
 def test_the_aggregator_never_writes_a_bypass_or_soft_stamp():

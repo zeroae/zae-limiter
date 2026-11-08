@@ -101,6 +101,15 @@ _ParentHint = tuple[str, int]
 _SlowPart = tuple[str, dict[str, int], int | None, int | None, _ParentHint | None]
 
 
+def _commits_when_rejected(entries: list[LeaseEntry]) -> bool:
+    """Whether a rejected pass still writes, with nothing consumed (``_commit_rejected_moves``).
+
+    An ADR-145 quota move, which must not be lost, or a shard created empty
+    (ADR-156), which must exist to refill.
+    """
+    return any(entry._donor_debit is not None or entry._created_empty for entry in entries)
+
+
 def _is_custom_config(config_source: str | None) -> bool:
     """Whether limits from ``config_source`` are the entity's own (ADR-136).
 
@@ -1379,7 +1388,13 @@ class SyncRateLimiter:
         )
         if wcu_state is not None and try_consume(wcu_state, 1, now_ms).success:
             return (result.shard_id, result.shard_count)
-        new_count = self._repository.bump_shard_count(entity_id, resource, result.shard_count)
+        raise_shards = getattr(self._repository, "raise_shards", None)
+        if raise_shards is not None and any(
+            b.limit_name != WCU_LIMIT_NAME and b.is_dripping_state for b in result.old_buckets or []
+        ):
+            new_count = raise_shards(entity_id, resource, result.shard_count)
+        else:
+            new_count = self._repository.bump_shard_count(entity_id, resource, result.shard_count)
         if new_count > result.shard_count:
             return (random.randrange(result.shard_count, new_count), new_count)
         return (result.shard_id, new_count)
@@ -2392,6 +2407,7 @@ class SyncRateLimiter:
         def plan_and_commit(disable_moves: bool, moves_contended: bool = False) -> SyncLease:
             period_redone = False
             owner_reread = False
+            fill_reread = False
             disable_bypass = False
             while True:
                 lease = self._do_acquire(
@@ -2404,7 +2420,7 @@ class SyncRateLimiter:
                     parent_hint=parent_hint,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
-                    consistent_owner=owner_reread,
+                    consistent_owner=owner_reread or fill_reread,
                     disable_bypass=disable_bypass,
                 )
                 try:
@@ -2414,10 +2430,11 @@ class SyncRateLimiter:
                     if disable_bypass:
                         raise AssertionError("an enforced plan carries no bypass write") from None
                     disable_bypass = True
-                except (PeriodNotAppliedError, SeedNotAppliedError, FillInstantLostError):
+                except (PeriodNotAppliedError, SeedNotAppliedError, FillInstantLostError) as lost:
                     if period_redone:
                         raise
                     period_redone = True
+                    fill_reread = isinstance(lost, FillInstantLostError)
                 except OwnerStampLostError:
                     if owner_reread:
                         raise
@@ -2621,6 +2638,7 @@ class SyncRateLimiter:
             moves_contended: bool,
             reread: bool,
             enforced: frozenset[str],
+            fill_reread: bool,
         ) -> SyncLease | Exception:
             resource, consume, shard, shard_count, parent_hint = part
             try:
@@ -2634,7 +2652,7 @@ class SyncRateLimiter:
                     parent_hint=parent_hint,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
-                    consistent_owner=reread,
+                    consistent_owner=reread or fill_reread,
                     disable_bypass=resource in enforced,
                 )
             except Exception as exc:
@@ -2646,10 +2664,13 @@ class SyncRateLimiter:
             redone: bool = False,
             reread: bool = False,
             enforced: frozenset[str] = frozenset(),
+            fill_reread: bool = False,
         ) -> tuple[SyncLease, dict[str, frozenset[str]]]:
             outcomes = self._run_in_executor(
                 *[
-                    lambda part=part: _plan(part, disable_moves, moves_contended, reread, enforced)
+                    lambda part=part: _plan(
+                        part, disable_moves, moves_contended, reread, enforced, fill_reread
+                    )
                     for part in slow_parts
                 ]
             )
@@ -2658,13 +2679,13 @@ class SyncRateLimiter:
             if errors:
                 error = self._combined_error(errors, planned)
                 for plan in planned:
-                    if any(entry._donor_debit is not None for entry in plan.entries):
+                    if _commits_when_rejected(plan.entries):
                         self._commit_rejected_moves(plan.entries, plan._carriers)
                     else:
                         self._fix_rejected_stamps(plan.entries, self._repository._now_ms())
                 raise error
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return plan_and_commit(True, moves_contended, redone, reread, enforced)
+                return plan_and_commit(True, moves_contended, redone, reread, enforced, fill_reread)
             marks = [plan._cache_mark for plan in planned]
             lease = SyncLease(
                 repository=self._repository,
@@ -2678,15 +2699,26 @@ class SyncRateLimiter:
                 grown = enforced | (lost.resources or frozenset(part[0] for part in slow_parts))
                 if grown == enforced:
                     raise AssertionError("an enforced part carries no bypass write") from None
-                return plan_and_commit(disable_moves, moves_contended, redone, reread, grown)
-            except (PeriodNotAppliedError, SeedNotAppliedError, FillInstantLostError):
+                return plan_and_commit(
+                    disable_moves, moves_contended, redone, reread, grown, fill_reread
+                )
+            except (PeriodNotAppliedError, SeedNotAppliedError, FillInstantLostError) as lost:
                 if redone:
                     raise
-                return plan_and_commit(disable_moves, moves_contended, True, reread, enforced)
+                return plan_and_commit(
+                    disable_moves,
+                    moves_contended,
+                    True,
+                    reread,
+                    enforced,
+                    isinstance(lost, FillInstantLostError),
+                )
             except OwnerStampLostError:
                 if reread:
                     raise
-                return plan_and_commit(disable_moves, moves_contended, redone, True, enforced)
+                return plan_and_commit(
+                    disable_moves, moves_contended, redone, True, enforced, fill_reread
+                )
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }
@@ -3169,8 +3201,11 @@ class SyncRateLimiter:
                         if soft and soft_authority[eid] != _SOFT_FROM_OVERRIDE
                         else None
                     )
+                created_empty = existing is None and (
+                    not any_existing and (eid_shard != 0 or eid_shard_count > 1)
+                )
                 if existing is None:
-                    express_created(state, now_ms)
+                    express_created(state, now_ms, empty=created_empty)
                 else:
                     adopt_fill_instant(state)
                 original_tk = state.tokens_milli
@@ -3230,6 +3265,7 @@ class SyncRateLimiter:
                         _stored_reset_after_seconds=stored_rsa,
                         _granted=granted or (is_new and limit.is_quota),
                         _donor_debit=donor,
+                        _created_empty=created_empty and state.fill_instant is not None,
                         _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM or restamp_soft,
                         _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG or restamp_soft,
                         _stamp_deadline_ms=stamp_deadline,
@@ -3266,7 +3302,7 @@ class SyncRateLimiter:
                     )
                 )
         violations = [s for s in statuses if s.exceeded]
-        writes = not violations or any(entry._donor_debit is not None for entry in entries)
+        writes = not violations or _commits_when_rejected(entries)
         for eid, item_states, override_names, shard, count, custom in to_carry if writes else ():
             configured, _, _ = self._repository.resolve_limits(eid, resource)
             carriers += self._item_limit_carriers(
@@ -3282,7 +3318,7 @@ class SyncRateLimiter:
                 anchor=not violations,
             )
         if violations:
-            if any(entry._donor_debit is not None for entry in entries):
+            if _commits_when_rejected(entries):
                 self._commit_rejected_moves(entries, carriers)
             else:
                 self._fix_rejected_stamps(entries, now_ms)
@@ -3402,7 +3438,7 @@ class SyncRateLimiter:
         return RateLimitExceeded([*prior, *statuses], contended=True)
 
     def _commit_rejected_moves(self, entries: list[LeaseEntry], carriers: list[LeaseEntry]) -> None:
-        """Commit a rejected pass's quota moves with nothing consumed (ADR-145 I5).
+        """Commit a rejected pass's quota moves and empty creates with nothing consumed.
 
         A pass that planned a move is rejected on some limit: the move is
         still written, in the same transaction as the created or seeded shard
@@ -3411,7 +3447,9 @@ class SyncRateLimiter:
         request asked for is ever debited (write-on-enter invariant 1). The
         rf-locked write also applies any reset the pass saw pending and
         advances `rf`, which is what the #633 standalone persist could not do
-        (the 1300 case).
+        (the 1300 case). A shard created empty (ADR-156) is written the same
+        way: left unwritten, it would never exist to refill, and every request
+        drawn to it would be rejected again.
 
         Best effort, and never a reason to fail differently: the move is one
         atomic transaction, so if it does not land — a lost condition, a

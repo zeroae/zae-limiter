@@ -125,6 +125,15 @@ _ParentHint = tuple[str, int]
 _SlowPart = tuple[str, dict[str, int], int | None, int | None, _ParentHint | None]
 
 
+def _commits_when_rejected(entries: list[LeaseEntry]) -> bool:
+    """Whether a rejected pass still writes, with nothing consumed (``_commit_rejected_moves``).
+
+    An ADR-145 quota move, which must not be lost, or a shard created empty
+    (ADR-156), which must exist to refill.
+    """
+    return any(entry._donor_debit is not None or entry._created_empty for entry in entries)
+
+
 def _is_custom_config(config_source: str | None) -> bool:
     """Whether limits from ``config_source`` are the entity's own (ADR-136).
 
@@ -1780,12 +1789,23 @@ class RateLimiter:
         )
         if wcu_state is not None and try_consume(wcu_state, 1, now_ms).success:
             return result.shard_id, result.shard_count
-        new_count = await self._repository.bump_shard_count(entity_id, resource, result.shard_count)
+        # A bucket holding a dripping limit is raised whole, its balance moved
+        # into the shards it creates (ADR-156); any other keeps ADR-133's lazy
+        # doubling. A backend without the raise doubles.
+        raise_shards = getattr(self._repository, "raise_shards", None)
+        if raise_shards is not None and any(
+            b.limit_name != WCU_LIMIT_NAME and b.is_dripping_state for b in result.old_buckets or []
+        ):
+            new_count = await raise_shards(entity_id, resource, result.shard_count)
+        else:
+            new_count = await self._repository.bump_shard_count(
+                entity_id, resource, result.shard_count
+            )
         # Send the slow path to a shard that is not the hot one: one of the
-        # shards the doubling just added, which it will create (issue #439).
-        # bump_shard_count returns the winner's count when another client
-        # doubled first, so this range is new either way; only a vanished
-        # shard 0 leaves nothing to add.
+        # shards the doubling just added — created by the raise, or by the
+        # slow path itself (issue #439). Both return the winner's count when
+        # another writer raised first, so this range is new either way; only a
+        # raise that gave up or a vanished shard 0 leaves nothing to add.
         if new_count > result.shard_count:
             return random.randrange(result.shard_count, new_count), new_count
         return result.shard_id, new_count
@@ -2986,6 +3006,7 @@ class RateLimiter:
         async def plan_and_commit(disable_moves: bool, moves_contended: bool = False) -> Lease:
             period_redone = False
             owner_reread = False
+            fill_reread = False
             disable_bypass = False
             while True:
                 lease = await self._do_acquire(
@@ -2998,7 +3019,7 @@ class RateLimiter:
                     parent_hint=parent_hint,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
-                    consistent_owner=owner_reread,
+                    consistent_owner=owner_reread or fill_reread,
                     disable_bypass=disable_bypass,
                 )
                 try:
@@ -3010,7 +3031,7 @@ class RateLimiter:
                     if disable_bypass:  # pragma: no cover
                         raise AssertionError("an enforced plan carries no bypass write") from None
                     disable_bypass = True
-                except (PeriodNotAppliedError, SeedNotAppliedError, FillInstantLostError):
+                except (PeriodNotAppliedError, SeedNotAppliedError, FillInstantLostError) as lost:
                     # The retry found a quota period nobody has applied (#743),
                     # or a limit the item does not carry yet and the retry
                     # cannot seed (#771), or a write of fill instants lost its
@@ -3022,6 +3043,12 @@ class RateLimiter:
                     if period_redone:
                         raise
                     period_redone = True
+                    # A fill instant has no consumption-only retry, which
+                    # stamps no owner (ADR-150). Its pins may have been lost to
+                    # an owner stamp a stale META replica disagreed with, so
+                    # the redo reads META strongly consistently. Its own flag:
+                    # a lost META check still gets its redo.
+                    fill_reread = isinstance(lost, FillInstantLostError)
                 except OwnerStampLostError:
                     # A bucket this pass created lost its META check: the
                     # owner moved since the read (ADR-150). Nothing was
@@ -3265,6 +3292,7 @@ class RateLimiter:
             moves_contended: bool,
             reread: bool,
             enforced: frozenset[str],
+            fill_reread: bool,
         ) -> Lease | Exception:
             resource, consume, shard, shard_count, parent_hint = part
             try:
@@ -3278,7 +3306,7 @@ class RateLimiter:
                     parent_hint=parent_hint,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
-                    consistent_owner=reread,
+                    consistent_owner=reread or fill_reread,
                     disable_bypass=resource in enforced,
                 )
             except Exception as exc:
@@ -3290,11 +3318,12 @@ class RateLimiter:
             redone: bool = False,
             reread: bool = False,
             enforced: frozenset[str] = frozenset(),
+            fill_reread: bool = False,
         ) -> tuple[Lease, dict[str, frozenset[str]]]:
             # One name per part keeps the sync twin's lambda on one line (#513).
             outcomes = await asyncio.gather(
                 *[
-                    _plan(part, disable_moves, moves_contended, reread, enforced)
+                    _plan(part, disable_moves, moves_contended, reread, enforced, fill_reread)
                     for part in slow_parts
                 ]
             )
@@ -3307,7 +3336,7 @@ class RateLimiter:
                 # A rejected part committed its own moves already; the parts
                 # that planned fine must not lose theirs either (ADR-145).
                 for plan in planned:
-                    if any(entry._donor_debit is not None for entry in plan.entries):
+                    if _commits_when_rejected(plan.entries):
                         await self._commit_rejected_moves(plan.entries, plan._carriers)
                     else:
                         # Never committed: its stamps are corrected alone, as
@@ -3318,7 +3347,9 @@ class RateLimiter:
             # at most 2 META checks (the entity and its parent, ADR-150), so
             # MAX_ACQUIRE_RESOURCES keeps the re-plan under the limit.
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return await plan_and_commit(True, moves_contended, redone, reread, enforced)
+                return await plan_and_commit(
+                    True, moves_contended, redone, reread, enforced, fill_reread
+                )
             marks = [plan._cache_mark for plan in planned]
             lease = Lease(
                 repository=self._repository,
@@ -3341,17 +3372,27 @@ class RateLimiter:
                 grown = enforced | (lost.resources or frozenset(part[0] for part in slow_parts))
                 if grown == enforced:  # pragma: no cover
                     raise AssertionError("an enforced part carries no bypass write") from None
-                return await plan_and_commit(disable_moves, moves_contended, redone, reread, grown)
-            except (PeriodNotAppliedError, SeedNotAppliedError, FillInstantLostError):
+                return await plan_and_commit(
+                    disable_moves, moves_contended, redone, reread, grown, fill_reread
+                )
+            except (PeriodNotAppliedError, SeedNotAppliedError, FillInstantLostError) as lost:
                 # The retry found a quota period nobody has applied (#743),
                 # or a limit no part's item carries yet that the retry cannot
                 # seed (#771), or a write of fill instants lost its pins
                 # (#818): redo the pass once from a fresh read, which applies
                 # or seeds it. A second loss stands as the rejection it was
-                # raised as.
+                # raised as. A lost fill instant redoes it with META read
+                # strongly consistently, as `_slow_acquire` does (ADR-150).
                 if redone:
                     raise
-                return await plan_and_commit(disable_moves, moves_contended, True, reread, enforced)
+                return await plan_and_commit(
+                    disable_moves,
+                    moves_contended,
+                    True,
+                    reread,
+                    enforced,
+                    isinstance(lost, FillInstantLostError),
+                )
             except OwnerStampLostError:
                 # A bucket this commit created lost its META check: an owner
                 # moved since the read (ADR-150). Nothing was written; re-plan
@@ -3359,7 +3400,9 @@ class RateLimiter:
                 # loss stands as the contended 429 it was raised as.
                 if reread:
                     raise
-                return await plan_and_commit(disable_moves, moves_contended, redone, True, enforced)
+                return await plan_and_commit(
+                    disable_moves, moves_contended, redone, True, enforced, fill_reread
+                )
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }
@@ -4083,12 +4126,19 @@ class RateLimiter:
                         else None
                     )
 
-                # A dripping limit is converted to a fill instant here while
-                # the switch is on (#818), or created as one, before anything
+                # A dripping limit is converted to a fill instant here (#818),
+                # or created as one, before anything
                 # moves it: the write converts the item, pinned on the `tk` and
-                # `rf` read.
+                # `rf` read. A shard created while others of its bucket exist
+                # (a slot a TTL swept, or one no raise created) starts empty
+                # (ADR-156): a raise creates every shard it adds, funded from
+                # its parent, and a full one here would add a share nothing
+                # paid for. A limit seeded on an existing item starts full.
+                created_empty = existing is None and (
+                    not any_existing and (eid_shard != 0 or eid_shard_count > 1)
+                )
                 if existing is None:
-                    express_created(state, now_ms)
+                    express_created(state, now_ms, empty=created_empty)
                 else:
                     adopt_fill_instant(state)
                 # Capture original values before try_consume modifies them (ADR-115)
@@ -4204,6 +4254,7 @@ class RateLimiter:
                         # it carries `gc` at the count it was sized at.
                         _granted=granted or (is_new and limit.is_quota),
                         _donor_debit=donor,
+                        _created_empty=created_empty and state.fill_instant is not None,
                         _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM or restamp_soft,
                         _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG or restamp_soft,
                         _stamp_deadline_ms=stamp_deadline,
@@ -4248,7 +4299,7 @@ class RateLimiter:
         # Check for any violations
         violations = [s for s in statuses if s.exceeded]
         # A rejected pass writes an rf-locked item only to commit a quota move.
-        writes = not violations or any(entry._donor_debit is not None for entry in entries)
+        writes = not violations or _commits_when_rejected(entries)
         for eid, item_states, override_names, shard, count, custom in to_carry if writes else ():
             # Carried as configured, so the config is read — through the
             # config cache, as any pass without the override reads it.
@@ -4268,7 +4319,7 @@ class RateLimiter:
                 anchor=not violations,
             )
         if violations:
-            if any(entry._donor_debit is not None for entry in entries):
+            if _commits_when_rejected(entries):
                 # The move's rf-locked write carries this pass's stamps too.
                 await self._commit_rejected_moves(entries, carriers)
             else:
@@ -4400,7 +4451,7 @@ class RateLimiter:
     async def _commit_rejected_moves(
         self, entries: list[LeaseEntry], carriers: list[LeaseEntry]
     ) -> None:
-        """Commit a rejected pass's quota moves with nothing consumed (ADR-145 I5).
+        """Commit a rejected pass's quota moves and empty creates with nothing consumed.
 
         A pass that planned a move is rejected on some limit: the move is
         still written, in the same transaction as the created or seeded shard
@@ -4409,7 +4460,9 @@ class RateLimiter:
         request asked for is ever debited (write-on-enter invariant 1). The
         rf-locked write also applies any reset the pass saw pending and
         advances `rf`, which is what the #633 standalone persist could not do
-        (the 1300 case).
+        (the 1300 case). A shard created empty (ADR-156) is written the same
+        way: left unwritten, it would never exist to refill, and every request
+        drawn to it would be rejected again.
 
         Best effort, and never a reason to fail differently: the move is one
         atomic transaction, so if it does not land — a lost condition, a

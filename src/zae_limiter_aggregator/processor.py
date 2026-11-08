@@ -1,6 +1,7 @@
 """DynamoDB Stream processor for usage aggregation and bucket refill."""
 
 import json
+import secrets
 import time as time_module
 import traceback
 from dataclasses import dataclass, field, replace
@@ -11,6 +12,7 @@ import boto3
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
+from zae_limiter import fill_instant, shard_raise
 from zae_limiter.bucket import balance_milli_at, refill_bucket
 from zae_limiter.models import (
     BucketState,
@@ -36,6 +38,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_PGEN,
     BUCKET_FIELD_PINC,
     BUCKET_FIELD_RA,
+    BUCKET_FIELD_RAISE,
     BUCKET_FIELD_RP,
     BUCKET_FIELD_RSA,
     BUCKET_FIELD_RSCHED,
@@ -54,6 +57,7 @@ from zae_limiter.schema import (
     BUCKET_SCHED_NONE,
     MAX_SHARD_COUNT,
     OVERDRAWN_COUNTER_SUFFIX,
+    RAISE_MARKER_MS,
     SK_BUCKET,
     WCU_LIMIT_NAME,
     bucket_attr,
@@ -207,11 +211,29 @@ class BucketRefillState:
     # newer client's encoding). The bucket is then skipped entirely rather
     # than refilled at the *base* rate, which would silently undo a scale-down.
     sched_error: str | None = None
+    # Item-level `xi` (ADR-155): the instant its fill instants were last
+    # expressed. None when the item stores none.
+    xi_ms: int | None = None
 
     @property
     def stores_fill_instants(self) -> bool:
         """Whether any limit on the item is stored as a fill instant (#818)."""
         return any(info.fill_instant is not None for info in self.limits.values())
+
+    @property
+    def holds_dripping(self) -> bool:
+        """Whether the item holds a dripping user limit: raised only by ADR-156's raise."""
+        return any(name != WCU_LIMIT_NAME and _drips(info) for name, info in self.limits.items())
+
+
+def _drips(info: LimitRefillInfo) -> bool:
+    """A dripping limit (ADR-137): a positive rate and no reset, in either storage form."""
+    return (
+        not info.reset_sched
+        and info.reset_after_seconds is None
+        and info.rp_ms > 0
+        and is_accrual_rate(info.ra_milli)
+    )
 
 
 def process_stream_records(
@@ -311,11 +333,6 @@ def process_stream_records(
     now_ms = int(time_module.time() * 1000)
 
     for state in bucket_states.values():
-        if state.stores_fill_instants:
-            # A fill instant is never refilled, and `tk` must never be written
-            # beside one (ADR-154, #818). A quota sharing the item is reset by
-            # the client's slow path; #821 gives the aggregator a write for it.
-            continue
         try:
             if try_refill_bucket(table, state, now_ms):
                 refills_written += 1
@@ -332,9 +349,7 @@ def process_stream_records(
     # Proactive sharding (check wcu token level per bucket)
     for state in bucket_states.values():
         wcu_info = state.limits.get(WCU_LIMIT_NAME)
-        # A bucket storing fill instants is raised only through ADR-156's raise
-        # (#821), never by this doubling, which reads `wcu` off `tk`.
-        if wcu_info and not state.stores_fill_instants:
+        if wcu_info:
             try:
                 try_proactive_shard(
                     table,
@@ -344,6 +359,7 @@ def process_stream_records(
                     wcu_refill_amount_milli=wcu_info.ra_milli,
                     wcu_refill_period_ms=wcu_info.rp_ms,
                     now_ms=now_ms,
+                    wcu_fill_instant=wcu_info.fill_instant,
                 )
             except Exception as e:
                 error_msg = f"Error in proactive sharding: {e}"
@@ -800,6 +816,7 @@ def aggregate_bucket_states(
                 reset_sched=parsed.reset_sched,
                 vu_ms=parsed.vu_ms,
                 sched_error=parsed.sched_error,
+                xi_ms=parsed.xi_ms,
             )
         else:
             # Last NewImage wins, exactly as it does for rf/tk/cp below: stream
@@ -816,6 +833,7 @@ def aggregate_bucket_states(
             bucket_states[key].reset_sched = parsed.reset_sched
             bucket_states[key].vu_ms = parsed.vu_ms
             bucket_states[key].sched_error = parsed.sched_error
+            bucket_states[key].xi_ms = parsed.xi_ms
 
         state = bucket_states[key]
 
@@ -960,14 +978,17 @@ def try_refill_bucket(
     state: BucketRefillState,
     now_ms: int,
 ) -> bool:
-    """Try to refill a composite bucket if projected tokens are insufficient.
+    """Apply a quota's pending reset or roll, re-stamping ``vu`` (#317, #222, ADR-156).
 
-    For each limit in the bucket, computes the refill delta using
-    ``refill_bucket()``.  A *positive* delta is only written if the limit's
-    projected tokens (after natural refill) won't cover the observed
-    consumption rate for the next batch window.  A *negative* delta — the
-    bucket holds more than its effective cap after a shrink — is always
-    written, ungated by that threshold.
+    A dripping limit is never refilled, trimmed or written here, in either
+    storage form (ADR-156): every write of one is exact (ADR-155), and the
+    client's fast path reads a fill instant's balance at any instant without
+    one. ``wcu`` included. What is left is a quota's reset edge or duration
+    window roll, written as an ``ADD`` delta; a limit with no accrual rate and
+    no reset (corrupt) is only checked against its ceiling. When the write
+    re-stamps ``vu`` past a schedule boundary of a dripping limit stored as a
+    fill instant, it re-expresses the item's scheduled fill instants at
+    ``now_ms`` in the same write, pinned on what it read (ADR-155).
 
     Scheduled limits (#222) are honoured from the bucket item's own ``sched``
     attributes, so the aggregator tops up toward the *scheduled* ceiling at the
@@ -1060,56 +1081,38 @@ def try_refill_bucket(
     # pinned on each staying within it (#679, #681, see below).
     unclamped: list[tuple[str, int]] = []
     over_ceiling: list[str] = []
-    # `wcu`'s refill when the threshold below would skip it: credited if this
-    # write happens for another limit, since that write moves `rf` (see after
-    # the loop). `(delta, tk as read)`.
-    deferred_wcu: tuple[int, int] | None = None
 
     for limit_name, info in state.limits.items():
-        if limit_name == WCU_LIMIT_NAME:
-            # `wcu` is the per-partition DynamoDB write ceiling, not a user
-            # limit: it is never divided by shard_count (every shard is its own
-            # partition — `_deserialize_composite_bucket` and the Path 2 clone
-            # below both say so) and a user's schedule must never scale it.
-            effective_cp = info.cp_milli
-            ceiling_cp = info.cp_milli
-            effective_ra = info.ra_milli
-            effective_rp = info.rp_ms
-            # `rsched` is item-level and applies to every limit on the item by
-            # default, so without this a user's daily reset would hand `wcu`
-            # its ceiling back on every batch that crossed midnight. The client
-            # gets the same exemption for free: `wcu` rides as a carrier built
-            # by `Limit._carrier()`, which never sets `reset_schedule`.
-            reset_sched: tuple[ScheduleEntry, ...] = ()
-        else:
-            # Scale first, THEN divide by shard_count: the schedule applies to
-            # the whole limit, the shard split to what is left of it.
-            #
-            # `info.sched` is authoritative and there is deliberately no
-            # fall-back to `state.sched` (#541): the parser already resolves
-            # every limit against the item default, so an empty tuple here
-            # means the limit is *explicitly* unscheduled — `b_{name}_sched`
-            # held `BUCKET_SCHED_NONE` — and falling back would hand it the
-            # window it was recorded as not having.
-            scaled_cp, scaled_ra, effective_rp = effective_params(
-                info.cp_milli, info.ra_milli, info.rp_ms, info.sched, now_ms
-            )
-            effective_cp = scaled_cp // state.shard_count
-            effective_ra = scaled_ra // state.shard_count
-            reset_sched = info.reset_sched
-            # ADR-145 I7: a quota shard holds every slot its grant covers, so
-            # its ceiling is `C // gc`, never `C // shard_count` (#637). The
-            # reset / roll target stays `effective_cp`: a re-grant is sized
-            # at the item's count. A dripping limit keeps `C // shard_count`.
-            is_quota = bool(reset_sched) or info.reset_after_seconds is not None
-            grant_count = info.grant_count
-            if not is_quota or grant_count is None or grant_count < 1:
-                grant_count = state.shard_count
-            ceiling_cp = scaled_cp // grant_count
-            # ADR-149: a quota shard topped up above its grant this period holds
-            # that allowance too, until the next reset or roll removes it.
-            if is_quota and info.topped_up_milli:
-                ceiling_cp += info.topped_up_milli
+        if limit_name == WCU_LIMIT_NAME or _drips(info):
+            # Never refilled, trimmed or written here (ADR-156): see above.
+            continue
+        # Scale first, THEN divide by shard_count: the schedule applies to
+        # the whole limit, the shard split to what is left of it.
+        #
+        # `info.sched` is authoritative and there is deliberately no
+        # fall-back to `state.sched` (#541): the parser already resolves
+        # every limit against the item default, so an empty tuple here
+        # means the limit is *explicitly* unscheduled — `b_{name}_sched`
+        # held `BUCKET_SCHED_NONE` — and falling back would hand it the
+        # window it was recorded as not having.
+        scaled_cp, _scaled_ra, _effective_rp = effective_params(
+            info.cp_milli, info.ra_milli, info.rp_ms, info.sched, now_ms
+        )
+        effective_cp = scaled_cp // state.shard_count
+        reset_sched = info.reset_sched
+        # ADR-145 I7: a quota shard holds every slot its grant covers, so
+        # its ceiling is `C // gc`, never `C // shard_count` (#637). The
+        # reset / roll target stays `effective_cp`: a re-grant is sized
+        # at the item's count.
+        is_quota = bool(reset_sched) or info.reset_after_seconds is not None
+        grant_count = info.grant_count
+        if not is_quota or grant_count is None or grant_count < 1:
+            grant_count = state.shard_count
+        ceiling_cp = scaled_cp // grant_count
+        # ADR-149: a quota shard topped up above its grant this period holds
+        # that allowance too, until the next reset or roll removes it.
+        if is_quota and info.topped_up_milli:
+            ceiling_cp += info.topped_up_milli
 
         # A duration window rolled since this item was last refilled sets the
         # balance to the effective capacity (ADR-140), which as an `ADD` is
@@ -1199,58 +1202,13 @@ def try_refill_bucket(
                     refilled.append(limit_name)
                 continue
 
-        # A stored rate that is not an accrual rate has nothing to refill. That
-        # is the *normal* state of a quota since ADR-137 — it recovers only at
-        # the `reset_schedule` edge handled above — and otherwise means a
-        # corrupt or unparsed item. Either way, skipping is right:
-        # `refill_bucket` would add nothing and the `rp_ms` half of the guard
-        # exists to keep its drift division off a zero denominator.
-        if info.rp_ms <= 0 or not is_accrual_rate(info.ra_milli):
-            unclamped.append((limit_name, ceiling_cp))
-            if info.tk_milli > ceiling_cp:
-                over_ceiling.append(limit_name)
-            continue
-
-        result = refill_bucket(
-            tokens_milli=info.tk_milli,
-            last_refill_ms=state.rf_ms,
-            now_ms=now_ms,
-            capacity_milli=ceiling_cp,
-            refill_amount_milli=effective_ra,
-            refill_period_ms=effective_rp,
-        )
-
-        refill_delta = result.new_tokens_milli - info.tk_milli
-        if refill_delta == 0:
-            continue
-
-        if refill_delta > 0:
-            # Threshold: only top up if projected tokens < consumption for next
-            # window. Use the accumulated tc delta as proxy for next-window
-            # consumption.
-            projected = result.new_tokens_milli
-            consumption_estimate = max(0, info.tc_delta)
-            if projected >= consumption_estimate:
-                if limit_name == WCU_LIMIT_NAME:
-                    deferred_wcu = (refill_delta, info.tk_milli)
-                continue
-        # A negative delta is a clamp: the bucket holds more than its effective
-        # cap after a shrink (set_limits, a shard doubling, or a schedule
-        # boundary). It bypasses the threshold above — a hot bucket has the
-        # largest tc_delta, and that is exactly where a shrink most needs to
-        # land, since the aggregator exists to keep the slow path from running
-        # there at all. Safe as an ADD for the same commutativity reason the
-        # positive case is: it removes exactly the surplus, and concurrent
-        # consumption subtracts independently (#222 §3.3, replaces #469).
-
-        any_needs_refill = True
-        idx = len(refilled)
-        add_parts.append(f"#rt{idx} :rd{idx}")
-        expr_names[f"#rt{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
-        expr_values[f":rd{idx}"] = refill_delta
-        if refill_delta > 0:
-            raised.append((f"#rt{idx}", f":rk{idx}", info.tk_milli))
-        refilled.append(limit_name)
+        # What is left drips back at no rate this write applies: a quota
+        # between its reset edges (its stored rate is 0, ADR-137), or a
+        # corrupt item. It is only checked against its ceiling, for the `vu`
+        # re-stamp below.
+        unclamped.append((limit_name, ceiling_cp))
+        if info.tk_milli > ceiling_cp:
+            over_ceiling.append(limit_name)
 
     if not any_needs_refill:
         logger.debug(
@@ -1259,28 +1217,6 @@ def try_refill_bucket(
             resource=state.resource,
         )
         return False
-
-    # This write moves `rf`, and every limit on the item refills from `rf`, so
-    # a limit left out of it forfeits everything it accrued since the last
-    # stamp. `wcu` was always left out by the threshold above. Its `tc` does
-    # move (the fast path ADDs one token to `#wcu_tc` per write), but a batch holds
-    # at most BatchSize (100) records, so its `tc_delta` is at most 100 tokens,
-    # while its projection from the unmoved `rf` is back near its 1000-token
-    # capacity within a second (it refills 1000/s): `projected >= tc_delta`
-    # skipped it on every pass, and nothing on the fast path refills it.
-    # Its stored balance then
-    # drained by one token per write for good, and read as a hot partition
-    # after ~800 writes however slowly they came. Credited only here, never as
-    # a reason to write: a `wcu`-only refill would spend a write to record
-    # capacity that refill from the unmoved `rf` already accounts for.
-    if deferred_wcu is not None:
-        wcu_delta, wcu_read_tk = deferred_wcu
-        idx = len(refilled)
-        add_parts.append(f"#rt{idx} :rd{idx}")
-        expr_names[f"#rt{idx}"] = bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK)
-        expr_values[f":rd{idx}"] = wcu_delta
-        raised.append((f"#rt{idx}", f":rk{idx}", wcu_read_tk))
-        refilled.append(WCU_LIMIT_NAME)
 
     # Build single UpdateItem for the composite bucket
     # ADD is commutative with concurrent speculative writes (Issue #317)
@@ -1303,6 +1239,11 @@ def try_refill_bucket(
     expr_values[":new_rf"] = new_rf
     expr_values[":expected_rf"] = state.rf_ms
     condition = "rf = :expected_rf"
+    # Never while a raise holds the item (ADR-156): it is pinned on what it
+    # read, and this write would cancel it.
+    expr_names["#rx"] = BUCKET_FIELD_RAISE
+    expr_values[":rxt"] = now_ms
+    condition += " AND (attribute_not_exists(#rx) OR #rx <= :rxt)"
 
     # #640: every window in force leaves this write reflecting the `ws` the
     # image carried — the loop above rolled it, or it was already applied — so
@@ -1406,9 +1347,11 @@ def try_refill_bucket(
     # ceiling (#679): a quota lifted there by a credit or left there by a
     # capacity shrink. The fast path is a pure `ADD` and would spend the excess;
     # the client slow pass the expired `vu` forces clamps every limit first.
+    restamped = False
     if state.vu_ms is not None and state.vu_ms <= now_ms and not over_ceiling:
         boundary = _item_next_boundary(state, now_ms)
         if boundary is not None and boundary > now_ms:
+            restamped = True
             set_parts.append("#vu = :new_vu")
             expr_values[":new_vu"] = boundary
             # The stream image the boundary was computed from can be older than
@@ -1433,6 +1376,55 @@ def try_refill_bucket(
                 expr_names[f"#vq{idx}"] = bucket_attr(name, BUCKET_FIELD_TK)
                 expr_values[f":vq{idx}"] = ceiling
                 condition += f" AND #vq{idx} <= :vq{idx}"
+
+    # A `vu` moved past a schedule boundary of a dripping limit stored as a fill
+    # instant: the item's scheduled fill instants are re-expressed at `now_ms`
+    # across every boundary since `xi` in the same write (ADR-155), each window
+    # dripping at its own rate and capped at its own ceiling, so the fast path
+    # can read the item again. Pinned on each fill instant and `cp` / `ra` /
+    # `rp` read and on `xi`. Positional tokens (#634): `#xf*` / `#xc*` /
+    # `#xa*` / `#xr*` and `#xxi`, disjoint from every family here.
+    if restamped and state.xi_ms is not None and now_ms > state.xi_ms:
+        xi = state.xi_ms
+        scheduled = [
+            (name, info)
+            for name, info in sorted(state.limits.items())
+            if info.fill_instant is not None and info.sched and _drips(info)
+        ]
+        if any(
+            (crossed := next_boundary(info.sched, now_ms=xi)) is not None and crossed <= now_ms
+            for _name, info in scheduled
+        ):
+            for k, (name, info) in enumerate(scheduled):
+                assert info.fill_instant is not None
+                z, _last = fill_instant.re_express_across(
+                    info.fill_instant,
+                    xi,
+                    now_ms,
+                    info.cp_milli,
+                    info.ra_milli,
+                    info.rp_ms,
+                    info.sched,
+                    state.shard_count,
+                )
+                expr_names[f"#xf{k}"] = bucket_attr(name, BUCKET_FIELD_FI)
+                expr_values[f":xf{k}"] = z
+                expr_values[f":xb{k}"] = info.fill_instant
+                set_parts.append(f"#xf{k} = :xf{k}")
+                condition += f" AND #xf{k} = :xb{k}"
+                for token, field_name, value in (
+                    ("xc", BUCKET_FIELD_CP, info.cp_milli),
+                    ("xa", BUCKET_FIELD_RA, info.ra_milli),
+                    ("xr", BUCKET_FIELD_RP, info.rp_ms),
+                ):
+                    expr_names[f"#{token}{k}"] = bucket_attr(name, field_name)
+                    expr_values[f":{token}{k}"] = value
+                    condition += f" AND #{token}{k} = :{token}{k}"
+            expr_names["#xxi"] = BUCKET_FIELD_XI
+            expr_values[":xxi"] = now_ms
+            expr_values[":xxir"] = xi
+            set_parts.append("#xxi = :xxi")
+            condition += " AND #xxi = :xxir"
 
     update_expr = f"SET {', '.join(set_parts)} ADD {', '.join(add_parts)}"
     if remove_parts:
@@ -1488,8 +1480,15 @@ def try_proactive_shard(
     wcu_refill_amount_milli: int = 0,
     wcu_refill_period_ms: int = 0,
     now_ms: int | None = None,
+    wcu_fill_instant: int | None = None,
 ) -> bool:
     """Proactively double shard_count when wcu token level is low.
+
+    A bucket holding a dripping limit is raised through ADR-156's raise
+    (:func:`raise_bucket_shards`), its balances moved into the shards it
+    creates; any other keeps ADR-133's doubling of shard 0's count. ``wcu``
+    stored as a fill instant (``wcu_fill_instant``) is read exactly at
+    ``now_ms``.
 
     Checks remaining wcu tokens against capacity. When tokens drop
     below 20% of capacity, the partition is under sustained write
@@ -1547,7 +1546,22 @@ def try_proactive_shard(
         )
         return False
 
-    if now_ms is not None and wcu_refill_period_ms > 0 and wcu_refill_amount_milli > 0:
+    if (
+        wcu_fill_instant is not None
+        and now_ms is not None
+        and wcu_refill_period_ms > 0
+        and wcu_refill_amount_milli > 0
+    ):
+        # Never read before the item's expression instant: a clock behind the
+        # one that stamped it would see a full budget as spent, and raise.
+        wcu_tk_milli = fill_instant.balance_milli(
+            wcu_fill_instant,
+            max(now_ms, state.xi_ms or now_ms),
+            fill_instant.ShardParams(
+                wcu_capacity_milli, wcu_refill_amount_milli, wcu_refill_period_ms, 1
+            ),
+        )
+    elif now_ms is not None and wcu_refill_period_ms > 0 and wcu_refill_amount_milli > 0:
         wcu_tk_milli = refill_bucket(
             tokens_milli=wcu_tk_milli,
             last_refill_ms=state.rf_ms,
@@ -1559,6 +1573,33 @@ def try_proactive_shard(
 
     token_ratio = wcu_tk_milli / wcu_capacity_milli
     if token_ratio >= WCU_PROACTIVE_THRESHOLD_LOW:
+        return False
+
+    if state.holds_dripping:
+        clock_ms = now_ms if now_ms is not None else int(time_module.time() * 1000)
+        meta = table.meta.client.meta
+        client = boto3.client(
+            "dynamodb", region_name=meta.region_name, endpoint_url=meta.endpoint_url
+        )
+        raised = raise_bucket_shards(
+            client,
+            table.name,
+            state.namespace_id,
+            state.entity_id,
+            state.resource,
+            state.shard_count,
+            clock_ms,
+        )
+        if raised > state.shard_count:
+            logger.info(
+                "Proactive shard raise",
+                entity_id=state.entity_id,
+                resource=state.resource,
+                old_count=state.shard_count,
+                new_count=raised,
+                token_ratio=round(token_ratio, 2),
+            )
+            return True
         return False
 
     new_count = min(state.shard_count * 2, MAX_SHARD_COUNT)
@@ -1602,6 +1643,108 @@ def try_proactive_shard(
             )
             return False
         raise
+
+
+def raise_bucket_shards(
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    entity_id: str,
+    resource: str,
+    current_count: int,
+    now_ms: int,
+) -> int:
+    """Raise a bucket holding a dripping limit to twice ``current_count`` shards (ADR-156).
+
+    The Lambda mirror of ``Repository.raise_shards``, through a low-level
+    (wire-format) DynamoDB ``client``: a raise marker on every shard below
+    ``current_count`` (its ``ALL_NEW`` is the read), then one transaction from
+    :func:`zae_limiter.shard_raise.plan_raise`. Gives up, removing its own
+    markers, when another raise holds a shard, a shard stores a larger count,
+    the plan is empty or the transaction is cancelled; the client raises on its
+    next ``wcu`` exhaustion. Needs ``dynamodb:ConditionCheckItem`` (the owner
+    check), which the aggregator role holds for the Path 2 clone.
+
+    Returns:
+        The new count when the raise landed, else the largest count seen.
+    """
+    if current_count >= MAX_SHARD_COUNT:
+        return current_count
+    deadline_ms = now_ms + RAISE_MARKER_MS
+    marker = shard_raise.marker_write(deadline_ms, now_ms)
+
+    def key(shard: int) -> dict[str, Any]:
+        return {
+            "PK": {"S": pk_bucket(namespace_id, entity_id, resource, shard)},
+            "SK": {"S": sk_state()},
+        }
+
+    images: dict[int, dict[str, Any] | None] = {}
+    busy = False
+    seen = current_count
+    for shard in range(current_count):
+        try:
+            response = client.update_item(
+                TableName=table_name,
+                Key=key(shard),
+                ReturnValues="ALL_NEW",
+                ReturnValuesOnConditionCheckFailure="ALL_OLD",
+                **marker,
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                busy = True
+                break
+            images[shard] = None
+            if e.response.get("Item"):
+                busy = True  # another raise's live marker
+                break
+            continue
+        image = response.get("Attributes") or {}
+        images[shard] = image
+        seen = max(seen, shard_raise.stored_count(image))
+
+    def release() -> None:
+        undo = shard_raise.release_write(deadline_ms)
+        for shard, image in images.items():
+            if image is None:
+                continue
+            try:
+                client.update_item(TableName=table_name, Key=key(shard), **undo)
+            except ClientError:
+                pass  # gone already, or lapses at its deadline
+
+    if busy or seen > current_count:
+        release()
+        return seen
+    plan = shard_raise.plan_raise(
+        table_name,
+        namespace_id,
+        entity_id,
+        resource,
+        images,
+        current_count,
+        now_ms,
+        deadline_ms,
+    )
+    if plan is None:
+        release()
+        return current_count
+    try:
+        client.transact_write_items(
+            TransactItems=plan.transact_items,
+            ClientRequestToken=secrets.token_hex(16),
+        )
+    except ClientError as e:
+        release()
+        # Never the entity id: it is routinely an API key.
+        logger.debug(
+            "Shard raise cancelled - left to the client",
+            resource=resource,
+            error_code=e.response.get("Error", {}).get("Code"),
+        )
+        return current_count
+    return plan.new_count
 
 
 def _extract_limit_attrs(
@@ -2111,6 +2254,12 @@ def propagate_shard_count(
     if shard_id != 0:
         return 0  # Only propagate from source of truth
 
+    if shard_raise.holds_dripping(new_image):
+        # A bucket holding a dripping limit is raised by ADR-156's raise, which
+        # writes every shard, existing and new, in one transaction: there is
+        # nothing left to propagate or clone (#821).
+        return 0
+
     # A count past the cap is a runaway doubling (an aggregator predating the
     # cap in `try_proactive_shard`), never a real split. Path 1 and Path 2 each
     # write once per shard, so propagating it is O(new_count) writes: past a few
@@ -2299,14 +2448,6 @@ def propagate_shard_count(
         )
         return updated
     if read_failed:
-        return updated
-    if any(
-        attr.startswith(BUCKET_ATTR_PREFIX) and attr.endswith(f"_{BUCKET_FIELD_FI}")
-        for attr in new_image
-    ):
-        # A bucket storing fill instants is never cloned: a clone would copy
-        # its parent's fill instant, or write `tk` beside it (ADR-154, #818).
-        # The client creates the shard; ADR-156's raise replaces both (#821).
         return updated
 
     # Path 2: Pre-create new shards (full item cloned from shard 0)

@@ -16,8 +16,14 @@ from aiobotocore.session import AioSession, get_session
 from botocore.exceptions import ClientError
 from ulid import ULID
 
-from . import bucket_ops, fill_instant, fill_sync, schedule, schema
-from .bucket import balance_milli_at, express_at, express_created, fill_params
+from . import bucket_ops, fill_instant, fill_sync, schedule, schema, shard_raise
+from .bucket import (
+    balance_milli_at,
+    convert_to_fill_instant,
+    express_at,
+    express_created,
+    fill_params,
+)
 from .config_cache import CacheStats, ConfigCache, ConfigSource
 from .exceptions import (
     EntityExistsError,
@@ -3613,9 +3619,19 @@ class Repository:
         # `refill_amount` is 0 and which nothing ever refills.
         self._stamp_schedule(item, states)
 
-        # Auto-inject wcu infrastructure limit, full. Stored as a fill instant
-        # whenever the item's dripping limits are (#818): undivided, so its
-        # parameters are the partition's whatever the shard count.
+        # Every dripping limit a create writes is a fill instant (#821): a
+        # state still holding `tk` (built by a caller that skipped
+        # `express_created`) is converted exactly, at the count the item is
+        # created with, never written as `tk` beside the `xi` this item carries.
+        for state in states:
+            if state.fill_instant is None and state.is_dripping_state:
+                state.shard_count = shard_count
+                convert_to_fill_instant(state)
+
+        # Auto-inject wcu infrastructure limit, full, as a fill instant like
+        # every dripping limit (#818): undivided, so its parameters are the
+        # partition's whatever the shard count. Every shard starts with its
+        # partition's whole budget (ADR-156).
         wcu_cp_milli = schema.WCU_LIMIT_CAPACITY * 1000
         wcu_ra_milli = schema.WCU_LIMIT_REFILL_AMOUNT * 1000
         wcu_rp_ms = schema.WCU_LIMIT_REFILL_PERIOD_SECONDS * 1000
@@ -3625,20 +3641,15 @@ class Repository:
             for st in states
             if st.fill_instant is not None and st.expressed_ms is not None
         ]
-        if expressed or schema.WRITE_FILL_INSTANTS:
-            xi = max(expressed, default=now_ms)
-            item[schema.BUCKET_FIELD_XI] = {"N": str(xi)}
-            item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_FI)] = {
-                "N": str(
-                    fill_instant.created_full(
-                        xi, fill_instant.ShardParams(wcu_cp_milli, wcu_ra_milli, wcu_rp_ms, 1)
-                    )
-                ),
-            }
-        else:
-            item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_TK)] = {
-                "N": str(wcu_cp_milli),
-            }
+        xi = max(expressed, default=now_ms)
+        item[schema.BUCKET_FIELD_XI] = {"N": str(xi)}
+        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_FI)] = {
+            "N": str(
+                fill_instant.created_full(
+                    xi, fill_instant.ShardParams(wcu_cp_milli, wcu_ra_milli, wcu_rp_ms, 1)
+                )
+            ),
+        }
         item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_CP)] = {
             "N": str(wcu_cp_milli),
         }
@@ -3976,7 +3987,11 @@ class Repository:
             set_parts.append(f"#wl{i} = :wl{i}")
             attr_values[f":wl{i}"] = {"N": str(rsa)}
 
-        condition_parts: list[str] = ["#rf = :expected_rf"]
+        # Never while a raise holds the item (ADR-156): its pins would break.
+        guard, guard_names, guard_values = schema.raise_guard(now_ms)
+        condition_parts: list[str] = ["#rf = :expected_rf", guard]
+        attr_names.update(guard_names)
+        attr_values.update(guard_values)
         soft_aliases: dict[str, str] = {}
         if pgen_pinned and owner_pinc is not None:
             # Same incarnation only: this pass read META eventually
@@ -4295,6 +4310,12 @@ class Repository:
         attr_values: dict[str, Any] = {}
         guards = period_guards or {}
         stamp_now = self._now_ms() if now_ms is None else now_ms
+        # Never while a raise holds the item (ADR-156): a `tk` it converts is
+        # pinned, and this write would break the pin.
+        guard, guard_names, guard_values = schema.raise_guard(stamp_now)
+        condition_parts.append(guard)
+        attr_names.update(guard_names)
+        attr_values.update(guard_values)
 
         # Index-derived tokens, never the limit name (#634); see
         # `build_composite_normal`.
@@ -5153,9 +5174,18 @@ class Repository:
         period's refund in the new period's allowance (review D6). Its ceilings
         and pins come from the debit's ``ALL_NEW`` image. A failed refund is
         logged and leaves the debit (under-admission, never over).
+
+        Only a legacy item (no ``xi``) can owe one. On an item storing fill
+        instants today's write is refused (``attribute_not_exists(xi)``) and
+        the fill-instant write that follows is bypass-shaped once its image
+        shows the stamp, debiting nothing, quotas included; an enforce-shaped
+        one never lands on a stamped item. A credit there would mint a
+        quota's tokens, or create a ``tk`` beside a fill instant.
         """
         from .lease import credit_ceilings, credit_image, write_credit
 
+        if any(state.stored_expressed_ms is not None for state in result.buckets):
+            return
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
         image = credit_image(result.buckets)
         ceilings = credit_ceilings(
@@ -5225,7 +5255,7 @@ class Repository:
         fill_key = (self._namespace_id, entity_id, resource, shard_id)
         cached = self._fill_images.get(fill_key)
         if cached is not None:
-            return await self._speculative_consume_fill(
+            decided = await self._speculative_consume_fill(
                 entity_id,
                 resource,
                 consume,
@@ -5236,6 +5266,11 @@ class Repository:
                 fresh=False,
                 budget=budget,
             )
+            if decided is not None:
+                return decided
+            # The cached image would have sent the request elsewhere unwritten;
+            # it may be stale (the slow pass that fixed the item stores none),
+            # so it was forgotten and today's write asks the item itself.
         client = await self._get_client()
         bypass_key = (self._namespace_id, entity_id, resource)
 
@@ -5361,6 +5396,13 @@ class Repository:
         attr_names["#xi"] = schema.BUCKET_FIELD_XI
         condition_parts.append("attribute_not_exists(#xi)")
 
+        # Never while a raise holds the item (ADR-156): a `tk` it converts is
+        # pinned, and this write would break the pin.
+        guard, guard_names, guard_values = schema.raise_guard(now_ms)
+        condition_parts.append(guard)
+        attr_names.update(guard_names)
+        attr_values.update(guard_values)
+
         # Reject a bucket whose schedule window has closed (#222 §2.1). The
         # fast path cannot evaluate a schedule, so `vu` is a precomputed
         # instant: past it, `tk` was materialised under parameters that no
@@ -5476,6 +5518,22 @@ class Repository:
                             failure_reason=SpeculativeFailureReason.DISABLED,
                         )
 
+                    # A raise holds the shard (ADR-156): refused until it lands
+                    # or lapses. Neither a rejection nor a reason to probe or
+                    # double: the contended 429.
+                    if schema.raise_deadline(old_item, now_ms) is not None:
+                        return SpeculativeResult(
+                            success=False,
+                            old_buckets=old_buckets,
+                            cascade=old_cascade,
+                            parent_id=old_parent_id,
+                            shard_id=shard_id,
+                            shard_count=old_shard_count,
+                            pgen=old_pgen,
+                            pinc=old_pinc,
+                            failure_reason=SpeculativeFailureReason.UNDECIDED,
+                        )
+
                     # A `bypass` stamp, or a declared limit's soft stamp, at
                     # or past its deadline (ADR-151 decision 8): neither a
                     # rejection nor a cleared bypass,
@@ -5545,7 +5603,7 @@ class Repository:
                     if schema.BUCKET_FIELD_XI in old_item:
                         self._fill_images.store(fill_key, old_item)
                         budget.take()
-                        return await self._speculative_consume_fill(
+                        decided = await self._speculative_consume_fill(
                             entity_id,
                             resource,
                             consume,
@@ -5556,6 +5614,8 @@ class Repository:
                             fresh=True,
                             budget=budget,
                         )
+                        assert decided is not None  # a fresh image always decides
+                        return decided
                     if (
                         not old_bypassed
                         and vu_raw is not None
@@ -5683,7 +5743,7 @@ class Repository:
         *,
         fresh: bool,
         budget: fill_instant.WriteBudget,
-    ) -> SpeculativeResult:
+    ) -> SpeculativeResult | None:
         """The fast path on an item storing fill instants (ADR-154, #819).
 
         Each hard limit on the write, the reserved ``wcu`` included, gets one of
@@ -5702,6 +5762,14 @@ class Repository:
         terms. Anything the two writes cannot express goes to the slow path as
         ``SCHEDULE_BOUNDARY``: a closed window, a schedule boundary since the
         item's ``xi``, an expired stamp, a limit missing from the item.
+
+        Returns None, writing nothing, when an image from the cache (not
+        ``fresh``) would send the request anywhere but to a write (a route
+        above, ``DISABLED``, a live raise marker): it is forgotten, and the
+        caller sends today's write, whose failure returns the item as it is.
+        A cached image is refreshed only by a fast-path write, so trusted here
+        it could keep a shard off the fast path after the slow pass that fixed
+        it, or answer 403 after another process lifted a disable.
         """
         client = await self._get_client()
         fill_key = (self._namespace_id, entity_id, resource, shard_id)
@@ -5719,11 +5787,22 @@ class Repository:
             by_name = {state.limit_name: state for state in states}
             boundary = SpeculativeFailureReason.SCHEDULE_BOUNDARY
 
-            def _route(reason: SpeculativeFailureReason) -> SpeculativeResult:
+            def _route(reason: SpeculativeFailureReason) -> SpeculativeResult | None:
+                if not fresh:
+                    # Decided from this process's cached image with no write:
+                    # it may predate the slow pass, enable or raise that has
+                    # changed the item since, and only a fast-path write
+                    # refreshes it. Forget it; the caller asks the item.
+                    self._fill_images.forget(fill_key)
+                    return None
                 return self._image_result(seen, states, shard_id, success=False, reason=reason)
 
             if item.get(schema.BUCKET_FIELD_DISABLED, {}).get("BOOL", False):
                 return _route(SpeculativeFailureReason.DISABLED)
+            if schema.raise_deadline(item, now_ms) is not None:
+                # A raise holds the shard (ADR-156): every write it would send
+                # is refused until the raise lands. The contended 429.
+                return _route(SpeculativeFailureReason.UNDECIDED)
             if schema.BUCKET_FIELD_XI not in item:
                 # No longer stored as fill instants: the slow path decides.
                 self._fill_images.forget(fill_key)
@@ -5997,6 +6076,11 @@ class Repository:
         for _attempt in range(attempts or _DEBIT_ATTEMPTS):
             if current is None or schema.BUCKET_FIELD_XI not in current:
                 break
+            if await self._wait_out_raise(current):
+                # A raise held the item (ADR-156): it has landed or lapsed by
+                # now, and the item it left is read again.
+                current = await self._read_bucket_item(entity_id, resource, shard_id)
+                continue
             by_name = {s.limit_name: s for s in self._deserialize_composite_bucket(current)}
             if any(
                 by_name.get(name) is None or by_name[name].fill_instant is None for name in debits
@@ -6066,6 +6150,20 @@ class Repository:
             resource=resource,
         )
 
+    async def _wait_out_raise(self, item: dict[str, Any] | None) -> bool:
+        """Sleep until the live raise marker on ``item`` lapses; False when there is none.
+
+        A write that must land (a debit, a parameter sync, a reset) waits for a
+        raise rather than fail (ADR-156): the raise is one transaction, done in
+        far less than ``schema.RAISE_MARKER_MS``, the most this waits.
+        """
+        now_ms = self._now_ms()
+        deadline = schema.raise_deadline(item, now_ms)
+        if deadline is None:
+            return False
+        await asyncio.sleep(min(deadline - now_ms, schema.RAISE_MARKER_MS) / 1000)
+        return True
+
     async def _read_bucket_item(
         self, entity_id: str, resource: str, shard_id: int
     ) -> dict[str, Any] | None:
@@ -6103,7 +6201,10 @@ class Repository:
         names: dict[str, str] = {"#zxi": schema.BUCKET_FIELD_XI}
         values: dict[str, Any] = {":zxi": {"N": str(now_ms)}, ":zxir": {"N": str(xi)}}
         sets = ["#zxi = :zxi"]
-        conditions = ["attribute_exists(PK)", "#zxi = :zxir"]
+        guard, guard_names, guard_values = schema.raise_guard(now_ms)
+        conditions = ["attribute_exists(PK)", "#zxi = :zxir", guard]
+        names.update(guard_names)
+        values.update(guard_values)
         for i, state in enumerate(states):
             express_at(state, now_ms)
             names[f"#zf{i}"] = schema.bucket_attr(state.limit_name, schema.BUCKET_FIELD_FI)
@@ -6258,6 +6359,11 @@ class Repository:
         conditions.append(
             "(attribute_not_exists(#zsc) OR #zsc = :zsc)" if shard_count == 1 else "#zsc = :zsc"
         )
+        # Never while a raise holds the item (ADR-156): its pins would break.
+        guard, guard_names, guard_values = schema.raise_guard(now_ms)
+        conditions.append(guard)
+        names.update(guard_names)
+        values.update(guard_values)
         for token, field, raw in (
             ("zis", schema.BUCKET_FIELD_SCHED, item_sched[0]),
             ("zit", schema.BUCKET_FIELD_SCHED_TZ, item_sched[1]),
@@ -6319,6 +6425,7 @@ class Repository:
         expressed_ms: int,
         shard_count: int,
         counter: bool = True,
+        now_ms: int | None = None,
     ) -> dict[str, Any]:
         """Build an exact return of fill-instant debits (ADR-155): ``UpdateItem`` kwargs.
 
@@ -6330,7 +6437,9 @@ class Repository:
         write is pinned on the fill instant still existing, the state's stored
         ``cp`` / ``ra`` / ``rp``, the item's ``shard_count`` and its ``xi``: a
         span computed against other parameters would return the wrong amount,
-        so a return that fails its pins is dropped (an under-admission).
+        so a return that fails its pins is dropped (an under-admission). So is
+        one that finds a live raise marker at ``now_ms`` (the clock when
+        omitted, ADR-156): a raise in progress is pinned on every fill instant.
         """
         add_parts: list[str] = []
         conditions: list[str] = ["attribute_exists(PK)"]
@@ -6364,6 +6473,12 @@ class Repository:
         conditions.append(
             "(attribute_not_exists(#zsc) OR #zsc = :zsc)" if shard_count == 1 else "#zsc = :zsc"
         )
+        guard, guard_names, guard_values = schema.raise_guard(
+            self._now_ms() if now_ms is None else now_ms
+        )
+        conditions.append(guard)
+        names.update(guard_names)
+        values.update(guard_values)
         return {
             "TableName": self.table_name,
             "Key": {
@@ -6715,6 +6830,135 @@ class Repository:
 
         # Update entity cache with new shard_count (monotonic)
         return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
+
+    async def raise_shards(self, entity_id: str, resource: str, current_count: int) -> int:
+        """Raise a bucket holding a dripping limit from ``current_count`` to twice it (ADR-156).
+
+        Replaces :meth:`bump_shard_count` for such a bucket, whose doubling
+        let every shard keep its balance and created each new shard at a full
+        share: up to 1.5x the limit across a doubling. Three steps:
+
+        1. A raise marker with a deadline ``schema.RAISE_MARKER_MS`` out
+           is stamped on every shard below ``current_count``, concurrently.
+           Each write's ``ALL_NEW`` is this raise's strongly consistent read of
+           that shard; one that finds no item marks the slot missing.
+        2. :func:`shard_raise.plan_raise` builds one transaction from the
+           images: every shard re-expressed at the new count, its balance
+           above the new share moved into the shard it splits off, every new
+           shard created with a full ``wcu``, ADR-150's owner check.
+        3. The transaction is sent with a fresh ``ClientRequestToken``.
+
+        Gives up, removing its own markers, when another raise's marker is
+        live, a shard already stores a larger count, the plan is empty, or the
+        transaction is cancelled (a write the marker does not hold off landed,
+        or the owner moved): the caller keeps the shard it has, and the next
+        ``wcu`` exhaustion raises. Cost: ``current_count`` marker writes, then
+        one transaction of at most ``2 × current_count`` items plus the check.
+
+        Returns:
+            The shard count now cached: the new count when the raise landed,
+            the larger count a shard stores when another writer raised first,
+            otherwise ``current_count``.
+        """
+        cache_key = (self._namespace_id, entity_id)
+        meta = None if cache_key in self._entity_cache else (False, None)
+        if current_count >= schema.MAX_SHARD_COUNT:
+            if (entity_id, resource) not in self._shard_cap_warned:
+                self._shard_cap_warned.add((entity_id, resource))
+                # Never the entity id: it is routinely an API key.
+                logger.warning(
+                    "shard_count for resource=%s is at MAX_SHARD_COUNT=%d; "
+                    "refusing to raise further",
+                    resource,
+                    schema.MAX_SHARD_COUNT,
+                )
+            return self._learn_shard_count(entity_id, resource, current_count, meta=meta)
+
+        client = await self._get_client()
+        now_ms = self._now_ms()
+        deadline_ms = now_ms + schema.RAISE_MARKER_MS
+        marker = shard_raise.marker_write(deadline_ms, now_ms)
+
+        def key(shard: int) -> dict[str, Any]:
+            return {
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": schema.sk_state()},
+            }
+
+        async def stamp(shard: int) -> tuple[int, dict[str, Any] | None, int]:
+            """``(shard, image, count)``: count is -1 for a shard another raise holds."""
+            try:
+                response = await self._update_item_retrying_conflict(
+                    client,
+                    TableName=self.table_name,
+                    Key=key(shard),
+                    ReturnValues="ALL_NEW",
+                    ReturnValuesOnConditionCheckFailure="ALL_OLD",
+                    **marker,
+                )
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                    held = cast(dict[str, Any] | None, e.response.get("Item"))
+                    if not held:
+                        return shard, None, 0  # no item at this slot
+                    return shard, None, -1
+                if _is_item_transaction_conflict(e):
+                    return shard, None, -1
+                raise
+            image = cast(dict[str, Any], response.get("Attributes") or {})
+            return shard, image, shard_raise.stored_count(image)
+
+        async def release(stamped: list[int]) -> None:
+            undo = shard_raise.release_write(deadline_ms)
+
+            async def one(shard: int) -> None:
+                try:
+                    await client.update_item(TableName=self.table_name, Key=key(shard), **undo)
+                except ClientError:
+                    pass  # gone already, or lapses at its deadline
+
+            await asyncio.gather(*[one(shard) for shard in stamped])
+
+        # A comprehension, not a pre-built list: the sync transformer needs
+        # each call deferred into its own lambda (#666).
+        results = await asyncio.gather(*[stamp(shard) for shard in range(current_count)])
+        images = {shard: image for shard, image, _count in results}
+        stamped = [shard for shard, image, _count in results if image is not None]
+        seen = max([count for _shard, _image, count in results] + [current_count])
+        if any(count < 0 for _shard, _image, count in results) or seen > current_count:
+            await release(stamped)
+            return self._learn_shard_count(entity_id, resource, seen, meta=meta)
+        plan = shard_raise.plan_raise(
+            self.table_name,
+            self._namespace_id,
+            entity_id,
+            resource,
+            images,
+            current_count,
+            now_ms,
+            deadline_ms,
+        )
+        if plan is None:
+            await release(stamped)
+            return self._learn_shard_count(entity_id, resource, current_count, meta=meta)
+        try:
+            await client.transact_write_items(
+                TransactItems=plan.transact_items, ClientRequestToken=secrets.token_hex(16)
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") not in (
+                "TransactionCanceledException",
+                "TransactionConflictException",
+            ):
+                await release(stamped)
+                raise
+            await release(stamped)
+            # Never the entity id: it is routinely an API key.
+            logger.debug("shard raise for resource=%s cancelled; left at %d", resource, seen)
+            return self._learn_shard_count(entity_id, resource, current_count, meta=meta)
+        for shard in range(current_count):
+            self._fill_images.forget((self._namespace_id, entity_id, resource, shard))
+        return self._learn_shard_count(entity_id, resource, plan.new_count, meta=meta)
 
     async def _propagate_shard_count(
         self, entity_id: str, resource: str, old_count: int, new_count: int
@@ -7610,6 +7854,11 @@ class Repository:
                     # is nothing to reconcile — a bucket created later is
                     # created with the current params.
                     return False
+                if await self._wait_out_raise(item):
+                    # A raise held the shard (ADR-156); its image is stale now.
+                    # The plain write fails on the `xi` the raise left and
+                    # returns the item to re-express from.
+                    item = None
                 continue
             return True
         raise RateLimiterUnavailable(
@@ -9461,6 +9710,9 @@ class Repository:
         stored_xi = self._decode_stored_fill_int(
             schema.BUCKET_FIELD_XI, item.get(schema.BUCKET_FIELD_XI, {}).get("N")
         )
+        raise_until = self._decode_stored_fill_int(
+            schema.BUCKET_FIELD_RAISE, item.get(schema.BUCKET_FIELD_RAISE, {}).get("N")
+        )
 
         buckets: list[BucketState] = []
         for name in limit_names:
@@ -9582,6 +9834,7 @@ class Repository:
                 expressed_ms=stored_xi if stored_fi is not None else None,
                 stored_fill_instant=stored_fi,
                 stored_expressed_ms=stored_xi,
+                raise_until_ms=raise_until,
             )
             if stored_fi is not None and not state.is_dripping_state:
                 # Only a dripping limit has a fill instant: a quota's balance
@@ -10618,62 +10871,10 @@ class Repository:
     ) -> list[tuple[str, int]]:
         """``(name, grant_count)`` for every legacy quota ``item`` carries outside ``skip``.
 
-        A quota is read off the stored shape, the same key the aggregator's
-        ``_is_quota_limit`` uses: a zero refill rate beside a reset — the
-        limit's own ``b_{name}_rsa`` or ``b_{name}_rsched``, or the item-level
-        ``rsched`` unless the #541 ``BUCKET_SCHED_NONE`` marker blocks it. Only
-        one with no ``gc`` (design §9) is returned, sized by the R7 rule of
-        :meth:`_quota_sibling` against its schedule-effective capacity; an
-        undecodable schedule sizes against the base capacity.
+        :func:`shard_raise.legacy_quota_sizes`, shared with the dripping-bucket
+        raise (ADR-156), which freezes the same grant sizes.
         """
-        tz = item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S", "UTC")
-        sizes: list[tuple[str, int]] = []
-        prefix, suffix = schema.BUCKET_ATTR_PREFIX, f"_{schema.BUCKET_FIELD_TK}"
-        for attr in item:
-            if not (attr.startswith(prefix) and attr.endswith(suffix)):
-                continue
-            name = attr[len(prefix) : -len(suffix)]
-            if (
-                not name
-                or name == schema.WCU_LIMIT_NAME
-                or name in skip
-                or schema.bucket_attr(name, schema.BUCKET_FIELD_GC) in item
-            ):
-                continue
-            if int(cls._limit_field(item, name, schema.BUCKET_FIELD_RA, "N") or "0") != 0:
-                continue
-            own_reset = cls._limit_field(item, name, schema.BUCKET_FIELD_RSCHED, "S")
-            is_quota = cls._limit_field(item, name, schema.BUCKET_FIELD_RSA, "N") is not None or (
-                own_reset != schema.BUCKET_SCHED_NONE
-                and bool(own_reset or item.get(schema.BUCKET_FIELD_RSCHED, {}).get("S"))
-            )
-            cp = cls._limit_field(item, name, schema.BUCKET_FIELD_CP, "N")
-            if not is_quota or cp is None:
-                continue
-            own_sched = cls._limit_field(item, name, schema.BUCKET_FIELD_SCHED, "S")
-            compact = (
-                None
-                if own_sched == schema.BUCKET_SCHED_NONE
-                else own_sched or item.get(schema.BUCKET_FIELD_SCHED, {}).get("S")
-            )
-            try:
-                sched = schedule.decode(compact, tz) if compact else ()
-            except ValueError:
-                sched = ()
-            rp = int(cls._limit_field(item, name, schema.BUCKET_FIELD_RP, "N") or "1000")
-            capacity = schedule.effective_params(int(cp), 0, rp, sched, now_ms)[0]
-            grant_count = cls._stored_shard_count(item)
-            tokens = int(item[attr]["N"])
-            while grant_count > 1 and tokens > capacity // grant_count:
-                grant_count //= 2
-            sizes.append((name, grant_count))
-        return sizes
-
-    @staticmethod
-    def _limit_field(item: dict[str, Any], name: str, key: str, kind: str) -> str | None:
-        """One per-limit bucket attribute's raw ``kind`` value, or ``None``."""
-        value = item.get(schema.bucket_attr(name, key), {}).get(kind)
-        return None if value is None else str(value)
+        return shard_raise.legacy_quota_sizes(item, skip, now_ms)
 
     @staticmethod
     def _stored_shard_count(item: dict[str, Any]) -> int:
@@ -12123,6 +12324,15 @@ class Repository:
                 await asyncio.sleep(random.uniform(0, _OPERATION_RETRY_BASE_DELAY * 2**attempt))
             now_ms = self._now_ms()
             shards, raw = await self._read_operation_shards(entity_id, resource, now_ms)
+            held = next(
+                (item for item in raw.values() if schema.raise_deadline(item, now_ms)), None
+            )
+            if held is not None:
+                # A raise holds the bucket (ADR-156) and refuses this write:
+                # wait for it to land or lapse, then read every shard again.
+                await self._wait_out_raise(held)
+                now_ms = self._now_ms()
+                shards, raw = await self._read_operation_shards(entity_id, resource, now_ms)
             if not shards:
                 if operation == bucket_ops.RESET:
                     result = BucketOperationResult(
@@ -12563,8 +12773,8 @@ class Repository:
             for limit in resolved
         }
         for state in states.values():
-            # Created full like any other bucket (#818): a fill instant while
-            # `schema.WRITE_FILL_INSTANTS` is on.
+            # Created full like any other bucket's first shard (ADR-156): no
+            # shard of it exists.
             express_created(state, now_ms)
         by_name = {limit.name: limit for limit in resolved}
         amounts = {
@@ -12729,7 +12939,11 @@ class Repository:
         set_parts = ["#rf = :rf", "#vu = :vu"]
         add_parts: list[str] = []
         remove_parts: list[str] = []
-        conditions: list[str] = []
+        # Never while a raise holds the item (ADR-156): its pins would break.
+        guard, guard_names, guard_values = schema.raise_guard(write.written_rf)
+        conditions: list[str] = [guard]
+        names.update(guard_names)
+        values.update(guard_values)
 
         def attr(name: str, field: str) -> str:
             return schema.bucket_attr(name, field)

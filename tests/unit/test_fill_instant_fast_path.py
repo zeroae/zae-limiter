@@ -7,10 +7,9 @@ chosen from the last image this process saw. A wrong guess fails, returns the
 item, and is retried from it with the same stamp; a request still undecided
 when its write budget (``L + 2``) runs out is the contended 429.
 
-Every test turns ``schema.WRITE_FILL_INSTANTS`` on: until #821 removes it,
-nothing outside tests stores a fill instant. Not a sync-generation source: the
-sync twin of every path here is generated from the same modules, and the #808
-reproductions in ``test_limiter.py`` run on both.
+Not a sync-generation source: the sync twin of every path here is generated
+from the same modules, and the #808 reproductions in ``test_limiter.py`` run on
+both.
 """
 
 from collections.abc import Awaitable, Callable
@@ -19,7 +18,7 @@ from typing import Any
 import pytest
 
 from tests.fixtures.capacity import CapacityCounter, _counting_client
-from zae_limiter import Limit, RateLimitExceeded, schema
+from zae_limiter import Limit, RateLimitExceeded
 from zae_limiter import fill_instant as fi
 from zae_limiter.fill_instant import FILL_INSTANT_EXTRA_WRITES, Side
 from zae_limiter.repository_protocol import SpeculativeFailureReason, SpeculativeResult
@@ -38,11 +37,6 @@ TPM = Limit.per_minute("tpm", 10_000)
 P_RPM = fi.ShardParams(100_000, 100_000, 60_000, 1)
 P_TPM = fi.ShardParams(10_000_000, 10_000_000, 60_000, 1)
 P_WCU = fi.ShardParams(1_000_000, 1_000_000, 1_000, 1)
-
-
-@pytest.fixture(autouse=True)
-def _fill_instants_on(monkeypatch):
-    monkeypatch.setattr(schema, "WRITE_FILL_INSTANTS", True)
 
 
 class Clock:
@@ -407,6 +401,33 @@ class TestRouting:
         result = await self._fill(limiter)
         assert result.failure_reason is SpeculativeFailureReason.BUCKET_MISSING
         assert repo._fill_images.get((repo._namespace_id, "e1", RESOURCE, 0)) is None
+
+    @pytest.mark.parametrize(
+        ("attr", "value"),
+        [("disabled", {"BOOL": True}), ("ttl", {"N": "1"}), ("rx", {"N": str(T0 + 60_000)})],
+        ids=["disabled", "expired-ttl", "live-raise-marker"],
+    )
+    async def test_a_stale_cached_image_is_asked_again(self, limiter, clock, attr, value) -> None:
+        """#821: a route decided from this process's cached image sends no write,
+        and only a fast-path write refreshes the image. Trusted, a stamp lifted
+        since (by another process, or by the slow pass that fixed the item)
+        kept the shard off the fast path, or answered 403, for good. The image
+        is forgotten and today's write asks the item: one refused write, then
+        the fast path admits, with no read."""
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM])
+        key = (repo._namespace_id, "e1", RESOURCE, 0)
+        cached = repo._fill_images.get(key)
+        assert cached is not None
+        repo._fill_images.store(key, {**cached.item, attr: value})  # stale
+        counter = CapacityCounter()
+        with _counting_client(counter, limiter):
+            result = await self._fill(limiter)
+        assert result.success
+        assert counter.update_item == 2  # today's write, refused on `xi`; then the pair
+        assert counter.get_item == counter.query == 0 and counter.batch_get_item == []
+        refreshed = repo._fill_images.get(key)
+        assert refreshed is not None and attr not in refreshed.item
 
     @pytest.mark.parametrize(
         ("expression", "names", "values", "reason"),

@@ -1321,8 +1321,8 @@ class BucketState:
     # balance: `bucket.py` projects it exactly at any instant, and
     # `tokens_milli` / `last_refill_ms` are a snapshot kept for the readers that
     # look at them raw. Set on a state read as a fill instant, on one the slow
-    # path converts (its write converts the item), and on one it creates while
-    # `schema.WRITE_FILL_INSTANTS` is on; kept in step with every in-memory
+    # path converts (its write converts the item), and on one it creates; kept
+    # in step with every in-memory
     # debit and credit (`bucket.settle`, `bucket.apply_consume`).
     fill_instant: int | None = None
     # The instant `fill_instant` was expressed against `sched` and the stored
@@ -1335,6 +1335,11 @@ class BucketState:
     # a conversion is pinned on `tk` (and no `fi`) instead of the first.
     stored_fill_instant: int | None = None
     stored_expressed_ms: int | None = None
+    # The deadline of a raise marker on the item (ADR-156), epoch ms, or None.
+    # While it is live every write that moves a fill instant, `xi` or the
+    # shard count is refused, so the slow path answers contended rather than
+    # write.
+    raise_until_ms: int | None = None
 
     @property
     def is_dripping_state(self) -> bool:

@@ -82,13 +82,17 @@ BUCKET_FIELD_RF = "rf"  # shared refill timestamp (ms) — optimistic lock
 BUCKET_FIELD_FI = "fi"  # b_{name}_fi — scaled fill instant
 BUCKET_FIELD_XI = "xi"  # expression instant, epoch ms
 
-#: Internal switch (#818): whether a slow pass creates dripping limits as fill
-#: instants and converts legacy `tk`/`rf` ones. Off outside tests until every
-#: writer understands the form (#819, #820, #821); #821 removes it. A limit
-#: already stored as a fill instant is always read and written as one, whatever
-#: the switch says. Read at call time (`schema.WRITE_FILL_INSTANTS`), so a test
-#: can turn it on.
-WRITE_FILL_INSTANTS = False
+# The raise marker (ADR-156, #821): a deadline, epoch ms, stamped on every shard
+# of a bucket holding a dripping limit while its shard count is raised. Every
+# write that moves a fill instant, `xi` or the shard count refuses it while it
+# is live (`raise_guard`), so the raise's pins hold even on the hottest bucket;
+# an expired one is ignored. Correctness never rests on it: the raise is pinned
+# on everything it read, the marker only keeps it from being starved.
+BUCKET_FIELD_RAISE = "rx"
+#: How long a raise marker holds other writers off, ms. A raise is a marker
+#: write and one transaction; a raiser that dies leaves the bucket refusing
+#: writes for at most this long, and a writer that must land waits at most this.
+RAISE_MARKER_MS = 2_000
 
 # Scheduled limits (#222, ADR-135). The compact encoding lives in
 # ``zae_limiter.schedule``; these are the attribute names it is stored under.
@@ -306,6 +310,28 @@ def decode_stamp(attr: dict[str, Any] | None) -> int | None:
     if raw is None:
         return STAMP_EXPIRED
     return int(raw)
+
+
+def raise_guard(now_ms: int) -> tuple[str, dict[str, str], dict[str, dict[str, str]]]:
+    """The condition term refusing a live raise marker at ``now_ms`` (ADR-156).
+
+    ``(term, names, values)``: ``#rx`` / ``:rxt``, which no other bucket write
+    uses. A marker at or before ``now_ms`` has expired and passes.
+    """
+    return (
+        "(attribute_not_exists(#rx) OR #rx <= :rxt)",
+        {"#rx": BUCKET_FIELD_RAISE},
+        {":rxt": {"N": str(now_ms)}},
+    )
+
+
+def raise_deadline(item: dict[str, Any] | None, now_ms: int) -> int | None:
+    """The deadline of the live raise marker on wire-format ``item``, else None."""
+    raw = (item or {}).get(BUCKET_FIELD_RAISE, {}).get("N")
+    if raw is None:
+        return None
+    deadline = int(raw)
+    return deadline if deadline > now_ms else None
 
 
 def stamp_value(deadline_ms: int) -> dict[str, Any]:

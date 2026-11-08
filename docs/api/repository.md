@@ -231,10 +231,21 @@ Implement this protocol to use a different storage backend (e.g., for testing).
     exact return of a fill instant (`ADD b_{name}_fi -c·S·rp` pinned on what the
     debit was computed against), which compensation and lease refunds call, and
     `debit_fill_instants`, ADR-154's debit pair with no upper bound, which a
-    positive lease adjustment calls and which must never drop a debit (#820). The
-    remaining writers
-    change with #819-#821, before the release; until then writing the form is
-    behind an internal switch that is off.
+    positive lease adjustment calls and which must never drop a debit (#820).
+    Every bucket created stores its dripping limits, the reserved `wcu`
+    included, as fill instants (#821).
+
+!!! note "New in v0.18.0: `raise_shards` (optional, ADR-156, #821)"
+    At `wcu` exhaustion the limiter raises a bucket holding a dripping limit
+    through `raise_shards(entity_id, resource, current_count)`, which must
+    double the count with the total balance conserved: a raise marker `rx` (a
+    deadline) on every shard, then one transaction re-expressing each shard at
+    the new count and creating the shard it splits off holding its balance above
+    the new share (`zae_limiter.shard_raise.plan_raise` builds it from the items
+    read). It returns the count now cached. Every write that moves a fill
+    instant, `xi` or the shard count must refuse a live marker
+    (`schema.raise_guard`). It is optional: on a backend without it the limiter
+    calls `bump_shard_count`, as for a quota-only bucket.
 
 ::: zae_limiter.repository_protocol.RepositoryProtocol
     options:

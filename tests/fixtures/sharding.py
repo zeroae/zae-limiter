@@ -8,7 +8,8 @@ shard was granted. Async only: these call the async ``Repository`` directly.
 import contextlib
 import random
 
-from zae_limiter import RateLimitExceeded, schema
+from zae_limiter import RateLimitExceeded, fill_instant, schema
+from zae_limiter.bucket import balance_milli_at, fill_params
 
 RESOURCE = "gpt-4"
 
@@ -37,7 +38,28 @@ async def drain_wcu(repo, entity_id, shard_id, resource=RESOURCE):
         "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard_id)},
         "SK": {"S": schema.sk_state()},
     }
-    if (await client.get_item(TableName=repo.table_name, Key=key)).get("Item") is None:
+    item = (await client.get_item(TableName=repo.table_name, Key=key)).get("Item")
+    if item is None:
+        return
+    if schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_FI) in item:
+        # A fill instant (#821): emptied at the repository's clock under the
+        # slowed refill, so it reads empty for an hour.
+        slow = fill_instant.ShardParams(schema.WCU_LIMIT_CAPACITY * 1000, 1, 3_600_000, 1)
+        await client.update_item(
+            TableName=repo.table_name,
+            Key=key,
+            UpdateExpression="SET #rp = :hour, #ra = :one, #fi = :empty",
+            ExpressionAttributeNames={
+                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
+                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
+                "#fi": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_FI),
+            },
+            ExpressionAttributeValues={
+                ":hour": {"N": "3600000"},
+                ":one": {"N": "1"},
+                ":empty": {"N": str(fill_instant.created_empty(repo._now_ms(), slow))},
+            },
+        )
         return
     await client.update_item(
         TableName=repo.table_name,
@@ -61,9 +83,14 @@ async def drain_wcu(repo, entity_id, shard_id, resource=RESOURCE):
 
 
 async def shard_balances(repo, entity_id, limit_name, shard_count, resource=RESOURCE):
-    """Per-shard millitoken balances; ``None`` where the shard does not exist."""
+    """Per-shard millitoken balances; ``None`` where the shard does not exist.
+
+    A quota's ``tk`` as stored; a dripping limit's fill instant read exactly at
+    the repository's clock (#821).
+    """
     client = await repo._get_client()
     attr = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_TK)
+    fi_attr = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_FI)
     out: list[int | None] = []
     for shard in range(shard_count):
         response = await client.get_item(
@@ -74,6 +101,12 @@ async def shard_balances(repo, entity_id, limit_name, shard_count, resource=RESO
             },
         )
         item = response.get("Item") or {}
+        if fi_attr in item:
+            (state,) = [
+                s for s in repo._deserialize_composite_bucket(item) if s.limit_name == limit_name
+            ]
+            out.append(balance_milli_at(state, repo._now_ms()))
+            continue
         raw = item.get(attr)
         out.append(None if raw is None else int(raw["N"]))
     return out
@@ -108,6 +141,27 @@ async def drain_shard(repo, entity_id, limit_name, shard_id, floor=2, resource=R
     }
     response = await client.get_item(TableName=repo.table_name, Key=key)
     item = response.get("Item") or {}
+    fi_attr = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_FI)
+    if fi_attr in item:
+        # A fill instant (#821): set to hold ``floor`` at the repository's clock.
+        (state,) = [
+            s for s in repo._deserialize_composite_bucket(item) if s.limit_name == limit_name
+        ]
+        now_ms = repo._now_ms()
+        current = balance_milli_at(state, now_ms)
+        if current <= floor * 1000:
+            return 0
+        params = fill_params(state, now_ms)
+        await client.update_item(
+            TableName=repo.table_name,
+            Key=key,
+            UpdateExpression="SET #fi = :floor",
+            ExpressionAttributeNames={"#fi": fi_attr},
+            ExpressionAttributeValues={
+                ":floor": {"N": str(fill_instant.from_tokens(floor * 1000, now_ms, params))}
+            },
+        )
+        return (current - floor * 1000) // 1000
     attr = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_TK)
     raw = item.get(attr)
     if raw is None:

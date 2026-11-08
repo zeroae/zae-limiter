@@ -53,6 +53,7 @@ from zae_limiter.schema import (
     LIMIT_FIELD_RSCHED,
     LIMIT_FIELD_SCHED,
     LIMIT_FIELD_SOFT,
+    RAISE_MARKER_MS,
     WINDOW_LIMIT_ATTR_PREFIX,
     bucket_attr,
     calculate_bucket_ttl_seconds,
@@ -64,6 +65,7 @@ from zae_limiter.schema import (
     pk_entity,
     pk_resource,
     pk_system,
+    raise_deadline,
     sk_config,
     sk_state,
     stamp_deadline,
@@ -483,6 +485,14 @@ def _update_one_shard(
                 # is created with the current params, so nothing to reconcile.
                 logger.debug("Bucket %s vanished before param sync", pk)
                 return False
+            now_ms = read_clock_ms()
+            deadline = raise_deadline(item, now_ms)
+            if deadline is not None:
+                # A raise holds the shard (ADR-156): wait for it to land or
+                # lapse. Its image is stale now; the plain write fails on the
+                # `xi` the raise left and returns the item to re-express from.
+                time.sleep(min(deadline - now_ms, RAISE_MARKER_MS) / 1000)
+                item = None
     raise RuntimeError("a bucket kept changing under its parameter sync")
 
 

@@ -350,7 +350,9 @@ interval at the rate in force at its end, as the code does today, admitted 1000 
 across a boundary from 0.1x to 1x.
 
 **Shard split (ADR-156).** A raise from `S` to `2S` shards first stamps a short-lived marker on
-every shard, which other writes refuse while it is live, so their writes cannot break its pins.
+every shard, which every write that moves a fill instant, the expression instant or the shard
+count refuses while it is live, so their writes cannot break its pins; one it does not hold off
+(a stamp fan-out) cancels it, since it is pinned on what it copies.
 It then reads every shard and, in one transaction pinned on what it read, re-expresses each
 shard `i` (holding `b_i ≤ C / S`) at the new share `C / 2S`, keeping `min(b_i, C / 2S)`, and
 creates shard `i + S` holding `max(0, b_i − C / 2S)`, which is at most `C / 2S`. Every shard

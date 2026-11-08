@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from botocore.exceptions import ClientError
 
+from tests.fixtures.balances import balance_milli, full_fill_instant, stored_fill_instant
 from zae_limiter import AuditAction, Limit
 from zae_limiter.exceptions import (
     EntityExistsError,
@@ -24,6 +25,7 @@ from zae_limiter.repository_protocol import SpeculativeFailureReason
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
     BUCKET_FIELD_DISABLED,
+    BUCKET_FIELD_FI,
     BUCKET_FIELD_RF,
     BUCKET_FIELD_RSA,
     BUCKET_FIELD_RSCHED,
@@ -34,6 +36,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_VU,
     BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
+    BUCKET_FIELD_XI,
     BUCKET_SCHED_NONE,
     CONFIG_FIELD_SCHED_TZ,
     LIMIT_FIELD_RSA,
@@ -63,6 +66,52 @@ async def _stamp_deployed(repo):
     await repo.set_version_record(
         schema_version=get_schema_version(), lambda_version=zae_limiter.__version__
     )
+
+
+async def _as_legacy_item(repo, entity_id, resource, tokens=None, shard_id=0):
+    """Rewrite a bucket item into its pre-#821 shape: every dripping limit as ``tk``.
+
+    REMOVEs every ``b_{name}_fi`` and the item's ``xi``, and SETs ``b_{name}_tk``
+    to ``tokens[name]`` (millitokens) or, for a limit not named, to the balance
+    its fill instant reads at the item's ``rf``; the reserved ``wcu`` included.
+    Today's speculative write, its ``vu`` guard and the ``tk`` slow path still
+    serve such an item, so tests of that path run on one.
+    """
+    key = {
+        "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard_id)},
+        "SK": {"S": sk_state()},
+    }
+    client = await repo._get_client()
+    response = await client.get_item(TableName=repo.table_name, Key=key, ConsistentRead=True)
+    item = response["Item"]
+    filled = sorted(
+        parsed[0]
+        for parsed in map(parse_bucket_attr, item)
+        if parsed is not None and parsed[1] == BUCKET_FIELD_FI
+    )
+    assert set(tokens or {}) <= set(filled), f"{tokens} names a limit not stored as fi"
+    rf_ms = int(item[BUCKET_FIELD_RF]["N"])
+    names = {"#xi": BUCKET_FIELD_XI}
+    values = {}
+    sets = []
+    removes = ["#xi"]
+    for i, name in enumerate(filled):
+        tk = (tokens or {}).get(name, balance_milli(repo, item, name, rf_ms))
+        names[f"#f{i}"] = bucket_attr(name, BUCKET_FIELD_FI)
+        names[f"#t{i}"] = bucket_attr(name, BUCKET_FIELD_TK)
+        values[f":t{i}"] = {"N": str(tk)}
+        sets.append(f"#t{i} = :t{i}")
+        removes.append(f"#f{i}")
+    await client.update_item(
+        TableName=repo.table_name,
+        Key=key,
+        UpdateExpression=f"SET {', '.join(sets)} REMOVE {', '.join(removes)}",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
+    # An image cached while the item stored fill instants would send the next
+    # write down the fill-instant fast path, which its pins now refuse.
+    repo._fill_images.forget((repo._namespace_id, entity_id, resource, shard_id))
 
 
 @pytest.fixture
@@ -781,7 +830,13 @@ class TestRepositoryTransactions:
         assert "data" not in put_spec["Item"]
         item = put_spec["Item"]
 
-        assert item["b_rpm_tk"]["N"] == str(100_000)  # capacity
+        # A dripping limit is a fill instant (#821): created full at `now_ms`.
+        assert "b_rpm_tk" not in item
+        assert stored_fill_instant(item, "rpm") == full_fill_instant(
+            now_ms, 100_000, 100_000, 60_000
+        )
+        assert balance_milli(repo, item, "rpm", now_ms) == 100_000  # capacity
+        assert BUCKET_FIELD_XI in item
         assert item["b_rpm_cp"]["N"] == str(100_000)
         assert item["b_rpm_ra"]["N"] == str(100_000)
         assert item["b_rpm_rp"]["N"] == str(60_000)
@@ -1291,11 +1346,13 @@ class TestDurationWindowStamp:
     async def test_a_normal_write_carrying_ws_and_rsa_round_trips(self, repo):
         """Executed, not just built: an item created with no window at all
         (stamped before its limit gained one) gets both attributes from the
-        rollover write, and reads back with a computable window end."""
+        rollover write, and reads back with a computable window end. On a
+        legacy item: the write debits `rpm` as `tk`, which only one has (#821)."""
         now = 1_757_000_000_000
         rpm = Limit.per_minute("rpm", 100)
         state = BucketState.from_limit("e1", "gpt-4", rpm, now_ms=now)
         await repo.transact_write([repo.build_composite_create("e1", "gpt-4", [state], now)])
+        await _as_legacy_item(repo, "e1", "gpt-4")
 
         later = now + 1_000
         await repo.transact_write(
@@ -4312,6 +4369,37 @@ class TestRepositoryDeserializationEdgeCases:
         assert bucket.total_consumed_milli == 5000
 
 
+async def _sink_wcu(repo, entity_id: str, resource: str, now_ms: int) -> None:
+    """Sink a shard's ``wcu`` fill instant ten seconds into debt at ``now_ms``.
+
+    ``wcu`` refills 1000 tokens a second, so emptying it would hold for a
+    millisecond: ten seconds of debt keeps every write in the test refused.
+    """
+    from zae_limiter import fill_instant, schema
+
+    params = fill_instant.ShardParams(
+        schema.WCU_LIMIT_CAPACITY * 1000,
+        schema.WCU_LIMIT_REFILL_AMOUNT * 1000,
+        schema.WCU_LIMIT_REFILL_PERIOD_SECONDS * 1000,
+        1,
+    )
+    client = await repo._get_client()
+    await client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, 0)},
+            "SK": {"S": schema.sk_state()},
+        },
+        UpdateExpression="SET #w = :w",
+        ExpressionAttributeNames={
+            "#w": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_FI)
+        },
+        ExpressionAttributeValues={
+            ":w": {"N": str(fill_instant.from_tokens(-10_000_000, now_ms, params))}
+        },
+    )
+
+
 class TestSpeculativeConsume:
     """Tests for speculative_consume method."""
 
@@ -4391,24 +4479,11 @@ class TestSpeculativeConsume:
         result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
         assert result.success is True
 
-        # Spend the other 999 wcu in one ADD instead of 999 writes
-        from zae_limiter import schema
+        # Empty wcu deep enough that a few ms of refill (1000/s) cannot cover a
+        # write: a fill instant is exact at any instant (#821).
+        await _sink_wcu(repo, "e1", "gpt-4", now_ms)
 
-        client = await repo._get_client()
-        await client.update_item(
-            TableName=repo.table_name,
-            Key={
-                "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 0)},
-                "SK": {"S": schema.sk_state()},
-            },
-            UpdateExpression="ADD #wtk :neg",
-            ExpressionAttributeNames={
-                "#wtk": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
-            },
-            ExpressionAttributeValues={":neg": {"N": str(-999 * 1000)}},
-        )
-
-        # Now both rpm (0 tokens) and wcu (0 tokens) should be exhausted
+        # Now both rpm (0 tokens) and wcu (in debt) should be exhausted
         result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
         assert result.success is False
         assert result.failure_reason == SpeculativeFailureReason.BOTH_EXHAUSTED
@@ -4480,16 +4555,25 @@ class TestScheduleBoundaryClassification:
     on the item changes effective params. Past it, ``tk`` was materialised
     under parameters that no longer apply, so the write must not be admitted
     and — crucially — must not be reported as a rejection either.
+
+    Today's speculative write and its ``vu`` guard serve only a legacy item,
+    every dripping limit stored as ``tk`` (#821), so these tests build one; a
+    fill instant is never pinned on ``vu`` (ADR-155), checked at the end.
     """
 
     LIMIT = Limit.per_minute("rpm", 100)
 
-    async def _make_bucket(self, repo, entity_id="vu-1", **kwargs):
+    async def _make_bucket(self, repo, entity_id="vu-1", limits=None, legacy=True):
         """Create a real composite bucket item (wcu included) for ``entity_id``."""
         now_ms = repo._now_ms()
-        state = BucketState.from_limit(entity_id, "gpt-4", self.LIMIT, now_ms)
-        put_item = repo.build_composite_create(entity_id, "gpt-4", [state], now_ms, **kwargs)
+        states = [
+            BucketState.from_limit(entity_id, "gpt-4", limit, now_ms)
+            for limit in limits or [self.LIMIT]
+        ]
+        put_item = repo.build_composite_create(entity_id, "gpt-4", states, now_ms)
         await repo.transact_write([put_item])
+        if legacy:
+            await _as_legacy_item(repo, entity_id, "gpt-4")
         return entity_id
 
     @staticmethod
@@ -4608,13 +4692,47 @@ class TestScheduleBoundaryClassification:
         result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
         assert result.failure_reason is SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
 
+    async def test_a_fill_instant_item_ignores_an_expired_vu(self, repo):
+        """#821, ADR-155: a fill instant is never pinned on ``vu``. Its writes
+        are pinned on the item's ``xi`` and parameters instead, and a schedule
+        boundary since ``xi`` is found from the item itself, so an expired
+        ``vu`` (a param sync's ``vu = 0`` included) neither stops nor demotes
+        the fast path on an item storing only fill instants."""
+        for entity_id, vu_ms in (("vu-fill", repo._now_ms() - 1), ("vu-fill-zero", 0)):
+            await self._make_bucket(repo, entity_id, legacy=False)
+            await self._set_vu(repo, entity_id, vu_ms)
+
+            result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
+            assert result.success is True, entity_id
+            assert result.failure_reason is None
+
+    async def test_a_quota_debited_beside_a_fill_instant_still_waits_on_vu(self, repo):
+        """A quota keeps ``tk`` and its reset is materialised only by the slow
+        pass, so a fill-instant write that also debits one carries today's
+        ``vu`` guard: past it, SCHEDULE_BOUNDARY. A request leaving the quota
+        alone is admitted on the same item (#821)."""
+        quota = Limit.quota("rpd", 1_000, cron="0 0 * * *")
+        entity_id = await self._make_bucket(
+            repo, "vu-fill-quota", limits=[self.LIMIT, quota], legacy=False
+        )
+        await self._set_vu(repo, entity_id, repo._now_ms() - 1)
+
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1, "rpd": 1})
+        assert result.success is False
+        assert result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY
+
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
+        assert result.success is True
+
 
 class TestScheduleBoundaryFastPathCost:
     """The ``vu`` guard must cost nothing on the fast path (#222 §2.1).
 
     The load-bearing claim of the whole design is that the fast path gains
     exactly one comparison: no config read, no schedule evaluation, no extra
-    round trip. Measured here rather than asserted in prose.
+    round trip. Measured here rather than asserted in prose. The ``vu`` guard
+    is today's write's, which serves a legacy item (#821); the fill-instant
+    fast path's own cost is pinned at the end.
     """
 
     LIMIT = Limit.per_minute("rpm", 100)
@@ -4653,6 +4771,7 @@ class TestScheduleBoundaryFastPathCost:
         now_ms = repo._now_ms()
         state = BucketState.from_limit("cost-1", "gpt-4", self.LIMIT, now_ms)
         await repo.transact_write([repo.build_composite_create("cost-1", "gpt-4", [state], now_ms)])
+        await _as_legacy_item(repo, "cost-1", "gpt-4")
 
         counts, captured = await self._count_calls(
             repo, lambda: repo.speculative_consume("cost-1", "gpt-4", {"rpm": 1})
@@ -4672,6 +4791,7 @@ class TestScheduleBoundaryFastPathCost:
         now_ms = repo._now_ms()
         state = BucketState.from_limit("cost-2", "gpt-4", self.LIMIT, now_ms)
         await repo.transact_write([repo.build_composite_create("cost-2", "gpt-4", [state], now_ms)])
+        await _as_legacy_item(repo, "cost-2", "gpt-4")
         client = await repo._get_client()
         await client.update_item(
             TableName=repo.table_name,
@@ -4688,6 +4808,30 @@ class TestScheduleBoundaryFastPathCost:
             repo, lambda: repo.speculative_consume("cost-2", "gpt-4", {"rpm": 1})
         )
         assert counts == {"update_item": 1}, f"scheduled fast path issued {counts}"
+
+    async def test_a_fill_instant_item_pays_one_write_once_its_image_is_cached(self, repo):
+        """#819, #821: the first request per process on a fill-instant shard is
+        today's write, refused on ``xi``, whose ``ALL_OLD`` picks the
+        fill-instant write: 2 writes, no reads. Every later one starts from the
+        cached image: 1 write. A fill-instant write never names ``vu`` (ADR-155)."""
+        now_ms = repo._now_ms()
+        state = BucketState.from_limit("cost-3", "gpt-4", self.LIMIT, now_ms)
+        await repo.transact_write([repo.build_composite_create("cost-3", "gpt-4", [state], now_ms)])
+
+        def consume():
+            return repo.speculative_consume("cost-3", "gpt-4", {"rpm": 1})
+
+        fi = bucket_attr("rpm", BUCKET_FIELD_FI)
+        counts, captured = await self._count_calls(repo, consume)
+        assert counts == {"update_item": 2}, f"first fill-instant fast path issued {counts}"
+        assert "attribute_not_exists(#xi)" in captured[0]["ConditionExpression"]  # refused
+        assert fi in captured[1]["ExpressionAttributeNames"].values()
+        assert BUCKET_FIELD_VU not in captured[1]["ExpressionAttributeNames"].values()
+
+        counts, captured = await self._count_calls(repo, consume)
+        assert counts == {"update_item": 1}, f"cached fill-instant fast path issued {counts}"
+        assert fi in captured[0]["ExpressionAttributeNames"].values()
+        assert BUCKET_FIELD_VU not in captured[0]["ExpressionAttributeNames"].values()
 
 
 class TestScheduleBoundaryUsesOneClockReading:
@@ -4717,7 +4861,12 @@ class TestScheduleBoundaryUsesOneClockReading:
 
 
 class TestCompositeNormalGuard:
-    """Tests for tk >= floor guard in build_composite_normal."""
+    """Tests for tk >= floor guard in build_composite_normal.
+
+    The guard is on ``tk``, which only a legacy item holds for a dripping limit
+    (#821): on a fill-instant item it would fail for want of the attribute, so
+    these run on a legacy item.
+    """
 
     async def test_normal_write_rejects_when_speculative_drained_tokens(self, repo):
         """build_composite_normal rejects when concurrent speculative drained tk.
@@ -4737,6 +4886,7 @@ class TestCompositeNormalGuard:
         # Step 1: Create bucket with 100 rpm tokens
         put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
         await repo.transact_write([put_item])
+        await _as_legacy_item(repo, "e1", "gpt-4")
 
         # Step 2: Read bucket (slow path would do this)
         buckets = await repo.get_buckets("e1", resource="gpt-4")
@@ -4776,6 +4926,7 @@ class TestCompositeNormalGuard:
 
         put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
         await repo.transact_write([put_item])
+        await _as_legacy_item(repo, "e1", "gpt-4")
 
         buckets = await repo.get_buckets("e1", resource="gpt-4")
         rpm_bucket = next(b for b in buckets if b.limit_name == "rpm")
@@ -5287,8 +5438,9 @@ class TestPreShardBuckets:
         assert put_item["GSI3PK"]["S"] == schema.gsi3_pk_entity(repo._namespace_id, "user-1")
         assert put_item["GSI3SK"]["S"] == schema.gsi3_sk_bucket("gpt-4", 0)
 
-        # wcu limit auto-injected
-        assert schema.bucket_attr("wcu", "tk") in put_item
+        # wcu limit auto-injected, a fill instant like every dripping limit (#821)
+        assert schema.bucket_attr("wcu", "fi") in put_item
+        assert schema.bucket_attr("wcu", "tk") not in put_item
         assert schema.bucket_attr("wcu", "cp") in put_item
 
         # shard_count stored
@@ -5320,7 +5472,6 @@ class TestPreShardBuckets:
     @pytest.mark.asyncio
     async def test_speculative_consume_includes_wcu_consumption(self, repo):
         """Speculative consume adds wcu consumption (1 WCU = 1000 milli per write)."""
-        from zae_limiter import schema
 
         now_ms = int(time.time() * 1000)
         limits = [Limit.per_minute("rpm", 1000)]
@@ -5332,9 +5483,12 @@ class TestPreShardBuckets:
         result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 10})
         assert result.success is True
 
-        # Verify wcu tokens were consumed: initial = 1_000_000, consumed 1 WCU = 1000 milli
+        # Verify wcu was consumed: 1 WCU = 1000 milli per write. The admitting
+        # write is the only one that lands (the first, today's, is refused on
+        # `xi` and applies nothing, #821).
         wcu_bucket = next(b for b in result.buckets if b.limit_name == "wcu")
-        assert wcu_bucket.tokens_milli == schema.WCU_LIMIT_CAPACITY * 1000 - 1000
+        assert wcu_bucket.total_consumed_milli == 1000
+        assert wcu_bucket.fill_instant is not None
 
     @pytest.mark.asyncio
     async def test_speculative_consume_returns_shard_count(self, repo):
@@ -5396,7 +5550,6 @@ class TestPreShardBuckets:
     @pytest.mark.asyncio
     async def test_speculative_consume_fails_when_wcu_exhausted(self, repo):
         """Speculative consume fails when wcu tokens are exhausted."""
-        from zae_limiter import schema
 
         now_ms = int(time.time() * 1000)
         limits = [Limit.per_minute("rpm", 100_000)]
@@ -5405,23 +5558,11 @@ class TestPreShardBuckets:
         put_item = repo.build_composite_create("e1", "gpt-4", states, now_ms)
         await repo.transact_write([put_item])
 
-        # Exhaust wcu tokens (1000 capacity, 1 per write). One real write, then
-        # the remaining 999 writes' wcu debit applied in a single ADD.
+        # Exhaust wcu (1000 capacity, 1 per write, refilling 1000/s): one real
+        # write, then the wcu fill instant sunk into ten seconds of debt.
         result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
         assert result.success is True
-        client = await repo._get_client()
-        await client.update_item(
-            TableName=repo.table_name,
-            Key={
-                "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 0)},
-                "SK": {"S": schema.sk_state()},
-            },
-            UpdateExpression="ADD #wtk :neg",
-            ExpressionAttributeNames={
-                "#wtk": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
-            },
-            ExpressionAttributeValues={":neg": {"N": str(-(schema.WCU_LIMIT_CAPACITY - 1) * 1000)}},
-        )
+        await _sink_wcu(repo, "e1", "gpt-4", now_ms)
 
         # Next write should fail due to wcu exhaustion
         result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
@@ -6761,8 +6902,12 @@ class TestCreateStampsSchedule:
         item = repo.build_composite_create("sched-1", "gpt-4", [state], inside)["Put"]["Item"]
         assert item[bucket_attr("rpm", "cp")]["N"] == "1000000"
         assert item[bucket_attr("rpm", "ra")]["N"] == "1000000"
-        # ...while the balance it starts at is the scheduled one.
-        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "500000"
+        # ...while the balance it starts at is the scheduled one, read off its
+        # fill instant (#821): full at the window's halved share.
+        assert balance_milli(repo, item, "rpm", inside) == 500_000
+        assert stored_fill_instant(item, "rpm") == full_fill_instant(
+            inside, 500_000, 500_000, 60_000
+        )
 
     def test_a_new_bucket_outside_the_window_starts_at_the_base_balance(self, repo):
         """The contrast case: same limit, instant outside the window."""
@@ -6773,7 +6918,10 @@ class TestCreateStampsSchedule:
             "sched-1", "gpt-4", Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS), outside
         )
         item = repo.build_composite_create("sched-1", "gpt-4", [state], outside)["Put"]["Item"]
-        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+        assert balance_milli(repo, item, "rpm", outside) == 1_000_000
+        assert stored_fill_instant(item, "rpm") == full_fill_instant(
+            outside, 1_000_000, 1_000_000, 60_000
+        )
 
 
 class TestFanOutStampsSchedule:
@@ -7185,8 +7333,14 @@ class TestAggregatorCannotRefillPastAFanOut:
 
     These run the real fan-out against moto and then the real aggregator
     against the same table, so they test the interaction rather than a
-    restatement of the condition string.
+    restatement of the condition string. The aggregator refills no dripping
+    limit (ADR-156, #821), so the write it pins is a daily quota's reset,
+    due since the bucket was last written a day ago.
     """
+
+    @staticmethod
+    def _quota(capacity):
+        return Limit.quota("rpm", capacity, cron="0 0 * * *")
 
     @staticmethod
     def _table(repo):
@@ -7197,11 +7351,14 @@ class TestAggregatorCannotRefillPastAFanOut:
     @staticmethod
     async def _seed(repo, entity_id, limits):
         now_ms = int(time.time() * 1000)
-        states = [BucketState.from_limit(entity_id, "gpt-4", lim, now_ms) for lim in limits]
-        # Drain the bucket so a refill is worth attempting at all.
+        yesterday = now_ms - 86_400_000  # a midnight reset falls in between
+        states = [BucketState.from_limit(entity_id, "gpt-4", lim, yesterday) for lim in limits]
+        # Drain the bucket so the reset has something to restore.
         for state in states:
             state.tokens_milli = 0
-        await repo.transact_write([repo.build_composite_create(entity_id, "gpt-4", states, now_ms)])
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, "gpt-4", states, yesterday)]
+        )
         return now_ms
 
     @staticmethod
@@ -7242,6 +7399,7 @@ class TestAggregatorCannotRefillPastAFanOut:
                     cp_milli=int(item[bucket_attr("rpm", "cp")]["N"]),
                     ra_milli=int(item[bucket_attr("rpm", "ra")]["N"]),
                     rp_ms=int(item[bucket_attr("rpm", "rp")]["N"]),
+                    reset_sched=(ScheduleEntry.reset(cron="0 0 * * *"),),
                 )
             },
             vu_ms=vu_ms,
@@ -7252,10 +7410,10 @@ class TestAggregatorCannotRefillPastAFanOut:
         from zae_limiter_aggregator.processor import try_refill_bucket
 
         await repo.create_entity("stale-img")
-        now_ms = await self._seed(repo, "stale-img", [Limit.per_minute("rpm", 1000)])
+        now_ms = await self._seed(repo, "stale-img", [self._quota(1000)])
         image = self._image(repo, "stale-img", await self._raw(repo, "stale-img"), vu_ms=None)
 
-        await repo.set_limits("stale-img", [Limit.per_minute("rpm", 10)], resource="gpt-4")
+        await repo.set_limits("stale-img", [self._quota(10)], resource="gpt-4")
 
         assert try_refill_bucket(self._table(repo), image, now_ms + 60_000) is False
         item = await self._raw(repo, "stale-img")
@@ -7270,8 +7428,8 @@ class TestAggregatorCannotRefillPastAFanOut:
         from zae_limiter_aggregator.processor import try_refill_bucket
 
         await repo.create_entity("fresh-img")
-        now_ms = await self._seed(repo, "fresh-img", [Limit.per_minute("rpm", 1000)])
-        await repo.set_limits("fresh-img", [Limit.per_minute("rpm", 10)], resource="gpt-4")
+        now_ms = await self._seed(repo, "fresh-img", [self._quota(1000)])
+        await repo.set_limits("fresh-img", [self._quota(10)], resource="gpt-4")
 
         image = self._image(repo, "fresh-img", await self._raw(repo, "fresh-img"), vu_ms=0)
 
@@ -7287,7 +7445,7 @@ class TestAggregatorCannotRefillPastAFanOut:
         from zae_limiter_aggregator.processor import try_refill_bucket
 
         await repo.create_entity("quiet-img")
-        now_ms = await self._seed(repo, "quiet-img", [Limit.per_minute("rpm", 1000)])
+        now_ms = await self._seed(repo, "quiet-img", [self._quota(1000)])
         image = self._image(repo, "quiet-img", await self._raw(repo, "quiet-img"), vu_ms=None)
 
         assert try_refill_bucket(self._table(repo), image, now_ms + 60_000) is True
@@ -8412,6 +8570,8 @@ class TestAMixedItemAttributesEachScheduleToItsOwnLimit:
         # Seeded unscheduled, so the schedules on the item can only have come
         # from the fan-out. Every limit is present up front because the fan-out
         # rewrites parameters, never balances — it does not add a limit's `tk`.
+        # `rpd` is seeded a quota already: a dripping limit turned quota loses
+        # its fill instant to the fan-out and waits for its seed (#821).
         await self._seed(
             repo,
             "mix-2",
@@ -8419,7 +8579,7 @@ class TestAMixedItemAttributesEachScheduleToItsOwnLimit:
             [
                 Limit.per_minute("rpm", 1000),
                 Limit.per_minute("tpm", 100_000),
-                Limit.per_minute("rpd", 10_000),
+                Limit.quota("rpd", 10_000, reset_after=timedelta(days=1)),
             ],
         )
 
@@ -9219,7 +9379,11 @@ class TestResetAndTopUp:
         result = await repo.reset_bucket("e", "r", principal="ops")
         item = await _op_item(repo, "e", "r")
         assert result.shards == 1
-        assert _op_num(item, "rpm", BUCKET_FIELD_TK) == 100_000
+        # Full at the reset instant, the debt forgiven: `Z = t·ra` (#820, #821).
+        assert stored_fill_instant(item, "rpm") == full_fill_instant(
+            _OP_T0 + 1, 100_000, 100_000, 60_000
+        )
+        assert balance_milli(repo, item, "rpm", _OP_T0 + 1) == 100_000
         assert result.amounts == {"rpm": 104}  # from the refilled -4.9 tokens
         assert _op_num(item, "rpm", "tc") == 105_000  # never touched (#179)
         assert item["disabled"] == {"BOOL": True}  # never touched (ADR-125)
@@ -9236,22 +9400,29 @@ class TestResetAndTopUp:
         await repo.set_limits("e", [_OP_RPM, tpm], resource="r")
         await _op_put_shard(repo, "e", "r", [_OP_RPM, tpm], tokens={"rpm": 0, "tpm": 0})
         repo._now_ms = lambda: _OP_T0 + 6_000  # 6 s: rpm +10, tpm +60
+        tpm_before = stored_fill_instant(await _op_item(repo, "e", "r"), "tpm")
         result = await repo.reset_bucket("e", "r", limits=["rpm"])
         item = await _op_item(repo, "e", "r")
         assert result.amounts == {"rpm": 90}
-        assert _op_num(item, "rpm", BUCKET_FIELD_TK) == 100_000
-        assert _op_num(item, "tpm", BUCKET_FIELD_TK) == 60_000  # refilled, not reset
+        assert balance_milli(repo, item, "rpm", _OP_T0 + 6_000) == 100_000
+        # Refilled, not reset: a fill instant refills without a write (#821).
+        assert balance_milli(repo, item, "tpm", _OP_T0 + 6_000) == 60_000
+        assert stored_fill_instant(item, "tpm") == tpm_before
 
     async def test_a_limit_no_longer_configured_is_left_alone(self, repo):
         tpm = Limit.per_minute("tpm", 600)
         await repo.set_limits("e", [_OP_RPM, tpm], resource="r")
         await _op_put_shard(repo, "e", "r", [_OP_RPM, tpm], tokens={"rpm": 0, "tpm": 0})
-        await repo.set_limits("e", [_OP_RPM], resource="r")
+        # The param sync re-expresses each fill instant at its own clock (#820),
+        # so it runs on the test's: a wall clock ten months on reads the T0
+        # balances as debt.
         repo._now_ms = lambda: _OP_T0 + 6_000
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        tpm_before = stored_fill_instant(await _op_item(repo, "e", "r"), "tpm")
         result = await repo.reset_bucket("e", "r")
         item = await _op_item(repo, "e", "r")
         assert result.amounts == {"rpm": 90}
-        assert _op_num(item, "tpm", BUCKET_FIELD_TK) == 0  # neither refilled nor reset
+        assert stored_fill_instant(item, "tpm") == tpm_before  # neither refilled nor reset
 
     async def test_names_must_be_configured_limits(self, repo):
         await repo.set_limits("e", [_OP_RPM], resource="r")
@@ -9395,7 +9566,11 @@ class TestResetAndTopUp:
         assert result.amounts == {"rpm": 50}
         for shard in (0, 1):
             item = await _op_item(repo, "e", "r", shard)
-            assert _op_num(item, "rpm", BUCKET_FIELD_TK) == 50_000
+            # Exactly full at its share, no further (#821).
+            assert stored_fill_instant(item, "rpm") == full_fill_instant(
+                _OP_T0, 100_000, 100_000, 60_000, shards=2
+            )
+            assert balance_milli(repo, item, "rpm", _OP_T0) == 50_000
             assert _op_num(item, "rpm", "tu") is None
 
     async def test_a_partial_dripping_top_up_is_split_by_headroom(self, repo):
@@ -9408,7 +9583,7 @@ class TestResetAndTopUp:
         result = await repo.top_up("e", "r", {"rpm": 21})
         assert result.amounts == {"rpm": 21}
         tokens = [
-            _op_num(await _op_item(repo, "e", "r", shard), "rpm", BUCKET_FIELD_TK)
+            balance_milli(repo, await _op_item(repo, "e", "r", shard), "rpm", _OP_T0)
             for shard in (0, 1)
         ]
         assert tokens == [10_000 + 14_000, 30_000 + 7_000]  # headroom 40:20 of 21
@@ -9472,7 +9647,7 @@ class TestResetAndTopUp:
         assert _op_num(item, "ses", BUCKET_FIELD_TK) == 1_007_000
         assert _op_num(item, "ses", "tu") == 7_000
         assert _op_num(item, "ses", BUCKET_FIELD_WS) == _OP_T0
-        assert _op_num(item, "rpm", BUCKET_FIELD_TK) == 100_000
+        assert balance_milli(repo, item, "rpm", _OP_T0) == 100_000  # a fill instant, full
         assert item["cascade"] == {"BOOL": True} and item["parent_id"] == {"S": "p"}
         assert "ttl" not in item  # entity-level config persists
         assert int(item[BUCKET_FIELD_VU]["N"]) == _OP_T0 + 5 * 3600 * 1000
@@ -9578,6 +9753,8 @@ class TestResetAndTopUp:
     async def test_a_conflict_is_retried_from_a_fresh_read(self, repo):
         await repo.set_limits("e", [_OP_RPM], resource="r")
         await _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        # On the bucket's clock: by the wall clock it is long full anyway (#821).
+        repo._now_ms = lambda: _OP_T0
         real = repo.transact_write
         calls = []
 
@@ -9600,7 +9777,7 @@ class TestResetAndTopUp:
         with patch.object(repo, "transact_write", side_effect=conflicting):
             result = await repo.reset_bucket("e", "r")
         assert result.shards == 1
-        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 100_000
+        assert balance_milli(repo, await _op_item(repo, "e", "r"), "rpm", _OP_T0) == 100_000
 
     async def test_a_bucket_that_keeps_changing_fails_after_the_retries(self, repo):
         await repo.set_limits("e", [_OP_RPM], resource="r")
@@ -9667,7 +9844,7 @@ class TestResetAndTopUp:
             result = await repo.reset_bucket("e", "r")
         assert len(calls) == 4
         assert result.shards == 1
-        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 100_000
+        assert balance_milli(repo, await _op_item(repo, "e", "r"), "rpm", _OP_T0) == 100_000
 
     async def test_a_retry_with_the_same_idempotency_key_is_applied_once(self, repo):
         """The caller saw an error and retried with the same key: the first
@@ -9780,7 +9957,7 @@ class TestResetAndTopUp:
             pytest.raises(RuntimeError),
         ):
             await repo.reset_bucket("e", "r")
-        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 0
+        assert balance_milli(repo, await _op_item(repo, "e", "r"), "rpm", _OP_T0) == 0
         assert [e for e in await repo.get_audit_events("e") if e.action == "bucket_reset"] == []
 
     async def test_a_top_up_refreshes_a_default_buckets_ttl(self, repo):
@@ -9881,7 +10058,7 @@ class TestResetAndTopUp:
         again = await repo.top_up("e", "r", {"rpm": 5}, idempotency_key="k")
         assert again == first
         assert again.amounts == {"rpm": 0} and again.shards == 0
-        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 0
+        assert balance_milli(repo, await _op_item(repo, "e", "r"), "rpm", _OP_T0) == 0
         events = [e for e in await repo.get_audit_events("e") if e.action == "bucket_topped_up"]
         assert [(e.details["amounts"], e.details["shards"]) for e in events] == [({"rpm": 0}, 0)]
 
@@ -9893,7 +10070,7 @@ class TestResetAndTopUp:
         first = await repo.reset_bucket("e", "r", idempotency_key="k")
         await _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
         assert await repo.reset_bucket("e", "r", idempotency_key="k") == first
-        assert _op_num(await _op_item(repo, "e", "r"), "rpm", BUCKET_FIELD_TK) == 0
+        assert balance_milli(repo, await _op_item(repo, "e", "r"), "rpm", _OP_T0) == 0
         with pytest.raises(ValidationError):
             await repo.top_up("e", "r", {"rpm": 5}, idempotency_key="k")
         events = [e for e in await repo.get_audit_events("e") if e.action == "bucket_reset"]

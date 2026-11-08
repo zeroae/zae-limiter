@@ -4,9 +4,7 @@ The fast path is #819's. This covers the rest: a positive adjustment is the
 debit pair; a return moves the fill instant back with no read; a reset sets
 ``Z = t·ra``; a top-up is a read and a write pinned on it; the entity-level
 parameter sync re-expresses every fill instant against the parameters it
-writes; a schedule boundary is integrated window by window. Every test turns
-``schema.WRITE_FILL_INSTANTS`` on: until #821 removes it, nothing outside tests
-stores a fill instant.
+writes; a schedule boundary is integrated window by window.
 """
 
 from typing import Any
@@ -23,7 +21,6 @@ from tests.unit.test_fill_instant_fast_path import (
     T0,
     TPM,
     Clock,
-    _attrs,
     _fi,
     _key,
     _raw,
@@ -35,11 +32,6 @@ from zae_limiter import fill_instant as fi
 from zae_limiter.schema import BUCKET_FIELD_FI, bucket_attr
 
 MIDNIGHT = 1_800_057_600_000  # 2027-01-15 00:00 UTC
-
-
-@pytest.fixture(autouse=True)
-def _fill_instants_on(monkeypatch):
-    monkeypatch.setattr(schema, "WRITE_FILL_INSTANTS", True)
 
 
 @pytest.fixture
@@ -122,6 +114,20 @@ class TestAdjustments:
 
 
 class TestResetAndTopUp:
+    async def test_a_clock_behind_xi_never_moves_it_back(self, limiter, clock) -> None:
+        """A reset sent from a clock behind the item's `xi` keeps `xi`: every fill
+        instant it writes is expressed at `max(now, xi)`, and an `xi` moved back
+        would have the next reader re-apply the boundaries in between (#821)."""
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM])
+        clock.now = T0 + 5_000
+        async with limiter.acquire("e1", RESOURCE, consume={"rpm": 30}, limits=[RPM]):
+            pass
+        xi = int((await _raw(repo, "e1"))["xi"]["N"])
+        clock.now = xi - 2_000  # this process's clock lags the writer's
+        await repo.reset_bucket("e1", RESOURCE)
+        assert int((await _raw(repo, "e1"))["xi"]["N"]) == xi
+
     async def test_a_reset_of_both_forms_is_one_transaction(self, limiter, clock) -> None:
         repo = limiter._repository
         quota = Limit.quota("rpd", 50, cron="0 0 * * *")
@@ -299,12 +305,9 @@ class TestNoLegacyWriters:
     ) -> None:
         repo = limiter._repository
         await _warm(limiter, "e1", [RPM])
-        await _attrs(repo, "e1", "SET #s = :two", {"#s": "shard_count"}, {":two": {"N": "2"}})
-        await repo.speculative_consume("e1", RESOURCE, {"rpm": 1})  # learns two shards
+        # Shard 1 exists before the new limit does: a raise created it (ADR-156).
+        assert await repo.raise_shards("e1", RESOURCE, 1) == 2
         slow = RateLimiter(repository=repo, speculative_writes=False)
-        with pinned_shard(1):  # shard 1 exists before the new limit does
-            async with slow.acquire("e1", RESOURCE, consume={"rpm": 1}):
-                pass
         await repo.set_limits("e1", [RPM, TPM], resource=RESOURCE)
         clock.now = T0 + 1_000
         p = fi.ShardParams(10_000_000, 10_000_000, 60_000, 2)

@@ -63,6 +63,7 @@ from .schema import (
     calculate_ttl,
     decode_stamp,
     explicit_schedule_overrides,
+    raise_deadline,
 )
 from .sync_repository_protocol import FillInstantWrite
 
@@ -108,6 +109,7 @@ class LeaseEntry:
     _seed: bool = False
     _granted: bool = False
     _donor_debit: QuotaDonorDebit | None = None
+    _created_empty: bool = False
     _soft_trusted: bool = False
     _soft_restamp: bool = False
     _stamp_deadline_ms: int | None = None
@@ -925,6 +927,11 @@ class SyncLease:
             return
         now_ms = self.repository._now_ms()
         repo = self.repository
+        if any(
+            entry.state.raise_until_ms is not None and entry.state.raise_until_ms > now_ms
+            for entry in (*self.entries, *self._carriers)
+        ):
+            raise _contention_rejection(self.entries, now_ms)
         groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in (*self.entries, *self._carriers):
             key = (entry.entity_id, entry.resource, entry._shard_id)
@@ -1276,7 +1283,9 @@ class SyncLease:
         if lost_bypass:
             raise BypassLostError(lost_bypass) from condition_exc
         if condition_failed and any(
-            e.state.fill_instant is not None for group in groups.values() for e in group
+            e.state.fill_instant is not None and e.consumed > 0
+            for group in groups.values()
+            for e in group
         ):
             raise FillInstantLostError(
                 _contention_rejection(self.entries, now_ms).statuses
@@ -1417,6 +1426,10 @@ class SyncLease:
                         images = _retry_failure_images(
                             retry_exc, [key for key, _group in retry_groups]
                         )
+                        if any(
+                            raise_deadline(image, now_ms) is not None for image in images.values()
+                        ):
+                            raise _contention_rejection(self.entries, now_ms) from retry_exc
                         if _still_unseeded(retry_unseeded, images, bool(retry_maybe_missing)) and (
                             not _genuinely_short(retry_groups, images, now_ms)
                         ):

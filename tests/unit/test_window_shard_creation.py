@@ -231,7 +231,8 @@ class TestNewShardJoinsTheWindow:
         read.assert_not_called()
 
     async def test_a_limit_with_no_window_is_not_read_for(self, limiter):
-        """A dripping limit's new shard costs no sibling read at all."""
+        """A dripping limit's new shard costs no sibling read at all. Created
+        beside shard 0, it starts empty (ADR-156) and rejects the request."""
         from zae_limiter import Limit
 
         repo = limiter._repository
@@ -241,7 +242,7 @@ class TestNewShardJoinsTheWindow:
             pass
         assert await repo.bump_shard_count("user-1", RESOURCE, 1) == 2
         with patch.object(repo, "get_shard_window_starts") as read:
-            assert await materialise(limiter, "user-1", "rpm", 1, resource=RESOURCE) == 1
+            assert await materialise(limiter, "user-1", "rpm", 1, resource=RESOURCE) == 0
         read.assert_not_called()
 
 

@@ -6,9 +6,15 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.fixtures.balances import balance_milli
 from zae_limiter import RateLimiter, RateLimitExceeded, schema
 from zae_limiter.exceptions import ResourceDisabled, VersionMismatchError
-from zae_limiter.lease import BypassLostError, LeaseEntry, _bypass_write_failed
+from zae_limiter.lease import (
+    BypassLostError,
+    FillInstantLostError,
+    LeaseEntry,
+    _bypass_write_failed,
+)
 from zae_limiter.models import BucketState, Limit
 from zae_limiter.repository import Repository
 from zae_limiter.repository_protocol import SpeculativeFailureReason
@@ -23,6 +29,10 @@ async def repo(mock_dynamodb):
     from zae_limiter.version import get_schema_version
 
     repo = Repository(name="test-bypass", region="us-east-1", _skip_deprecation_warning=True)
+    # Frozen at the wall clock: a fill instant's balance moves continuously, so
+    # an exact balance needs an instant that holds still (#821).
+    frozen = int(time.time() * 1000)
+    repo._now_ms = lambda: frozen
     await repo.create_table()
     await repo._register_namespace("default")
     await repo.set_version_record(schema_version=get_schema_version(), lambda_version=__version__)
@@ -55,11 +65,56 @@ def _n(item, attr: str) -> int:
     return int(item[attr]["N"])
 
 
+def _bal(repo: Repository, item, name: str) -> int:
+    """A dripping limit's balance at the repository's clock, in either storage form (#821)."""
+    return balance_milli(repo, item, name, repo._now_ms())
+
+
 def _live(item, now_ms: int | None = None) -> bool:
     """The item's `bypass` stamp is a deadline still ahead (ADR-151 decision 8)."""
     raw = (item or {}).get("bypass", {}).get("N")
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
     return raw is not None and int(raw) > now_ms
+
+
+async def _legacy(repo: Repository, entity: str = "u") -> None:
+    """Rewrite a bucket into the pre-#821 shape: ``rpm`` and ``wcu`` as ``tk``, no ``xi``.
+
+    Only such an item can be debited by an enforce-shaped write and owe a
+    bypass refund: a fill instant's write is bypass-shaped once it sees the
+    stamp (#821).
+    """
+    item = await _item(repo, entity)
+    client = await repo._get_client()
+    await client.update_item(
+        TableName=repo.table_name,
+        Key={"PK": {"S": _pk(repo, entity)}, "SK": {"S": schema.sk_state()}},
+        UpdateExpression=(
+            "SET b_rpm_tk = :tk, b_wcu_tk = :wcu, rf = :now REMOVE b_rpm_fi, b_wcu_fi, xi"
+        ),
+        ExpressionAttributeValues={
+            ":tk": {"N": str(_bal(repo, item, "rpm"))},
+            ":wcu": {"N": str(_bal(repo, item, schema.WCU_LIMIT_NAME))},
+            ":now": {"N": str(repo._now_ms())},
+        },
+    )
+
+
+async def _drain_wcu(repo: Repository, entity: str = "u") -> None:
+    """Empty the shard's ``wcu`` fill instant and slow its refill to a day, so it stays empty."""
+    from zae_limiter import fill_instant
+
+    slow = fill_instant.ShardParams(1_000_000, 1_000_000, 86_400_000, 1)
+    client = await repo._get_client()
+    await client.update_item(
+        TableName=repo.table_name,
+        Key={"PK": {"S": _pk(repo, entity)}, "SK": {"S": schema.sk_state()}},
+        UpdateExpression="SET b_wcu_fi = :empty, b_wcu_rp = :long",
+        ExpressionAttributeValues={
+            ":empty": {"N": str(fill_instant.created_empty(repo._now_ms(), slow))},
+            ":long": {"N": "86400000"},
+        },
+    )
 
 
 async def _use(limiter: RateLimiter, n: int = 1, entity: str = "u") -> None:
@@ -136,7 +191,7 @@ class TestAdmission:
             async with limiter.acquire("u", "llm", {"rpm": 1}) as lease:
                 assert lease.bypassed is True
         item = await _item(repo)
-        assert _n(item, "b_rpm_tk") == 1_000  # untouched since the enforced use
+        assert _bal(repo, item, "rpm") == 1_000  # untouched since the enforced use
         assert _n(item, "b_rpm_tc") == 6_000
 
     async def test_a_bypassed_create_is_funded_and_counts(self, repo, limiter):
@@ -145,7 +200,7 @@ class TestAdmission:
             assert lease.bypassed is True
         item = await _item(repo)
         assert _live(item)
-        assert _n(item, "b_rpm_tk") == 2_000  # the full share, nothing debited
+        assert _bal(repo, item, "rpm") == 2_000  # the full share, nothing debited
         assert _n(item, "b_rpm_tc") == 5_000
 
     async def test_lifting_the_bypass_leaves_no_debt(self, repo, limiter):
@@ -185,8 +240,25 @@ class TestAdmission:
 
 
 class TestWarmPathLearning:
-    async def test_the_first_request_after_bypass_is_refunded_once(self, repo, limiter):
+    async def test_a_fill_instant_learns_the_bypass_without_a_refund(self, repo, limiter):
+        """#821: the enforce-shaped write is refused on `xi`, its image shows the
+        stamp, and the write that follows is bypass-shaped: nothing debited,
+        nothing to refund."""
         await _use(limiter)  # warm, enforce-shaped cache
+        await repo.bypass_resource("llm")
+        with patch.object(repo, "write_each", wraps=repo.write_each) as refunds:
+            await _use(limiter)
+            await _use(limiter)
+        assert refunds.await_count == 0
+        item = await _item(repo)
+        assert _bal(repo, item, "rpm") == 1_000
+        assert _n(item, "b_rpm_tc") == 3_000
+        assert schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK) not in item
+
+    async def test_the_first_request_after_bypass_is_refunded_once(self, repo, limiter):
+        """On a legacy item (#821: only one can be debited enforce-shaped)."""
+        await _use(limiter)  # warm, enforce-shaped cache
+        await _legacy(repo)
         await repo.bypass_resource("llm")
         with patch.object(repo, "write_each", wraps=repo.write_each) as refunds:
             await _use(limiter)
@@ -194,7 +266,7 @@ class TestWarmPathLearning:
         assert refunds.await_count == 1  # the refund, once; then bypass-shaped
         assert (repo._namespace_id, "u", "llm") in repo._bypass_cache
         item = await _item(repo)
-        assert _n(item, "b_rpm_tk") == 1_000
+        assert _bal(repo, item, "rpm") == 1_000
         assert _n(item, "b_rpm_tc") == 3_000
 
     async def test_a_cleared_bypass_is_enforced_on_the_next_request(self, repo, limiter):
@@ -234,8 +306,10 @@ class TestWarmPathLearning:
         """Review D6: the bypass refund was a bare `ADD tk`, outside the #721
         self-trimming credit. A refill to capacity landing between the debit
         and the refund lifted the balance above the ceiling with nothing to
-        stop the fast path spending it once the bypass is lifted."""
+        stop the fast path spending it once the bypass is lifted. On a legacy
+        item: only one is debited enforce-shaped (#821)."""
         await _use(limiter)  # warm, enforce-shaped cache; 1 of 2 left
+        await _legacy(repo)
         await repo.bypass_resource("llm")
         real = repo._refund_bypassed_debit
         client = await repo._get_client()
@@ -254,32 +328,29 @@ class TestWarmPathLearning:
         item = await _item(repo)
         # Above the ceiling only with `vu = 0`: the fast path cannot spend it,
         # and the next slow pass clamps it.
-        assert _n(item, "b_rpm_tk") <= 2_000 or _n(item, "vu") == 0
+        assert _bal(repo, item, "rpm") <= 2_000 or _n(item, "vu") == 0
         assert _n(item, "b_rpm_tc") == 2_000  # the refund leaves the count alone
 
     async def test_a_failed_refund_is_logged_and_keeps_the_debit(self, repo, limiter):
         await _use(limiter)
+        await _legacy(repo)  # only a legacy item is debited enforce-shaped (#821)
         await repo.bypass_resource("llm")
         with patch.object(repo, "write_each", side_effect=RuntimeError("throttled")):
             await _use(limiter)
         item = await _item(repo)
-        assert _n(item, "b_rpm_tk") == 0  # debited, not refunded: under-admission only
+        assert _bal(repo, item, "rpm") == 0  # debited, not refunded: under-admission only
 
     async def test_wcu_still_gates_and_doubles_under_bypass(self, repo, limiter):
         await _use(limiter)
         await repo.bypass_resource("llm")
         await _use(limiter)  # learn
-        client = await repo._get_client()
-        await client.update_item(
-            TableName=repo.table_name,
-            Key={"PK": {"S": _pk(repo)}, "SK": {"S": schema.sk_state()}},
-            UpdateExpression="SET b_wcu_tk = :zero, b_wcu_rp = :long",
-            ExpressionAttributeValues={":zero": {"N": "0"}, ":long": {"N": "86400000"}},
-        )
+        await _drain_wcu(repo)
         async with limiter.acquire("u", "llm", {"rpm": 1}) as lease:
             pass
         assert lease.bypassed is True
+        # Raised (ADR-156): both shards exist, the bypass stamp copied.
         assert _n(await _item(repo), "shard_count") == 2
+        assert _live(await _item(repo, shard=1), repo._now_ms())
 
     async def test_a_missing_bucket_in_bypass_shape_is_not_retried(self, repo):
         repo._bypass_cache.add((repo._namespace_id, "ghost", "llm"))
@@ -300,7 +371,7 @@ class TestLeaseWritesCountersOnly:
             await lease.consume(rpm=10)  # never rejected under bypass
             await lease.release(rpm=3)
         item = await _item(repo)
-        assert _n(item, "b_rpm_tk") == 2_000
+        assert _bal(repo, item, "rpm") == 2_000
         assert _n(item, "b_rpm_tc") == 10_000  # 2 + 1 + 10 - 3
 
     async def test_rollback(self, repo, limiter):
@@ -309,7 +380,7 @@ class TestLeaseWritesCountersOnly:
             async with limiter.acquire("u", "llm", {"rpm": 1}):
                 raise RuntimeError("boom")
         item = await _item(repo)
-        assert _n(item, "b_rpm_tk") == 2_000
+        assert _bal(repo, item, "rpm") == 2_000
         assert _n(item, "b_rpm_tc") == 2_000
 
 
@@ -322,7 +393,7 @@ class TestSlowPath:
         assert lease.bypassed is True
         await lease._commit_initial()
         item = await _item(repo)
-        assert _n(item, "b_rpm_tk") == 1_000
+        assert _bal(repo, item, "rpm") == 1_000
         assert _n(item, "b_rpm_tc") == 6_000
 
     async def test_a_stamp_config_no_longer_backs_is_enforced(self, repo, limiter):
@@ -352,7 +423,7 @@ class TestSlowPath:
                 assert lease.bypassed is False
         item = await _item(repo)
         assert "bypass" not in item
-        assert _n(item, "b_rpm_tk") == 1_000  # enforced: debited
+        assert _bal(repo, item, "rpm") == 1_000  # enforced: debited
         # The fast path enforces from here on.
         await _use(limiter)
         with pytest.raises(RateLimitExceeded):
@@ -369,7 +440,7 @@ class TestSlowPath:
                 assert lease.bypassed is False
         item = await _item(repo)
         assert "bypass" in item
-        assert _n(item, "b_rpm_tk") < 1_000  # this request was enforced
+        assert _bal(repo, item, "rpm") < 1_000  # this request was enforced
         for _ in range(5):
             await _use(limiter)
         assert _n(await _item(repo), "b_rpm_tc") == 7_000
@@ -398,7 +469,7 @@ class TestSlowPath:
             lease = await cold._slow_acquire("u", "llm", None, {"rpm": 1})
         assert calls == [False, True]
         assert lease.bypassed is False
-        assert _n(await _item(repo), "b_rpm_tk") < 1_000  # debited, enforced
+        assert _bal(repo, await _item(repo), "rpm") < 1_000  # debited, enforced
 
     async def test_a_multi_resource_bypass_lost_before_the_write_is_replanned_enforced(
         self, repo, limiter
@@ -429,7 +500,7 @@ class TestSlowPath:
             lease, _unknown = await cold._slow_acquire_resources("u", parts)
         assert sorted(calls) == [("api", False), ("api", True), ("llm", False), ("llm", False)]
         assert lease.bypassed is False
-        assert _n(await _item(repo, resource="api"), "b_rpm_tk") < 1_000  # enforced
+        assert _bal(repo, await _item(repo, resource="api"), "rpm") < 1_000  # enforced
 
     async def test_a_part_still_bypassed_stays_bypassed_when_another_loses_it(self, repo, limiter):
         """Review M3: one part's lost bypass re-planned every part enforced, so
@@ -452,14 +523,14 @@ class TestSlowPath:
                 await repo._stamp_bucket_disabled(_pk(repo, resource="api"), False)
             return planned
 
-        before = _n(await _item(repo), "b_rpm_tk")
+        before = _bal(repo, await _item(repo), "rpm")
         parts = [("llm", {"rpm": 1}, 0, 1, None), ("api", {"rpm": 1}, 0, 1, None)]
         with patch.object(cold, "_do_acquire", side_effect=clearing):
             lease, _unknown = await cold._slow_acquire_resources("u", parts)
         assert ("llm", True) not in calls
         assert lease.resource("llm").bypassed is True
         assert lease.resource("api").bypassed is False
-        assert _n(await _item(repo), "b_rpm_tk") == before  # llm: nothing debited
+        assert _bal(repo, await _item(repo), "rpm") == before  # llm: nothing debited
 
     async def test_an_undeclared_limit_is_not_written_under_bypass(self, repo, limiter):
         await repo.set_resource_defaults("llm", [RPM, Limit.per_minute("tpm", 10)])
@@ -483,16 +554,28 @@ class TestSlowPath:
         return lease
 
     async def test_a_bypassed_create_that_loses_its_race_counts_on_the_winner(self, repo, limiter):
+        """#821: a create stored as fill instants that loses its race writes
+        nothing and is planned again from a fresh read (never the
+        consumption-only retry, which writes `tk`); the re-plan finds the
+        winner stamped and counts on it."""
         lease = await self._lose_the_create_race(repo, stamp=True)
-        await lease._commit_initial()
+        with pytest.raises(FillInstantLostError):
+            await lease._commit_initial()
+        assert _n(await _item(repo), "b_rpm_tc") == 1_000  # the winner's alone
+        again = await RateLimiter(repository=repo)._do_acquire("u", "llm", None, {"rpm": 1})
+        assert again.bypassed is True
+        await again._commit_initial()
         item = await _item(repo)
         assert _n(item, "b_rpm_tc") == 2_000
-        assert _n(item, "b_rpm_tk") == 2_000
+        assert _bal(repo, item, "rpm") == 2_000
 
     async def test_a_lost_race_onto_an_unstamped_item_is_replanned(self, repo, limiter):
+        """#821: re-planned from a fresh read, which finds no stamp and enforces."""
         lease = await self._lose_the_create_race(repo, stamp=False)
-        with pytest.raises(BypassLostError):
+        with pytest.raises(FillInstantLostError):
             await lease._commit_initial()
+        again = await RateLimiter(repository=repo)._do_acquire("u", "llm", None, {"rpm": 1})
+        assert again.bypassed is False
 
     async def test_a_refund_of_nothing_writes_nothing(self, repo):
         from zae_limiter.repository_protocol import SpeculativeResult
@@ -586,7 +669,7 @@ class TestCascade:
             await _use(limiter)
         child = await _item(repo)
         assert _n(child, "b_rpm_tc") == 2_000
-        assert _n(child, "b_rpm_tk") == 2_000
+        assert _bal(repo, child, "rpm") == 2_000
 
     async def test_a_bypassed_parent_admits_an_enforced_child(self, repo, limiter):
         await self._family(repo)
@@ -596,7 +679,7 @@ class TestCascade:
             await _use(limiter)
         assert {s.entity_id for s in exc_info.value.violations} == {"u"}
         parent = await _item(repo, "org")
-        assert _n(parent, "b_rpm_tk") == 2_000
+        assert _bal(repo, parent, "rpm") == 2_000
 
     async def test_a_bypassed_child_of_a_disabled_parent_is_refused(self, repo, limiter):
         """#311's cascade matrix, child bypass / parent disabled: the parent's
@@ -761,7 +844,7 @@ class TestStampsExpire:
         item = await _item(repo)
         assert _live(item, later)  # renewed from config read uncached
         assert _n(item, "bypass") <= later + schema.DEFAULT_STAMP_TTL_SECONDS * 1000
-        assert _n(item, "b_rpm_tk") == 2_000  # nothing debited
+        assert _bal(repo, item, "rpm") == 2_000  # nothing debited
         assert _n(item, "b_rpm_tc") == 6_000
 
     async def test_an_expired_stamp_on_the_bypass_shape_costs_one_write(self, repo, limiter):
@@ -810,7 +893,9 @@ class TestStampsExpire:
         assert _live(await _item(repo))  # replaced by a deadline
 
     async def test_a_restamp_is_pinned_on_the_stamp_as_read(self, repo, limiter):
-        """A pass that read config before a fan-out cannot undo the fan-out."""
+        """A pass that read config before a fan-out cannot undo the fan-out. Its
+        write is refused and, its fill instants being exact from the read, the
+        acquire is planned again rather than retried consumption-only (#821)."""
         await repo.bypass_resource("llm")
         start = repo._now_ms()
         with patch.object(repo, "_now_ms", return_value=start):
@@ -823,10 +908,11 @@ class TestStampsExpire:
             await repo.bypass_resource("llm")  # a later fan-out stamps a new deadline
         stamped = _n(await _item(repo), "bypass")
         with patch.object(repo, "_now_ms", return_value=start + 3_000):
-            await lease._commit_initial()
-        item = await _item(repo)
-        assert _n(item, "bypass") == stamped  # the fan-out's stamp stands
-        assert _n(item, "b_rpm_tk") == 1_000  # the retry debited, enforced
+            with pytest.raises(FillInstantLostError):
+                await lease._commit_initial()
+            item = await _item(repo)
+            assert _n(item, "bypass") == stamped  # the fan-out's stamp stands
+            assert _bal(repo, item, "rpm") == 2_000  # nothing debited: re-planned
 
     async def test_a_rejected_pass_removes_a_stamp_config_no_longer_backs(self, repo):
         """Review E1: a rejection wrote nothing, so an expired stamp on an
@@ -892,7 +978,7 @@ class TestStampsExpire:
         child = await _item(repo, "c")
         assert _live(child, later)
         assert _n(child, "bypass") <= later + schema.DEFAULT_STAMP_TTL_SECONDS * 1000
-        assert _n(child, "b_rph_tk") == 2_000  # nothing debited
+        assert _bal(repo, child, "rph") == 2_000  # nothing debited
 
     async def test_stamp_ttl_bounds_every_deadline_this_writer_sets(self, mock_dynamodb):
         """T is the writer's `stamp_ttl`: a create and a fan-out alike."""

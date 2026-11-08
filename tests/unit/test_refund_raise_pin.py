@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from tests.fixtures.balances import balance_milli
 from zae_limiter import Limit, RateLimiter, RateLimitExceeded
 from zae_limiter.schema import BUCKET_FIELD_TK, bucket_attr, pk_bucket, sk_state
 
@@ -86,7 +87,10 @@ async def test_client_refill_does_not_stack_on_a_refund(two):
         r2.transact_write = original
     assert raced
 
-    assert int((await _raw(r1, "c"))[TK]["N"]) <= 10_000
+    # A dripping limit is a fill instant (#821): the slow pass's write is the
+    # exact debit pair, the refund an exact return, and they compose; no raise
+    # is computed from the read at all. The bound is the same.
+    assert balance_milli(r1, await _raw(r1, "c"), "q", now[0]) <= 10_000
     admitted = 0
     while admitted <= 20:  # what the fast path would spend
         result = await r1.speculative_consume("c", "r", {"q": 1}, shard_id=0)

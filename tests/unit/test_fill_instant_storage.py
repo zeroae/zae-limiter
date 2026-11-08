@@ -4,14 +4,16 @@ A dripping limit, the reserved ``wcu`` included, stores its scaled fill instant
 ``b_{name}_fi`` in place of ``b_{name}_tk``, beside one item-level expression
 instant ``xi``; a quota keeps ``tk``, ``rf`` and ``gc``. A legacy item is
 converted on its next slow pass, by a write pinned on the ``tk`` and ``rf`` it
-read. Writing either form is behind ``schema.WRITE_FILL_INSTANTS``, off outside
-tests until #819-#821 teach every writer the form; reading is always on.
+read. Every bucket created since #821 stores its dripping limits this way; a
+legacy item is one written before it.
 
 Not a sync-generation source: these drive the async limiter on moto, and the
 sync twin of every path here is generated from the same modules.
 """
 
+import time
 from fractions import Fraction
+from types import SimpleNamespace
 from typing import Any
 
 import boto3
@@ -51,6 +53,7 @@ from zae_limiter.schema import (
     sk_state,
 )
 from zae_limiter.version import CURRENT_SCHEMA_VERSION
+from zae_limiter_aggregator import processor
 from zae_limiter_aggregator.processor import (
     ParsedBucketLimit,
     ParsedBucketRecord,
@@ -86,16 +89,6 @@ def clock(limiter) -> Clock:
     return clock
 
 
-@pytest.fixture
-def switch(monkeypatch):
-    """Turn the internal switch on or off for the rest of the test."""
-
-    def _set(on: bool) -> None:
-        monkeypatch.setattr(schema, "WRITE_FILL_INSTANTS", on)
-
-    return _set
-
-
 def _key(repo, entity_id: str, shard: int = 0) -> dict[str, Any]:
     return {
         "PK": {"S": pk_bucket(repo._namespace_id, entity_id, RESOURCE, shard)},
@@ -114,11 +107,14 @@ def _n(item: dict[str, Any], limit_name: str, field: str) -> int:
 
 
 async def _legacy_item(
-    limiter, clock: Clock, switch, entity_id: str, tk: int, shard_count: int = 1
+    limiter, clock: Clock, entity_id: str, tk: int, shard_count: int = 1
 ) -> None:
-    """A bucket written before fill instants: ``rpm`` holds ``tk`` at ``rf = T0``."""
+    """A bucket written before fill instants: ``rpm`` holds ``tk`` at ``rf = T0``.
+
+    Nothing creates one since #821, so a bucket created now is rewritten into
+    the legacy shape: every dripping limit as ``tk``, no ``xi``.
+    """
     repo = limiter._repository
-    switch(False)
     await repo.set_limits(entity_id, [RPM, TPM], resource=RESOURCE)
     clock.now = T0
     async with limiter.acquire(entity_id, RESOURCE, consume={"tpm": 1}):
@@ -127,14 +123,25 @@ async def _legacy_item(
     await client.update_item(
         TableName=repo.table_name,
         Key=_key(repo, entity_id),
-        UpdateExpression="SET #tk = :tk, #rf = :rf, #sc = :sc",
+        UpdateExpression=(
+            "SET #tk = :tk, #ttk = :ttk, #wtk = :wtk, #rf = :rf, #sc = :sc "
+            "REMOVE #fi, #tfi, #wfi, #xi"
+        ),
         ExpressionAttributeNames={
             "#tk": bucket_attr("rpm", BUCKET_FIELD_TK),
+            "#ttk": bucket_attr("tpm", BUCKET_FIELD_TK),
+            "#wtk": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK),
+            "#fi": bucket_attr("rpm", BUCKET_FIELD_FI),
+            "#tfi": bucket_attr("tpm", BUCKET_FIELD_FI),
+            "#wfi": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_FI),
+            "#xi": BUCKET_FIELD_XI,
             "#rf": BUCKET_FIELD_RF,
             "#sc": "shard_count",
         },
         ExpressionAttributeValues={
             ":tk": {"N": str(tk)},
+            ":ttk": {"N": str(TPM.capacity * 1000 // shard_count - 1_000)},
+            ":wtk": {"N": str(schema.WCU_LIMIT_CAPACITY * 1000 - 1_000)},
             ":rf": {"N": str(T0)},
             ":sc": {"N": str(shard_count)},
         },
@@ -164,21 +171,21 @@ async def _available(limiter, entity_id: str) -> int:
     return status.available
 
 
-class TestTheSwitch:
-    def test_it_is_off_outside_tests(self) -> None:
-        # #821 removes it once every writer understands fill instants.
-        assert schema.WRITE_FILL_INSTANTS is False
+class TestFillInstantsAreWritten:
+    def test_there_is_no_switch(self) -> None:
+        # #821 removed #818's internal switch: every writer understands the form.
+        assert not hasattr(schema, "WRITE_FILL_INSTANTS")
 
-    async def test_off_a_bucket_is_created_as_tk(self, limiter, clock) -> None:
+    async def test_a_new_bucket_stores_fill_instants(self, limiter, clock) -> None:
         repo = limiter._repository
         await repo.set_limits("e1", [RPM], resource=RESOURCE)
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}):
             pass
         item = await _raw(repo, "e1")
-        assert bucket_attr("rpm", BUCKET_FIELD_TK) in item
-        assert bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK) in item
-        assert not any(name.endswith(f"_{BUCKET_FIELD_FI}") for name in item)
-        assert BUCKET_FIELD_XI not in item
+        assert bucket_attr("rpm", BUCKET_FIELD_FI) in item
+        assert bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_FI) in item
+        assert not any(name.endswith(f"_{BUCKET_FIELD_TK}") for name in item)
+        assert int(item[BUCKET_FIELD_XI]["N"]) == T0
 
     def test_the_schema_version_moved(self) -> None:
         assert CURRENT_SCHEMA_VERSION == "0.11.0"
@@ -202,9 +209,8 @@ class TestTheSwitch:
 
 class TestCreate:
     async def test_dripping_limits_and_wcu_are_stored_as_fill_instants(
-        self, limiter, clock, switch
+        self, limiter, clock
     ) -> None:
-        switch(True)
         repo = limiter._repository
         await repo.set_limits("e1", [RPM, RPD], resource=RESOURCE)
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 10, "rpd": 1}):
@@ -223,10 +229,7 @@ class TestCreate:
         assert _n(item, "rpd", BUCKET_FIELD_GC) == 1
         assert bucket_attr("rpd", BUCKET_FIELD_FI) not in item
 
-    async def test_a_later_pass_moves_the_fill_instant_exactly(
-        self, limiter, clock, switch
-    ) -> None:
-        switch(True)
+    async def test_a_later_pass_moves_the_fill_instant_exactly(self, limiter, clock) -> None:
         repo = limiter._repository
         await repo.set_limits("e1", [RPM], resource=RESOURCE)
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 10}):
@@ -256,16 +259,15 @@ class TestConversion:
         ids=["full", "partial", "surplus", "debt"],
     )
     async def test_the_next_slow_pass_converts_exactly(
-        self, limiter, clock, switch, fraction: Fraction, shard_count: int
+        self, limiter, clock, fraction: Fraction, shard_count: int
     ) -> None:
         repo = limiter._repository
         share = 100_000 // shard_count
         tk = int(share * fraction)
-        await _legacy_item(limiter, clock, switch, "e1", tk, shard_count)
+        await _legacy_item(limiter, clock, "e1", tk, shard_count)
         before = await _raw(repo, "e1")
         wcu_tk = _n(before, WCU_LIMIT_NAME, BUCKET_FIELD_TK)
 
-        switch(True)
         clock.now = T0 + 15_000
         slow = RateLimiter(repository=repo, speculative_writes=False)
         with pinned_shard(0):
@@ -281,11 +283,9 @@ class TestConversion:
         assert bucket_attr("tpm", BUCKET_FIELD_TK) not in item
         assert int(item[BUCKET_FIELD_XI]["N"]) == T0 + 15_000
 
-    async def test_a_write_landing_in_between_fails_the_conversion(
-        self, limiter, clock, switch
-    ) -> None:
+    async def test_a_write_landing_in_between_fails_the_conversion(self, limiter, clock) -> None:
         repo = limiter._repository
-        await _legacy_item(limiter, clock, switch, "e1", 40_000)
+        await _legacy_item(limiter, clock, "e1", 40_000)
         client = await repo._get_client()
         real = repo.transact_write
 
@@ -301,7 +301,6 @@ class TestConversion:
             return await real(items, *args, **kwargs)
 
         repo.transact_write = interfering
-        switch(True)
         clock.now = T0 + 15_000
         slow = RateLimiter(repository=repo, speculative_writes=False)
         with pytest.raises(RateLimitExceeded) as raised:
@@ -316,9 +315,9 @@ class TestConversion:
         assert not any(name.endswith(f"_{BUCKET_FIELD_FI}") for name in item)
         assert BUCKET_FIELD_XI not in item
 
-    async def test_a_re_plan_converts_what_it_reads(self, limiter, clock, switch) -> None:
+    async def test_a_re_plan_converts_what_it_reads(self, limiter, clock) -> None:
         repo = limiter._repository
-        await _legacy_item(limiter, clock, switch, "e1", 40_000)
+        await _legacy_item(limiter, clock, "e1", 40_000)
         client = await repo._get_client()
         real = repo.transact_write
         calls = 0
@@ -337,7 +336,6 @@ class TestConversion:
             return await real(items, *args, **kwargs)
 
         repo.transact_write = interfering_once
-        switch(True)
         clock.now = T0 + 15_000
         slow = RateLimiter(repository=repo, speculative_writes=False)
         async with slow.acquire("e1", RESOURCE, consume={"tpm": 1}):
@@ -350,10 +348,9 @@ class TestConversion:
 
 class TestReaders:
     async def test_check_availability_after_conversion_matches_the_strict_bucket(
-        self, limiter, clock, switch
+        self, limiter, clock
     ) -> None:
-        await _legacy_item(limiter, clock, switch, "e1", 40_000)
-        switch(True)
+        await _legacy_item(limiter, clock, "e1", 40_000)
         events: list[tuple[int, int]] = []
         for at, amount in [(15_000, 30), (21_500, 40), (22_250, 7)]:
             clock.now = T0 + at
@@ -367,10 +364,7 @@ class TestReaders:
             expected = _strict(Fraction(40_000), T0, events, T0 + at) // 1000
             assert await _available(limiter, "e1") == expected, at
 
-    async def test_a_rejection_is_decided_on_the_exact_balance(
-        self, limiter, clock, switch
-    ) -> None:
-        switch(True)
+    async def test_a_rejection_is_decided_on_the_exact_balance(self, limiter, clock) -> None:
         repo = limiter._repository
         await repo.set_limits("e1", [RPM], resource=RESOURCE)
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 100}):
@@ -385,8 +379,7 @@ class TestReaders:
             pass
         assert await _available(limiter, "e1") == 0
 
-    async def test_a_tk_beside_a_fill_instant_is_ignored(self, limiter, clock, switch) -> None:
-        switch(True)
+    async def test_a_tk_beside_a_fill_instant_is_ignored(self, limiter, clock) -> None:
         repo = limiter._repository
         await repo.set_limits("e1", [RPM], resource=RESOURCE)
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 100}):
@@ -415,16 +408,15 @@ class TestReaders:
 class TestGuards:
     """Writers still on `tk` never write it beside a fill instant (#818)."""
 
-    async def _converted(self, limiter, clock, switch) -> Any:
-        switch(True)
+    async def _converted(self, limiter, clock) -> Any:
         repo = limiter._repository
         await repo.set_limits("e1", [RPM], resource=RESOURCE)
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 10}):
             pass
         return repo
 
-    async def test_a_positive_adjustment_is_the_debit_pair(self, limiter, clock, switch) -> None:
-        repo = await self._converted(limiter, clock, switch)
+    async def test_a_positive_adjustment_is_the_debit_pair(self, limiter, clock) -> None:
+        repo = await self._converted(limiter, clock)
         clock.now = T0 + 1_000
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}) as lease:
             await lease.adjust(rpm=5)
@@ -434,8 +426,8 @@ class TestGuards:
         after_first = fi.stamp(T0, p) + fi.span(10_000, p)
         assert _n(item, "rpm", BUCKET_FIELD_FI) == after_first + fi.span(6_000, p)
 
-    async def test_a_rollback_returns_its_debit_exactly(self, limiter, clock, switch) -> None:
-        repo = await self._converted(limiter, clock, switch)
+    async def test_a_rollback_returns_its_debit_exactly(self, limiter, clock) -> None:
+        repo = await self._converted(limiter, clock)
         tc_before = _n(await _raw(repo, "e1"), "rpm", "tc")
         clock.now = T0 + 1_000
         with pytest.raises(RuntimeError):
@@ -449,8 +441,8 @@ class TestGuards:
         assert _n(item, "rpm", BUCKET_FIELD_FI) == fi.stamp(T0, p) + fi.span(10_000, p)
         assert _n(item, "rpm", "tc") == tc_before
 
-    async def test_a_reset_forgives_debt(self, limiter, clock, switch) -> None:
-        repo = await self._converted(limiter, clock, switch)
+    async def test_a_reset_forgives_debt(self, limiter, clock) -> None:
+        repo = await self._converted(limiter, clock)
         p = rpm_params()
         client = await repo._get_client()
         await client.update_item(  # deep in debt
@@ -465,9 +457,8 @@ class TestGuards:
         assert _n(await _raw(repo, "e1"), "rpm", BUCKET_FIELD_FI) == fi.reset(T0 + 1_000, p)
 
     async def test_an_operation_naming_only_a_quota_leaves_the_fill_instant(
-        self, limiter, clock, switch
+        self, limiter, clock
     ) -> None:
-        switch(True)
         repo = limiter._repository
         await repo.set_limits("e1", [RPM, RPD], resource=RESOURCE)
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 10, "rpd": 5}):
@@ -481,9 +472,16 @@ class TestGuards:
         assert bucket_attr("rpm", BUCKET_FIELD_TK) not in item
 
     async def test_the_aggregator_counts_usage_and_writes_nothing(
-        self, limiter, clock, switch
+        self, limiter, clock, monkeypatch
     ) -> None:
-        repo = await self._converted(limiter, clock, switch)
+        # The aggregator reads the clock the item was stamped with: a wall
+        # clock months behind it would read `wcu` as spent and raise.
+        monkeypatch.setattr(
+            processor,
+            "time_module",
+            SimpleNamespace(time=lambda: clock.now / 1000, perf_counter=time.perf_counter),
+        )
+        repo = await self._converted(limiter, clock)
         old = await _raw(repo, "e1")
         clock.now = T0 + 1_000
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 3}):
@@ -500,8 +498,8 @@ class TestGuards:
         assert result.refills_written == 0
         assert await _raw(repo, "e1") == new
 
-    async def test_the_aggregator_never_clones_a_fill_instant(self, limiter, clock, switch) -> None:
-        repo = await self._converted(limiter, clock, switch)
+    async def test_the_aggregator_never_clones_a_fill_instant(self, limiter, clock) -> None:
+        repo = await self._converted(limiter, clock)
         item = await _raw(repo, "e1")
         doubled = item | {"shard_count": {"N": "2"}}
         record = {"eventName": "MODIFY", "dynamodb": {"OldImage": item, "NewImage": doubled}}
@@ -513,10 +511,7 @@ class TestGuards:
 
 
 class TestEdges:
-    async def test_a_limit_added_later_is_seeded_as_a_fill_instant(
-        self, limiter, clock, switch
-    ) -> None:
-        switch(True)
+    async def test_a_limit_added_later_is_seeded_as_a_fill_instant(self, limiter, clock) -> None:
         repo = limiter._repository
         await repo.set_limits("e1", [RPM], resource=RESOURCE)
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}):
@@ -530,10 +525,7 @@ class TestEdges:
         assert _n(item, "tpm", BUCKET_FIELD_FI) == fi.stamp(T0 + 1_000, p) + fi.span(7_000, p)
         assert bucket_attr("tpm", BUCKET_FIELD_TK) not in item
 
-    async def test_a_reset_beside_a_fill_instant_wcu_leaves_it_alone(
-        self, limiter, clock, switch
-    ) -> None:
-        switch(True)
+    async def test_a_reset_beside_a_fill_instant_wcu_leaves_it_alone(self, limiter, clock) -> None:
         repo = limiter._repository
         await repo.set_limits("e1", [RPD], resource=RESOURCE)
         async with limiter.acquire("e1", RESOURCE, consume={"rpd": 5}):
@@ -568,9 +560,8 @@ class TestEdges:
 
     @pytest.mark.parametrize("dropped", [True, False], ids=["stale", "now-a-quota"])
     async def test_the_param_sync_removes_a_fill_instant_it_cannot_keep(
-        self, limiter, clock, switch, dropped: bool
+        self, limiter, clock, dropped: bool
     ) -> None:
-        switch(True)
         repo = limiter._repository
         await repo.set_limits("e1", [RPM, TPM], resource=RESOURCE)
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}):

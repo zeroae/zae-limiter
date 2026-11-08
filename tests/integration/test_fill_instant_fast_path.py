@@ -3,13 +3,12 @@
 The not-full write (``ADD fi :span`` under ``fi BETWEEN :stamp AND :upper``),
 the full write (``SET fi = :value`` under ``fi < :stamp``) and a retry chosen
 from a failed write's ``ALL_OLD``, through the real ``acquire()``, against
-LocalStack's DynamoDB rather than moto. Turns ``WRITE_FILL_INSTANTS`` on for the
-test only: until #821 removes it, nothing else stores a fill instant.
+LocalStack's DynamoDB rather than moto.
 """
 
 import pytest
 
-from zae_limiter import Limit, schema
+from zae_limiter import Limit
 from zae_limiter import fill_instant as fi
 from zae_limiter.schema import BUCKET_FIELD_FI, bucket_attr, pk_bucket, sk_state
 
@@ -39,10 +38,6 @@ async def _fi(repo, entity_id: str) -> int:
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestFillInstantWrites:
-    @pytest.fixture(autouse=True)
-    def _fill_instants_on(self, monkeypatch):
-        monkeypatch.setattr(schema, "WRITE_FILL_INSTANTS", True)
-
     async def test_both_writes_and_a_retry(self, localstack_limiter, unique_name):
         entity_id = f"fill-{unique_name}"
         repo = localstack_limiter._repository

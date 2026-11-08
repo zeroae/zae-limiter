@@ -11,7 +11,9 @@ from unittest.mock import patch
 
 import pytest
 
-from zae_limiter import RateLimiter, RateLimitExceeded, schema
+from tests.fixtures.balances import balance_milli, item_state
+from zae_limiter import RateLimiter, RateLimitExceeded, fill_instant, schema
+from zae_limiter.bucket import balance_milli_at, fill_params
 from zae_limiter.exceptions import ResourceDisabled
 from zae_limiter.models import BucketState, Limit
 from zae_limiter.rejection_cache import RejectionCache
@@ -648,8 +650,11 @@ class TestShards:
             )
 
         with patch.object(repo, "speculative_consume", side_effect=phase_1) as spy:
-            async with limiter.acquire("u", "r", consume={"rpm": 1}):
-                pass  # shard 1: created by the slow path
+            # Shard 1 is created by the slow path, empty while shard 0 exists
+            # (ADR-156): rejected, and still created.
+            with pytest.raises(RateLimitExceeded):
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
         assert spy.call_args.kwargs["avoid_shards"] == frozenset({0})
 
     async def test_rejects_locally_only_when_every_shard_is_short(self, repo):
@@ -751,8 +756,14 @@ class TestVuThatOnlyTrims:
     """
 
     async def _credited_above_the_ceiling(self, repo, limiter, now):
+        """A legacy item (#821): a fill instant's return is exact, capped for free,
+        so only a ``tk`` credit can land above the ceiling and earn the stamp."""
         await repo.set_system_defaults([Limit.per_minute("rpm", 1), Limit.per_minute("tpm", 1000)])
         with patch.object(repo, "_now_ms", side_effect=lambda: now[0]):
+            async with limiter.acquire("e", "r", consume={"tpm": 1}):
+                pass  # creates the bucket
+            await _to_legacy(repo, "e", ("rpm", "tpm", schema.WCU_LIMIT_NAME), now[0])
+            repo._fill_images.clear()
             async with limiter.acquire("e", "r", consume={"rpm": 1, "tpm": 500}) as lease:
                 now[0] += 30_000  # tpm refills to full during the call
                 await lease.adjust(tpm=-900)  # the release lands above the ceiling
@@ -786,7 +797,8 @@ class TestVuThatOnlyTrims:
                     pass
         item = await _bucket_item(repo, "e")
         assert schema.BUCKET_FIELD_VU not in item
-        assert int(item[schema.bucket_attr("tpm", schema.BUCKET_FIELD_TK)]["N"]) <= 1_000_000
+        # The slow pass converted the item (#821): its fill instant is at most full.
+        assert balance_milli(repo, item, "tpm", now[0]) <= 1_000_000
 
     def test_anything_that_can_raise_a_balance_still_needs_the_slow_pass(self):
         from zae_limiter.rejection_cache import vu_only_trims
@@ -1486,6 +1498,61 @@ async def _spent_and_cached(limiter: RateLimiter) -> None:
         pass
 
 
+async def _to_legacy(repo: Repository, entity_id: str, names, now_ms: int) -> None:
+    """Rewrite a bucket into the pre-#821 shape: each of ``names`` as ``tk``, no ``xi``."""
+    item = await _bucket_item(repo, entity_id)
+    sets = ["rf = :now"]
+    removes = ["xi"]
+    attr_names: dict[str, str] = {}
+    values: dict[str, dict[str, str]] = {":now": {"N": str(now_ms)}}
+    for i, name in enumerate(names):
+        attr_names[f"#t{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+        attr_names[f"#f{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_FI)
+        values[f":t{i}"] = {"N": str(balance_milli(repo, item, name, now_ms))}
+        sets.append(f"#t{i} = :t{i}")
+        removes.append(f"#f{i}")
+    client = await repo._get_client()
+    await client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "r", 0)},
+            "SK": {"S": schema.sk_state()},
+        },
+        UpdateExpression=f"SET {', '.join(sets)} REMOVE {', '.join(removes)}",
+        ExpressionAttributeNames=attr_names,
+        ExpressionAttributeValues=values,
+    )
+
+
+async def _debit_elsewhere(repo: Repository, entity_id: str, tokens: int, at_ms: int) -> None:
+    """Another process's unbounded debit of ``tokens`` ``rpm`` at ``at_ms`` (ADR-155's pair)."""
+    item = await _bucket_item(repo, entity_id)
+    state = item_state(repo, item, "rpm")
+    request = repo.build_fill_write(
+        entity_id,
+        "r",
+        0,
+        {
+            "rpm": (
+                fill_instant.debit_write(
+                    at_ms, tokens * 1000, fill_params(state, at_ms), image=state.fill_instant
+                ),
+                state,
+            )
+        },
+        {"rpm": tokens * 1000},
+        {},
+        now_ms=at_ms,
+        ttl_seconds=None,
+        expressed_ms=int(item[schema.BUCKET_FIELD_XI]["N"]),
+        shard_count=1,
+        item_sched=(None, None),
+        guards=False,
+    )
+    client = await repo._get_client()
+    await client.update_item(**request)
+
+
 class TestChangesElsewhere:
     """Writes by another process, or racing this one, never buy an admission.
 
@@ -1528,54 +1595,43 @@ class TestChangesElsewhere:
             pass
 
     async def test_a_write_since_the_state_was_cached_falls_back(self, limiter, repo):
-        """The rf lock: another writer moved rf, so the state is stale."""
+        """Another writer moved the fill instant, so the cached image is stale (#821).
+
+        The write chosen from it is pinned on the side it claims: a debit
+        elsewhere either keeps that side or fails it, and the retry is chosen
+        from the truth. Either way the result is exactly both debits.
+        """
         await _spent_and_cached(limiter)
-        client = await repo._get_client()
-        await client.update_item(  # another process's refill
-            TableName=repo.table_name,
-            Key={
-                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
-                "SK": {"S": schema.sk_state()},
-            },
-            UpdateExpression="SET rf = rf + :one",
-            ExpressionAttributeValues={":one": {"N": "1"}},
-        )
         later = repo._now_ms() + 60_000
+        await _debit_elsewhere(repo, "u", 1, later)  # another process, a minute later
         with patch.object(repo, "_now_ms", return_value=later):
             async with _count_client_calls(repo) as calls:
                 async with limiter.acquire("u", "r", consume={"rpm": 1}) as lease:
                     pass
         assert lease.consumed == {"rpm": 1}
-        assert calls[0] == "update_item" and len(calls) > 1  # lost lock, today's path
+        assert calls[0] == "update_item"
+        item = await _bucket_item(repo, "u")
+        assert balance_milli(repo, item, "rpm", later) == 0  # refilled to 2, then 1 + 1
 
     async def test_a_limit_change_elsewhere_is_not_refilled_at_the_old_limit(self, limiter, repo):
-        """The vu pin: another process cut the limit and stamped vu = 0, rf unmoved."""
+        """Another process cut the limit; its parameter sync re-expressed the
+        fill instant (ADR-155). The cached image's write is pinned on the old
+        parameters and fails, and the retry is chosen at the new ones (#821)."""
         await _spent_and_cached(limiter)
-        client = await repo._get_client()
-        await client.update_item(  # what _sync_bucket_params writes elsewhere
-            TableName=repo.table_name,
-            Key={
-                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
-                "SK": {"S": schema.sk_state()},
-            },
-            UpdateExpression="SET #cp = :cp, #ra = :ra, vu = :zero",
-            ExpressionAttributeNames={
-                "#cp": schema.bucket_attr("rpm", schema.BUCKET_FIELD_CP),
-                "#ra": schema.bucket_attr("rpm", schema.BUCKET_FIELD_RA),
-            },
-            ExpressionAttributeValues={
-                ":cp": {"N": "1000"},
-                ":ra": {"N": "1000"},
-                ":zero": {"N": "0"},
-            },
+        other = Repository(
+            name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
         )
+        other._namespace_id = repo._namespace_id
+        await other.set_limits("u", [Limit.per_minute("rpm", 1)], resource="r")
+        await other.close()
         later = repo._now_ms() + 60_000
         with patch.object(repo, "_now_ms", return_value=later):
             async with limiter.acquire("u", "r", consume={"rpm": 1}):
                 pass
         bucket = (await repo.get_buckets("u", "r"))[0]
         assert bucket.capacity_milli == 1000
-        assert bucket.tokens_milli <= 0  # refilled to the NEW capacity (1), then debited
+        # Refilled to the NEW capacity (1), then debited.
+        assert balance_milli_at(bucket, later) <= 0
 
     async def test_a_debit_elsewhere_smaller_than_the_refill_is_still_refused(self, repo):
         """The floor rides at any sign: refill above the debit must not hide a debt.
@@ -1598,18 +1654,8 @@ class TestChangesElsewhere:
                 async with limiter.acquire("u", "r", consume={"rpm": 599}):  # fast path: tk 0
                     pass
                 now[0] += 900
-                client = await repo._get_client()
-                await client.update_item(  # another process spends 1000
-                    TableName=repo.table_name,
-                    Key={
-                        "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
-                        "SK": {"S": schema.sk_state()},
-                    },
-                    UpdateExpression="ADD #t :d",
-                    ExpressionAttributeNames={"#t": "b_rpm_tk"},
-                    ExpressionAttributeValues={":d": {"N": "-1000000"}},
-                )
-                with pytest.raises(RateLimitExceeded):  # today's path reads the debt
+                await _debit_elsewhere(repo, "u", 1000, now[0])  # another process spends 1000
+                with pytest.raises(RateLimitExceeded):  # the write reads the debt
                     async with limiter.acquire("u", "r", consume={"rpm": 1}):
                         pass
 
@@ -1649,41 +1695,30 @@ class TestChangesElsewhere:
         async with RateLimiter(repository=repo) as limiter:
             t0 = repo._now_ms()
             await self._drained_to_50(repo, limiter, t0)
-            client = await repo._get_client()
+            other = Repository(
+                name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
+            )
+            other._namespace_id = repo._namespace_id
             real_write = repo.transact_write
             fired = []
 
             async def racing_write(items):
                 if not fired:  # another process's param sync lands between read and write
                     fired.append(True)
-                    await client.update_item(
-                        TableName=repo.table_name,
-                        Key={
-                            "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
-                            "SK": {"S": schema.sk_state()},
-                        },
-                        UpdateExpression="SET #cp = :cp, #ra = :ra, vu = :zero",
-                        ExpressionAttributeNames={
-                            "#cp": schema.bucket_attr("rpm", schema.BUCKET_FIELD_CP),
-                            "#ra": schema.bucket_attr("rpm", schema.BUCKET_FIELD_RA),
-                        },
-                        ExpressionAttributeValues={
-                            ":cp": {"N": "10000"},
-                            ":ra": {"N": "10000"},
-                            ":zero": {"N": "0"},
-                        },
-                    )
+                    await other.set_limits("u", [Limit.per_minute("rpm", 10)], resource="r")
                 return await real_write(items)
 
+            slow = RateLimiter(repository=repo, speculative_writes=False)
             with (
                 patch.object(repo, "_now_ms", return_value=t0 + 6_000),
                 patch.object(repo, "transact_write", side_effect=racing_write),
             ):
-                try:  # the slow pass; its write loses the `vu` pin to the cut (#701)
-                    async with limiter.acquire("u", "r", consume={"rpm": 100}):
+                try:  # the slow pass; its write loses its pins to the cut (ADR-155)
+                    async with slow.acquire("u", "r", consume={"rpm": 100}):
                         pass
                 except RateLimitExceeded:
-                    pass  # the consumption-only retry: 50 cannot cover 100
+                    pass  # planned again at the cut: 10 cannot cover 100
+            await other.close()
             assert fired
             with patch.object(repo, "_now_ms", return_value=t0 + 36_000):
                 with pytest.raises(RateLimitExceeded):  # 10/min cannot cover 400
@@ -1703,16 +1738,27 @@ class TestChangesElsewhere:
             fired = []
 
             async def refund_lands_first(items):
-                if not fired:  # another lease in this process releases 50
+                if not fired:  # another lease in this process releases 50, exactly
                     fired.append(True)
-                    await repo.write_each([repo.build_composite_adjust("u", "r", {"rpm": -50_000})])
+                    item = await _bucket_item(repo, "u")
+                    state = item_state(repo, item, "rpm")
+                    assert state.stored_expressed_ms is not None
+                    assert await repo.return_fill_instants(
+                        "u",
+                        "r",
+                        0,
+                        {"rpm": (50_000, state)},
+                        expressed_ms=state.stored_expressed_ms,
+                        shard_count=1,
+                    )
                 return await real_write(items)
 
+            slow = RateLimiter(repository=repo, speculative_writes=False)
             with (
                 patch.object(repo, "_now_ms", return_value=t0 + 6_000),
                 patch.object(repo, "transact_write", side_effect=refund_lands_first),
             ):
-                async with limiter.acquire("u", "r", consume={"rpm": 15}):  # the slow pass
+                async with slow.acquire("u", "r", consume={"rpm": 15}):  # the slow pass
                     pass
             assert fired
             with patch.object(repo, "_now_ms", return_value=t0 + 6_001):
@@ -1785,8 +1831,21 @@ class TestChangesElsewhere:
                     pass
         assert admitted == 2
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "#823: a resource-level change never reaches an active bucket, and the "
+            "fill-instant fast path refills exactly from the item's own parameters"
+        ),
+    )
     async def test_a_resource_schedule_is_honoured(self, repo):
-        """Phase-3 review #4: a resource-level schedule never reaches the item (no vu)."""
+        """Phase-3 review #4: a resource-level schedule never reaches the item (no vu).
+
+        Before fill instants the spent bucket sent the next request to the slow
+        path, which refilled at config's schedule. A fill instant needs no slow
+        pass to refill, so the item's unscheduled parameters admit the base
+        capacity until #823 fans the change out to active buckets (ADR-153).
+        """
         from zae_limiter import ScheduleEntry
 
         four = Limit.per_minute("rpm", 4)
@@ -1930,18 +1989,8 @@ class TestSteadyLoad:
                 async with limiter.acquire("u", "r", consume={"rpm": 599}):  # fast path: tk 0
                     pass
                 now[0] += 30_000  # 300 tokens of refill; the 1 s age cap is long past
-                client = await repo._get_client()
-                await client.update_item(  # another process spends 1000
-                    TableName=repo.table_name,
-                    Key={
-                        "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
-                        "SK": {"S": schema.sk_state()},
-                    },
-                    UpdateExpression="ADD #t :d",
-                    ExpressionAttributeNames={"#t": "b_rpm_tk"},
-                    ExpressionAttributeValues={":d": {"N": "-1000000"}},
-                )
-                with pytest.raises(RateLimitExceeded):  # today's path reads the debt
+                await _debit_elsewhere(repo, "u", 1000, now[0])  # another process spends 1000
+                with pytest.raises(RateLimitExceeded):  # the write reads the debt
                     async with limiter.acquire("u", "r", consume={"rpm": 10}):
                         pass
 

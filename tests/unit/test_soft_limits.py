@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.fixtures.balances import balance_milli, stored_fill_instant
 from zae_limiter import RateLimiter, RateLimitExceeded, schema
 from zae_limiter.bucket import try_consume
 from zae_limiter.exceptions import FanoutIncomplete, VersionMismatchError
@@ -36,6 +37,11 @@ async def soft_limiter(soft_repo):
     limiter = RateLimiter(repository=soft_repo)
     async with limiter:
         yield limiter
+
+
+def _balance(repo: Repository, item, name: str, now_ms: int | None = None) -> int:
+    """A dripping limit's balance in either storage form (#821), at the repository's clock."""
+    return balance_milli(repo, item, name, repo._now_ms() if now_ms is None else now_ms)
 
 
 async def _bucket_item(repo: Repository, entity_id: str, resource: str, shard: int = 0):
@@ -177,7 +183,7 @@ class TestFastPath:
         async with soft_limiter.acquire("user-1", "llm", {"rpm": 1, "tpm": 900}) as lease:
             assert lease.overdrawn == ["tpm"]
         item = await _bucket_item(soft_repo, "user-1", "llm")
-        assert int(item["b_tpm_tk"]["N"]) < 0
+        assert _balance(soft_repo, item, "tpm") < 0
         assert int(item["b_tpm_tc"]["N"]) == 1_800_000
 
     async def test_a_hard_sibling_still_rejects(self, soft_limiter, soft_repo):
@@ -303,7 +309,7 @@ class TestSlowPath:
             pass
         item = await _bucket_item(soft_repo, "user-1", "llm")
         assert _soft_stamp(item, "tpm") is True
-        assert int(item["b_tpm_tk"]["N"]) < 0
+        assert _balance(soft_repo, item, "tpm") < 0
 
     async def test_a_seed_from_a_cached_pass_reads_soft_uncached(self, soft_repo):
         await soft_repo.set_resource_defaults("llm", [RPM, SOFT_TPM])
@@ -604,7 +610,7 @@ class TestStampsExpire:
         item = await _bucket_item(soft_repo, "user-1", "llm")
         renewed = _soft_deadline(item)
         assert renewed is not None and later < renewed <= later + PAST_T_MS
-        assert int(item["b_tpm_tk"]["N"]) < 0  # still metered into debt
+        assert _balance(soft_repo, item, "tpm", later) < 0  # still metered into debt
         assert _soft_deadline(item, "rpm") is None
 
     async def test_the_fast_path_routes_an_expired_soft_stamp_to_the_slow_path(
@@ -718,12 +724,13 @@ class TestRejectedPassFixesStamps:
         self, soft_repo, soft_limiter
     ):
         start = await self._in_debt_then_missed_hard(soft_repo, soft_limiter)
+        before = stored_fill_instant(await _bucket_item(soft_repo, "user-1", "llm"), "tpm")
         rejected, slow = await self._ten_rejections(soft_repo, soft_limiter, start + PAST_T_MS)
         item = await _bucket_item(soft_repo, "user-1", "llm")
         assert rejected == 10
         assert _soft_deadline(item) is None
         assert slow == 1, f"{slow} slow passes for 10 rejections"
-        assert int(item["b_tpm_tk"]["N"]) == -8_000  # nothing debited, nothing refilled
+        assert stored_fill_instant(item, "tpm") == before  # nothing debited
 
     async def test_an_expired_stamp_config_still_backs_is_renewed(self, soft_repo, soft_limiter):
         """A hard limit beside it rejects: the soft stamp is renewed, not left
@@ -1033,7 +1040,7 @@ class TestOverrideAgainstAStamp:
                     pass
         assert admitted == 1
         item = await _bucket_item(soft_repo, "u", "llm")
-        assert int(item[schema.bucket_attr("tpm", schema.BUCKET_FIELD_TK)]["N"]) >= 0
+        assert _balance(soft_repo, item, "tpm") >= 0
         # An override is not config: the stamp config wrote is left alone.
         assert _soft_stamp(item, "tpm")
 

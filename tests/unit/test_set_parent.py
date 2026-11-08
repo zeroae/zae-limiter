@@ -4,7 +4,15 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from zae_limiter import RateLimiter, RateLimitExceeded, ResourceDisabled, __version__, schema
+from tests.fixtures.balances import balance_milli
+from zae_limiter import (
+    RateLimiter,
+    RateLimitExceeded,
+    ResourceDisabled,
+    __version__,
+    fill_instant,
+    schema,
+)
 from zae_limiter.exceptions import (
     EntityNotFoundError,
     FanoutIncomplete,
@@ -18,6 +26,8 @@ from zae_limiter.version import get_schema_version
 
 TABLE = "test-set-parent"
 RPM = Limit.per_day("rpm", 100)  # no refill to speak of during a test
+QRES = "quota"  # a quota-only resource: its buckets are cloned by Path 2
+QUOTA = Limit.quota("rpd", 100, cron="0 0 * * *")
 
 
 async def _open_repo() -> Repository:
@@ -115,9 +125,13 @@ async def _meta(repo: Repository, entity_id: str) -> dict:
     return response["Item"]
 
 
-async def _consumed(repo: Repository, entity_id: str, resource: str = "gpt-4") -> int:
+async def _consumed(
+    repo: Repository, entity_id: str, resource: str = "gpt-4", limit: str = "rpm"
+) -> int:
     item = await _item(repo, entity_id, resource)
-    return 0 if item is None else int(item[schema.bucket_attr("rpm", "tc")]["N"]) // 1000
+    if item is None or schema.bucket_attr(limit, "tc") not in item:
+        return 0
+    return int(item[schema.bucket_attr(limit, "tc")]["N"]) // 1000
 
 
 def _stamp(item: dict) -> tuple[bool, str | None, int | None]:
@@ -261,10 +275,7 @@ class TestFanout:
     async def test_every_shard_of_every_resource_is_restamped(self, limiter):
         repo = limiter._repository
         await _hierarchy(limiter)
-        await repo.bump_shard_count("user", "gpt-4", 1)
-        with patch("zae_limiter.repository.random.randrange", return_value=1):
-            async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
-                pass
+        assert await repo.raise_shards("user", "gpt-4", 1) == 2  # ADR-156
         assert await _item(repo, "user", "gpt-4", 1) is not None
 
         assert await repo.set_parent("user", "org-b") == 3
@@ -559,7 +570,9 @@ class TestStaleWriters:
 
         A slow pass whose eventually consistent META read returns the deleted
         predecessor (old incarnation, org-a) must not overwrite the recreated
-        entity's stamp (org-b). Its own acquire still debits org-a once.
+        entity's stamp (org-b). A fill instant has no consumption-only retry
+        (#821): the lost write is planned again from a strongly consistent META
+        read, and that pass debits the current parent, org-b, once.
         """
         generations_from_zero.stop()
         for resource in ("gpt-4", "llm"):
@@ -586,12 +599,14 @@ class TestStaleWriters:
             return (old_meta if entity_id == "user" else entity), buckets
 
         org_a = await _consumed(repo, "org-a", "llm")
+        org_b = await _consumed(repo, "org-b", "llm")
         with patch.object(stale, "batch_get_entity_and_buckets", stale_meta):
             async with RateLimiter(repository=stale, speculative_writes=False).acquire(
                 "user", "llm", consume={"rpm": 1}
             ) as lease:
-                assert {e.entity_id for e in lease.entries} == {"user", "org-a"}
-        assert await _consumed(repo, "org-a", "llm") == org_a + 1  # this lease, once
+                assert {e.entity_id for e in lease.entries} == {"user", "org-b"}
+        assert await _consumed(repo, "org-a", "llm") == org_a
+        assert await _consumed(repo, "org-b", "llm") == org_b + 1  # this lease, once
 
         assert _stamp(await _item(repo, "user", "llm")) == current  # the stamp stands
         third_repo = await _open_repo()
@@ -614,13 +629,19 @@ class TestStaleWriters:
         assert await repo.restamp_owner_if_current("nobody", "gpt-4", 0, "x") is False
 
     async def test_a_failed_claim_is_logged(self, repo, other, caplog):
+        """A claim that keeps failing leaves a fill-instant write nothing to land
+        on without its owner stamp (#821): the contended 429, nothing debited."""
         await self._leftover_from_a_fast_clock(repo, other)
+        before = await _consumed(repo, "user", "llm")
         with patch.object(repo, "restamp_owner_if_current", side_effect=RuntimeError("x")):
-            async with RateLimiter(repository=repo, speculative_writes=False).acquire(
-                "user", "llm", consume={"rpm": 1}
-            ):
-                pass
+            with pytest.raises(RateLimitExceeded) as caught:
+                async with RateLimiter(repository=repo, speculative_writes=False).acquire(
+                    "user", "llm", consume={"rpm": 1}
+                ):
+                    pass
+        assert caught.value.contended
         assert "could not claim a predecessor's bucket" in caplog.text
+        assert await _consumed(repo, "user", "llm") == before
 
     @staticmethod
     async def _foreign_stamp(repo: Repository) -> None:
@@ -636,7 +657,10 @@ class TestStaleWriters:
             ExpressionAttributeValues={":other": {"S": "someone-else"}},
         )
 
-    async def test_a_resent_write_that_loses_again_takes_the_retry(self, limiter):
+    async def test_a_resent_write_that_loses_again_is_contended(self, limiter):
+        """A fill instant has no consumption-only retry, which stamps no owner
+        (#821): a re-sent write that loses its pin again is planned once more
+        and then answered contended, nothing debited."""
         repo = limiter._repository
         await _hierarchy(limiter)
         await self._foreign_stamp(repo)
@@ -644,9 +668,11 @@ class TestStaleWriters:
         user = await _consumed(repo, "user")
         # A claim reported but not landed: the re-sent write loses the pin again.
         with patch.object(repo, "restamp_owner_if_current", return_value=True):
-            async with slow.acquire("user", "gpt-4", consume={"rpm": 1}):
-                pass
-        assert await _consumed(repo, "user") == user + 1  # the consumption-only retry
+            with pytest.raises(RateLimitExceeded) as caught:
+                async with slow.acquire("user", "gpt-4", consume={"rpm": 1}):
+                    pass
+        assert caught.value.contended
+        assert await _consumed(repo, "user") == user
         assert (await _item(repo, "user", "gpt-4"))["pinc"] == {"S": "someone-else"}
 
     async def test_a_resent_write_that_errors_surfaces(self, limiter):
@@ -1071,19 +1097,31 @@ class TestStaleWriters:
             )
 
     @staticmethod
+    async def _quota_buckets(limiter: RateLimiter) -> None:
+        """`_hierarchy`, plus user's bucket on a quota-only resource.
+
+        The aggregator's Path 2 clones only a bucket holding no dripping limit;
+        one holding one is raised by ADR-156's raise instead (#821).
+        """
+        await _hierarchy(limiter)
+        await limiter._repository.set_resource_defaults(QRES, [QUOTA])
+        async with limiter.acquire("user", QRES, consume={"rpd": 1}):
+            pass
+
+    @staticmethod
     async def _doubling_record(repo: Repository) -> dict:
         """The stream record of shard 0's 1 -> 2 doubling, its image read now."""
         client = await repo._get_client()
         await client.update_item(  # what the aggregator's proactive shard writes
             TableName=TABLE,
             Key={
-                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user", "gpt-4", 0)},
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user", QRES, 0)},
                 "SK": {"S": schema.sk_state()},
             },
             UpdateExpression="SET shard_count = :n",
             ExpressionAttributeValues={":n": {"N": "2"}},
         )
-        new_image = await _item(repo, "user", "gpt-4")
+        new_image = await _item(repo, "user", QRES)
         old_image = {**new_image, "shard_count": {"N": "1"}}
         return {"eventName": "MODIFY", "dynamodb": {"NewImage": new_image, "OldImage": old_image}}
 
@@ -1098,24 +1136,24 @@ class TestStaleWriters:
         from zae_limiter_aggregator.processor import propagate_shard_count
 
         repo = limiter._repository
-        await _hierarchy(limiter)
+        await self._quota_buckets(limiter)
         record = await self._doubling_record(repo)
         await repo.set_parent("user", "org-b")  # lands before the lagging record
 
         table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
         assert propagate_shard_count(table, record) == 0
-        assert await _item(repo, "user", "gpt-4", 1) is None
+        assert await _item(repo, "user", QRES, 1) is None
 
         third_repo = await _open_repo()
         async with RateLimiter(repository=third_repo) as third:
-            org_a = await _consumed(repo, "org-a")
+            org_a = await _consumed(repo, "org-a", QRES, "rpd")
             for shard in (1, 1, 0):
                 with patch("zae_limiter.repository.random.randrange", return_value=shard):
-                    async with third.acquire("user", "gpt-4", consume={"rpm": 1}):
+                    async with third.acquire("user", QRES, consume={"rpd": 1}):
                         pass
         await third_repo.close()
-        assert _stamp(await _item(repo, "user", "gpt-4", 1)) == (True, "org-b", 1)
-        assert await _consumed(repo, "org-a") == org_a
+        assert _stamp(await _item(repo, "user", QRES, 1)) == (True, "org-b", 1)
+        assert await _consumed(repo, "org-a", QRES, "rpd") == org_a
 
     async def test_a_clone_after_a_move_to_no_parent_is_skipped_too(self, limiter):
         import boto3
@@ -1123,12 +1161,12 @@ class TestStaleWriters:
         from zae_limiter_aggregator.processor import propagate_shard_count
 
         repo = limiter._repository
-        await _hierarchy(limiter)
+        await self._quota_buckets(limiter)
         record = await self._doubling_record(repo)
         await repo.set_parent("user", None)
         table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
         assert propagate_shard_count(table, record) == 0
-        assert await _item(repo, "user", "gpt-4", 1) is None
+        assert await _item(repo, "user", QRES, 1) is None
 
     async def test_a_clone_with_a_current_stamp_is_created(self, limiter):
         import boto3
@@ -1136,12 +1174,12 @@ class TestStaleWriters:
         from zae_limiter_aggregator.processor import propagate_shard_count
 
         repo = limiter._repository
-        await _hierarchy(limiter)
+        await self._quota_buckets(limiter)
         await repo.set_parent("user", "org-b")
         record = await self._doubling_record(repo)  # taken after the move
         table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
         assert propagate_shard_count(table, record) == 1
-        assert _stamp(await _item(repo, "user", "gpt-4", 1)) == (True, "org-b", 1)
+        assert _stamp(await _item(repo, "user", QRES, 1)) == (True, "org-b", 1)
 
     async def test_an_unstamped_image_clones_only_while_nothing_moved(self, limiter):
         """An image from before ADR-150 carries no generation: META must carry none."""
@@ -1150,7 +1188,7 @@ class TestStaleWriters:
         from zae_limiter_aggregator.processor import propagate_shard_count
 
         repo = limiter._repository
-        await _hierarchy(limiter)
+        await self._quota_buckets(limiter)
         record = await self._doubling_record(repo)
         image = record["dynamodb"]["NewImage"]
         for attr in (schema.BUCKET_FIELD_PGEN, schema.BUCKET_FIELD_PINC):
@@ -1171,7 +1209,7 @@ class TestStaleWriters:
         image["shard_count"] = {"N": "4"}
         assert propagate_shard_count(table, record) == 1  # Path 1 raises shard 1 only
         for shard in (2, 3):  # moved since: neither clone is written
-            assert await _item(repo, "user", "gpt-4", shard) is None
+            assert await _item(repo, "user", QRES, shard) is None
 
     async def test_a_skipped_clone_is_logged_without_the_entity(self, limiter, capsys):
         import json
@@ -1181,7 +1219,7 @@ class TestStaleWriters:
         from zae_limiter_aggregator.processor import propagate_shard_count
 
         repo = limiter._repository
-        await _hierarchy(limiter)
+        await self._quota_buckets(limiter)
         record = await self._doubling_record(repo)
         await repo.set_parent("user", "org-b")
         table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
@@ -1307,7 +1345,7 @@ class TestAnotherProcess:
                 pass
         assert await _consumed(repo, "org-a") == org_a
         child = await _item(repo, "user", "gpt-4")
-        assert int(child[schema.bucket_attr("rpm", "tk")]["N"]) >= (100 - user - 1) * 1000
+        assert balance_milli(repo, child, "rpm", repo._now_ms()) >= (100 - user - 1) * 1000
 
     async def test_a_failed_child_teaches_the_new_parent(self, limiter, other):
         repo = limiter._repository
@@ -1402,16 +1440,36 @@ async def _set(
     wcu_tk: int | None = None,
     rpm_tk: int | None = None,
 ) -> None:
-    """Rewrite a few attributes of an entity's gpt-4 shard 0, as another writer would."""
+    """Rewrite an entity's gpt-4 shard 0 as another writer would have left it.
+
+    Dripping limits are fill instants (#821): ``rpm_tk`` / ``wcu_tk`` set the
+    balance (millitokens) as of ``rf`` (now when omitted), and ``rf`` alone
+    moves the current ``rpm`` balance back to that instant, so it has refilled
+    since.
+    """
+    item = await _item(repo, entity_id, "gpt-4")
+    assert item is not None
+    now = repo._now_ms()
+    at = now if rf is None else rf
+    if rf is not None and rpm_tk is None:
+        rpm_tk = balance_milli(repo, item, "rpm", now)
+
+    def fill(name: str, tokens: int) -> dict:
+        def n(field: str) -> int:
+            return int(item[schema.bucket_attr(name, field)]["N"])
+
+        shards = 1 if name == "wcu" else int(item.get("shard_count", {}).get("N", "1"))
+        params = fill_instant.ShardParams(n("cp"), n("ra"), n("rp"), shards)
+        return {"N": str(fill_instant.from_tokens(tokens, at, params))}
+
     names: dict[str, str] = {}
     values: dict[str, dict] = {}
     sets = []
     for i, (attr, value) in enumerate(
         [
-            ("rf", None if rf is None else {"N": str(rf)}),
             (schema.BUCKET_FIELD_DISABLED, None if disabled is None else {"BOOL": disabled}),
-            (schema.bucket_attr("wcu", "tk"), None if wcu_tk is None else {"N": str(wcu_tk)}),
-            (schema.bucket_attr("rpm", "tk"), None if rpm_tk is None else {"N": str(rpm_tk)}),
+            (schema.bucket_attr("wcu", "fi"), None if wcu_tk is None else fill("wcu", wcu_tk)),
+            (schema.bucket_attr("rpm", "fi"), None if rpm_tk is None else fill("rpm", rpm_tk)),
         ]
     ):
         if value is not None:
@@ -1450,12 +1508,28 @@ class TestAStampedShardIsMaterialisedWhereItIs:
         async with RateLimiter(repository=repo) as limiter:
             async with limiter.acquire("user", "llm", consume={"rpm": 1}):
                 pass
-        await repo.bump_shard_count("user", "llm", 1)
-        with patch("zae_limiter.repository.random.randrange", return_value=1):
-            async with RateLimiter(repository=repo) as limiter:
-                async with limiter.acquire("user", "llm", consume={"rpm": 1}):
-                    pass
-        assert await _item(repo, "user", "llm", 1) is not None
+        assert await repo.raise_shards("user", "llm", 1) == 2  # ADR-156
+        shard1 = await _item(repo, "user", "llm", 1)
+        assert shard1 is not None
+        # Shard 1 in the legacy `tk` shape: only such a shard's fast path waits
+        # on a trimming `vu = 0`; a fill instant never does (ADR-155, #821).
+        now = repo._now_ms()
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=TABLE,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user", "llm", 1)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression=(
+                "SET b_rpm_tk = :tk, b_wcu_tk = :wcu, rf = :now REMOVE b_rpm_fi, b_wcu_fi, xi"
+            ),
+            ExpressionAttributeValues={
+                ":tk": {"N": str(balance_milli(repo, shard1, "rpm", now))},
+                ":wcu": {"N": str(balance_milli(repo, shard1, "wcu", now))},
+                ":now": {"N": str(now)},
+            },
+        )
 
     @staticmethod
     async def _set_shard1(repo: Repository, expression: str, values: dict) -> None:
@@ -1886,11 +1960,7 @@ class TestAnOlderStampNeverMovesTheCacheBack:
                 pass
             async with limiter.acquire("org-b", "gpt-4", consume={"rpm": 1}):
                 pass  # org-b has a bucket: a debit to it would land
-        await repo.bump_shard_count("user", "gpt-4", 1)
-        with patch("zae_limiter.repository.random.randrange", return_value=1):
-            async with RateLimiter(repository=repo) as limiter:
-                async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
-                    pass
+        assert await repo.raise_shards("user", "gpt-4", 1) == 2  # ADR-156
         await repo.set_parent("user", "org-b")  # generation 1 on both shards
         await repo.set_parent("user", "org-c")  # generation 2 on both shards
 

@@ -24,7 +24,7 @@ For implementation details, see docs/contributing/architecture.md
 
 from dataclasses import dataclass, replace
 
-from . import fill_instant, schema
+from . import fill_instant
 from .models import BucketState, Limit, LimitStatus, is_accrual_rate
 from .schedule import ScheduleEntry, retry_after_with_schedule
 
@@ -230,9 +230,8 @@ def convert_to_fill_instant(state: BucketState) -> None:
 
     Exact (#817): the balance at ``rf`` is ``tk``, a surplus above the share
     reads as a full bucket and a debt as a fill instant past ``rf``. A quota, or
-    a state already holding a fill instant, is left alone. The slow path calls
-    this only while ``schema.WRITE_FILL_INSTANTS`` is on; its write then
-    converts the item, pinned on the ``tk`` and ``rf`` it read.
+    a state already holding a fill instant, is left alone. The slow path's
+    write then converts the item, pinned on the ``tk`` and ``rf`` it read.
     """
     if state.fill_instant is not None or not state.is_dripping_state:
         return
@@ -242,28 +241,28 @@ def convert_to_fill_instant(state: BucketState) -> None:
 
 
 def adopt_fill_instant(state: BucketState) -> None:
-    """On the slow path: convert a dripping state stored as ``tk``/``rf``, if the switch is on.
+    """On the slow path: convert a dripping state still stored as ``tk``/``rf`` (#818).
 
-    ``schema.WRITE_FILL_INSTANTS`` (#818) gates the conversion; a state read as
-    a fill instant already holds one either way.
+    Lazy, with no migration (ADR-153): an item is converted on its next slow
+    pass. A state read as a fill instant already holds one.
     """
-    if schema.WRITE_FILL_INSTANTS:
-        convert_to_fill_instant(state)
+    convert_to_fill_instant(state)
 
 
-def express_created(state: BucketState, now_ms: int) -> None:
-    """Give a dripping state the slow path creates full at ``now_ms`` its fill instant (#818).
+def express_created(state: BucketState, now_ms: int, *, empty: bool = False) -> None:
+    """Give a dripping state the slow path creates at ``now_ms`` its fill instant (#818).
 
-    Only while ``schema.WRITE_FILL_INSTANTS`` is on; otherwise it is created as
-    ``tk``, as before.
+    Full, or ``empty`` for a shard created while others of its bucket exist
+    (ADR-156): a full one would add a share nothing paid for.
     """
-    if (
-        not schema.WRITE_FILL_INSTANTS
-        or state.fill_instant is not None
-        or not state.is_dripping_state
-    ):
+    if state.fill_instant is not None or not state.is_dripping_state:
         return
-    state.fill_instant = fill_instant.created_full(now_ms, fill_params(state, now_ms))
+    params = fill_params(state, now_ms)
+    if empty:
+        state.fill_instant = fill_instant.created_empty(now_ms, params)
+        state.tokens_milli = 0
+    else:
+        state.fill_instant = fill_instant.created_full(now_ms, params)
     state.expressed_ms = now_ms
 
 
