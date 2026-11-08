@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794107165127,
+  "lastUpdate": 1794110635309,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -40149,6 +40149,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.3024397437646192",
             "extra": "mean: 1.4326569824000046 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "41d7b522c7695a06ace8123b77576c2258684a02",
+          "message": "🐛 fix(infra): retry a stack delete that ends in DELETE_FAILED (#826)\n\n## Summary\n\nAWS e2e teardowns intermittently fail because CloudFormation's delete of\nthe DynamoDB table gets an HTTP 500 from `DeleteTable`, which leaves the\nstack in `DELETE_FAILED`. A second delete clears it. This PR settles the\nissue's open question by retrying **in the library**, not only in the\ntests: anyone running `zae-limiter delete` or\n`Repository.delete_stack()` gets the same 500.\n\n- **`b47ccc83` fix(infra), pre-existing bug:**\n`StackManager.delete_stack` caught only `ClientError`. A wait that ended\nin `DELETE_FAILED` or timed out got out as botocore's `WaiterError`, and\nthe docstring said `StackOperationError`. It now raises\n`StackOperationError` and attaches the stack events.\n- **`41644a60` fix(infra):** delete once more when the wait ends in\n`DELETE_FAILED` (`_DELETE_ATTEMPTS = 2`). A timeout is not retried. A\nretry that finds the stack already gone counts as success. Before\nretrying it logs a warning that names the failing resource and its\nreason (`Stack <name> ended in DELETE_FAILED (<logical id>: <reason>);\ndeleting it again`). Sync twin regenerated.\n- **`8b598932` test(e2e):** the CFN provisioner tenant stacks are now\ndeleted through `StackManager`. `rg` over the AWS test files finds no\nraw `cfn.delete_stack` left, so every AWS teardown gets the retry.\nCallers that pick it up: `Repository.delete_stack`,\n`SyncRepository.delete_stack`, CLI `delete` (`stack_pairs`,\n`upgrade_tags`), and `StackManager` directly.\n- **`a2d57b29` docs:** CLI `delete` help and CLAUDE.md.\n\n### Behaviour change for users\n\n`zae-limiter delete --wait`, `Repository.delete_stack()` and the sync\ntwin can now take up to one extra delete cycle when the first attempt\nends in `DELETE_FAILED`. Code that caught botocore's `WaiterError` from\na delete now receives `StackOperationError`, which is what the docstring\nalways said.\n\n## Test plan\n\n- [x] `TestDeleteStack` (async plus the generated sync twin):\n`WaiterError` is wrapped; retry then success (2 `DeleteStack` calls);\nboth attempts fail (2 calls, `StackOperationError`); timeout not retried\n(1 call); retry that finds the stack gone counts as success\n- [x] Full unit suite plus gevent pass (pre-push), diff-cover 100%, mypy\nclean\n- [ ] `aws-e2e` label run on this PR. The 500 is intermittent and has\nhit 3 of 6 runs so far, so a single green run does not show that the\nretry fired. Look for the `deleting it again` warning in the log.\n\nCloses #812\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-11-07T22:58:55-05:00",
+          "tree_id": "63ca246c632fea42e288961f9cd625cb611728b5",
+          "url": "https://github.com/zeroae/zae-limiter/commit/41d7b522c7695a06ace8123b77576c2258684a02"
+        },
+        "date": 1794110634159,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 16.9834493229328,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09369140471696813",
+            "extra": "mean: 58.880853999999715 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.578991503678694,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01031845513856118",
+            "extra": "mean: 48.59324616666664 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 40.47692774289698,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007879075040019124",
+            "extra": "mean: 24.705432347826427 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 42.50421578064886,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00839004890429864",
+            "extra": "mean: 23.527077999996315 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 25.313116687837653,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0042809225293841905",
+            "extra": "mean: 39.50521037500199 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 99.59109592749512,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0018815992025202305",
+            "extra": "mean: 10.041058296296145 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 30.738628836884537,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006110267226363446",
+            "extra": "mean: 32.53235547058817 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 30.657399415122914,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009231385084195017",
+            "extra": "mean: 32.61855274999981 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 25.74805015133656,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03956280127747408",
+            "extra": "mean: 38.83789234999959 msec\nrounds: 40"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 28.06268127494665,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006144233785262017",
+            "extra": "mean: 35.6345136874987 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 24.988460241891637,
+            "unit": "iter/sec",
+            "range": "stddev: 0.032028579451576125",
+            "extra": "mean: 40.01847213953426 msec\nrounds: 43"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 32.56305054181844,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005208683223390697",
+            "extra": "mean: 30.709653529412737 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 36.29064059201631,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004622938668975545",
+            "extra": "mean: 27.555314088889165 msec\nrounds: 45"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.8355241722788482,
+            "unit": "iter/sec",
+            "range": "stddev: 0.052885199360420805",
+            "extra": "mean: 544.8035035999965 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9055296807808575,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02084613527358392",
+            "extra": "mean: 524.7884670000076 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.8907648502735674,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07731136817341278",
+            "extra": "mean: 1.1226307365999957 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.8278209933725039,
+            "unit": "iter/sec",
+            "range": "stddev: 0.12061741952827679",
+            "extra": "mean: 1.2079906260000086 sec\nrounds: 5"
           }
         ]
       }
