@@ -1,17 +1,18 @@
 # Fill-instant fast path: proofs for many consumers
 
 **Status:** Draft, companion to [ADR-153](../adr/153-admission-contract-for-dripping-limits.md),
-[ADR-154](../adr/154-fill-instant-fast-path.md) and [ADR-155](../adr/155-fill-instant-writers.md)
+[ADR-154](../adr/154-fill-instant-fast-path.md), [ADR-155](../adr/155-fill-instant-writers.md)
+and [ADR-156](../adr/156-dripping-shard-raises.md)
 **Date:** 2026-11-07
 
 !!! note "A proposed design"
-    This page proves properties of the design ADR-154 and ADR-155 propose for v0.18.0. Until
-    that ships, the fast path still stores `tk` and `rf`, and #808 still applies.
+    This page proves properties of the design ADR-154, ADR-155 and ADR-156 propose for v0.18.0.
+    Until that ships, the fast path still stores `tk` and `rf`, and #808 still applies.
 
 ADR-153 makes the strict token bucket the admission contract for dripping limits. ADR-154
-changes how a dripping limit is stored and written so the fast path can meet it, and ADR-155
-holds every other writer to exact steps. This document proves the claims the three ADRs rest
-on, for any number of consumers sharing a bucket:
+changes how a dripping limit is stored and written so the fast path can meet it, ADR-155 holds
+every other writer to exact steps, and ADR-156 governs shard raises. This document proves the
+claims those ADRs rest on, for any number of consumers sharing a bucket:
 
 - **§3 Safety.** The two writes never break the contract, whatever the interleaving, beyond a
   bound set by clocks and time in flight.
@@ -99,8 +100,11 @@ ADR-154 stores `z` directly and uses these writes, each with the request's stamp
 | Top up `N` (ADR-155) | none | `z ← z − N / r` |
 | Reset (ADR-155) | none | `z ← t` |
 
-Every write is also pinned on the parameters, schedule and shard count it was computed against,
-with `vu` after its stamp (ADR-155), so `C` and `r` above are the ones `z` is expressed in.
+Every write is also pinned on the parameters, schedule and shard count it was computed against
+and on the item's recorded expression instant, with its stamp before the next schedule boundary
+after that instant (ADR-155), so `C` and `r` above are the ones `z` is expressed in. A soft
+limit takes no part in the admission write; it is debited afterwards like a positive
+adjustment (ADR-154).
 
 **Lemma 1 (exactness).** For `c ≤ C`, on an admissible item (`z ≤ t + (C − c) / r`) exactly
 one of `N_t`, `F_t` applies, and it records `max(z, t) + d`. On any other item both fail.
@@ -119,8 +123,9 @@ changes to them.
 ## 3. Safety with many consumers
 
 **Theorem 1.** For write `i`, let `o_i = t_i − T_i`: its stamp minus the instant it lands
-(clock offset plus time in flight, usually negative; a retry keeps its request's stamp, so this
-includes the time spent retrying). Let `s = max |o_i|`. Then over any real
+(clock offset plus time in flight, usually negative; an admission's retries keep its stamp, so
+this includes their time, while a debit takes a fresh stamp on each retry). Let
+`s = max |o_i|`. Then over any real
 time window of length `w`, tokens debited (admissions and positive adjustments) minus tokens
 returned, counted from the window's start to its last admission, is at most
 `C + r × w + 2 r × s`, plus what resets and top-ups grant in the window. This is ADR-153's
@@ -299,26 +304,33 @@ balance above `C`, so the ceiling checks of #721 have nothing left to do for dri
 An adjustment by `+c` is a debit, not an add. On a full bucket it must record `max(z, t) + d`;
 adding `d` instead forgives the debt whenever `z + d < t`, which is the usual case for a lease
 reconciling after a long call on an otherwise idle bucket (the independent model measured 17
-times the `2 r s` term). It therefore uses `N_t` or `F_t` without the upper bound, like a soft
-limit: it is never rejected, may push `z` past `t + C / r` (debt), and is retried until one
-lands, because dropping it would forgive the debt. Returns landing between its writes can delay
-it, as Theorem 3(c) delays an admission. Neither returns nor debits are idempotent (#731), and
-a reset (§8) forgives debt.
+times the `2 r s` term). It therefore uses `N_t` or `F_t` without the upper bound: it is never
+rejected, may push `z` past `t + C / r` (debt), and is retried until one lands, because
+dropping it would forgive the debt. Each retry takes a fresh stamp: with no admission test it
+needs no fixed one, every attempt is exact at its own stamp, and its lateness never enters `s`.
+Returns landing between its writes can delay it, as Theorem 3(c) delays an admission. A soft
+limit is debited the same way, by a separate write after the admission (ADR-154), so only a
+hard limit can reject. Neither returns nor debits are idempotent (#731), and a reset (§8)
+forgives debt.
 
 Nothing refills a dripping limit, so the aggregator writes no refill or trim for one. It still
-counts usage, and doubles a bucket that holds a dripping limit only through ADR-155's
-transaction (§8).
+counts usage, and doubles a bucket that holds a dripping limit only through ADR-156's raise
+(§8).
 
 ## 8. Other writers (ADR-155)
 
 ADR-155 allows every other write of a fill instant one of three forms, each pinned on the
-parameters, schedule and shard count it was computed against, with `vu` after its stamp. Under
-that pin the item's `z` is expressed in exactly the `C` and `r` the write used.
+parameters, schedule and shard count it was computed against and on the item's recorded
+expression instant, with its stamp before the next schedule boundary after it. Under that pin
+the item's `z` is expressed in exactly the `C` and `r` the write used. The pin does not use
+`vu`, which quota writers also stamp.
 
 **Lemma 3 (writes exact on every item).** Adding `−d` returns `c` tokens or adjusts by `−c`
 (§1). Adding `−N / r` tops up `N` tokens, `b ← min(C, b + N)`, capped at capacity because every
 `z` before now reads as full. Setting `z ← t` resets the balance to `C`, forgiving any debt.
-None depends on `z`, so none needs a read. A positive adjustment is not among them (§7).
+None depends on `z`, so none needs a read. A positive adjustment is not among them (§7). ADR-155
+still sends a top-up pinned on a read, only so that ADR-149's record knows what each shard
+gained; the write itself is exact on every item.
 
 **Lemma 4 (writes pinned on a read).** A write pinned on the fill instants it read applies only
 to an item still holding them, so a result it computes from the read lands on the state it was
@@ -337,11 +349,15 @@ at its own ceiling: the strict bucket with time-varying parameters. Crediting th
 interval at the rate in force at its end, as the code does today, admitted 1000 against 117
 across a boundary from 0.1x to 1x.
 
-**Shard split.** A raise from `S` to `2S` shards reads every shard and, in one transaction
-pinned on what it read, re-expresses each shard `i` (holding `b_i ≤ C / S`) at the new share
-`C / 2S`, keeping `min(b_i, C / 2S)`, and creates shard `i + S` holding
-`max(0, b_i − C / 2S)`, which is at most `C / 2S`. Every shard holds at most its share, and the
-total balance is exactly what it was before the raise.
+**Shard split (ADR-156).** A raise from `S` to `2S` shards first stamps a short-lived marker on
+every shard, which other writes refuse while it is live, so their writes cannot break its pins.
+It then reads every shard and, in one transaction pinned on what it read, re-expresses each
+shard `i` (holding `b_i ≤ C / S`) at the new share `C / 2S`, keeping `min(b_i, C / 2S)`, and
+creates shard `i + S` holding `max(0, b_i − C / 2S)`, which is at most `C / 2S`. Every shard
+holds at most its share, and the total balance is exactly what it was before the raise. A shard
+missing while others of its bucket exist is created empty, which adds nothing. The reserved
+`wcu` budget is not under ADR-153's bound: each partition has its own, so a new shard's starts
+full.
 
 **Theorem 5 (ADR-153's bound for every writer).** If every write of a dripping limit takes one
 of ADR-155's forms, then on one (entity, resource), summed over its shards, tokens debited minus
@@ -358,8 +374,8 @@ over the `s` before the window; read at the window's start alone, the independen
 exceeded the bound by 3 to 54 times the `2 r s` term.
 It gains at most `R(w)` of refill: within a schedule window the shards' rates sum to the rate
 in force, and across boundaries each shard drips at each window's own rate. A split conserves
-it, a re-expression keeps or lowers it, returns add at most what they return, and resets and
-top-ups add what they grant. Theorem 1's clock-offset induction holds shard by shard, each
+it, a shard created empty adds nothing, a re-expression keeps or lowers it, returns add at most
+what they return, and resets and top-ups add what they grant. Theorem 1's clock-offset induction holds shard by shard, each
 reference bucket falling at most `2 r_S s` below zero, and the shards' rates `r_S` sum to at
 most `r`. ∎
 
