@@ -18,6 +18,7 @@ from .bucket import (
     ConsumeResult,
     apply_consume,
     calculate_available,
+    express_at,
     retry_after_for_deficit,
     settle,
     try_consume,
@@ -1008,6 +1009,10 @@ class SyncLease:
                     (e._original_rf_ms for e in group_entries if not e._seed),
                     group_entries[0]._original_rf_ms,
                 )
+                if any(e.state.fill_instant is not None for e in group_entries):
+                    stamped, _read = _expressed(group_entries)
+                    for e in group_entries:
+                        express_at(e.state, stamped)
                 fill_writes: dict[str, FillInstantWrite] = {}
                 for entry in group_entries:
                     name = entry.limit.name

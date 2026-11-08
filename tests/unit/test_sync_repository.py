@@ -4894,7 +4894,7 @@ class TestStaleLimitAliasesAreExpressionSafe:
         assert removed == {
             bucket_attr(name, field)
             for name in ("req-min", "tok.sec")
-            for field in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched", "soft")
+            for field in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched", "soft", "fi")
         } | {
             "sched",
             "rsched",

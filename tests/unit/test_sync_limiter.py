@@ -733,6 +733,7 @@ class TestLeaseRetryPath:
         state.report_shard_count = 1
         state.report_top_up_milli = 0
         state.soft_until_ms = None
+        state.fill_instant = None
         entry = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",

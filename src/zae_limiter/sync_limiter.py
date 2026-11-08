@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from .sync_repository_protocol import SpeculativeResult, SyncRepositoryProtocol
 from .bucket import (
     adopt_fill_instant,
+    adopt_schedule,
     apply_consume,
     calculate_available,
     credit_back,
@@ -2125,7 +2126,7 @@ class SyncRateLimiter:
             if state.limit_name in resolved or state.limit_name not in config:
                 continue
             limit = replace(config[state.limit_name], soft=state.soft)
-            state.sched = limit.schedule
+            adopt_schedule(state, limit.schedule, now_ms)
             state.reset_sched = limit.reset_schedule
             stored_rsa = state.reset_after_seconds
             state.reset_after_seconds = limit.reset_after_seconds
@@ -2220,7 +2221,7 @@ class SyncRateLimiter:
                 return None
             if existing.soft_until_ms is not None and parent_soft_authority != _SOFT_FROM_CONFIG:
                 return None
-            existing.sched = limit.schedule
+            adopt_schedule(existing, limit.schedule, now_ms)
             existing.reset_sched = limit.reset_schedule
             stored_rsa = existing.reset_after_seconds
             existing.reset_after_seconds = limit.reset_after_seconds
@@ -3091,7 +3092,7 @@ class SyncRateLimiter:
                 else:
                     is_new = False
                     state = existing
-                    state.sched = limit.schedule
+                    adopt_schedule(state, limit.schedule, now_ms)
                     state.reset_sched = limit.reset_schedule
                     stored_rsa = state.reset_after_seconds
                     state.reset_after_seconds = limit.reset_after_seconds

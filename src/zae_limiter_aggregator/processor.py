@@ -11,9 +11,9 @@ import boto3
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from zae_limiter import fill_instant
-from zae_limiter.bucket import refill_bucket
+from zae_limiter.bucket import balance_milli_at, refill_bucket
 from zae_limiter.models import (
+    BucketState,
     QuotaDonorDebit,
     QuotaSibling,
     is_accrual_rate,
@@ -49,6 +49,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
     BUCKET_FIELD_WTC,
+    BUCKET_FIELD_XI,
     BUCKET_PREFIX,
     BUCKET_SCHED_NONE,
     MAX_SHARD_COUNT,
@@ -420,6 +421,7 @@ class ParsedBucketRecord:
     reset_sched: tuple[ScheduleEntry, ...] = ()  # item-level default reset schedule (§3.6)
     vu_ms: int | None = None  # materialisation stamp, None when absent
     sched_error: str | None = None  # set when a stored schedule would not decode
+    xi_ms: int | None = None  # fill instants' expression instant (#818), None when absent
 
 
 def _decode_schedule(compact: str | None, tz: str) -> tuple[tuple[ScheduleEntry, ...], str | None]:
@@ -537,6 +539,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
 
     vu_raw = new_image.get(BUCKET_FIELD_VU, {}).get("N")
     vu_ms = int(vu_raw) if vu_raw is not None else None
+    xi_raw = new_image.get(BUCKET_FIELD_XI, {}).get("N")
 
     # Discover limits by scanning b_{name}_tc attributes
     limits: dict[str, ParsedBucketLimit] = {}
@@ -666,20 +669,34 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         reset_sched=reset_sched,
         vu_ms=vu_ms,
         sched_error=sched_error,
+        xi_ms=int(xi_raw) if xi_raw is not None else None,
     )
 
 
 def _balance_milli(limit_name: str, info: ParsedBucketLimit, parsed: ParsedBucketRecord) -> int:
     """A limit's balance as the record left it, at the record's ``rf`` (#467, #818).
 
-    ``tk`` for a limit stored as one; for a fill instant, its balance at ``rf``
-    against the item's base parameters (``wcu`` is never divided).
+    ``tk`` for a limit stored as one. A fill instant is projected exactly as
+    the client projects it (``bucket.balance_milli_at``): re-expressed across
+    every schedule boundary since the item's ``xi`` (``wcu`` is never divided).
     """
     if info.fill_instant is None or info.ra_milli <= 0 or info.cp_milli <= 0 or info.rp_ms <= 0:
         return info.tk_milli
-    shards = 1 if limit_name == WCU_LIMIT_NAME else parsed.shard_count
-    params = fill_instant.ShardParams(info.cp_milli, info.ra_milli, info.rp_ms, shards)
-    return fill_instant.balance_milli(info.fill_instant, parsed.rf_ms, params)
+    state = BucketState(
+        entity_id=parsed.entity_id,
+        resource=parsed.resource,
+        limit_name=limit_name,
+        tokens_milli=info.tk_milli,
+        last_refill_ms=parsed.rf_ms,
+        capacity_milli=info.cp_milli,
+        refill_amount_milli=info.ra_milli,
+        refill_period_ms=info.rp_ms,
+        shard_count=1 if limit_name == WCU_LIMIT_NAME else parsed.shard_count,
+        sched=info.sched,
+        fill_instant=info.fill_instant,
+        expressed_ms=parsed.xi_ms,
+    )
+    return balance_milli_at(state, parsed.rf_ms)
 
 
 def extract_deltas(record: dict[str, Any]) -> list[ConsumptionDelta]:

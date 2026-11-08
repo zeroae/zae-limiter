@@ -178,9 +178,11 @@ def plan_operation(
             if stored.fill_instant is not None:
                 # Until #820 writes a fill instant exactly, an operation never
                 # adds to `tk` beside one (ADR-154). Only reachable while
-                # `schema.WRITE_FILL_INSTANTS` is on (#818). The reserved `wcu`
-                # is the partition's own budget and is left as it is.
-                if name == WCU_LIMIT_NAME:
+                # `schema.WRITE_FILL_INSTANTS` is on (#818). One the operation
+                # does not name, the reserved `wcu` included, is left as it
+                # is: `rf` is not its baseline, so the write can move `rf`
+                # without touching it.
+                if name not in named:
                     continue
                 raise NotImplementedError(
                     f"resetting or topping up fill-instant limit {name!r} lands in #820"

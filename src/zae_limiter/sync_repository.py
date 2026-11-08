@@ -3420,7 +3420,11 @@ class SyncRepository:
         if pin_shard_count_equal is not None:
             attr_names["#zsc"] = "shard_count"
             attr_values[":zsc"] = {"N": str(pin_shard_count_equal)}
-            condition_parts.append("#zsc = :zsc")
+            condition_parts.append(
+                "(attribute_not_exists(#zsc) OR #zsc = :zsc)"
+                if pin_shard_count_equal == 1
+                else "#zsc = :zsc"
+            )
         for k, (name, deadline) in enumerate(sorted((soft_stamps or {}).items())):
             alias = soft_aliases.get(name)
             if alias is None:
@@ -4387,6 +4391,8 @@ class SyncRepository:
         condition_parts.append("(attribute_not_exists(#ttl) OR #ttl > :now_epoch)")
         attr_names["#disabled"] = schema.BUCKET_FIELD_DISABLED
         condition_parts.append("attribute_not_exists(#disabled)")
+        attr_names["#xi"] = schema.BUCKET_FIELD_XI
+        condition_parts.append("attribute_not_exists(#xi)")
         if not bypass_shape:
             attr_names["#vu"] = schema.BUCKET_FIELD_VU
             condition_parts.append("(#byp > :vu_now OR attribute_not_exists(#vu) OR #vu > :vu_now)")
@@ -4502,7 +4508,7 @@ class SyncRepository:
                             failure_reason=SpeculativeFailureReason.APP_LIMIT_EXHAUSTED,
                         )
                     vu_raw = old_item.get(schema.BUCKET_FIELD_VU, {}).get("N")
-                    stores_fill_instants = any(
+                    stores_fill_instants = schema.BUCKET_FIELD_XI in old_item or any(
                         b.stored_fill_instant is not None for b in old_buckets
                     )
                     if stores_fill_instants or (
@@ -5431,11 +5437,15 @@ class SyncRepository:
                     schema.BUCKET_FIELD_SCHED,
                     schema.BUCKET_FIELD_RSCHED,
                     schema.BUCKET_FIELD_SOFT,
+                    schema.BUCKET_FIELD_FI,
                 )
             ):
                 alias = f"#stale{i}_{j}"
                 expr_names[alias] = schema.bucket_attr(stale_name, field)
                 remove_parts.append(alias)
+        for i, limit in enumerate(limit for limit in limits if limit.is_quota):
+            expr_names[f"#zq{i}"] = schema.bucket_attr(limit.name, schema.BUCKET_FIELD_FI)
+            remove_parts.append(f"#zq{i}")
         update_expr = f"SET {', '.join(set_parts)}"
         if remove_parts:
             update_expr += f" REMOVE {', '.join(remove_parts)}"
@@ -7067,12 +7077,9 @@ class SyncRepository:
                 stored_fill_instant=stored_fi,
                 stored_expressed_ms=stored_xi,
             )
-            if stored_fi is not None:
-                if not state.is_dripping_state:
-                    raise RateLimiterUnavailable(
-                        f"stored fill instant in {fi_name} belongs to a limit that does not drip",
-                        stack_name=self.stack_name,
-                    )
+            if stored_fi is not None and (not state.is_dripping_state):
+                state.fill_instant = state.expressed_ms = state.stored_fill_instant = None
+            elif stored_fi is not None:
                 state.tokens_milli = balance_milli_at(state, rf)
             buckets.append(state)
         return buckets

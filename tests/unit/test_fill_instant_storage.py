@@ -29,7 +29,14 @@ from zae_limiter import (
     schema,
 )
 from zae_limiter import fill_instant as fi
-from zae_limiter.bucket import balance_milli_at, credit_back, fill_instant_at, settle
+from zae_limiter.bucket import (
+    adopt_schedule,
+    balance_milli_at,
+    credit_back,
+    express_at,
+    fill_instant_at,
+    settle,
+)
 from zae_limiter.models import BucketState
 from zae_limiter.repository_protocol import FillInstantWrite
 from zae_limiter.schema import (
@@ -53,6 +60,7 @@ from zae_limiter_aggregator.processor import (
     process_stream_records,
     propagate_shard_count,
 )
+from zae_limiter_provisioner.bucket_sync import build_bucket_param_update
 
 RESOURCE = "gpt-4"
 T0 = 1_800_000_000_000
@@ -383,14 +391,24 @@ class TestReaders:
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 100}):
             pass
         client = await repo._get_client()
+        # An older writer's `tk`, for the limit and for `wcu`: the fast path's
+        # balance terms would hold on it, so its `xi` guard must refuse.
         await client.update_item(
             TableName=repo.table_name,
             Key=_key(repo, "e1"),
-            UpdateExpression="SET #tk = :tk",
-            ExpressionAttributeNames={"#tk": bucket_attr("rpm", BUCKET_FIELD_TK)},
-            ExpressionAttributeValues={":tk": {"N": "100000"}},
+            UpdateExpression="SET #tk = :tk, #wtk = :wtk",
+            ExpressionAttributeNames={
+                "#tk": bucket_attr("rpm", BUCKET_FIELD_TK),
+                "#wtk": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK),
+            },
+            ExpressionAttributeValues={":tk": {"N": "100000"}, ":wtk": {"N": "1000000"}},
         )
         assert await _available(limiter, "e1") == 0
+        clock.now = T0 + 1
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}):
+                pass
+        assert _n(await _raw(repo, "e1"), "rpm", BUCKET_FIELD_TK) == 100_000
 
 
 class TestGuards:
@@ -429,6 +447,22 @@ class TestGuards:
         repo = await self._converted(limiter, clock, switch)
         with pytest.raises(NotImplementedError, match="#820"):
             await repo.reset_bucket("e1", RESOURCE)
+
+    async def test_an_operation_naming_only_a_quota_leaves_the_fill_instant(
+        self, limiter, clock, switch
+    ) -> None:
+        switch(True)
+        repo = limiter._repository
+        await repo.set_limits("e1", [RPM, RPD], resource=RESOURCE)
+        async with limiter.acquire("e1", RESOURCE, consume={"rpm": 10, "rpd": 5}):
+            pass
+        before = _n(await _raw(repo, "e1"), "rpm", BUCKET_FIELD_FI)
+        await repo.reset_bucket("e1", RESOURCE, limits=["rpd"])
+        await repo.top_up("e1", RESOURCE, {"rpd": 3})
+        item = await _raw(repo, "e1")
+        assert _n(item, "rpd", BUCKET_FIELD_TK) == 53_000
+        assert _n(item, "rpm", BUCKET_FIELD_FI) == before
+        assert bucket_attr("rpm", BUCKET_FIELD_TK) not in item
 
     async def test_the_aggregator_counts_usage_and_writes_nothing(
         self, limiter, clock, switch
@@ -495,21 +529,57 @@ class TestEdges:
         assert _n(item, WCU_LIMIT_NAME, BUCKET_FIELD_FI) == wcu_before
         assert bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK) not in item
 
-    @pytest.mark.parametrize(
-        ("value", "message"),
-        [("1.5", "could not be decoded"), ("100", "does not drip")],
-    )
-    async def test_a_corrupt_fill_instant_is_unavailable(
-        self, limiter, clock, value: str, message: str
-    ) -> None:
+    async def test_a_corrupt_fill_instant_is_unavailable(self, limiter, clock) -> None:
+        repo = limiter._repository
+        await repo.set_limits("e1", [RPM], resource=RESOURCE)
+        async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}):
+            pass
+        item = await _raw(repo, "e1")
+        item[bucket_attr("rpm", BUCKET_FIELD_FI)] = {"N": "1.5"}
+        with pytest.raises(RateLimiterUnavailable, match="could not be decoded"):
+            repo._deserialize_composite_bucket(item)
+
+    async def test_a_fill_instant_on_a_quota_is_ignored(self, limiter, clock) -> None:
+        # Never an unreadable item: a quota's balance is its `tk`.
         repo = limiter._repository
         await repo.set_limits("e1", [RPD], resource=RESOURCE)
         async with limiter.acquire("e1", RESOURCE, consume={"rpd": 1}):
             pass
         item = await _raw(repo, "e1")
-        item[bucket_attr("rpd", BUCKET_FIELD_FI)] = {"N": value}
-        with pytest.raises(RateLimiterUnavailable, match=message):
-            repo._deserialize_composite_bucket(item)
+        item[bucket_attr("rpd", BUCKET_FIELD_FI)] = {"N": "100"}
+        (rpd,) = [s for s in repo._deserialize_composite_bucket(item) if s.limit_name == "rpd"]
+        assert (rpd.fill_instant, rpd.stored_fill_instant, rpd.tokens_milli) == (None, None, 49_000)
+
+    @pytest.mark.parametrize("dropped", [True, False], ids=["stale", "now-a-quota"])
+    async def test_the_param_sync_removes_a_fill_instant_it_cannot_keep(
+        self, limiter, clock, switch, dropped: bool
+    ) -> None:
+        switch(True)
+        repo = limiter._repository
+        await repo.set_limits("e1", [RPM, TPM], resource=RESOURCE)
+        async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}):
+            pass
+        if dropped:
+            # Reconciled to the resource's defaults, which do not name `rpm`;
+            # the first acquire cached the resource level as having none.
+            await repo.set_resource_defaults(RESOURCE, [TPM])
+            await repo.invalidate_config_cache()
+            await limiter.delete_limits("e1", resource=RESOURCE)
+        else:
+            await repo.set_limits(
+                "e1", [Limit.quota("rpm", 100, cron="0 0 * * *"), TPM], resource=RESOURCE
+            )
+        assert bucket_attr("rpm", BUCKET_FIELD_FI) not in await _raw(repo, "e1")
+
+    def test_the_shard_count_pin_accepts_a_missing_count_of_one(self, limiter) -> None:
+        def condition(pin: int) -> str:
+            update = limiter._repository.build_composite_normal(
+                "e1", RESOURCE, {}, {}, T0, T0, pin_shard_count_equal=pin
+            )
+            return str(update["Update"]["ConditionExpression"])
+
+        assert "attribute_not_exists(#zsc) OR #zsc = :zsc" in condition(1)
+        assert "attribute_not_exists(#zsc)" not in condition(4)
 
     async def test_a_corrupt_expression_instant_is_unavailable(self, limiter, clock) -> None:
         repo = limiter._repository
@@ -576,6 +646,38 @@ class TestProjection:
         assert balance_milli_at(state, T0) == 100_000
         assert state.tokens_milli == 100_000
 
+    def test_a_new_schedule_keeps_the_balance_it_finds(self) -> None:
+        # The slow path takes config's schedule over the item's: a fill instant
+        # scaled under a 0.1x window is re-expressed, not read 10x too far.
+        always = (ScheduleEntry(cron="* * * * *", scale=0.1),)
+        slow = fi.params_at(T0, 100_000, 100_000, 60_000, always, 1)
+        state = self._state(fi.stamp(T0, slow) + fi.span(4_000, slow), T0, always)
+        assert balance_milli_at(state, T0) == 6_000
+        adopt_schedule(state, (), T0)
+        assert state.sched == ()
+        assert balance_milli_at(state, T0) == 6_000
+        assert balance_milli_at(state, T0 + 600) == 7_000  # the base rate from here
+
+    def test_the_same_schedule_moves_nothing(self) -> None:
+        p = rpm_params()
+        state = self._state(fi.stamp(T0, p) + 7, T0)
+        adopt_schedule(state, (), T0 + 5)
+        assert (state.fill_instant, state.expressed_ms) == (fi.stamp(T0, p) + 7, T0)
+
+    def test_express_at_moves_a_fill_instant_across_a_boundary(self) -> None:
+        midnight = 1_800_057_600_000
+        sched = (ScheduleEntry(cron="* 0 * * *", scale=0.1),)
+        slow = fi.params_at(midnight, 100_000, 100_000, 60_000, sched, 1)
+        state = self._state(fi.created_empty(midnight, slow), midnight, sched)
+        later = midnight + 3_600_000 + 30_000
+        before = balance_milli_at(state, later)
+        express_at(state, later)
+        assert state.expressed_ms == later
+        assert balance_milli_at(state, later) == before
+        legacy = BucketState.from_limit("e1", RESOURCE, RPM, T0)
+        express_at(legacy, later)
+        assert legacy.fill_instant is None
+
     def test_a_credit_back_undoes_the_debit_from_its_instant(self) -> None:
         p = rpm_params()
         state = self._state(fi.stamp(T0, p) - 5, T0)  # full since before T0
@@ -605,3 +707,46 @@ class TestAggregatorBalance:
             tc_delta=1_000, tk_milli=-7, cp_milli=100_000, ra_milli=100_000, rp_ms=60_000
         )
         assert _balance_milli("rpm", legacy, record) == -7
+
+    def test_it_reads_the_schedule_in_force(self) -> None:
+        # Scaled by the half-rate window's `ra`; read against the base `ra` the
+        # debt would look like a full bucket and the overdraw would be missed.
+        half = (ScheduleEntry(cron="* * * * *", scale=0.5),)
+        p = fi.params_at(T0, 100_000, 100_000, 60_000, half, 1)
+        record = ParsedBucketRecord(
+            namespace_id="ns", entity_id="e1", resource=RESOURCE, rf_ms=T0, limits={}, xi_ms=T0
+        )
+        debt = ParsedBucketLimit(
+            tc_delta=1_000,
+            tk_milli=0,
+            cp_milli=100_000,
+            ra_milli=100_000,
+            rp_ms=60_000,
+            sched=half,
+            soft=True,
+            fill_instant=fi.stamp(T0, p) + p.capacity_units + p.units_per_milli * 1_000,
+        )
+        assert _balance_milli("rpm", debt, record) == -1_000
+
+
+class TestProvisionerSync:
+    def test_it_removes_the_fill_instant_of_a_stale_limit_and_a_quota(self) -> None:
+        expression, names, _values = build_bucket_param_update(
+            {
+                "tpm": {"capacity": 10_000, "refill_amount": 10_000, "refill_period": 60},
+                "rpd": {
+                    "capacity": 50,
+                    "refill_amount": 0,
+                    "refill_period": 60,
+                    "reset_schedule": [{"cron": "0 0 * * *", "tz": "UTC"}],
+                },
+            },
+            None,
+            {"rpm"},
+            T0,
+        )
+        removed = expression.split(" REMOVE ", 1)[1].split(", ")
+        removed_attrs = {names[alias] for alias in removed}
+        assert bucket_attr("rpm", BUCKET_FIELD_FI) in removed_attrs
+        assert bucket_attr("rpd", BUCKET_FIELD_FI) in removed_attrs
+        assert bucket_attr("tpm", BUCKET_FIELD_FI) not in removed_attrs

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 from .bucket import (
     adopt_fill_instant,
+    adopt_schedule,
     apply_consume,
     calculate_available,
     credit_back,
@@ -2620,7 +2621,7 @@ class RateLimiter:
             # config cache: nothing is consumed, so nothing is restamped.
             limit = replace(config[state.limit_name], soft=state.soft)
             # What `_do_acquire` attaches to an existing state from config.
-            state.sched = limit.schedule
+            adopt_schedule(state, limit.schedule, now_ms)
             state.reset_sched = limit.reset_schedule
             stored_rsa = state.reset_after_seconds
             state.reset_after_seconds = limit.reset_after_seconds
@@ -2747,7 +2748,7 @@ class RateLimiter:
 
             # See `_do_acquire`: the resolved config, not the item, is what
             # makes the parent's refill and ceiling schedule-aware here.
-            existing.sched = limit.schedule
+            adopt_schedule(existing, limit.schedule, now_ms)
             # And the reset schedule alongside it, for the same reason and from
             # the same source: `try_consume` reads it to decide whether a reset
             # edge beats the drip in a rejection's `retry_after_seconds`
@@ -3961,7 +3962,7 @@ class RateLimiter:
                     # apply on the slow path at all; without it the refill and
                     # the ceiling below come out at the base rate while `vu`
                     # claims the window was honoured.
-                    state.sched = limit.schedule
+                    adopt_schedule(state, limit.schedule, now_ms)
                     # The reset schedule travels with it. `try_consume` reads
                     # it for the rejection estimate (#222 §7), so a bucket that
                     # carried `sched` alone would report a quota's wait as the

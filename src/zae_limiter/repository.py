@@ -4055,7 +4055,12 @@ class Repository:
         if pin_shard_count_equal is not None:
             attr_names["#zsc"] = "shard_count"
             attr_values[":zsc"] = {"N": str(pin_shard_count_equal)}
-            condition_parts.append("#zsc = :zsc")
+            # A missing `shard_count` reads as 1, as the other count pins say.
+            condition_parts.append(
+                "(attribute_not_exists(#zsc) OR #zsc = :zsc)"
+                if pin_shard_count_equal == 1
+                else "#zsc = :zsc"
+            )
 
         # #467: re-stamp each limit's soft-ness from config read fresh on this
         # pass. Positional tokens (`#bs{k}`), disjoint from the rest.
@@ -5226,6 +5231,14 @@ class Repository:
         attr_names["#disabled"] = schema.BUCKET_FIELD_DISABLED
         condition_parts.append("attribute_not_exists(#disabled)")
 
+        # Never on an item storing fill instants (ADR-154, #818): every write
+        # of one stamps `xi`, and this write debits `tk`, which such an item
+        # does not hold for its dripping limits. Without the term a stray `tk`
+        # beside a fill instant (an older writer's) would admit against it.
+        # Only the slow path writes a fill instant until #819.
+        attr_names["#xi"] = schema.BUCKET_FIELD_XI
+        condition_parts.append("attribute_not_exists(#xi)")
+
         # Reject a bucket whose schedule window has closed (#222 §2.1). The
         # fast path cannot evaluate a schedule, so `vu` is a precomputed
         # instant: past it, `tk` was materialised under parameters that no
@@ -5408,7 +5421,7 @@ class Repository:
                     # hold on it: nothing was written. Not a rejection and not
                     # a `wcu` shortfall to double on; only the slow path writes
                     # a fill instant until #819.
-                    stores_fill_instants = any(
+                    stores_fill_instants = schema.BUCKET_FIELD_XI in old_item or any(
                         b.stored_fill_instant is not None for b in old_buckets
                     )
                     if stores_fill_instants or (
@@ -6556,11 +6569,22 @@ class Repository:
                     schema.BUCKET_FIELD_RSCHED,
                     # And its soft stamp (#467), for the same reason.
                     schema.BUCKET_FIELD_SOFT,
+                    # And its fill instant (#818): left behind, a limit of that
+                    # name configured again would read it against new
+                    # parameters, and a smaller `ra` puts it decades ahead.
+                    schema.BUCKET_FIELD_FI,
                 )
             ):
                 alias = f"#stale{i}_{j}"
                 expr_names[alias] = schema.bucket_attr(stale_name, field)
                 remove_parts.append(alias)
+
+        # A limit that is now a quota keeps no fill instant (#818): a quota's
+        # balance is `tk`, and a fill instant left beside it would re-attach,
+        # against new parameters, if the name drips again. Positional tokens.
+        for i, limit in enumerate(limit for limit in limits if limit.is_quota):
+            expr_names[f"#zq{i}"] = schema.bucket_attr(limit.name, schema.BUCKET_FIELD_FI)
+            remove_parts.append(f"#zq{i}")
 
         # Build update expression
         update_expr = f"SET {', '.join(set_parts)}"
@@ -8595,15 +8619,14 @@ class Repository:
                 stored_fill_instant=stored_fi,
                 stored_expressed_ms=stored_xi,
             )
-            if stored_fi is not None:
-                if not state.is_dripping_state:
-                    # Only a dripping limit has a fill instant: a quota's
-                    # balance is `tk`, and reading one as the other would admit
-                    # against the wrong allowance.
-                    raise RateLimiterUnavailable(
-                        f"stored fill instant in {fi_name} belongs to a limit that does not drip",
-                        stack_name=self.stack_name,
-                    )
+            if stored_fi is not None and not state.is_dripping_state:
+                # Only a dripping limit has a fill instant: a quota's balance
+                # is its `tk` (absent reads as 0, which can only under-admit
+                # until its next reset). The param sync removes a fill instant
+                # from a limit that became a quota; one left behind is ignored
+                # rather than failing every read of the item.
+                state.fill_instant = state.expressed_ms = state.stored_fill_instant = None
+            elif stored_fi is not None:
                 # The snapshot every raw reader sees: the balance at `rf`, as a
                 # `tk` would hold it. Projections read the fill instant.
                 state.tokens_milli = balance_milli_at(state, rf)

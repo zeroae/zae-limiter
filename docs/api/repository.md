@@ -221,7 +221,9 @@ Implement this protocol to use a different storage backend (e.g., for testing).
     for each `FillInstantWrite`, SET `b_{name}_fi` and ADD `b_{name}_tc`, pinned
     on the fill instant read (or, for a conversion, on no fill instant and the
     `tk` read, which the write REMOVEs) and on the stored `cp` / `ra` / `rp`;
-    SET `xi` pinned on the one read; pin `shard_count`. The remaining writers
+    SET `xi` pinned on the one read; pin `shard_count`. `speculative_consume`
+    must refuse an item carrying `xi` (it holds no `tk` for its dripping limits)
+    and report it as `SCHEDULE_BOUNDARY`. The remaining writers
     change with #819-#821, before the release; until then writing the form is
     behind an internal switch that is off.
 

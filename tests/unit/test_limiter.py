@@ -912,6 +912,7 @@ class TestLeaseRetryPath:
         state.report_shard_count = 1
         state.report_top_up_milli = 0
         state.soft_until_ms = None  # hard: no soft stamp (ADR-151)
+        state.fill_instant = None  # stored as `tk` (#818)
 
         entry = LeaseEntry(
             entity_id="e1",

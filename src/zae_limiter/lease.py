@@ -12,6 +12,7 @@ from .bucket import (
     ConsumeResult,
     apply_consume,
     calculate_available,
+    express_at,
     retry_after_for_deficit,
     settle,
     try_consume,
@@ -1262,7 +1263,15 @@ class Lease:
                 )
 
                 # Limits stored, or converted, as fill instants (#818): each is
-                # written exactly from what this pass read, never by `ADD tk`.
+                # written exactly from what this pass read, never by `ADD tk`,
+                # and all at the one `xi` the write stamps — a limit this pass
+                # rejected was never moved, and left at an older instant it
+                # would skip a schedule boundary the next reader does not
+                # re-apply.
+                if any(e.state.fill_instant is not None for e in group_entries):
+                    stamped, _read = _expressed(group_entries)
+                    for e in group_entries:
+                        express_at(e.state, stamped)
                 fill_writes: dict[str, FillInstantWrite] = {}
                 for entry in group_entries:
                     name = entry.limit.name

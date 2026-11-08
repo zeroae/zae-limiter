@@ -27,6 +27,7 @@ from zae_limiter.models import Limit
 from zae_limiter.schedule import ScheduleEntry, decode, decode_reset, encode, encode_reset
 from zae_limiter.schema import (
     BUCKET_FIELD_CP,
+    BUCKET_FIELD_FI,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
     BUCKET_FIELD_RSA,
@@ -137,6 +138,9 @@ _STALE_FIELDS = (
     BUCKET_FIELD_RSCHED,
     # And its soft stamp (#467), for the same reason.
     BUCKET_FIELD_SOFT,
+    # And its fill instant (#818): left behind, a limit of that name configured
+    # again would read it against new parameters.
+    BUCKET_FIELD_FI,
 )
 
 
@@ -406,6 +410,13 @@ def build_bucket_param_update(
             alias = f"#stale{i}_{j}"
             expr_names[alias] = bucket_attr(stale_name, field)
             remove_parts.append(alias)
+
+    # A limit that is now a quota keeps no fill instant (#818), matching the
+    # async path: a quota's balance is `tk`.
+    quotas = [name for name, d in limits.items() if not d["refill_amount"]]
+    for i, name in enumerate(quotas):
+        expr_names[f"#zq{i}"] = bucket_attr(name, BUCKET_FIELD_FI)
+        remove_parts.append(f"#zq{i}")
 
     update_expr = f"SET {', '.join(set_parts)}"
     if remove_parts:

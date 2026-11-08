@@ -26,7 +26,7 @@ from dataclasses import dataclass, replace
 
 from . import fill_instant, schema
 from .models import BucketState, Limit, LimitStatus, is_accrual_rate
-from .schedule import retry_after_with_schedule
+from .schedule import ScheduleEntry, retry_after_with_schedule
 
 
 @dataclass
@@ -187,6 +187,42 @@ def _moved(state: BucketState, amount: int, now_ms: int) -> tuple[int, int]:
     elif milli < 0:
         z = fill_instant.returned(z, -milli, params)
     return z, at
+
+
+def express_at(state: BucketState, t_ms: int) -> None:
+    """Re-express ``state``'s fill instant at ``t_ms``, across every boundary since it was.
+
+    A no-op for a state stored as ``tk``, or a reading before its expression
+    instant. Every fill instant one write stores is expressed at the item's one
+    ``xi``, so none skips a boundary the next reader would not re-apply.
+    """
+    if state.fill_instant is None:
+        return
+    z, expressed = fill_instant_at(state, t_ms)
+    state.fill_instant, state.expressed_ms = z, max(t_ms, expressed)
+
+
+def adopt_schedule(state: BucketState, sched: tuple[ScheduleEntry, ...], now_ms: int) -> None:
+    """Give ``state`` the schedule ``sched``, re-expressing a fill instant at ``now_ms``.
+
+    The slow path takes the schedule from config, the fresher source. A fill
+    instant is scaled by the refill amount the item's own schedule put in force,
+    so read against another schedule it would be misread, ten times too far
+    ahead or behind across a 0.1x window: it is re-expressed at ``now_ms`` from
+    the parameters in force under the old schedule to those under the new,
+    keeping the balance or trimming it to the new share (ADR-155).
+    """
+    if state.fill_instant is None or sched == state.sched:
+        state.sched = sched
+        return
+    express_at(state, now_ms)
+    assert state.expressed_ms is not None
+    at = state.expressed_ms
+    old = fill_params(state, at)
+    state.sched = sched
+    new = fill_params(state, at)
+    if new != old:
+        state.fill_instant = fill_instant.re_express(state.fill_instant, at, old, new)
 
 
 def convert_to_fill_instant(state: BucketState) -> None:
