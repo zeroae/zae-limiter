@@ -87,9 +87,11 @@ async with limiter.acquire(
 ```
 
 Two resources may declare limits with the same name (`units` above); each handle sees only
-its own. Nothing is written until the context exits, where every resource is reconciled in
-one go — one write per bucket, issued together. An exception inside the block refunds every
-resource.
+its own. Adjustments are written when the context exits, where every resource is reconciled
+in one go — one write per bucket, issued together. `consume()` on a handle is a request of its
+own, admitted and written when called (see
+[Consuming more inside the block](basic-usage.md#consuming-more-inside-the-block)). An
+exception inside the block refunds every resource, landed `consume()` calls included.
 
 `lease.resource()` raises `ValidationError` for a resource the lease does not cover, so a typo
 is never silent. On the no-op lease yielded under `on_unavailable=ALLOW`, every name returns a

@@ -163,6 +163,9 @@ When `ALLOW` activates due to infrastructure failure:
   reports keys outside `consume` is skipped for a degraded lease, so an outage never
   turns into a warning storm
 - `lease.degraded` is the only signal; a real lease with no entries is not degraded
+- On a real lease, a `lease.consume()` call that meets an outage under `ALLOW` is let
+  through unwritten (it is admitted as `acquire()` is); under `BLOCK` it raises
+  `RateLimiterUnavailable`
 
 To detect and log degraded operations, wrap with custom error handling:
 

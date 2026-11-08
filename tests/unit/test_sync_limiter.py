@@ -54,6 +54,7 @@ from zae_limiter.schema import (
     pk_bucket,
     sk_state,
 )
+from zae_limiter.sync_lease import SyncLease
 from zae_limiter.sync_repository_protocol import SpeculativeResult
 
 
@@ -12598,7 +12599,7 @@ class TestAdjustmentCommitFailure:
         self._cascade(sync_limiter)
         with pytest.raises(RuntimeError, match="throttled"):
             with sync_limiter.acquire("user", "gpt-4", consume={"rpm": 10}) as lease:
-                lease.consume(rpm=5)
+                lease.adjust(rpm=5)
                 self._fail_writes_to(repo, "org")
         assert self._consumed(repo, "user") == 15
         assert self._consumed(repo, "org") == 10
@@ -12608,7 +12609,7 @@ class TestAdjustmentCommitFailure:
         self._cascade(sync_limiter)
         with pytest.raises(RuntimeError, match="throttled"):
             with sync_limiter.acquire("user", "gpt-4", consume={"rpm": 10}) as lease:
-                lease.consume(rpm=5)
+                lease.adjust(rpm=5)
                 self._fail_writes_to(repo, "user")
         assert self._consumed(repo, "user") == 10
         assert self._consumed(repo, "org") == 15
@@ -14452,3 +14453,192 @@ class TestRetryDebitsOnlyAGrantedBalance:
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "7000"
         assert item[bucket_attr("q", BUCKET_FIELD_GC)]["N"] == "1"
         assert bucket_attr("q", BUCKET_FIELD_WS) in item
+
+
+class TestConsumeWritesWhenCalled:
+    """``lease.consume()`` is admitted and written when called (ADR-153, #822).
+
+    It used to check against the lease's in-memory state and write at exit, so
+    two leases on one bucket each passed against their own stale state: 18
+    admitted against 10 in the 2026-11-06 review.
+    """
+
+    RPM = Limit.custom("rpm", capacity=10, refill_amount=10, refill_period_seconds=86400)
+    USD = Limit.custom("usd", capacity=10, refill_amount=10, refill_period_seconds=86400)
+
+    @staticmethod
+    def _consumed(repo, limit_name: str = "rpm", resource: str = "gpt-4") -> int:
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "user-1", resource, 0)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return int(response["Item"][bucket_attr(limit_name, "tc")]["N"]) // 1000
+
+    @staticmethod
+    def _limiter(sync_limiter, speculative: bool):
+        if speculative:
+            return sync_limiter
+        return SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+
+    @pytest.mark.parametrize("speculative", [True, False], ids=["fast", "slow"])
+    def test_two_leases_admit_at_most_the_capacity(self, sync_limiter, speculative):
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [self.RPM], resource="gpt-4")
+        freeze_clock(repo)
+        target = self._limiter(sync_limiter, speculative)
+        rejected = 0
+        with target.acquire("user-1", "gpt-4", {"rpm": 1}) as a:
+            with target.acquire("user-1", "gpt-4", {"rpm": 1}) as b:
+                for lease in (a, b):
+                    try:
+                        lease.consume(rpm=8)
+                    except RateLimitExceeded:
+                        rejected += 1
+        assert rejected == 1
+        assert self._consumed(repo) == 10
+
+    def test_a_predicted_consume_is_one_write(self, sync_limiter):
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        freeze_clock(repo)
+        for _ in range(2):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+        client = repo._get_client()
+        calls: list[str] = []
+        originals = {
+            op: getattr(client, op)
+            for op in ("get_item", "batch_get_item", "query", "update_item", "transact_write_items")
+        }
+
+        def spy(op):
+
+            def call(*args, **kwargs):
+                calls.append(op)
+                return originals[op](*args, **kwargs)
+
+            return call
+
+        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            for op in originals:
+                setattr(client, op, spy(op))
+            try:
+                lease.consume(rpm=2)
+            finally:
+                for op, original in originals.items():
+                    setattr(client, op, original)
+            assert calls == ["update_item"]
+            assert lease.consumed == {"rpm": 3}
+        assert self._consumed(repo) == 2 + 3
+
+    @pytest.mark.parametrize("speculative", [True, False], ids=["fast", "slow"])
+    def test_a_rejected_consume_debits_nothing_and_leaves_the_lease_open(
+        self, sync_limiter, speculative
+    ):
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [self.RPM], resource="gpt-4")
+        freeze_clock(repo)
+        target = self._limiter(sync_limiter, speculative)
+        with target.acquire("user-1", "gpt-4", {"rpm": 2}) as lease:
+            with pytest.raises(RateLimitExceeded) as exc:
+                lease.consume(rpm=9)
+            assert exc.value.statuses[0].exceeded
+            lease.consume(rpm=3)
+            assert lease.consumed == {"rpm": 5}
+        assert self._consumed(repo) == 5
+
+    @pytest.mark.parametrize("speculative", [True, False], ids=["fast", "slow"])
+    def test_a_block_that_raises_refunds_a_landed_consume(self, sync_limiter, speculative):
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [self.RPM], resource="gpt-4")
+        freeze_clock(repo)
+        target = self._limiter(sync_limiter, speculative)
+        with pytest.raises(RuntimeError, match="boom"):
+            with target.acquire("user-1", "gpt-4", {"rpm": 2}) as lease:
+                lease.consume(rpm=3)
+                lease.consume(rpm=1)
+                raise RuntimeError("boom")
+        assert self._consumed(repo) == 0
+        assert target.available("user-1", "gpt-4")["rpm"] == 10
+
+    @pytest.mark.parametrize("speculative", [True, False], ids=["fast", "slow"])
+    def test_a_release_after_a_consume_lands(self, sync_limiter, speculative):
+        """The lease's return follows its own consume's write (ADR-155 pin)."""
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [self.RPM], resource="gpt-4")
+        freeze_clock(repo)
+        target = self._limiter(sync_limiter, speculative)
+        with target.acquire("user-1", "gpt-4", {"rpm": 4}) as lease:
+            lease.consume(rpm=3)
+            lease.release(rpm=2)
+        assert self._consumed(repo) == 5
+        assert target.available("user-1", "gpt-4")["rpm"] == 5
+
+    def test_a_failed_adjustment_commit_refunds_no_consume(self, sync_limiter):
+        """#682: once the adjustment commit has started, nothing is refunded."""
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [self.RPM], resource="gpt-4")
+        freeze_clock(repo)
+        with pytest.raises(RuntimeError, match="throttled"):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 2}) as lease:
+                lease.consume(rpm=3)
+                lease.adjust(rpm=1)
+                TestAdjustmentCommitFailure._fail_writes_to(repo, "user-1")
+        assert self._consumed(repo) == 5
+
+    def test_a_resource_handle_consume_is_written_when_called(self, sync_limiter):
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [self.RPM], resource="gpt-4")
+        repo.set_limits("user-1", [self.USD], resource="budget")
+        freeze_clock(repo)
+        with sync_limiter.acquire(
+            "user-1", "gpt-4", {"rpm": 1}, also={"budget": {"usd": 2}}
+        ) as lease:
+            budget = lease.resource("budget")
+            budget.consume(usd=5)
+            assert sync_limiter.available("user-1", "budget")["usd"] == 3
+            with pytest.raises(RateLimitExceeded):
+                budget.consume(usd=4)
+            assert budget.consumed == {"usd": 7}
+            assert lease.consumed == {"rpm": 1}
+        assert self._consumed(repo, "usd", "budget") == 7
+        assert self._consumed(repo) == 1
+
+    def test_a_consume_under_allow_lets_an_outage_through(self, sync_limiter):
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [self.RPM], resource="gpt-4")
+        freeze_clock(repo)
+        with sync_limiter.acquire(
+            "user-1", "gpt-4", {"rpm": 1}, on_unavailable=OnUnavailable.ALLOW
+        ) as lease:
+            with patch.object(
+                sync_limiter, "_admit_one", MagicMock(side_effect=RuntimeError("outage"))
+            ):
+                lease.consume(rpm=3)
+            assert lease.consumed == {"rpm": 1}
+        assert self._consumed(repo) == 1
+
+    def test_a_consume_under_block_raises_on_an_outage(self, sync_limiter):
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [self.RPM], resource="gpt-4")
+        freeze_clock(repo)
+        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            with patch.object(
+                sync_limiter, "_admit_one", MagicMock(side_effect=RuntimeError("outage"))
+            ):
+                with pytest.raises(RateLimiterUnavailable):
+                    lease.consume(rpm=3)
+        assert self._consumed(repo) == 1
+
+    def test_a_hand_built_lease_refuses_consume(self, sync_limiter):
+        """``consume()`` is admitted by the limiter that yielded the lease."""
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [self.RPM], resource="gpt-4")
+        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            hand_built = SyncLease(repository=repo, entries=lease.entries)
+            with pytest.raises(RuntimeError, match="yielded by SyncRateLimiter.acquire"):
+                hand_built.consume(rpm=1)

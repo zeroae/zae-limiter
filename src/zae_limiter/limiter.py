@@ -1004,60 +1004,12 @@ class RateLimiter:
             ):
                 await self._repository.require_reset_after_readers(limits)
 
-            lease: Lease | None = None
-            # Shard the fast path selected, and the shard_count it observed on
-            # the failure image; the slow path must read and create that same
-            # shard, sized by that count, rather than draw again from a cache
-            # a failed speculative write never updates (issue #439).
-            slow_path_shard: int | None = None
-            slow_path_shard_count: int | None = None
-            slow_path_parent_shard: _ParentHint | None = None
-
             # Several resources, all or none (ADR-148): arrives committed, and
             # refunded whole if anything failed.
             if len(parts) > 1:
                 lease = await self._acquire_resources(entity_id, parts)
-
-            # Try speculative fast path first (issue #315). Not when a `limits=`
-            # override declares a soft limit this request consumes (#467,
-            # review D11): an override is not config, so no bucket carries its
-            # stamp, and the fast path — child and cascade parent — would read
-            # that limit hard and reject on it. The slow path trusts the
-            # override for every entity it plans.
-            elif self._speculative_writes and not any(
-                limit.soft and limit.name in consume for limit in limits or ()
-            ):
-                (
-                    lease,
-                    slow_path_shard,
-                    slow_path_shard_count,
-                    slow_path_parent_shard,
-                ) = await self._try_speculative_acquire(
-                    entity_id=entity_id,
-                    resource=resource,
-                    consume=consume,
-                    use_rejection_cache=limits is None,
-                )
-                if lease is not None and _waived_against_override(lease, limits):
-                    # The other half of D11 (review F1): the write was admitted
-                    # on a config soft stamp for a limit this override declares
-                    # hard. Refund it and let the slow path, which trusts the
-                    # override, decide.
-                    await lease._rollback()
-                    lease, slow_path_shard, slow_path_shard_count = None, None, None
-                    slow_path_parent_shard = None
-
-            # Fall back to slow path if speculative didn't succeed
-            if lease is None:
-                lease = await self._slow_acquire(
-                    entity_id=entity_id,
-                    resource=resource,
-                    limits_override=limits,
-                    consume=consume,
-                    shard_id=slow_path_shard,
-                    shard_count=slow_path_shard_count,
-                    parent_hint=slow_path_parent_shard,
-                )
+            else:
+                lease = await self._admit_one(entity_id, resource, consume, limits)
 
             # Write initial consumption to DynamoDB before yielding (Issue
             # #309). No-op for speculative leases (already committed by
@@ -1086,43 +1038,132 @@ class RateLimiter:
             # RateLimiterUnavailable or swallowed by a degraded lease.
             raise
         except Exception as e:
-            # A missing IAM permission is not an outage (#751): it never heals,
-            # and the denied write is the one that would create the bucket, so
-            # ALLOW would admit every later call with no limit, silently. It is
-            # raised under every mode, before ALLOW can degrade.
-            denied = _access_denied_in(e)
-            if denied is not None:
-                message = denied.response.get("Error", {}).get("Message") or str(denied)
-                raise PermissionDenied(
-                    f"{message} -- acquire() needs the IAM actions listed at {IAM_DOCS_URL}",
-                    cause=e,
-                    stack_name=self._repository.stack_name,
-                    entity_id=entity_id,
-                    resource=resource,
-                ) from e
-            if mode == OnUnavailable.ALLOW:
-                # Return a no-op lease. `degraded` exempts it from declared-
-                # scope validation (Issue #455): it has no entries by design.
-                yield Lease(repository=self._repository, degraded=True)
-                return
-            else:
-                raise RateLimiterUnavailable(
-                    str(e),
-                    cause=e,
-                    stack_name=self._repository.stack_name,
-                    entity_id=entity_id,
-                    resource=resource,
-                ) from e
+            self._raise_unless_allowed(e, mode, entity_id, resource)
+            # Return a no-op lease. `degraded` exempts it from declared-
+            # scope validation (Issue #455): it has no entries by design.
+            yield Lease(repository=self._repository, degraded=True)
+            return
 
         # Lease committed - manage the context. The lease-level methods act on
         # the primary resource; the others through `lease.resource()`.
         lease._bind_resources(tuple(name for name, _amounts in parts))
+
+        async def admit(target: str, amounts: dict[str, int]) -> Lease | None:
+            """A `consume()` call (ADR-153, #822): admitted as `acquire()` admits."""
+            override = limits if target == resource else None
+            try:
+                inner = await self._admit_one(entity_id, target, amounts, override)
+                await inner._commit_initial()
+                return inner
+            except (
+                RateLimitExceeded,
+                ValidationError,
+                ResourceDisabled,
+                VersionMismatchError,
+                Warning,
+            ):
+                raise
+            except Exception as e:
+                self._raise_unless_allowed(e, mode, entity_id, target)
+                return None
+
+        lease._admit = admit
         try:
             yield lease
             await lease._commit_adjustments()
         except Exception:
             await lease._rollback()
             raise
+
+    async def _admit_one(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        limits: list[Limit] | None,
+    ) -> Lease:
+        """One resource's request admitted: the speculative write, else the slow path.
+
+        Shared by ``acquire()`` and a lease's ``consume()`` (#822). The lease
+        it returns is committed (a speculative write) or ready to commit.
+        """
+        lease: Lease | None = None
+        # Shard the fast path selected, and the shard_count it observed on
+        # the failure image; the slow path must read and create that same
+        # shard, sized by that count, rather than draw again from a cache
+        # a failed speculative write never updates (issue #439).
+        slow_path_shard: int | None = None
+        slow_path_shard_count: int | None = None
+        slow_path_parent_shard: _ParentHint | None = None
+
+        # Try speculative fast path first (issue #315). Not when a `limits=`
+        # override declares a soft limit this request consumes (#467,
+        # review D11): an override is not config, so no bucket carries its
+        # stamp, and the fast path — child and cascade parent — would read
+        # that limit hard and reject on it. The slow path trusts the
+        # override for every entity it plans.
+        if self._speculative_writes and not any(
+            limit.soft and limit.name in consume for limit in limits or ()
+        ):
+            (
+                lease,
+                slow_path_shard,
+                slow_path_shard_count,
+                slow_path_parent_shard,
+            ) = await self._try_speculative_acquire(
+                entity_id=entity_id,
+                resource=resource,
+                consume=consume,
+                use_rejection_cache=limits is None,
+            )
+            if lease is not None and _waived_against_override(lease, limits):
+                # The other half of D11 (review F1): the write was admitted
+                # on a config soft stamp for a limit this override declares
+                # hard. Refund it and let the slow path, which trusts the
+                # override, decide.
+                await lease._rollback()
+                lease, slow_path_shard, slow_path_shard_count = None, None, None
+                slow_path_parent_shard = None
+
+        # Fall back to slow path if speculative didn't succeed
+        if lease is None:
+            lease = await self._slow_acquire(
+                entity_id=entity_id,
+                resource=resource,
+                limits_override=limits,
+                consume=consume,
+                shard_id=slow_path_shard,
+                shard_count=slow_path_shard_count,
+                parent_hint=slow_path_parent_shard,
+            )
+        return lease
+
+    def _raise_unless_allowed(
+        self, error: Exception, mode: OnUnavailable, entity_id: str, resource: str
+    ) -> None:
+        """Map a backend error: raise it as the caller sees it, or return under ALLOW."""
+        # A missing IAM permission is not an outage (#751): it never heals,
+        # and the denied write is the one that would create the bucket, so
+        # ALLOW would admit every later call with no limit, silently. It is
+        # raised under every mode, before ALLOW can degrade.
+        denied = _access_denied_in(error)
+        if denied is not None:
+            message = denied.response.get("Error", {}).get("Message") or str(denied)
+            raise PermissionDenied(
+                f"{message} -- acquire() needs the IAM actions listed at {IAM_DOCS_URL}",
+                cause=error,
+                stack_name=self._repository.stack_name,
+                entity_id=entity_id,
+                resource=resource,
+            ) from error
+        if mode != OnUnavailable.ALLOW:
+            raise RateLimiterUnavailable(
+                str(error),
+                cause=error,
+                stack_name=self._repository.stack_name,
+                entity_id=entity_id,
+                resource=resource,
+            ) from error
 
     async def _try_speculative_acquire(
         self,
@@ -2302,8 +2343,7 @@ class RateLimiter:
         Args:
             stacklevel: Frames from this helper to the ``acquire()`` caller;
                 the ``with``/``async with`` context-manager machinery adds one.
-                The single call site is ``_do_acquire`` (helper -> _do_acquire
-                -> acquire -> __aenter__ -> caller), so it is always 5.
+                The single call site is ``_do_acquire``, which counts them.
         """
         configured = sorted(limit.name for limit in limits)
         unknown = sorted(set(consume) - set(configured))
@@ -3761,14 +3801,14 @@ class RateLimiter:
         # parent on [rpm, tpm] still has tpm gated and consumed on the parent
         # — a key known to either side of the cascade is not unknown.
         known_limits = [limit for eid in entity_ids for limit in entity_limits[eid]]
-        # helper -> here -> plan_and_commit -> _slow_acquire -> acquire ->
-        # __aenter__ -> caller
+        # helper -> here -> plan_and_commit -> _slow_acquire -> _admit_one ->
+        # acquire -> __aenter__ -> caller
         unknown_keys = self._warn_unknown_limits(
             consume,
             known_limits,
             resource,
             config_source=child_config_source,
-            stacklevel=7,
+            stacklevel=8,
         )
 
         # Process buckets and build lease entries

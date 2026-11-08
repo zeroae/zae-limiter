@@ -876,37 +876,10 @@ class SyncRateLimiter:
                 getattr(limit, "reset_after", None) is not None for limit in limits
             ):
                 self._repository.require_reset_after_readers(limits)
-            lease: SyncLease | None = None
-            slow_path_shard: int | None = None
-            slow_path_shard_count: int | None = None
-            slow_path_parent_shard: _ParentHint | None = None
             if len(parts) > 1:
                 lease = self._acquire_resources(entity_id, parts)
-            elif self._speculative_writes and (
-                not any(limit.soft and limit.name in consume for limit in limits or ())
-            ):
-                lease, slow_path_shard, slow_path_shard_count, slow_path_parent_shard = (
-                    self._try_speculative_acquire(
-                        entity_id=entity_id,
-                        resource=resource,
-                        consume=consume,
-                        use_rejection_cache=limits is None,
-                    )
-                )
-                if lease is not None and _waived_against_override(lease, limits):
-                    lease._rollback()
-                    lease, slow_path_shard, slow_path_shard_count = (None, None, None)
-                    slow_path_parent_shard = None
-            if lease is None:
-                lease = self._slow_acquire(
-                    entity_id=entity_id,
-                    resource=resource,
-                    limits_override=limits,
-                    consume=consume,
-                    shard_id=slow_path_shard,
-                    shard_count=slow_path_shard_count,
-                    parent_hint=slow_path_parent_shard,
-                )
+            else:
+                lease = self._admit_one(entity_id, resource, consume, limits)
             lease._commit_initial()
         except (
             RateLimitExceeded,
@@ -917,34 +890,99 @@ class SyncRateLimiter:
         ):
             raise
         except Exception as e:
-            denied = _access_denied_in(e)
-            if denied is not None:
-                message = denied.response.get("Error", {}).get("Message") or str(denied)
-                raise PermissionDenied(
-                    f"{message} -- acquire() needs the IAM actions listed at {IAM_DOCS_URL}",
-                    cause=e,
-                    stack_name=self._repository.stack_name,
-                    entity_id=entity_id,
-                    resource=resource,
-                ) from e
-            if mode == OnUnavailable.ALLOW:
-                yield SyncLease(repository=self._repository, degraded=True)
-                return
-            else:
-                raise RateLimiterUnavailable(
-                    str(e),
-                    cause=e,
-                    stack_name=self._repository.stack_name,
-                    entity_id=entity_id,
-                    resource=resource,
-                ) from e
+            self._raise_unless_allowed(e, mode, entity_id, resource)
+            yield SyncLease(repository=self._repository, degraded=True)
+            return
         lease._bind_resources(tuple((name for name, _amounts in parts)))
+
+        def admit(target: str, amounts: dict[str, int]) -> SyncLease | None:
+            """A `consume()` call (ADR-153, #822): admitted as `acquire()` admits."""
+            override = limits if target == resource else None
+            try:
+                inner = self._admit_one(entity_id, target, amounts, override)
+                inner._commit_initial()
+                return inner
+            except (
+                RateLimitExceeded,
+                ValidationError,
+                ResourceDisabled,
+                VersionMismatchError,
+                Warning,
+            ):
+                raise
+            except Exception as e:
+                self._raise_unless_allowed(e, mode, entity_id, target)
+                return None
+
+        lease._admit = admit
         try:
             yield lease
             lease._commit_adjustments()
         except Exception:
             lease._rollback()
             raise
+
+    def _admit_one(
+        self, entity_id: str, resource: str, consume: dict[str, int], limits: list[Limit] | None
+    ) -> SyncLease:
+        """One resource's request admitted: the speculative write, else the slow path.
+
+        Shared by ``acquire()`` and a lease's ``consume()`` (#822). The lease
+        it returns is committed (a speculative write) or ready to commit.
+        """
+        lease: SyncLease | None = None
+        slow_path_shard: int | None = None
+        slow_path_shard_count: int | None = None
+        slow_path_parent_shard: _ParentHint | None = None
+        if self._speculative_writes and (
+            not any(limit.soft and limit.name in consume for limit in limits or ())
+        ):
+            lease, slow_path_shard, slow_path_shard_count, slow_path_parent_shard = (
+                self._try_speculative_acquire(
+                    entity_id=entity_id,
+                    resource=resource,
+                    consume=consume,
+                    use_rejection_cache=limits is None,
+                )
+            )
+            if lease is not None and _waived_against_override(lease, limits):
+                lease._rollback()
+                lease, slow_path_shard, slow_path_shard_count = (None, None, None)
+                slow_path_parent_shard = None
+        if lease is None:
+            lease = self._slow_acquire(
+                entity_id=entity_id,
+                resource=resource,
+                limits_override=limits,
+                consume=consume,
+                shard_id=slow_path_shard,
+                shard_count=slow_path_shard_count,
+                parent_hint=slow_path_parent_shard,
+            )
+        return lease
+
+    def _raise_unless_allowed(
+        self, error: Exception, mode: OnUnavailable, entity_id: str, resource: str
+    ) -> None:
+        """Map a backend error: raise it as the caller sees it, or return under ALLOW."""
+        denied = _access_denied_in(error)
+        if denied is not None:
+            message = denied.response.get("Error", {}).get("Message") or str(denied)
+            raise PermissionDenied(
+                f"{message} -- acquire() needs the IAM actions listed at {IAM_DOCS_URL}",
+                cause=error,
+                stack_name=self._repository.stack_name,
+                entity_id=entity_id,
+                resource=resource,
+            ) from error
+        if mode != OnUnavailable.ALLOW:
+            raise RateLimiterUnavailable(
+                str(error),
+                cause=error,
+                stack_name=self._repository.stack_name,
+                entity_id=entity_id,
+                resource=resource,
+            ) from error
 
     def _try_speculative_acquire(
         self,
@@ -1813,8 +1851,7 @@ class SyncRateLimiter:
         Args:
             stacklevel: Frames from this helper to the ``acquire()`` caller;
                 the ``with``/``async with`` context-manager machinery adds one.
-                The single call site is ``_do_acquire`` (helper -> _do_acquire
-                -> acquire -> __aenter__ -> caller), so it is always 5.
+                The single call site is ``_do_acquire``, which counts them.
         """
         configured = sorted(limit.name for limit in limits)
         unknown = sorted(set(consume) - set(configured))
@@ -2996,7 +3033,7 @@ class SyncRateLimiter:
             existing_buckets.update(parent_buckets)
         known_limits = [limit for eid in entity_ids for limit in entity_limits[eid]]
         unknown_keys = self._warn_unknown_limits(
-            consume, known_limits, resource, config_source=child_config_source, stacklevel=7
+            consume, known_limits, resource, config_source=child_config_source, stacklevel=8
         )
         entries: list[LeaseEntry] = []
         carriers: list[LeaseEntry] = []

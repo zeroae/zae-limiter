@@ -32,6 +32,10 @@ The operations and how each is driven — every one through the real path:
   ``C + top-ups this period``, and a shard's ceiling becomes ``C // gc + tu``.
 - **reset** — ``Repository.reset_bucket`` of the quota (ADR-149): a new period,
   every existing shard re-granted at the count, nothing admitted yet.
+- **consume** (#822) — about a third of the admitted spends call
+  ``consume()`` inside the lease on the same shard, written when called; a
+  fifth of those then raise inside the block, rolling back the spend and the
+  landed consume. Drawn from a fourth RNG.
 - **mixed lease** (ADR-148) — about a third of the spends also debit a second,
   rate-limited resource in the same ``acquire(..., also=...)``, and a tenth of
   those ask that resource for more than it holds, so the quota's part is
@@ -178,6 +182,10 @@ async def real_accounting(repo, entity_id: str, quota: Limit, now_ms: int) -> tu
     return held, len(uncovered) * (C * 1000 // count), count
 
 
+class _RollBackError(Exception):
+    """Raised inside a spend's lease to roll it back."""
+
+
 def pytest_generate_tests(metafunc):
     """Each class below runs its own slice of the seeds."""
     if metafunc.cls is not None and "seed" in metafunc.fixturenames:
@@ -201,6 +209,9 @@ async def run_fuzz(limiter, seed: int, kind: str, quota_in_also: bool = False) -
     # unchanged: an `acquire(limits=[...])` slow pass that does not name the
     # quota, yet advances the item's `rf` and so carries the quota through.
     over = random.Random(seed + 2_000_000)
+    # The `consume()` calls inside a spend's lease (#822), from a fourth RNG
+    # so the sequences above are unchanged.
+    cons = random.Random(seed + 3_000_000)
 
     quota_on = rng.random() < 0.5
     await limiter.set_limits(eid, [RPM, quota] if quota_on else [RPM], resource=RESOURCE)
@@ -260,17 +271,35 @@ async def run_fuzz(limiter, seed: int, kind: str, quota_in_also: bool = False) -
             elif mix.random() < 0.35:
                 also = {OTHER: {"rpm": 5_000 if mix.random() < 0.1 else 1}}
             ok = True
+            # A `consume()` inside the lease, written when called (#822): on
+            # the same drawn shard, and sometimes followed by the block
+            # raising, which rolls back the spend and every landed consume.
+            extra = cons.choice([1, 10, 100]) if quota_on and cons.random() < 0.3 else 0
+            rolled_back = extra > 0 and cons.random() < 0.2
+            extra_ok = False
             with drawn(shard, rng):
                 try:
-                    async with lim.acquire(eid, primary, primary_consume, also=also):
-                        pass
+                    async with lim.acquire(eid, primary, primary_consume, also=also) as lease:
+                        if extra:
+                            with contextlib.suppress(RateLimitExceeded):
+                                await lease.resource(RESOURCE).consume(**{quota.name: extra})
+                                extra_ok = True
+                        if rolled_back:
+                            raise _RollBackError
                 except RateLimitExceeded:
                     ok = False
+                except _RollBackError:
+                    pass
             if quota_on:
-                admitted += amount if ok else 0
+                admitted += amount if ok and not rolled_back else 0
                 model.spend(shard, amount)
+            if extra:
+                admitted += extra if extra_ok and not rolled_back else 0
+                model.spend(shard, extra)
             path = "fast" if lim is fast else "slow"
             trace.append(f"spend({shard},{amount},{path},also={also})={ok}")
+            if extra:
+                trace.append(f"consume({extra})={extra_ok},rolled_back={rolled_back}")
         if over.random() < 0.2:
             shard = over.randrange(_cached_count(repo, eid))
             with drawn(shard, over):

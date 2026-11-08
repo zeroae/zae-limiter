@@ -99,6 +99,36 @@ async with limiter.acquire(
     This is useful for post-hoc reconciliation when actual usage exceeds estimates.
     See [Token Bucket Algorithm - Negative Buckets](token-bucket.md#negative-buckets-debt) for how debt works.
 
+### Consuming more inside the block
+
+`lease.consume()` asks for more capacity mid-block, and unlike `adjust()` it is a request:
+it is admitted exactly as `acquire()` admits one, and written before it returns, so every
+other caller sees it at once. It can raise inside the block:
+
+```python
+async with limiter.acquire(
+    entity_id="key-123",
+    resource="gpt-4",
+    consume={"rpm": 1, "tpm": 500},
+) as lease:
+    try:
+        await lease.consume(tpm=2_000)  # a follow-up call, admitted now
+    except RateLimitExceeded as e:
+        ...  # nothing was debited; the lease is still open
+```
+
+- A rejected `consume()` raises `RateLimitExceeded` (with `contended=True` when the bucket
+  was busy rather than short), debits nothing, and leaves the lease usable.
+- A `consume()` that landed is refunded with the rest of the lease if the block raises, and
+  counts in `lease.consumed`. It is never written again when the block exits.
+- It costs what an `acquire()` costs: one write when this process predicts it, else the slow
+  path. It may land on a different shard of the bucket than the initial consumption.
+- Under `on_unavailable=ALLOW` a backend error lets it through unwritten, as it lets
+  `acquire()` through; under `BLOCK` it raises `RateLimiterUnavailable`.
+
+`adjust()` and `release()` are reconciliation, not requests: they never raise for capacity
+and are written when the block exits.
+
 !!! warning "`consume` is the declared scope of a lease"
     Only limits named in `acquire(consume=...)` can be adjusted, consumed, or
     released through the lease, and only those appear in `lease.consumed`. A

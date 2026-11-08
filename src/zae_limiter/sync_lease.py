@@ -16,9 +16,6 @@ from typing import TYPE_CHECKING, Any
 
 from . import fill_instant
 from .bucket import (
-    ConsumeResult,
-    apply_consume,
-    calculate_available,
     express_at,
     fill_params,
     retry_after_for_deficit,
@@ -546,6 +543,8 @@ class SyncLease:
     _resources: tuple[str, ...] = ()
     _unknown_keys_by_resource: dict[str, frozenset[str]] = field(default_factory=dict)
     _declared_by_resource: dict[str, frozenset[str]] = field(init=False, default_factory=dict)
+    _consumes: list["SyncLease"] = field(default_factory=list)
+    _admit: Callable[[str, dict[str, int]], "SyncLease | None"] | None = None
     compute_images: InitVar[bool] = True
 
     def __post_init__(self, compute_images: bool = True) -> None:
@@ -643,11 +642,14 @@ class SyncLease:
         ]
 
     def _consumed_in(self, resource: str | None) -> dict[str, int]:
-        """Total consumed amounts by limit name, for one resource."""
+        """Total consumed amounts by limit name, for one resource, `consume()` calls included."""
         result: dict[str, int] = {}
         for entry in self._scoped(resource):
             name = entry.limit.name
             result[name] = result.get(name, 0) + entry.consumed
+        for inner in self._consumes:
+            for name, amount in inner._consumed_in(resource).items():
+                result[name] = result.get(name, 0) + amount
         return result
 
     def _bypassed_in(self, resource: str | None) -> bool:
@@ -671,7 +673,7 @@ class SyncLease:
                 entry.limit.name
                 for entry in self._scoped(resource)
                 if entry.limit.soft and entry.state.tokens_milli < 0
-            }
+            }.union(*(inner._overdrawn_in(resource) for inner in self._consumes))
         )
 
     @property
@@ -769,9 +771,21 @@ class SyncLease:
 
     def consume(self, **amounts: int) -> None:
         """
-        Consume additional capacity from the buckets.
+        Consume additional capacity, written when called (ADR-153, #822).
 
-        Raises RateLimitExceeded if any bucket has insufficient capacity.
+        Admitted exactly as ``acquire()`` admits a request for these amounts,
+        in the same write and round trip: the speculative write (one write
+        when this process predicts it), else the slow path. It is committed
+        before this call returns, so concurrent callers see it at once, and it
+        can raise inside the caller's block.
+
+        A rejected call debits nothing and leaves the lease open. A call that
+        landed is rolled back with the lease when the block raises, and
+        committed with it otherwise; ``lease.consumed`` includes it, and it is
+        never written again at exit. Under ``on_unavailable=ALLOW`` a backend
+        error lets the call through unwritten, as it lets ``acquire()``
+        through. The amounts may land on another shard of the bucket than
+        the initial consumption (ADR-134).
 
         Only limits declared in ``acquire(consume=...)`` can be consumed;
         other keys are reported (Issue #455) and ignored.
@@ -780,65 +794,65 @@ class SyncLease:
 
         Args:
             **amounts: Mapping of limit_name -> amount to consume
+
+        Raises:
+            RateLimitExceeded: If a limit cannot cover it, or the bucket is
+                contended (``contended=True``); nothing was debited.
+            ResourceDisabled: If the resource was disabled since the acquire.
+            RateLimiterUnavailable: On a backend error under ``on_unavailable=BLOCK``.
+            LeaseExpiredError: If the lease has already exited.
         """
         self._require_open()
         self._check_declared(amounts, "consume")
         self._consume_in(self._primary, amounts)
 
     def _consume_in(self, resource: str | None, amounts: dict[str, int]) -> None:
-        """Consume ``amounts`` from ``resource``'s declared limits, all or none."""
-        now_ms = self.repository._now_ms()
-        statuses: list[LimitStatus] = []
-        updates: list[tuple[LeaseEntry, ConsumeResult]] = []
-        scoped = self._scoped(resource)
-        for entry in scoped:
-            amount = amounts.get(entry.limit.name, 0)
-            if amount <= 0:
-                continue
-            result = try_consume(entry.state, amount, now_ms)
-            status = LimitStatus(
-                entity_id=entry.entity_id,
-                resource=entry.resource,
-                limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(
-                    entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
-                ),
-                available=result.available,
-                requested=amount,
-                exceeded=not result.success,
-                retry_after_seconds=result.retry_after_seconds,
-                resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
+        """Admit and commit ``amounts`` of ``resource``'s declared limits, all or none."""
+        if self.degraded:
+            return
+        if resource is None or resource == self._primary:
+            declared = self._declared_names
+        else:
+            declared = self._declared_by_resource.get(resource, frozenset())
+        wanted = {
+            name: amount for name, amount in amounts.items() if name in declared and amount > 0
+        }
+        if not wanted:
+            return
+        if self._admit is None:
+            raise RuntimeError("consume() needs a lease yielded by SyncRateLimiter.acquire()")
+        target = resource if resource is not None else self.entries[0].resource
+        inner = self._admit(target, wanted)
+        if inner is not None:
+            for earlier in (self, *self._consumes):
+                earlier._follow_fill_pins(inner)
+            self._consumes.append(inner)
+
+    def _follow_fill_pins(self, landed: "SyncLease") -> None:
+        """Move this lease's return pins past a later write of its own (#822).
+
+        A ``consume()`` call that took the slow path moved its item's ``xi``,
+        on which this lease's exact returns are pinned (ADR-155), and would
+        drop them. That write was pinned on the ``xi`` it read: when it read
+        this lease's pin, nothing else wrote the item's fill instants in
+        between (a reset included), so the pin follows it.
+        """
+        moved = {
+            (entry.entity_id, entry.resource, entry._shard_id): (
+                entry.state.stored_expressed_ms,
+                entry._fill_xi,
             )
-            statuses.append(status)
-            if result.success:
-                updates.append((entry, result))
-        for entry in scoped:
-            if entry.limit.name not in amounts:
-                available = calculate_available(entry.state, now_ms)
-                statuses.append(
-                    LimitStatus(
-                        entity_id=entry.entity_id,
-                        resource=entry.resource,
-                        limit_name=entry.limit.name,
-                        limit=entry.limit.per_shard(
-                            entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
-                        ),
-                        available=available,
-                        requested=0,
-                        exceeded=False,
-                        retry_after_seconds=0.0,
-                        resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
-                    )
-                )
-        violations = [s for s in statuses if s.exceeded]
-        if violations:
-            raise RateLimitExceeded(statuses)
-        for entry, result in updates:
-            apply_consume(entry.state, result)
-            amount = amounts.get(entry.limit.name, 0)
-            entry.consumed += amount
-            if entry.state.total_consumed_milli is not None:
-                entry.state.total_consumed_milli += amount * 1000
+            for entry in landed.entries
+            if entry._fill_xi is not None and entry.state.stored_expressed_ms is not None
+        }
+        for entry in self.entries:
+            key = (entry.entity_id, entry.resource, entry._shard_id)
+            if key not in moved:
+                continue
+            read, written = moved[key]
+            pin = entry._fill_xi if entry._fill_xi is not None else entry.state.stored_expressed_ms
+            if pin == read:
+                entry._fill_xi = written
 
     def adjust(self, **amounts: int) -> None:
         """
@@ -1727,6 +1741,8 @@ class SyncLease:
         """
         if self._committed or self._rolled_back:
             return
+        for inner in self._consumes:
+            inner._committed = True
         if not self._has_adjustments:
             self._committed = True
             return
@@ -1766,6 +1782,8 @@ class SyncLease:
         if self._committed or self._rolled_back:
             return
         self._rolled_back = True
+        for inner in self._consumes:
+            inner._rollback()
         if not self._initial_committed:
             return
         writes = self._adjust_writes(lambda entry: -entry._initial_consumed * 1000)
@@ -2121,8 +2139,9 @@ class SyncLeaseResource:
     ``adjust()``, ``consume()``, ``release()`` and ``consumed`` behave exactly
     as the lease-level methods do, scoped to this resource's declared limits:
     the ones named for it in ``acquire()``'s ``consume`` (the primary
-    resource) or ``also`` (every other one). Nothing is written until the
-    lease's context exits, where every resource is reconciled together.
+    resource) or ``also`` (every other one). ``consume()`` is written when
+    called (#822); adjustments are written when the lease's context exits,
+    where every resource is reconciled together.
     """
 
     def __init__(self, lease: "SyncLease", name: str) -> None:

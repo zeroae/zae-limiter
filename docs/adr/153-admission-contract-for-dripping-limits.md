@@ -61,9 +61,10 @@ bound through ADR-154, every other writer through ADR-155, and shard raises thro
   ruling for dripping limits.
 - Refill is integrated across schedule windows (amending ADR-135): a limit raised at a boundary
   accrues from there instead of arriving full.
-- `lease.consume()` debits when called, one write and one round trip per call, and can raise
-  `RateLimitExceeded` (contended included) inside the caller's block, departing from #309 and
-  from ADR-148's promise that the single-resource methods keep their meaning.
+- `lease.consume()` debits when called, admitted as `acquire()` admits a request (one write and
+  one round trip when predicted), and can raise `RateLimitExceeded` (contended included) inside
+  the caller's block, departing from #309 and from ADR-148's promise that the single-resource
+  methods keep their meaning.
 - A lowered resource- or system-level limit must reach active buckets within the config cache
   TTL: the slow path takes capacity and refill from config, and a fan-out ADR-136 rejected as
   O(all buckets) replaces ADR-135's and ADR-100's arrival at TTL expiry; a namespace-wide
