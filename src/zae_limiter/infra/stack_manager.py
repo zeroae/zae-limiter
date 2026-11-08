@@ -10,7 +10,7 @@ from typing import Any, cast
 
 import yaml
 from aiobotocore.session import AioSession, get_session
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import BotoCoreError, ClientError, WaiterError
 
 from ..exceptions import StackAlreadyExistsError, StackOperationError
 from ..models import StackOptions
@@ -889,7 +889,8 @@ class StackManager:
             wait: Wait for stack to be DELETE_COMPLETE
 
         Raises:
-            StackOperationError: If deletion fails
+            StackOperationError: If deletion fails, including a stack that
+                ends in ``DELETE_FAILED`` while waiting
         """
         client = await self._get_client()
 
@@ -910,6 +911,14 @@ class StackManager:
             raise StackOperationError(
                 stack_name=stack_name,
                 reason=f"Stack deletion failed: {e.response['Error']['Message']}",
+            ) from e
+        except WaiterError as e:
+            # The waiter raises botocore's WaiterError, not a ClientError, when
+            # the stack ends in DELETE_FAILED or the wait times out.
+            raise StackOperationError(
+                stack_name=stack_name,
+                reason=f"Stack deletion failed: {e}",
+                events=await self._get_stack_events(client, stack_name),
             ) from e
 
     async def _get_stack_events(

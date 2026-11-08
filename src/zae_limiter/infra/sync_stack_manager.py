@@ -15,7 +15,7 @@ from typing import Any, cast
 
 import boto3
 import yaml
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import BotoCoreError, ClientError, WaiterError
 
 from ..exceptions import StackAlreadyExistsError, StackOperationError
 from ..models import StackOptions
@@ -771,7 +771,8 @@ class SyncStackManager:
             wait: Wait for stack to be DELETE_COMPLETE
 
         Raises:
-            StackOperationError: If deletion fails
+            StackOperationError: If deletion fails, including a stack that
+                ends in ``DELETE_FAILED`` while waiting
         """
         client = self._get_client()
         try:
@@ -786,6 +787,12 @@ class SyncStackManager:
             raise StackOperationError(
                 stack_name=stack_name,
                 reason=f"Stack deletion failed: {e.response['Error']['Message']}",
+            ) from e
+        except WaiterError as e:
+            raise StackOperationError(
+                stack_name=stack_name,
+                reason=f"Stack deletion failed: {e}",
+                events=self._get_stack_events(client, stack_name),
             ) from e
 
     def _get_stack_events(

@@ -3,7 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from botocore.exceptions import ClientError, EndpointConnectionError
+from botocore.exceptions import ClientError, EndpointConnectionError, WaiterError
 
 from zae_limiter import StackOptions
 from zae_limiter.exceptions import StackAlreadyExistsError, StackOperationError
@@ -539,6 +539,43 @@ class TestDeleteStack:
                 await manager.delete_stack("test-stack")
 
             assert "Not authorized" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_wait_raises_stack_operation_error(self) -> None:
+        """A wait ending in DELETE_FAILED raises the documented error, not WaiterError."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.delete_stack = AsyncMock()
+            mock_client.describe_stack_events = AsyncMock(
+                return_value={
+                    "StackEvents": [
+                        {
+                            "LogicalResourceId": "RateLimitsTable",
+                            "ResourceStatus": "DELETE_FAILED",
+                            "ResourceStatusReason": "Internal server error",
+                        }
+                    ]
+                }
+            )
+            mock_waiter = MagicMock()
+            mock_waiter.wait = AsyncMock(
+                side_effect=WaiterError(
+                    "StackDeleteComplete",
+                    "Waiter encountered a terminal failure state",
+                    {"Stacks": [{"StackStatus": "DELETE_FAILED"}]},
+                )
+            )
+            mock_client.get_waiter.return_value = mock_waiter
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+
+            with pytest.raises(StackOperationError) as exc_info:
+                await manager.delete_stack("test-stack")
+
+            assert "terminal failure state" in str(exc_info.value)
+            assert exc_info.value.events[0]["logical_id"] == "RateLimitsTable"
+            assert isinstance(exc_info.value.__cause__, WaiterError)
 
 
 class TestDeployLambdaCode:
