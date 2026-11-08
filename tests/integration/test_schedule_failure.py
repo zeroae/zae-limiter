@@ -19,6 +19,7 @@ independently of the client boundary.
 
 import pytest
 
+from tests.fixtures.legacy import as_legacy_item
 from zae_limiter import Limit, OnUnavailable, RateLimiter, RateLimiterUnavailable
 from zae_limiter.schedule import ENCODING_VERSION, ScheduleEntry, decode
 from zae_limiter.schema import (
@@ -122,7 +123,11 @@ class TestUnreadableScheduleIntegration:
 
     async def test_an_expired_vu_surfaces_the_error(self, localstack_limiter, unique_name):
         """Once `vu` has passed, the slow path resolves config, hits the
-        corrupt attribute, and `on_unavailable` applies."""
+        corrupt attribute, and `on_unavailable` applies.
+
+        On an item written before v0.18, whose dripping limits are `tk`: one
+        storing fill instants is gated by schedule boundaries since its `xi`,
+        not by `vu` (ADR-155), and an always-active window has none."""
         limiter = localstack_limiter
         repo = limiter._repository
         entity_id = f"sched-fail-slow-{unique_name}"
@@ -135,6 +140,7 @@ class TestUnreadableScheduleIntegration:
             pass
 
         # Expire the boundary exactly as a crossed one would, then corrupt.
+        await as_legacy_item(repo, entity_id, RESOURCE)
         await _write_attr(repo, await _bucket_key(repo, entity_id), BUCKET_FIELD_VU, {"N": "1"})
         await _corrupt_config(repo, entity_id)
 
@@ -170,9 +176,13 @@ class TestUnreadableScheduleIntegration:
             repo, await _bucket_key(repo, entity_id), BUCKET_FIELD_SCHED, {"S": "not-a-schedule"}
         )
 
+        # A request that fits: the fast write is pinned on the `sched` this
+        # process last saw (ADR-155), so it fails and its image carries the
+        # corrupt one. (One above the share would be rejected from that image
+        # with no write at all, never reading the item.)
         with pytest.raises(RateLimiterUnavailable):
             async with limiter.acquire(
-                entity_id, RESOURCE, {"rpm": 5_000}, on_unavailable=OnUnavailable.BLOCK
+                entity_id, RESOURCE, {"rpm": 1}, on_unavailable=OnUnavailable.BLOCK
             ):
                 pass
 
