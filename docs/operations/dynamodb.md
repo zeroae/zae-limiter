@@ -389,7 +389,7 @@ Once you've identified a hot partition:
 
 #### 1. Write Sharding (Recommended for Cascade)
 
-Split high-fanout parent into sharded parents. See [Write Sharding Guide](../performance.md#write-sharding-for-high-fanout-parents) for detailed example.
+Split high-fanout parent into sharded parents. See [Write Sharding Guide](../performance.md#write-sharding-automatic-pre-shard-buckets) for detailed example.
 
 ```python
 # Instead of:

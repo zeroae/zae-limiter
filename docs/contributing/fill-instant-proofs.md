@@ -5,9 +5,11 @@
 and [ADR-156](../adr/156-dripping-shard-raises.md)
 **Date:** 2026-11-07
 
-!!! note "A proposed design"
-    This page proves properties of the design ADR-154, ADR-155 and ADR-156 propose for v0.18.0.
-    Until that ships, the fast path still stores `tk` and `rf`, and #808 still applies.
+!!! note "Ships in v0.18.0"
+    The design ADR-154, ADR-155 and ADR-156 describe ships in v0.18.0: every bucket created
+    from that release stores its dripping limits as fill instants, and an item written before
+    it is converted on its next slow pass. Where this page says "today's" fast path or
+    design, it means the `tk` and `rf` form that release replaces, which #808 describes.
 
 ADR-153 makes the strict token bucket the admission contract for dripping limits. ADR-154
 changes how a dripping limit is stored and written so the fast path can meet it, ADR-155 holds

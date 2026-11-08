@@ -83,6 +83,38 @@ graph TD
 - **Bursty workloads**: Allow temporary spikes followed by quiet periods
 - **User experience**: Don't reject the first request just because a minute hasn't passed
 
+### Bursts Are Strict
+
+The capacity is a ceiling over every stretch of time, not an average. Over any window, a
+dripping limit admits at most its capacity plus what refills during that window. A bucket
+cannot bank idle time: once it is full, waiting longer adds nothing, so a bucket that sat idle
+for an hour admits one burst of at most its capacity, not two.
+
+```python
+# Idle for an hour, then a flood of requests:
+Limit.per_minute("rpm", 100)
+# admits 100 at once, then about 100 per minute.
+# Over any 30 seconds: at most 100 + 50 = 150.
+```
+
+This holds however many processes share the bucket and however it is
+[sharded](#sharded-buckets). Each process stamps its writes with its own clock, so the bound
+allows a little for clock skew and time in flight: at most `2 × r × s` extra tokens, where `r`
+is the refill rate and `s` the largest gap between a process's clock reading and the moment its
+write lands. At 10,000 tokens per minute with clocks and round trips within 100 ms, that is
+about 33 tokens.
+
+The guarantee does not cover what you have chosen not to enforce:
+[soft limits and bypass](soft-limits-and-bypass.md), and requests admitted under
+`on_unavailable="allow"` while DynamoDB is unreachable. An operator
+[reset or top-up](reset-and-top-up.md) adds what it grants. A quota does not drip, so it follows
+its own rule: one allowance per window.
+
+!!! note "v0.18.0"
+    Before v0.18.0 a bucket that sat full could admit close to twice its capacity in a short
+    burst. The strict bound needs every client and Lambda sharing the table to run v0.18.0 or
+    later.
+
 ### Lazy Refill
 
 Unlike traditional implementations that continuously add tokens, zae-limiter calculates refills on-demand:
@@ -110,6 +142,12 @@ tokens_to_add = elapsed_time × refill_rate
 
 `refill_amount` here is the value in force at that instant. With a schedule, that is the
 scheduled value rather than the configured base.
+
+Under the hood, a dripping limit does not store a token count. It stores the instant its
+bucket will be full again, and the balance at any moment follows from that instant and the
+refill rate. A full bucket simply has that instant in the past, which is how it forgets idle
+time and keeps [bursts strict](#bursts-are-strict). See
+[Architecture](../contributing/architecture.md#fill-instants) for the details.
 
 ### Negative Buckets (Debt)
 
@@ -196,6 +234,28 @@ except RateLimitExceeded as e:
     await asyncio.sleep(e.retry_after_seconds)
     # Now the request will succeed
 ```
+
+### Sharded buckets
+
+When one entity writes to a bucket faster than a single DynamoDB partition accepts (about
+1,000 writes a second), zae-limiter splits the bucket across more shards, each holding an
+equal share of the limit (see [Write Sharding](../performance.md#write-sharding-automatic-pre-shard-buckets)).
+A split moves the balance; it never creates tokens. Each new shard takes the part of its
+parent's balance above the parent's new, smaller share, so the bucket holds exactly what it
+held before the split. A new shard can therefore start nearly empty, when its parent had little
+above its new share, and fills at its share of the refill rate.
+
+A shard created later while the bucket's other shards exist, for example one that expired
+through its TTL, starts empty and fills the same way. A brand-new bucket still starts full.
+
+Two things follow:
+
+- The entity as a whole never admits more than its limit across a split.
+- Right after a split, a request can be rejected while some shard still holds tokens. The
+  client tries up to two other shards before it rejects, not every shard.
+
+A [quota](scheduled-limits.md#quotas) is split by its own rule: a new shard is funded by moving
+part of another shard's allowance, so a split never adds to the period's allowance either.
 
 ### Choosing the right limits
 
