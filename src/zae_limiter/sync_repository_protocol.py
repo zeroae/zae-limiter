@@ -15,6 +15,7 @@ from .config_cache import CacheStats as CacheStats
 from .limiter import OnUnavailable as OnUnavailable
 
 if TYPE_CHECKING:
+    from .fill_instant import WriteBudget
     from .models import (
         AuditEvent,
         BackendCapabilities,
@@ -64,6 +65,7 @@ class SpeculativeFailureReason(Enum):
     DISABLED = "disabled"
     SCHEDULE_BOUNDARY = "schedule_boundary"
     CONTENTION = "contention"
+    UNDECIDED = "undecided"
 
 
 @dataclass(frozen=True)
@@ -929,6 +931,29 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def return_fill_instants(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        returns: "dict[str, tuple[int, BucketState]]",
+        *,
+        expressed_ms: int,
+        shard_count: int,
+        counter: bool = True,
+    ) -> bool:
+        """Return fill-instant debits exactly (ADR-155, #819).
+
+        ``returns`` maps a limit to the millitokens returned and the state the
+        debit was computed against. Each fill instant moves back by the debit's
+        span (``ADD b_{name}_fi -c·S·rp``, and ``tc`` back unless ``counter`` is
+        False) with no balance condition, pinned on the fill instant existing,
+        the state's stored ``cp`` / ``ra`` / ``rp``, ``shard_count`` and
+        ``expressed_ms`` (the item's ``xi``). Returns False when a pin failed and
+        the return was dropped (an under-admission).
+        """
+        ...
+
     def speculative_consume(
         self,
         entity_id: str,
@@ -939,8 +964,13 @@ class SyncRepositoryProtocol(Protocol):
         now_ms: int | None = None,
         avoid_shards: frozenset[int] = frozenset(),
         avoid_parent_shards: frozenset[int] = frozenset(),
+        write_budget: "WriteBudget | None" = None,
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
+
+        ``write_budget`` (ADR-154, #819): the writes the acquire may still send
+        on items storing fill instants, shared by every resource of a
+        multi-resource acquire; the limiter passes it only then.
 
         Issues an UpdateItem with ADD -consumed and condition
         ``attribute_exists(PK) AND tk >= consumed`` for each limit.

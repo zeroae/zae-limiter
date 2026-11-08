@@ -14,6 +14,7 @@ import secrets
 import time
 import warnings
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
 import boto3
@@ -21,7 +22,7 @@ from botocore.exceptions import ClientError
 from ulid import ULID
 
 from . import bucket_ops, fill_instant, schedule, schema
-from .bucket import balance_milli_at
+from .bucket import balance_milli_at, fill_params
 from .config_cache import CacheStats as CacheStats
 from .exceptions import (
     EntityExistsError,
@@ -31,6 +32,7 @@ from .exceptions import (
     ResourceDisabled,
     ValidationError,
 )
+from .fill_images import FillImageCache
 from .limiter import OnUnavailable as OnUnavailable
 from .models import (
     AuditAction,
@@ -154,6 +156,10 @@ def _conflict_backoff_s(attempt: int) -> float:
     return random.uniform(0, _ITEM_CONFLICT_BASE_DELAY_S * 2**attempt)
 
 
+_WRITE_BUDGET: ContextVar["fill_instant.WriteBudget | None"] = ContextVar(
+    "zae_limiter_write_budget", default=None
+)
+_SOFT_DEBIT_ATTEMPTS = 4
 _SEED_TOKEN = {
     schema.BUCKET_FIELD_TK: "t",
     schema.BUCKET_FIELD_TC: "c",
@@ -403,6 +409,7 @@ class SyncRepository:
         self._rejection_cache = RejectionCache(
             ttl_seconds=rejection_cache_ttl, max_entries=rejection_cache_size
         )
+        self._fill_images = FillImageCache(max_entries=rejection_cache_size)
         self._on_unavailable_cache: OnUnavailableAction | None = None
         self._namespace_cache: dict[str, str] = {}
         self._parallel_mode = parallel_mode
@@ -743,6 +750,7 @@ class SyncRepository:
         scoped._stamp_ttl_seconds = self._stamp_ttl_seconds
         scoped._owner_stamp_cache = self._owner_stamp_cache
         scoped._rejection_cache = self._rejection_cache
+        scoped._fill_images = self._fill_images
         scoped._namespace_cache = self._namespace_cache
         scoped._shard_cap_warned = self._shard_cap_warned
         scoped._on_unavailable_cache = None
@@ -4082,6 +4090,7 @@ class SyncRepository:
         now_ms: int | None = None,
         avoid_shards: frozenset[int] = frozenset(),
         avoid_parent_shards: frozenset[int] = frozenset(),
+        write_budget: fill_instant.WriteBudget | None = None,
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -4108,6 +4117,10 @@ class SyncRepository:
                 (ADR-147); the child shard is drawn among the others.
             avoid_parent_shards: The same for the parent's shards on the
                 parallel cascade write (ADR-147 phase 2, decision 4).
+            write_budget: The writes the whole acquire may still send on items
+                storing fill instants (ADR-154): a multi-resource acquire passes
+                one shared by every resource. None starts one for this call,
+                shared by a cascade's child and parent.
 
         Returns:
             SpeculativeResult with:
@@ -4117,6 +4130,35 @@ class SyncRepository:
         """
         if now_ms is None:
             now_ms = self._now_ms()
+        token = _WRITE_BUDGET.set(
+            write_budget if write_budget is not None else fill_instant.WriteBudget()
+        )
+        try:
+            return self._speculative_consume_scoped(
+                entity_id,
+                resource,
+                consume,
+                ttl_seconds,
+                shard_id,
+                now_ms,
+                avoid_shards,
+                avoid_parent_shards,
+            )
+        finally:
+            _WRITE_BUDGET.reset(token)
+
+    def _speculative_consume_scoped(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        ttl_seconds: int | None,
+        shard_id: int | None,
+        now_ms: int,
+        avoid_shards: frozenset[int],
+        avoid_parent_shards: frozenset[int],
+    ) -> SpeculativeResult:
+        """:meth:`speculative_consume`'s body, inside the acquire's write budget."""
         if shard_id is not None:
             return self._speculative_consume_single(
                 entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
@@ -4328,6 +4370,21 @@ class SyncRepository:
             SpeculativeResult with shard_id and shard_count populated, and
             ``bypassed`` when the image carries the stamp.
         """
+        budget = _WRITE_BUDGET.get() or fill_instant.WriteBudget()
+        fill_key = (self._namespace_id, entity_id, resource, shard_id)
+        cached = self._fill_images.get(fill_key)
+        if cached is not None:
+            return self._speculative_consume_fill(
+                entity_id,
+                resource,
+                consume,
+                ttl_seconds,
+                shard_id,
+                now_ms,
+                cached.item,
+                fresh=False,
+                budget=budget,
+            )
         client = self._get_client()
         bypass_key = (self._namespace_id, entity_id, resource)
         add_parts: list[str] = []
@@ -4508,10 +4565,21 @@ class SyncRepository:
                             failure_reason=SpeculativeFailureReason.APP_LIMIT_EXHAUSTED,
                         )
                     vu_raw = old_item.get(schema.BUCKET_FIELD_VU, {}).get("N")
-                    stores_fill_instants = schema.BUCKET_FIELD_XI in old_item or any(
-                        b.stored_fill_instant is not None for b in old_buckets
-                    )
-                    if stores_fill_instants or (
+                    if schema.BUCKET_FIELD_XI in old_item:
+                        self._fill_images.store(fill_key, old_item)
+                        budget.take()
+                        return self._speculative_consume_fill(
+                            entity_id,
+                            resource,
+                            consume,
+                            ttl_seconds,
+                            shard_id,
+                            now_ms,
+                            old_item,
+                            fresh=True,
+                            budget=budget,
+                        )
+                    if (
                         not old_bypassed
                         and vu_raw is not None
                         and (int(vu_raw) <= now_ms)
@@ -4563,6 +4631,656 @@ class SyncRepository:
                         failure_reason=SpeculativeFailureReason.BUCKET_MISSING,
                     )
             raise
+
+    def _image_result(
+        self,
+        item: dict[str, Any],
+        states: list[BucketState],
+        shard_id: int,
+        *,
+        success: bool,
+        reason: SpeculativeFailureReason | None = None,
+        bypassed: bool = False,
+    ) -> SpeculativeResult:
+        """A speculative result carrying ``item``'s owner stamps and shard count."""
+        result = SpeculativeResult(
+            success=success,
+            cascade=item.get("cascade", {}).get("BOOL", False),
+            parent_id=item.get("parent_id", {}).get("S"),
+            shard_id=shard_id,
+            shard_count=int(item.get("shard_count", {}).get("N", "1")),
+            failure_reason=reason,
+            bypassed=bypassed,
+            pgen=_stamped_pgen(item),
+            pinc=_stamped_pinc(item),
+        )
+        if success:
+            result.buckets = states
+        else:
+            result.old_buckets = states
+        return result
+
+    def _learn_from_image(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        item: dict[str, Any],
+        states: list[BucketState],
+        *,
+        owner: bool,
+    ) -> None:
+        """What a speculative response teaches: the image and, from a failure, the owner.
+
+        A success leaves the owner and shard count to the caller, as today's
+        path does: a cascade parent's write is the child's acquire, and the
+        parent's own metadata is learned from its own acquires.
+        """
+        shard_count = int(item.get("shard_count", {}).get("N", "1"))
+        self._fill_images.store((self._namespace_id, entity_id, resource, shard_id), item)
+        self._remember_bucket_image(entity_id, resource, shard_id, item, states, shard_count)
+        if not owner:
+            return
+        self._learn_shard_count(
+            entity_id,
+            resource,
+            shard_count,
+            meta=(item.get("cascade", {}).get("BOOL", False), item.get("parent_id", {}).get("S")),
+            pgen=_stamped_pgen(item),
+            pinc=_stamped_pinc(item),
+        )
+
+    def _speculative_consume_fill(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        ttl_seconds: int | None,
+        shard_id: int,
+        now_ms: int,
+        item: dict[str, Any] | None,
+        *,
+        fresh: bool,
+        budget: fill_instant.WriteBudget,
+    ) -> SpeculativeResult:
+        """The fast path on an item storing fill instants (ADR-154, #819).
+
+        Each hard limit on the write, the reserved ``wcu`` included, gets one of
+        ADR-154's two writes, chosen from ``item``: the not-full write
+        (``ADD fi c·S·rp`` under ``t·ra ≤ fi ≤ t·ra + slack``) or the full write
+        (``SET fi = t·ra + c·S·rp`` under ``fi < t·ra``), every one pinned on the
+        parameters, schedule, shard count and expression instant it was computed
+        against (ADR-155). ``fresh`` says ``item`` is a failed write's
+        ``ALL_OLD``, the truth at that instant (Theorem 4 chooses from it); an
+        image from the cache is a guess, which a utilisation estimate corrects
+        (proofs §6). A failed write is retried from its own ``ALL_OLD`` with the
+        same ``now_ms`` (Theorem 3(b)), until the request is admitted, past a
+        limit's slack (rejected), or out of ``budget`` (``UNDECIDED``, the
+        contended 429). A soft limit takes no part and is debited afterwards
+        (:meth:`_debit_soft_fill`). A quota on the item keeps today's ``tk``
+        terms. Anything the two writes cannot express goes to the slow path as
+        ``SCHEDULE_BOUNDARY``: a closed window, a schedule boundary since the
+        item's ``xi``, an expired stamp, a limit missing from the item.
+        """
+        client = self._get_client()
+        fill_key = (self._namespace_id, entity_id, resource, shard_id)
+        bypass_key = (self._namespace_id, entity_id, resource)
+        while True:
+            if item is None:
+                self._fill_images.forget(fill_key)
+                return SpeculativeResult(
+                    success=False,
+                    shard_id=shard_id,
+                    failure_reason=SpeculativeFailureReason.BUCKET_MISSING,
+                )
+            seen = item
+            states = self._deserialize_composite_bucket(seen)
+            by_name = {state.limit_name: state for state in states}
+            boundary = SpeculativeFailureReason.SCHEDULE_BOUNDARY
+
+            def _route(reason: SpeculativeFailureReason) -> SpeculativeResult:
+                return self._image_result(seen, states, shard_id, success=False, reason=reason)
+
+            if item.get(schema.BUCKET_FIELD_DISABLED, {}).get("BOOL", False):
+                return _route(SpeculativeFailureReason.DISABLED)
+            if schema.BUCKET_FIELD_XI not in item:
+                self._fill_images.forget(fill_key)
+                return _route(boundary)
+            bypass_until = schema.decode_stamp(item.get(schema.BUCKET_FIELD_BYPASS))
+            bypassed = bypass_until is not None and bypass_until > now_ms
+            if bypass_until is not None and (not bypassed):
+                return _route(boundary)
+            vu_raw = item.get(schema.BUCKET_FIELD_VU, {}).get("N")
+            if (
+                not bypassed
+                and vu_raw is not None
+                and (int(vu_raw) <= now_ms)
+                and (not vu_only_trims(int(vu_raw), states))
+            ):
+                return _route(boundary)
+            ttl_raw = item.get("ttl", {}).get("N")
+            if ttl_raw is not None and int(ttl_raw) <= now_ms // 1000:
+                return _route(boundary)
+            if any(name not in by_name for name in consume):
+                return _route(boundary)
+            if not bypassed and any(
+                (until := by_name[name].soft_until_ms) is not None and until <= now_ms
+                for name in consume
+            ):
+                return _route(boundary)
+            xi = int(item[schema.BUCKET_FIELD_XI]["N"])
+            hard: dict[str, int] = {}
+            soft: dict[str, int] = {}
+            debited: dict[str, int] = {}
+            counted: dict[str, int] = {}
+            for name, amount in consume.items():
+                state = by_name[name]
+                milli = amount * 1000
+                if bypassed:
+                    counted[name] = milli
+                elif state.fill_instant is None:
+                    debited[name] = milli
+                    counted[name] = milli
+                elif state.soft:
+                    soft[name] = milli
+                else:
+                    hard[name] = milli
+                    counted[name] = milli
+            wcu = by_name.get(schema.WCU_LIMIT_NAME)
+            if wcu is not None and wcu.fill_instant is not None:
+                hard[schema.WCU_LIMIT_NAME] = 1000
+                counted[schema.WCU_LIMIT_NAME] = 1000
+            elif wcu is not None:
+                debited[schema.WCU_LIMIT_NAME] = 1000
+                counted[schema.WCU_LIMIT_NAME] = 1000
+            for name in [*hard, *soft]:
+                state = by_name[name]
+                if state.sched:
+                    crossed = schedule.next_boundary(state.sched, now_ms=xi)
+                    if crossed is not None and crossed <= now_ms:
+                        return _route(boundary)
+            budget.add_limits((entity_id, resource, shard_id), len(hard))
+            image = self._fill_images.get(fill_key)
+            trusted = fresh or (
+                image is not None and self._fill_images.age(image) < self._config_cache_ttl
+            )
+            writes: dict[str, fill_instant.Write] = {}
+            short: set[str] = set()
+            for name, milli in hard.items():
+                state = by_name[name]
+                assert state.fill_instant is not None
+                params = fill_params(state, now_ms)
+                if fill_instant.exceeds_share(milli, params):
+                    if trusted:
+                        short.add(name)
+                        continue
+                    writes[name] = fill_instant.not_full_write(now_ms, milli, params)
+                    continue
+                planned = (
+                    fill_instant.plan_retry(now_ms, milli, params, state.fill_instant)
+                    if fresh
+                    else fill_instant.plan_first(
+                        now_ms,
+                        milli,
+                        params,
+                        image=state.fill_instant,
+                        utilisation_permille=self._fill_images.utilisation(fill_key, name),
+                    )
+                )
+                if planned is None:
+                    short.add(name)
+                else:
+                    writes[name] = planned
+            if fresh:
+                short |= {
+                    name
+                    for name, milli in debited.items()
+                    if by_name[name].fast_path_short(milli // 1000)
+                }
+            if short:
+                wcu_short = schema.WCU_LIMIT_NAME in short
+                user_short = bool(short - {schema.WCU_LIMIT_NAME})
+                reason = (
+                    SpeculativeFailureReason.BOTH_EXHAUSTED
+                    if wcu_short and user_short
+                    else SpeculativeFailureReason.WCU_EXHAUSTED
+                    if wcu_short
+                    else SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
+                )
+                return self._image_result(
+                    item, states, shard_id, success=False, reason=reason, bypassed=bypassed
+                )
+            if not budget.take():
+                return self._image_result(
+                    item,
+                    states,
+                    shard_id,
+                    success=False,
+                    reason=SpeculativeFailureReason.UNDECIDED,
+                    bypassed=bypassed,
+                )
+            request = self.build_fill_write(
+                entity_id,
+                resource,
+                shard_id,
+                {name: (write, by_name[name]) for name, write in writes.items()},
+                counted,
+                debited,
+                now_ms=now_ms,
+                ttl_seconds=ttl_seconds,
+                expressed_ms=xi,
+                shard_count=int(item.get("shard_count", {}).get("N", "1")),
+                item_sched=(
+                    item.get(schema.BUCKET_FIELD_SCHED, {}).get("S"),
+                    item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S"),
+                ),
+                bypassed=bypassed,
+                soft_pins={name: by_name[name].soft_until_ms for name in soft},
+            )
+            try:
+                response = self._update_item_retrying_conflict(
+                    client,
+                    **request,
+                    ReturnValues="ALL_NEW",
+                    ReturnValuesOnConditionCheckFailure="ALL_OLD",
+                )
+            except ClientError as e:
+                if _is_item_transaction_conflict(e):
+                    return SpeculativeResult(
+                        success=False,
+                        shard_id=shard_id,
+                        failure_reason=SpeculativeFailureReason.CONTENTION,
+                    )
+                if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                old_item = cast(dict[str, Any] | None, e.response.get("Item"))
+                if old_item is not None:
+                    old_states = {
+                        s.limit_name: s for s in self._deserialize_composite_bucket(old_item)
+                    }
+                    self._learn_from_image(
+                        entity_id,
+                        resource,
+                        shard_id,
+                        old_item,
+                        list(old_states.values()),
+                        owner=True,
+                    )
+                    self._learn_bypass(bypass_key, old_item, now_ms)
+                    for name in writes:
+                        found = old_states.get(name)
+                        if found is not None and found.fill_instant is not None:
+                            self._fill_images.observe(
+                                fill_key,
+                                name,
+                                found.fill_instant
+                                >= fill_instant.stamp(now_ms, fill_params(found, now_ms)),
+                            )
+                item, fresh = (old_item, True)
+                continue
+            new_item = response["Attributes"]
+            new_states = self._deserialize_composite_bucket(new_item)
+            self._learn_from_image(entity_id, resource, shard_id, new_item, new_states, owner=False)
+            self._learn_bypass(bypass_key, new_item, now_ms)
+            for name, write in writes.items():
+                self._fill_images.observe(fill_key, name, write.side is fill_instant.Side.NOT_FULL)
+            if soft:
+                new_states = self._debit_soft_fill(
+                    entity_id, resource, shard_id, soft, new_item, new_states
+                )
+            return self._image_result(
+                new_item, new_states, shard_id, success=True, bypassed=bypassed
+            )
+
+    def _debit_soft_fill(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        soft: dict[str, int],
+        item: dict[str, Any],
+        states: list[BucketState],
+    ) -> list[BucketState]:
+        """Debit the soft limits of an admitted request (ADR-154, ADR-151).
+
+        After admission, by ADR-155's debit pair: each soft fill instant gets
+        the not-full or full write with no upper bound, so it records
+        ``max(z, t) + c / r`` and may go into debt, retried from the failure
+        image with a fresh stamp each time (with no admission test it needs no
+        fixed one). It never rejects; after :data:`_SOFT_DEBIT_ATTEMPTS` failed
+        writes it is given up, which loses only the reporting (``tc`` and the
+        overdraw). Returns the states of the last image.
+        """
+        client = self._get_client()
+        fill_key = (self._namespace_id, entity_id, resource, shard_id)
+        current: dict[str, Any] | None = item
+        for _attempt in range(_SOFT_DEBIT_ATTEMPTS):
+            if current is None or schema.BUCKET_FIELD_XI not in current:
+                break
+            by_name = {s.limit_name: s for s in self._deserialize_composite_bucket(current)}
+            if any(
+                by_name.get(name) is None or by_name[name].fill_instant is None for name in soft
+            ):
+                break
+            t_ms = self._now_ms()
+            xi = int(current[schema.BUCKET_FIELD_XI]["N"])
+            if any(
+                by_name[name].sched
+                and (crossed := schedule.next_boundary(by_name[name].sched, now_ms=xi)) is not None
+                and (crossed <= t_ms)
+                for name in soft
+            ):
+                break
+            writes = {
+                name: (
+                    fill_instant.debit_write(
+                        t_ms,
+                        milli,
+                        fill_params(by_name[name], t_ms),
+                        image=by_name[name].fill_instant,
+                    ),
+                    by_name[name],
+                )
+                for name, milli in soft.items()
+            }
+            request = self.build_fill_write(
+                entity_id,
+                resource,
+                shard_id,
+                writes,
+                dict(soft),
+                {},
+                now_ms=t_ms,
+                ttl_seconds=None,
+                expressed_ms=xi,
+                shard_count=int(current.get("shard_count", {}).get("N", "1")),
+                item_sched=(
+                    current.get(schema.BUCKET_FIELD_SCHED, {}).get("S"),
+                    current.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S"),
+                ),
+                guards=False,
+            )
+            try:
+                response = self._update_item_retrying_conflict(
+                    client,
+                    **request,
+                    ReturnValues="ALL_NEW",
+                    ReturnValuesOnConditionCheckFailure="ALL_OLD",
+                )
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    logger.warning(
+                        "soft debit failed for resource=%s shard=%d",
+                        resource,
+                        shard_id,
+                        exc_info=True,
+                    )
+                    return states
+                current = cast(dict[str, Any] | None, e.response.get("Item"))
+                continue
+            new_item = response["Attributes"]
+            self._fill_images.store(fill_key, new_item)
+            return self._deserialize_composite_bucket(new_item)
+        logger.warning(
+            "soft debit given up for resource=%s shard=%d: only its reporting is lost",
+            resource,
+            shard_id,
+        )
+        return states
+
+    def build_fill_write(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        writes: dict[str, tuple[fill_instant.Write, BucketState]],
+        counted: dict[str, int],
+        debited: dict[str, int],
+        *,
+        now_ms: int,
+        ttl_seconds: int | None,
+        expressed_ms: int,
+        shard_count: int,
+        item_sched: tuple[str | None, str | None],
+        bypassed: bool = False,
+        guards: bool = True,
+        soft_pins: dict[str, int | None] | None = None,
+    ) -> dict[str, Any]:
+        """Build one fill-instant write (ADR-154, ADR-155): the ``UpdateItem`` kwargs.
+
+        ``writes`` names each fill instant this write moves, with the state it
+        was computed from: the not-full write ``ADD fi :span`` under
+        ``:stamp ≤ fi ≤ :upper`` (no upper bound for a debit), or the full
+        write ``SET fi = :value`` under ``fi < :stamp``, each pinned on that
+        state's stored ``cp`` / ``ra`` / ``rp`` and its own ``sched`` override.
+        ``counted`` is the ``tc`` it adds per limit, ``debited`` the limits
+        still stored as ``tk`` (quotas) it debits under today's terms. The item
+        is pinned on its expression instant ``xi``, ``shard_count`` and the
+        hoisted ``sched`` / ``sched_tz``. With ``guards`` (an admission) it
+        carries today's guards: the item exists and is not expired, not
+        disabled, its ``vu`` window open, and either no ``bypass`` stamp
+        (enforce) or a live one (``bypassed``); a soft debit carries only the
+        pins. ``soft_pins`` pins each soft limit the admission leaves out on
+        the stamp it read, so one a fan-out removed since is decided as hard
+        on the retry. Every token is positional (#634).
+        """
+        set_parts: list[str] = []
+        add_parts: list[str] = []
+        conditions: list[str] = ["attribute_exists(PK)"]
+        names: dict[str, str] = {}
+        values: dict[str, Any] = {}
+        for i, (name, (write, state)) in enumerate(writes.items()):
+            names[f"#zf{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_FI)
+            values[f":zs{i}"] = {"N": str(write.stamp)}
+            if write.side is fill_instant.Side.FULL:
+                values[f":zv{i}"] = {"N": str(write.stamp + write.span)}
+                set_parts.append(f"#zf{i} = :zv{i}")
+                conditions.append(f"#zf{i} < :zs{i}")
+            else:
+                values[f":zd{i}"] = {"N": str(write.span)}
+                add_parts.append(f"#zf{i} :zd{i}")
+                if write.upper is None:
+                    conditions.append(f"#zf{i} >= :zs{i}")
+                else:
+                    values[f":zu{i}"] = {"N": str(write.upper)}
+                    conditions.append(f"#zf{i} BETWEEN :zs{i} AND :zu{i}")
+            for token, field, value in (
+                ("zp", schema.BUCKET_FIELD_CP, state.capacity_milli),
+                ("za", schema.BUCKET_FIELD_RA, state.refill_amount_milli),
+                ("zr", schema.BUCKET_FIELD_RP, state.refill_period_ms),
+            ):
+                names[f"#{token}{i}"] = schema.bucket_attr(name, field)
+                values[f":{token}{i}"] = {"N": str(value)}
+                conditions.append(f"#{token}{i} = :{token}{i}")
+            names[f"#zh{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED)
+            override = state.stored_sched_raw[0] if state.stored_sched_raw else None
+            if override is None:
+                conditions.append(f"attribute_not_exists(#zh{i})")
+            else:
+                values[f":zh{i}"] = {"S": override}
+                conditions.append(f"#zh{i} = :zh{i}")
+            if guards:
+                names[f"#zg{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
+                values[":vu_now"] = {"N": str(now_ms)}
+                conditions.append(f"(attribute_not_exists(#zg{i}) OR #zg{i} > :vu_now)")
+        for j, (name, milli) in enumerate(counted.items()):
+            names[f"#zc{j}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
+            values[f":zc{j}"] = {"N": str(milli)}
+            add_parts.append(f"#zc{j} :zc{j}")
+        for k, (name, milli) in enumerate(debited.items()):
+            names[f"#t{k}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+            values[f":n{k}"] = {"N": str(-milli)}
+            values[f":h{k}"] = {"N": str(milli)}
+            add_parts.append(f"#t{k} :n{k}")
+            names[f"#o{k}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
+            names[f"#oc{k}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
+            values[":vu_now"] = {"N": str(now_ms)}
+            conditions.append(
+                f"((#o{k} > :vu_now AND attribute_exists(#oc{k}) AND attribute_exists(#t{k})) OR #t{k} >= :h{k})"
+            )
+            conditions.append(f"(attribute_not_exists(#o{k}) OR #o{k} > :vu_now)")
+        for m, (name, deadline) in enumerate((soft_pins or {}).items()):
+            names[f"#zo{m}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
+            if deadline is None:
+                conditions.append(f"attribute_not_exists(#zo{m})")
+            else:
+                values[f":zo{m}"] = schema.stamp_value(deadline)
+                conditions.append(f"#zo{m} = :zo{m}")
+        names["#zxi"] = schema.BUCKET_FIELD_XI
+        values[":zxi"] = {"N": str(expressed_ms)}
+        conditions.append("#zxi = :zxi")
+        names["#zsc"] = "shard_count"
+        values[":zsc"] = {"N": str(shard_count)}
+        conditions.append(
+            "(attribute_not_exists(#zsc) OR #zsc = :zsc)" if shard_count == 1 else "#zsc = :zsc"
+        )
+        for token, field, raw in (
+            ("zis", schema.BUCKET_FIELD_SCHED, item_sched[0]),
+            ("zit", schema.BUCKET_FIELD_SCHED_TZ, item_sched[1]),
+        ):
+            names[f"#{token}"] = field
+            if raw is None:
+                conditions.append(f"attribute_not_exists(#{token})")
+            else:
+                values[f":{token}"] = {"S": raw}
+                conditions.append(f"#{token} = :{token}")
+        if guards:
+            names["#ttl"] = "ttl"
+            values[":now_epoch"] = {"N": str(now_ms // 1000)}
+            conditions.append("(attribute_not_exists(#ttl) OR #ttl > :now_epoch)")
+            if ttl_seconds is not None:
+                values[":ttl"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
+                set_parts.append("#ttl = :ttl")
+            names["#disabled"] = schema.BUCKET_FIELD_DISABLED
+            conditions.append("attribute_not_exists(#disabled)")
+            names["#byp"] = schema.BUCKET_FIELD_BYPASS
+            values[":vu_now"] = {"N": str(now_ms)}
+            if bypassed:
+                conditions.append("#byp > :vu_now")
+            else:
+                conditions.append("attribute_not_exists(#byp)")
+                names["#vu"] = schema.BUCKET_FIELD_VU
+                conditions.append("(attribute_not_exists(#vu) OR #vu > :vu_now)")
+        expression = []
+        if set_parts:
+            expression.append("SET " + ", ".join(set_parts))
+        if add_parts:
+            expression.append("ADD " + ", ".join(add_parts))
+        return {
+            "TableName": self.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            "UpdateExpression": " ".join(expression),
+            "ConditionExpression": " AND ".join(conditions),
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": values,
+        }
+
+    def build_fill_return(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        returns: dict[str, tuple[int, BucketState]],
+        *,
+        expressed_ms: int,
+        shard_count: int,
+        counter: bool = True,
+    ) -> dict[str, Any]:
+        """Build an exact return of fill-instant debits (ADR-155): ``UpdateItem`` kwargs.
+
+        ``returns`` maps a limit to the millitokens returned and the state the
+        debit was computed against. Each moves ``fi`` back by the debit's
+        span, which is exact on every item with no balance condition: every
+        fill instant before now reads as full, so the cap comes for free
+        (proofs Lemma 3). ``tc`` goes back too unless ``counter`` is False. The
+        write is pinned on the fill instant still existing, the state's stored
+        ``cp`` / ``ra`` / ``rp``, the item's ``shard_count`` and its ``xi``: a
+        span computed against other parameters would return the wrong amount,
+        so a return that fails its pins is dropped (an under-admission).
+        """
+        add_parts: list[str] = []
+        conditions: list[str] = ["attribute_exists(PK)"]
+        names: dict[str, str] = {}
+        values: dict[str, Any] = {}
+        for i, (name, (milli, state)) in enumerate(returns.items()):
+            params = fill_params(state, expressed_ms)
+            names[f"#zf{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_FI)
+            values[f":zd{i}"] = {"N": str(-fill_instant.span(milli, params))}
+            add_parts.append(f"#zf{i} :zd{i}")
+            conditions.append(f"attribute_exists(#zf{i})")
+            if counter:
+                names[f"#zc{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
+                values[f":zc{i}"] = {"N": str(-milli)}
+                add_parts.append(f"#zc{i} :zc{i}")
+            for token, field, value in (
+                ("zp", schema.BUCKET_FIELD_CP, state.capacity_milli),
+                ("za", schema.BUCKET_FIELD_RA, state.refill_amount_milli),
+                ("zr", schema.BUCKET_FIELD_RP, state.refill_period_ms),
+            ):
+                names[f"#{token}{i}"] = schema.bucket_attr(name, field)
+                values[f":{token}{i}"] = {"N": str(value)}
+                conditions.append(f"#{token}{i} = :{token}{i}")
+        names["#zxi"] = schema.BUCKET_FIELD_XI
+        values[":zxi"] = {"N": str(expressed_ms)}
+        conditions.append("#zxi = :zxi")
+        names["#zsc"] = "shard_count"
+        values[":zsc"] = {"N": str(shard_count)}
+        conditions.append(
+            "(attribute_not_exists(#zsc) OR #zsc = :zsc)" if shard_count == 1 else "#zsc = :zsc"
+        )
+        return {
+            "TableName": self.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            "UpdateExpression": "ADD " + ", ".join(add_parts),
+            "ConditionExpression": " AND ".join(conditions),
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": values,
+        }
+
+    def return_fill_instants(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        returns: dict[str, tuple[int, BucketState]],
+        *,
+        expressed_ms: int,
+        shard_count: int,
+        counter: bool = True,
+    ) -> bool:
+        """Return fill-instant debits exactly (:meth:`build_fill_return`).
+
+        Returns whether the write landed; a lost pin (the item re-expressed or
+        reparameterised since the debit) drops the return, an under-admission,
+        and is logged at debug. Any other error is raised.
+        """
+        if not returns:
+            return True
+        client = self._get_client()
+        request = self.build_fill_return(
+            entity_id,
+            resource,
+            shard_id,
+            returns,
+            expressed_ms=expressed_ms,
+            shard_count=shard_count,
+            counter=counter,
+        )
+        try:
+            self._update_item_retrying_conflict(client, **request)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            logger.debug("Fill-instant return dropped: its pins no longer hold")
+            return False
+        self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
+        return True
 
     def _learn_bypass(self, key: tuple[str, str, str], item: dict[str, Any], now_ms: int) -> bool:
         """Learn a pair's bypass mode from the item a write returned (#311).

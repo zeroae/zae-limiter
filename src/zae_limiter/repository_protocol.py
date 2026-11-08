@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from .config_cache import CacheStats, ConfigSource
+    from .fill_instant import WriteBudget
     from .models import (
         AuditEvent,
         BackendCapabilities,
@@ -62,6 +63,9 @@ class SpeculativeFailureReason(Enum):
     DISABLED = "disabled"
     SCHEDULE_BOUNDARY = "schedule_boundary"
     CONTENTION = "contention"
+    # The fill-instant fast path's writes kept being overtaken until the
+    # request's write budget ran out (ADR-154): answered as the contended 429.
+    UNDECIDED = "undecided"
 
 
 @dataclass(frozen=True)
@@ -1000,6 +1004,29 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    async def return_fill_instants(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        returns: "dict[str, tuple[int, BucketState]]",
+        *,
+        expressed_ms: int,
+        shard_count: int,
+        counter: bool = True,
+    ) -> bool:
+        """Return fill-instant debits exactly (ADR-155, #819).
+
+        ``returns`` maps a limit to the millitokens returned and the state the
+        debit was computed against. Each fill instant moves back by the debit's
+        span (``ADD b_{name}_fi -c·S·rp``, and ``tc`` back unless ``counter`` is
+        False) with no balance condition, pinned on the fill instant existing,
+        the state's stored ``cp`` / ``ra`` / ``rp``, ``shard_count`` and
+        ``expressed_ms`` (the item's ``xi``). Returns False when a pin failed and
+        the return was dropped (an under-admission).
+        """
+        ...
+
     async def speculative_consume(
         self,
         entity_id: str,
@@ -1010,8 +1037,13 @@ class RepositoryProtocol(Protocol):
         now_ms: int | None = None,
         avoid_shards: frozenset[int] = frozenset(),
         avoid_parent_shards: frozenset[int] = frozenset(),
+        write_budget: "WriteBudget | None" = None,
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
+
+        ``write_budget`` (ADR-154, #819): the writes the acquire may still send
+        on items storing fill instants, shared by every resource of a
+        multi-resource acquire; the limiter passes it only then.
 
         Issues an UpdateItem with ADD -consumed and condition
         ``attribute_exists(PK) AND tk >= consumed`` for each limit.

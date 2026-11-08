@@ -223,7 +223,14 @@ Implement this protocol to use a different storage backend (e.g., for testing).
     `tk` read, which the write REMOVEs) and on the stored `cp` / `ra` / `rp`;
     SET `xi` pinned on the one read; pin `shard_count`. `speculative_consume`
     must refuse an item carrying `xi` (it holds no `tk` for its dripping limits)
-    and report it as `SCHEDULE_BOUNDARY`. The remaining writers
+    and report it as `SCHEDULE_BOUNDARY`; the repository's own fill-instant fast
+    path (#819) then writes it, which a custom backend may leave to the slow
+    path. `speculative_consume` also takes `write_budget=` (passed only by a
+    multi-resource acquire) and may return `SpeculativeFailureReason.UNDECIDED`,
+    the contended 429. A backend must implement `return_fill_instants`, the
+    exact return of a fill instant (`ADD b_{name}_fi -c·S·rp` pinned on what the
+    debit was computed against), which compensation and lease refunds call. The
+    remaining writers
     change with #819-#821, before the release; until then writing the form is
     behind an internal switch that is off.
 

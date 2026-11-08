@@ -44,6 +44,7 @@ from .exceptions import (
     ValidationError,
     VersionMismatchError,
 )
+from .fill_instant import WriteBudget
 from .models import (
     AuditEvent,
     Availability,
@@ -263,6 +264,22 @@ def _reader_window_end(limit: Limit, bucket: BucketState) -> int | None:
         if seconds is not None
     ]
     return max(ends) if ends else None
+
+
+def _undecided_rejection(
+    buckets: "list[BucketState] | None", consume: dict[str, int], now_ms: int
+) -> RateLimitExceeded:
+    """The contended 429 for a request the fill-instant writes left undecided (ADR-154).
+
+    One status per declared limit on the images it holds, none exceeded, each
+    waiting ``_CONTENTION_RETRY_AFTER_S`` (#724): the request was overtaken,
+    not short. Nothing it asked for is debited.
+    """
+    statuses = [
+        replace(status, exceeded=False, retry_after_seconds=_CONTENTION_RETRY_AFTER_S)
+        for status in declared_statuses(buckets or [], consume, now_ms)
+    ]
+    return RateLimitExceeded(statuses, contended=True)
 
 
 class SyncRateLimiter:
@@ -927,6 +944,7 @@ class SyncRateLimiter:
         consume: dict[str, int],
         use_rejection_cache: bool = True,
         prechecked: tuple[frozenset[int], frozenset[int]] | None = None,
+        write_budget: WriteBudget | None = None,
     ) -> tuple[SyncLease | None, int, int | None, _ParentHint | None]:
         """Try the speculative fast path for acquire (issue #315).
 
@@ -956,6 +974,8 @@ class SyncRateLimiter:
         the cached states describe the stored parameters, not an override.
         ``prechecked`` is the ``(avoid, avoid_parent)`` answer of
         :meth:`_rejection_precheck` taken by the caller, which then skips it.
+        ``write_budget`` is a multi-resource acquire's shared budget for the
+        fill-instant writes (ADR-154), passed on only when given.
 
         Raises:
             RateLimitExceeded: If the bucket is truly exhausted (refill
@@ -970,27 +990,17 @@ class SyncRateLimiter:
             avoid, avoid_parent = prechecked
         elif use_rejection_cache:
             avoid, avoid_parent = self._rejection_precheck(entity_id, resource, consume, now_ms)
+        steering: dict[str, Any] = {}
+        if avoid:
+            steering["avoid_shards"] = avoid
         if avoid_parent:
-            result = self._repository.speculative_consume(
-                entity_id=entity_id,
-                resource=resource,
-                consume=consume,
-                now_ms=now_ms,
-                avoid_shards=avoid,
-                avoid_parent_shards=avoid_parent,
-            )
-        elif avoid:
-            result = self._repository.speculative_consume(
-                entity_id=entity_id,
-                resource=resource,
-                consume=consume,
-                now_ms=now_ms,
-                avoid_shards=avoid,
-            )
-        else:
-            result = self._repository.speculative_consume(
-                entity_id=entity_id, resource=resource, consume=consume, now_ms=now_ms
-            )
+            steering["avoid_shards"] = avoid
+            steering["avoid_parent_shards"] = avoid_parent
+        if write_budget is not None:
+            steering["write_budget"] = write_budget
+        result = self._repository.speculative_consume(
+            entity_id=entity_id, resource=resource, consume=consume, now_ms=now_ms, **steering
+        )
         if not result.success:
             written_parent = result.debited_parent_id or result.parent_id
             parent_hint = (
@@ -1023,6 +1033,8 @@ class SyncRateLimiter:
                 raise ResourceDisabled(
                     entity_id=result.parent_id, resource=resource, level="bucket"
                 )
+            if result.failure_reason == SpeculativeFailureReason.UNDECIDED:
+                raise _undecided_rejection(result.old_buckets, consume, now_ms)
             if result.failure_reason in (
                 SpeculativeFailureReason.WCU_EXHAUSTED,
                 SpeculativeFailureReason.BOTH_EXHAUSTED,
@@ -1234,6 +1246,18 @@ class SyncRateLimiter:
                 bypassed=result.bypassed,
             )
             raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
+        if parent_result.failure_reason == SpeculativeFailureReason.UNDECIDED:
+            self._compensate_child(
+                entity_id,
+                resource,
+                consume,
+                result.shard_id,
+                result.buckets,
+                bypassed=result.bypassed,
+            )
+            raise _undecided_rejection(
+                [*result.buckets, *(parent_result.old_buckets or [])], consume, now_ms
+            )
         if parent_result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY:
             self._compensate_child(
                 entity_id,
@@ -1545,6 +1569,33 @@ class SyncRateLimiter:
         must never turn a rejection into an admission; a lost one costs the
         entity the tokens of one request.
         """
+        consume_all = consume
+        fill = {
+            b.limit_name: b
+            for b in buckets or ()
+            if b.fill_instant is not None and (not b.soft) and (b.limit_name in consume)
+        }
+        if fill and (not bypassed):
+            consume = {name: amount for name, amount in consume.items() if name not in fill}
+            first = next(iter(fill.values()))
+            try:
+                self._repository.return_fill_instants(
+                    entity_id,
+                    resource,
+                    shard_id,
+                    {name: (consume_all[name] * 1000, state) for name, state in fill.items()},
+                    expressed_ms=first.stored_expressed_ms or 0,
+                    shard_count=first.shard_count,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Fill-instant compensation failed for resource=%s shard=%d; the debit stands (%s)",
+                    resource,
+                    shard_id,
+                    type(exc).__name__,
+                )
+            if not consume:
+                return
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
         image = credit_image(buckets or ())
         ceilings = credit_ceilings(
@@ -1662,6 +1713,8 @@ class SyncRateLimiter:
                     self._build_lease_from_speculative(entity_id, resource, consume, retry),
                     None,
                 )
+            if retry.failure_reason == SpeculativeFailureReason.UNDECIDED:
+                raise _undecided_rejection(retry.old_buckets, consume, now_ms)
             if retry.failure_reason in (
                 SpeculativeFailureReason.BUCKET_MISSING,
                 SpeculativeFailureReason.SCHEDULE_BOUNDARY,
@@ -2463,13 +2516,18 @@ class SyncRateLimiter:
                         self._rejection_precheck(entity_id, resource, consume, now_ms),
                     )
                 )
+            budget = WriteBudget()
 
             def _attempt(
                 resource: str, consume: dict[str, int], avoid: tuple[frozenset[int], frozenset[int]]
             ) -> tuple[SyncLease | None, int, int | None, _ParentHint | None] | Exception:
                 try:
                     outcome = self._try_speculative_acquire(
-                        entity_id=entity_id, resource=resource, consume=consume, prechecked=avoid
+                        entity_id=entity_id,
+                        resource=resource,
+                        consume=consume,
+                        prechecked=avoid,
+                        write_budget=budget,
                     )
                 except Exception as exc:
                     return exc

@@ -57,6 +57,12 @@ REPOSITORY = {
     "_build_bucket_param_update": (False, False),  # param sync: cp/ra/rp/sched, vu = 0
     # Direct bucket writes.
     "_speculative_consume_once": (True, False),  # the fast path ADD; never gc
+    # ADR-154's two writes (#819): a quota on the item keeps today's `tk` terms.
+    "_speculative_consume_fill": (True, False),
+    "build_fill_write": (True, False),
+    "_debit_soft_fill": (False, False),  # a soft fill instant's debit after admission
+    "build_fill_return": (False, False),  # the exact return of a fill instant (ADR-155)
+    "return_fill_instants": (False, False),
     # (bypass shape: tc only, #311)
     "bump_shard_count": (False, False),  # shard_count on shard 0
     "_propagate_shard_count": (False, False),  # shard_count on siblings (R6 residual)
@@ -166,10 +172,11 @@ def test_every_aggregator_writer_is_registered():
 
 def test_the_fast_path_never_writes_gc():
     """I3: the speculative consume must stay 0 RCU + 1 WCU and blind to ``gc``."""
-    assert REPOSITORY["_speculative_consume_once"] == (True, False)
-    source = inspect.getsource(Repository._speculative_consume_once)
-    assert "BUCKET_FIELD_GC" not in source
-    assert "grant_count" not in source
+    for name in ("_speculative_consume_once", "_speculative_consume_fill", "build_fill_write"):
+        assert REPOSITORY[name] == (True, False)
+        source = inspect.getsource(getattr(Repository, name))
+        assert "BUCKET_FIELD_GC" not in source
+        assert "grant_count" not in source
 
 
 def test_only_grant_writers_write_gc():

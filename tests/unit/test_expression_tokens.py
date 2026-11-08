@@ -384,6 +384,68 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "attribute_not_exists(#sz0)" in update["ConditionExpression"]
 
+    def _fill_state(self, name: str, *, sched: str | None = None) -> BucketState:
+        state = BucketState.from_limit("user-1", "api", Limit.per_minute(name, 100), 2_000)
+        state.fill_instant, state.expressed_ms = 5_000, 2_000
+        state.stored_sched_raw = (sched, None)
+        return state
+
+    @pytest.mark.parametrize("bypassed", [False, True])
+    @pytest.mark.parametrize("guards", [True, False])
+    def test_fill_write(self, bypassed: bool, guards: bool) -> None:
+        """#819: ADR-154's two writes, every side, beside a quota's `tk` terms."""
+        from zae_limiter import fill_instant
+
+        params = fill_instant.ShardParams(100_000, 100_000, 60_000, 1)
+        request = _repo().build_fill_write(
+            "user-1",
+            "api",
+            0,
+            {
+                DOTTED: (
+                    fill_instant.not_full_write(2_000, 1_000, params),
+                    self._fill_state(DOTTED),
+                ),
+                HYPHENATED: (
+                    fill_instant.full_write(2_000, 1_000, params),
+                    self._fill_state(HYPHENATED, sched="1h9-17s500"),
+                ),
+                "tok.sec": (
+                    fill_instant.not_full_write(2_000, 1_000, params, bounded=False),
+                    self._fill_state("tok.sec"),
+                ),
+            },
+            {DOTTED: 1_000, HYPHENATED: 1_000, "tok.sec": 1_000, "q.v1": 1_000},
+            {"q.v1": 1_000},
+            now_ms=2_000,
+            ttl_seconds=60,
+            expressed_ms=2_000,
+            shard_count=4,
+            item_sched=("1h9-17s500", "UTC"),
+            bypassed=bypassed,
+            guards=guards,
+            soft_pins={"soft.a": None, "soft-b": 9_000},
+        )
+        assert_expression_safe(request)
+        assert " BETWEEN " in request["ConditionExpression"]
+
+    def test_fill_return(self) -> None:
+        """#819: the exact return of a fill instant (ADR-155)."""
+        for counter in (True, False):
+            request = _repo().build_fill_return(
+                "user-1",
+                "api",
+                0,
+                {
+                    DOTTED: (1_000, self._fill_state(DOTTED)),
+                    HYPHENATED: (5, self._fill_state(HYPHENATED)),
+                },
+                expressed_ms=2_000,
+                shard_count=1,
+                counter=counter,
+            )
+            assert_expression_safe(request)
+
     def test_normal_with_only_seeds(self) -> None:
         """No ADD clause at all when every limit written is a seed."""
         update = _repo().build_composite_normal(

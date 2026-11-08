@@ -2399,6 +2399,84 @@ class TestCheckAvailabilitySeesAJustCreatedBucket:
         assert available == {"rpm": 80}
 
 
+class TestRefillPastCapacityOverAdmits:
+    """Refill accrued while a bucket sat full is spent later (issue #808).
+
+    A strict token bucket discards refill past ``capacity``. The speculative
+    fast path debits the stored balance with a plain ``ADD`` and leaves ``rf``
+    where it was, so once that balance runs out the slow path credits every
+    millisecond since ``rf``, capped at the ceiling, including refill that
+    accrued while the bucket was already full. A burst therefore admits the
+    stored balance **plus** up to a full ceiling of stale refill: nearly twice
+    the configured capacity after a long idle period.
+
+    Fixed by ADR-154's fill instants (#819): the fast path records
+    ``max(z, t) + c / r``, so time a bucket sat full is never credited. The
+    control shows the slow path alone (``speculative_writes=False``) admits the
+    same. The clock is frozen during each burst, so no refill accrues inside
+    it. Until #821 removes it, only tests turn ``WRITE_FILL_INSTANTS`` on.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fill_instants_on(self, monkeypatch):
+        from zae_limiter import schema
+
+        monkeypatch.setattr(schema, "WRITE_FILL_INSTANTS", True)
+
+    LIMITS = [Limit.custom("rpm", capacity=300, refill_amount=300, refill_period_seconds=14400)]
+
+    @staticmethod
+    def _clock(sync_limiter):
+        repo = sync_limiter._repository
+        clock = {"now": repo._now_ms()}
+        repo._now_ms = lambda: clock["now"]
+        return clock
+
+    @staticmethod
+    def _use(sync_limiter, entity_id, times):
+        for _ in range(times):
+            with sync_limiter.acquire(entity_id, "gpt-4", consume={"rpm": 1}):
+                pass
+
+    @staticmethod
+    def _burst(sync_limiter, entity_id):
+        admitted = 0
+        while admitted < 2000:
+            try:
+                with sync_limiter.acquire(entity_id, "gpt-4", consume={"rpm": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                break
+        return admitted
+
+    def test_burst_after_partial_use_admits_at_most_capacity(self, sync_limiter):
+        """300 per 4h: 10 uses, 45 idle minutes (56 accrued, bucket full again)."""
+        clock = self._clock(sync_limiter)
+        sync_limiter._repository.set_limits("user-1", self.LIMITS, resource="gpt-4")
+        self._use(sync_limiter, "user-1", 10)
+        clock["now"] += 45 * 60000
+        assert sync_limiter.available("user-1", "gpt-4") == {"rpm": 300}
+        assert self._burst(sync_limiter, "user-1") == 300
+
+    def test_burst_after_long_idle_admits_at_most_capacity(self, sync_limiter):
+        """300 per 4h: one use, then a day idle."""
+        clock = self._clock(sync_limiter)
+        sync_limiter._repository.set_limits("user-1", self.LIMITS, resource="gpt-4")
+        self._use(sync_limiter, "user-1", 1)
+        clock["now"] += 24 * 3600000
+        assert sync_limiter.available("user-1", "gpt-4") == {"rpm": 300}
+        assert self._burst(sync_limiter, "user-1") == 300
+
+    def test_slow_path_alone_admits_capacity(self, sync_limiter):
+        """Control: with the fast path off, every pass clamps and moves ``rf``."""
+        slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+        clock = self._clock(sync_limiter)
+        sync_limiter._repository.set_limits("user-1", self.LIMITS, resource="gpt-4")
+        self._use(slow, "user-1", 1)
+        clock["now"] += 24 * 3600000
+        assert self._burst(slow, "user-1") == 300
+
+
 class TestRateLimitExceededException:
     """Tests for RateLimitExceeded exception."""
 

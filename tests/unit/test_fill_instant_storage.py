@@ -232,8 +232,8 @@ class TestCreate:
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 10}):
             pass
         clock.now = T0 + 3_000
-        # The fast path's write cannot hold on an item with no `tk` (nothing
-        # is written); the slow path writes the fill instant from its read.
+        # Today's write fails on the item's `xi` guard and hands its image to
+        # the fill-instant fast path (#819), which records `max(z, t) + c / r`.
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 5}):
             pass
 
@@ -244,7 +244,8 @@ class TestCreate:
             5_000, p
         )
         assert bucket_attr("rpm", BUCKET_FIELD_TK) not in item
-        assert int(item[BUCKET_FIELD_XI]["N"]) == T0 + 3_000
+        # A fast-path write re-expresses nothing, so `xi` stays where it was.
+        assert int(item[BUCKET_FIELD_XI]["N"]) == T0
 
 
 class TestConversion:
@@ -430,8 +431,9 @@ class TestGuards:
                 await lease.adjust(rpm=5)
         assert bucket_attr("rpm", BUCKET_FIELD_TK) not in await _raw(repo, "e1")
 
-    async def test_a_rollback_drops_its_credit(self, limiter, clock, switch) -> None:
+    async def test_a_rollback_returns_its_debit_exactly(self, limiter, clock, switch) -> None:
         repo = await self._converted(limiter, clock, switch)
+        tc_before = _n(await _raw(repo, "e1"), "rpm", "tc")
         clock.now = T0 + 1_000
         with pytest.raises(RuntimeError):
             async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}):
@@ -439,9 +441,10 @@ class TestGuards:
         item = await _raw(repo, "e1")
         assert bucket_attr("rpm", BUCKET_FIELD_TK) not in item
         p = rpm_params()
-        after_first = fi.stamp(T0, p) + fi.span(10_000, p)
-        expected = max(after_first, fi.stamp(T0 + 1_000, p)) + fi.span(1_000, p)
-        assert _n(item, "rpm", BUCKET_FIELD_FI) == expected
+        # The debit moved the fill instant by c / r and the return moved it
+        # back (ADR-155): exactly where the first acquire left it.
+        assert _n(item, "rpm", BUCKET_FIELD_FI) == fi.stamp(T0, p) + fi.span(10_000, p)
+        assert _n(item, "rpm", "tc") == tc_before
 
     async def test_reset_refuses(self, limiter, clock, switch) -> None:
         repo = await self._converted(limiter, clock, switch)

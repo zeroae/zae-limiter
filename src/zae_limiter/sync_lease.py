@@ -54,6 +54,7 @@ from .schema import (
     BUCKET_FIELD_VU,
     BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
+    BUCKET_FIELD_XI,
     WCU_LIMIT_NAME,
     bucket_attr,
     calculate_bucket_ttl_seconds,
@@ -108,6 +109,7 @@ class LeaseEntry:
     _soft_trusted: bool = False
     _soft_restamp: bool = False
     _stamp_deadline_ms: int | None = None
+    _fill_xi: int | None = None
     _bypass: bool = False
     _bypass_until_ms: int | None = None
     _bypass_restamp: tuple[int | None, int | None] | None = None
@@ -933,6 +935,7 @@ class SyncLease:
         ] = []
         credit_images: dict[tuple[str, str, int], CreditImage | None] = {}
         period_images: dict[tuple[str, str, int], CreditImage | None] = {}
+        fill_xis: dict[tuple[str, str, int], int] = {}
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
             has_custom_config = group_entries[0]._has_custom_config
@@ -981,6 +984,13 @@ class SyncLease:
                     )
                 )
                 created = items[-1].get("Put") if isinstance(items[-1], dict) else None
+                created_xi = (
+                    created.get("Item", {}).get(BUCKET_FIELD_XI, {}).get("N")
+                    if isinstance(created, dict)
+                    else None
+                )
+                if created_xi is not None:
+                    fill_xis[entity_id, resource, shard_id] = int(created_xi)
                 credit_images[entity_id, resource, shard_id] = credit_image_from_item(
                     created.get("Item") if isinstance(created, dict) else None
                 )
@@ -1013,6 +1023,7 @@ class SyncLease:
                     stamped, _read = _expressed(group_entries)
                     for e in group_entries:
                         express_at(e.state, stamped)
+                    fill_xis[entity_id, resource, shard_id] = stamped
                 fill_writes: dict[str, FillInstantWrite] = {}
                 for entry in group_entries:
                     name = entry.limit.name
@@ -1434,6 +1445,7 @@ class SyncLease:
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
             key = (entry.entity_id, entry.resource, entry._shard_id)
+            entry._fill_xi = fill_xis.get(key)
             if key in credit_images:
                 entry._image = entry._period_image = credit_images[key]
             elif key in period_images:
@@ -1700,10 +1712,16 @@ class SyncLease:
         writes = self._adjust_writes(
             lambda entry: (entry.consumed - entry._initial_consumed) * 1000
         )
+        returns = self._fill_returns(
+            lambda entry: (entry.consumed - entry._initial_consumed) * 1000
+        )
         self._committed = True
         failures = self._write_credits_independently(writes)
+        returned = self._send_fill_returns(returns)
         if failures:
             raise failures[0][1]
+        if returned:
+            raise returned[0]
 
     def _rollback(self) -> None:
         """Write compensating deltas to restore consumed tokens (Issue #309).
@@ -1726,6 +1744,10 @@ class SyncLease:
         if not self._initial_committed:
             return
         writes = self._adjust_writes(lambda entry: -entry._initial_consumed * 1000)
+        for exc in self._send_fill_returns(
+            self._fill_returns(lambda entry: -entry._initial_consumed * 1000)
+        ):
+            logger.warning("Failed to return a fill instant on rollback (%s)", type(exc).__name__)
         for (_entity_id, resource, shard_id, *_rest), exc in self._write_credits_independently(
             writes
         ):
@@ -1763,9 +1785,6 @@ class SyncLease:
                         raise NotImplementedError(
                             f"debiting fill-instant limit {entry.limit.name!r} lands in #820"
                         )
-                    logger.debug(
-                        "Credit to fill-instant limit %s dropped until #820", entry.limit.name
-                    )
                     continue
                 deltas[entry.limit.name] = delta
             if not deltas:
@@ -1784,6 +1803,63 @@ class SyncLease:
             pin = image.pin if image is not None else None
             writes.append((entity_id, resource, shard_id, deltas, ceilings, pin, shape))
         return writes
+
+    def _fill_returns(
+        self, delta_of: Callable[[LeaseEntry], int]
+    ) -> list[tuple[str, str, int, dict[str, tuple[int, BucketState]], int, int]]:
+        """The exact returns of this lease's fill-instant credits, per bucket item (#819).
+
+        ``(entity, resource, shard, returns, xi, shard_count)``: every entry
+        stored as a fill instant whose delta is negative, on an item written in
+        the enforce shape (a bypassed one never had its fill instant debited).
+        Pinned on the ``xi`` the item held once this lease's commit landed.
+        """
+        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
+        for entry in self.entries:
+            groups.setdefault((entry.entity_id, entry.resource, entry._shard_id), []).append(entry)
+        returns = []
+        for (entity_id, resource, shard_id), group_entries in groups.items():
+            if _bypass_shape(group_entries):
+                continue
+            credits = {
+                e.limit.name: (-delta_of(e), e.state)
+                for e in group_entries
+                if e.state.fill_instant is not None and delta_of(e) < 0
+            }
+            if not credits:
+                continue
+            first = group_entries[0]
+            xi = first._fill_xi if first._fill_xi is not None else first.state.stored_expressed_ms
+            if xi is None:
+                continue
+            count = next(
+                (e.state.shard_count for e in group_entries if e.limit.name != WCU_LIMIT_NAME), 1
+            )
+            returns.append((entity_id, resource, shard_id, credits, xi, count))
+        return returns
+
+    def _send_fill_returns(
+        self, returns: list[tuple[str, str, int, dict[str, tuple[int, BucketState]], int, int]]
+    ) -> list[Exception]:
+        """Send each exact return on its own; the errors of those that failed (#819)."""
+        repo = self.repository
+
+        def _send(
+            ret: tuple[str, str, int, dict[str, tuple[int, BucketState]], int, int],
+        ) -> Exception | None:
+            entity_id, resource, shard_id, credits, xi, count = ret
+            try:
+                repo.return_fill_instants(
+                    entity_id, resource, shard_id, credits, expressed_ms=xi, shard_count=count
+                )
+            except Exception as exc:
+                return exc
+            return None
+
+        if not returns:
+            return []
+        outcomes = self._run_in_executor(*[lambda ret=ret: _send(ret) for ret in returns])
+        return [exc for exc in outcomes if exc is not None]
 
     def _write_credits_independently(
         self, writes: list[_CreditWrite]
