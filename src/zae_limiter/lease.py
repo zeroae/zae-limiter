@@ -1298,11 +1298,11 @@ class Lease:
                 # rejected was never moved, and left at an older instant it
                 # would skip a schedule boundary the next reader does not
                 # re-apply.
+                stamped: int | None = None
                 if any(e.state.fill_instant is not None for e in group_entries):
                     stamped, _read = _expressed(group_entries)
                     for e in group_entries:
                         express_at(e.state, stamped)
-                    fill_xis[(entity_id, resource, shard_id)] = stamped
                 fill_writes: dict[str, FillInstantWrite] = {}
                 for entry in group_entries:
                     name = entry.limit.name
@@ -1502,6 +1502,11 @@ class Lease:
                         continue
                     soft_stamps[e.limit.name] = wanted
                     soft_reads[e.limit.name] = e.state.soft_until_ms
+                # What a return is pinned on (ADR-155): the `xi` this write
+                # stamps, which it stamps only with a fill instant to write.
+                # Otherwise the item keeps the `xi` it was read with.
+                if fill_writes and stamped is not None:
+                    fill_xis[(entity_id, resource, shard_id)] = stamped
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,

@@ -105,6 +105,22 @@ class TestZeroEstimateIsStillAdjustable:
 
         assert (await _tokens(repo, "e1", "api"))["rpm"] == 1_000_000 - 100_000 - 30_000
 
+    async def test_a_release_after_a_pass_that_moved_nothing_lands(self, repo, speculative):
+        """A slow pass that moves no fill instant stamps no ``xi``: the return
+        is pinned on the ``xi`` the item kept, not on the one the pass would
+        have stamped, so it lands rather than being dropped (ADR-155)."""
+        await repo.set_system_defaults([Limit.custom("rpm", 1000, **SLOW)])
+        await repo.create_entity("e1", parent_id=None, name="e1")
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            async with limiter.acquire("e1", "api", {"rpm": 100}):
+                pass
+            async with limiter.acquire("e1", "api", {"rpm": 0}) as lease:
+                await lease.release(rpm=20)
+
+        assert (await _tokens(repo, "e1", "api"))["rpm"] == 1_000_000 - 100_000 + 20_000
+
 
 @pytest.mark.parametrize("speculative", [True, False])
 class TestWcuStaysInternal:

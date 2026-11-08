@@ -1028,11 +1028,11 @@ class SyncLease:
                     (e._original_rf_ms for e in group_entries if not e._seed),
                     group_entries[0]._original_rf_ms,
                 )
+                stamped: int | None = None
                 if any(e.state.fill_instant is not None for e in group_entries):
                     stamped, _read = _expressed(group_entries)
                     for e in group_entries:
                         express_at(e.state, stamped)
-                    fill_xis[entity_id, resource, shard_id] = stamped
                 fill_writes: dict[str, FillInstantWrite] = {}
                 for entry in group_entries:
                     name = entry.limit.name
@@ -1165,6 +1165,8 @@ class SyncLease:
                         continue
                     soft_stamps[e.limit.name] = wanted
                     soft_reads[e.limit.name] = e.state.soft_until_ms
+                if fill_writes and stamped is not None:
+                    fill_xis[entity_id, resource, shard_id] = stamped
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
