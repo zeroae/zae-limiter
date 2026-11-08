@@ -859,6 +859,10 @@ def delete(
     Removes the DynamoDB table, Lambda function, IAM roles, and all associated
     resources. This action cannot be undone - all data will be permanently lost.
 
+    With --wait, a stack that ends in DELETE_FAILED is deleted once more before
+    the command fails: DynamoDB occasionally answers a table delete with a
+    transient internal error that a second attempt clears.
+
     \f
 
     **Examples:**
