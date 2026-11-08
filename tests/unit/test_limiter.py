@@ -12220,7 +12220,10 @@ class TestOverrideMaterialisesItemLimits:
         repo._now_ms = lambda: _UTC_MIDNIGHT - 60_000
         async with limiter.acquire("o", "r", consume={"q": 4, "rpm": 1}):
             pass
-        await repo.set_resource_defaults("r", [_RPM_1000])
+        # A bucket the change's fan-out missed (#823): an acquire in flight
+        # during its discovery (ADR-125). The item still carries `q`.
+        with patch.object(repo, "_fanout_params", AsyncMock(return_value=0)):
+            await repo.set_resource_defaults("r", [_RPM_1000])
         await repo.invalidate_config_cache()
 
         repo._now_ms = lambda: _UTC_MIDNIGHT + 1_000

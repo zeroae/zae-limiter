@@ -1060,6 +1060,8 @@ class TestSoftLimitAddedLater:
             "llm", [hard_rpm, Limit.per_minute("tpm", 100, soft=True)]
         )
         item = await _bucket_item(soft_repo, "u", "llm")
+        # Not seeded yet: the parameter fan-out writes only limits the item
+        # carries (#823), and nothing has written a balance for `tpm`.
         assert schema.bucket_attr("tpm", schema.BUCKET_FIELD_CP) not in item
         assert _soft_stamp(item, "tpm")  # the fan-out stamped the missing limit
 

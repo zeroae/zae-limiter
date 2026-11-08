@@ -1831,20 +1831,13 @@ class TestChangesElsewhere:
                     pass
         assert admitted == 2
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#823: a resource-level change never reaches an active bucket, and the "
-            "fill-instant fast path refills exactly from the item's own parameters"
-        ),
-    )
     async def test_a_resource_schedule_is_honoured(self, repo):
-        """Phase-3 review #4: a resource-level schedule never reaches the item (no vu).
+        """Phase-3 review #4: a resource-level schedule reaches the active item.
 
-        Before fill instants the spent bucket sent the next request to the slow
-        path, which refilled at config's schedule. A fill instant needs no slow
-        pass to refill, so the item's unscheduled parameters admit the base
-        capacity until #823 fans the change out to active buckets (ADR-153).
+        A fill instant needs no slow pass to refill, so the item's own
+        parameters decide what the fast path admits. The change fans out to the
+        active bucket (#823, ADR-153), and the cached rejection never lets the
+        base capacity through.
         """
         from zae_limiter import ScheduleEntry
 
@@ -1856,18 +1849,15 @@ class TestChangesElsewhere:
                 async with limiter.acquire("u", "r", consume={"rpm": 1}):
                     pass
             halved = four.with_schedule((ScheduleEntry(cron="* * * * *", scale=0.5),))
-            await repo.set_resource_defaults("r", [halved])  # clears the rejection cache...
-            # ...but not this level of the config cache, which lags by its own TTL
-            # on both paths alike; let it expire.
+            # Clears the rejection cache, and fans the schedule out to u's item.
+            await repo.set_resource_defaults("r", [halved])
             await repo.invalidate_config_cache()
-            # A read warms the config cache with the schedule and writes no bucket,
-            # so u's item still has no `vu`: only the gate can see the schedule.
             await limiter.check_availability("u", "r")
             with pytest.raises(RateLimitExceeded):  # a fast rejection re-fills the cache
                 async with limiter.acquire("u", "r", consume={"rpm": 1}):
                     pass
             item = await _bucket_item(repo, "u")
-            assert "vu" not in item and _cached(repo)
+            assert schema.BUCKET_FIELD_SCHED in item
             admitted = 0
             later = repo._now_ms() + 60_000
             with patch.object(repo, "_now_ms", return_value=later):

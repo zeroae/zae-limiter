@@ -15,6 +15,7 @@ import time
 import warnings
 from collections.abc import Callable, Sequence
 from contextvars import ContextVar
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 import boto3
@@ -6549,6 +6550,8 @@ class SyncRepository:
         update_expr: str,
         expr_names: dict[str, str],
         expr_values: dict[str, dict[str, Any]],
+        *,
+        image: dict[str, Any] | None = None,
     ) -> bool:
         """Apply one shard's static-param update, tolerating a vanished shard.
 
@@ -6557,12 +6560,17 @@ class SyncRepository:
             update_expr: SET/REMOVE expression built by `_sync_bucket_params`
             expr_names: Expression attribute name aliases
             expr_values: Expression attribute values
+            image: The item as the caller just read it, strongly consistent:
+                the first write is built from it instead of from the image a
+                refused write returns (1 RCU instead of 1 WCU).
 
         Returns:
             True if the item was written, False if the shard had vanished.
         """
         client = self._get_client()
-        item: dict[str, Any] | None = None
+        item = image
+        if item is not None and self._wait_out_raise(item):
+            item = None
         for _attempt in range(_SYNC_ATTEMPTS):
             extended = (
                 fill_sync.reexpression(item, update_expr, expr_names, expr_values, self._now_ms())
@@ -6924,11 +6932,17 @@ class SyncRepository:
                 An explicit value is gated on the stack's version and fans out
                 like `set_resource_cascade()`.
 
+        A change to the limits reaches the resource's active buckets
+        (ADR-153, #823): each bucket its defaults decide is read and written
+        once (`_fanout_params`). Re-setting the same limits writes no bucket.
+
         Raises:
             VersionMismatchError: ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638), or an explicit
                 ``cascade`` and they predate the cascade policy. Nothing is
                 written.
+            FanoutIncomplete: The config is written but a bucket write failed
+                part-way; carries how many landed. Re-running reconciles.
         """
         validate_resource(resource)
         client = self._get_client()
@@ -6964,6 +6978,7 @@ class SyncRepository:
             item[schema.CONFIG_FIELD_CASCADE] = cascade_attr
         replaced = client.put_item(TableName=self.table_name, Item=item, ReturnValues="ALL_OLD")
         soft_changed = self._soft_changed(replaced.get("Attributes"), limits)
+        limits_changed, dropped = self._limits_changed(replaced.get("Attributes"), limits)
         client.update_item(
             TableName=self.table_name,
             Key={
@@ -6984,6 +6999,8 @@ class SyncRepository:
             self._fanout_cascade(resource=resource)
         if soft_changed:
             self._fanout_soft(resource=resource, names=soft_changed)
+        if limits_changed:
+            self._fanout_params(resource=resource, stale_limit_names=dropped)
         self._log_audit_event(
             action=AuditAction.LIMITS_SET,
             entity_id=f"$RESOURCE:{resource}",
@@ -7064,6 +7081,7 @@ class SyncRepository:
         had_disabled = schema.CONFIG_FIELD_DISABLED in (deleted.get("Attributes") or {})
         had_cascade = schema.CONFIG_FIELD_CASCADE in (deleted.get("Attributes") or {})
         soft_changed = self._soft_changed(deleted.get("Attributes"), [])
+        limits_changed, dropped = self._limits_changed(deleted.get("Attributes"), [])
         client.update_item(
             TableName=self.table_name,
             Key={
@@ -7079,6 +7097,8 @@ class SyncRepository:
             self._fanout_cascade(resource=resource)
         if soft_changed:
             self._fanout_soft(resource=resource, names=soft_changed)
+        if limits_changed:
+            self._fanout_params(resource=resource, stale_limit_names=dropped)
         self._log_audit_event(
             action=AuditAction.LIMITS_DELETED,
             entity_id=f"$RESOURCE:{resource}",
@@ -7119,9 +7139,14 @@ class SyncRepository:
             on_unavailable: Behavior when DynamoDB unavailable ("allow" or "block")
             principal: Caller identity for audit logging
 
+        A change to the limits reaches every active bucket in the namespace
+        that the system defaults decide (ADR-153, #823; `_fanout_params`).
+
         Raises:
             VersionMismatchError: ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638). Nothing is written.
+            FanoutIncomplete: The config is written but a bucket write failed
+                part-way; carries how many landed. Re-running reconciles.
         """
         client = self._get_client()
         self._require_reset_after_readers(limits)
@@ -7140,6 +7165,9 @@ class SyncRepository:
         soft_changed = self._soft_changed(replaced.get("Attributes"), limits)
         if soft_changed:
             self._fanout_soft(resource=None, names=soft_changed)
+        limits_changed, dropped = self._limits_changed(replaced.get("Attributes"), limits)
+        if limits_changed:
+            self._fanout_params(resource=None, stale_limit_names=dropped)
         self._log_audit_event(
             action=AuditAction.LIMITS_SET,
             entity_id="$SYSTEM",
@@ -7204,6 +7232,9 @@ class SyncRepository:
         soft_changed = self._soft_changed(deleted.get("Attributes"), [])
         if soft_changed:
             self._fanout_soft(resource=None, names=soft_changed)
+        limits_changed, dropped = self._limits_changed(deleted.get("Attributes"), [])
+        if limits_changed:
+            self._fanout_params(resource=None, stale_limit_names=dropped)
         self._log_audit_event(
             action=AuditAction.LIMITS_DELETED,
             entity_id="$SYSTEM",
@@ -9480,6 +9511,30 @@ class SyncRepository:
             old = set(schema.config_limit_names(old_item))
         return old ^ new
 
+    def _limits_changed(
+        self, old_item: dict[str, Any] | None, limits: list[Limit]
+    ) -> tuple[bool, set[str]]:
+        """Whether a config replace or delete changed any limit but its soft-ness (#823).
+
+        ``old_item`` is the write's ``ALL_OLD`` image (None when the level did
+        not exist). Returns whether a limit was added, removed or changed in
+        anything other than soft-ness (``_soft_changed`` covers that), and the
+        names the write dropped. An old image that will not deserialize counts
+        as changed, dropping every limit it names, so the fan-out errs toward
+        writing.
+        """
+        new = {limit.name: replace(limit, soft=False) for limit in limits}
+        if not old_item:
+            return (bool(new), set())
+        try:
+            old = {
+                limit.name: replace(limit, soft=False)
+                for limit in self._deserialize_composite_limits(old_item)
+            }
+        except Exception:
+            return (True, set(schema.config_limit_names(old_item)) - set(new))
+        return (old != new, set(old) - set(new))
+
     def _resolve_soft_levels(
         self, entity_id: str, resource: str, *, consistent_read: bool = False
     ) -> tuple[str | None, dict[str, bool]]:
@@ -9487,6 +9542,19 @@ class SyncRepository:
 
         One uncached ``BatchGetItem`` of the four config levels (#467). Returns
         ``(None, {})`` when no level defines a limit.
+        """
+        level, limits = self._resolve_level_limits(
+            entity_id, resource, consistent_read=consistent_read
+        )
+        return (level, {limit.name: limit.soft for limit in limits})
+
+    def _resolve_level_limits(
+        self, entity_id: str, resource: str, *, consistent_read: bool = False
+    ) -> tuple[str | None, list[Limit]]:
+        """The level that decides this bucket's limits, and those limits.
+
+        One uncached ``BatchGetItem`` of the four config levels. Returns
+        ``(None, [])`` when no level defines a limit.
         """
         ns = self._namespace_id
         levels = [
@@ -9507,8 +9575,8 @@ class SyncRepository:
                 continue
             limits = self._deserialize_composite_limits(item)
             if limits:
-                return (level, {limit.name: limit.soft for limit in limits})
-        return (None, {})
+                return (level, limits)
+        return (None, [])
 
     def _discover_namespace_bucket_pks(self) -> list[str]:
         """Every bucket PK in this namespace (GSI4, ``GSI4SK begins_with BUCKET#``)."""
@@ -9536,6 +9604,134 @@ class SyncRepository:
             if not start_key:
                 break
         return pks
+
+    def _fanout_params(
+        self, *, resource: str | None, stale_limit_names: set[str] | None = None
+    ) -> int:
+        """Bring active buckets to a resource- or system-level change (ADR-153, #823).
+
+        Such a change used to reach a bucket only when its TTL expired, which
+        an active bucket never does: every acquire re-stamps the TTL, so
+        lowering a resource-level limit left every busy entity on the old one
+        for good. Discovers every bucket the changed level can decide — GSI2
+        for one resource, the namespace's GSI4 partition when ``resource`` is
+        None (a system-level change) — and writes each from the limits
+        resolved, read strongly consistent, for **its own** entity and
+        resource, exactly as the entity-level param sync writes (#468, #487):
+        ``cp`` / ``ra`` / ``rp``, schedules, soft stamps and TTL, each fill
+        instant re-expressed from the parameters read to the ones written in a
+        pinned write (ADR-155). Each bucket is read first (strongly consistent,
+        1 RCU) and written once. Only the limits the item carries are written:
+        one it does not carry yet is seeded by its next slow pass (#633), and
+        writing its parameters beside a stray ``tk`` an older client left
+        would make it read as spent. A bucket whose limits come from an entity
+        level is left alone, its own sync owns it; so, under a system change,
+        is one a resource level decides. Two discovery passes, as every
+        fan-out (ADR-125).
+
+        Args:
+            resource: The resource whose defaults changed, or None for the
+                system defaults.
+            stale_limit_names: Limits the change dropped: removed from a bucket
+                whose resolution no longer names them.
+
+        Raises:
+            FanoutIncomplete: A write failed part-way; carries how many landed.
+                Every write is idempotent, so re-running reconciles the rest.
+
+        Returns:
+            Number of bucket items written.
+        """
+        self.invalidate_config_cache()
+        synced: set[str] = set()
+        written = 0
+        targets: dict[tuple[str, str], tuple[list[Limit], int] | None] = {}
+        for _pass in range(2):
+            if resource is not None:
+                pks = [pk for pk, _eid in self._discover_resource_bucket_pks(resource)]
+            else:
+                pks = self._discover_namespace_bucket_pks()
+            for pk in pks:
+                if pk in synced:
+                    continue
+                _ns, eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
+                key = (eid, bucket_resource)
+                if key not in targets:
+                    targets[key] = self._default_limits(
+                        eid, bucket_resource, changed_resource=resource
+                    )
+                target = targets[key]
+                if target is not None:
+                    limits, soft_until = target
+                    try:
+                        if self._sync_default_bucket(pk, limits, soft_until, stale_limit_names):
+                            written += 1
+                    except Exception as e:
+                        raise FanoutIncomplete(
+                            written, e, resource=resource, action="syncing"
+                        ) from e
+                synced.add(pk)
+        return written
+
+    def _default_limits(
+        self, entity_id: str, bucket_resource: str, *, changed_resource: str | None
+    ) -> tuple[list[Limit], int] | None:
+        """The limits a default-level change gives one bucket, and its soft deadline.
+
+        None when an entity level decides the bucket's limits (its own sync
+        owns it), when a resource level does under a system change, or when no
+        level defines a limit any more (there is no correct value to write).
+        """
+        soft_until = self._stamp_deadline(self._now_ms())
+        level, resolved = self._resolve_level_limits(
+            entity_id, bucket_resource, consistent_read=True
+        )
+        if level in ("entity", "entity_default") or (
+            changed_resource is None and level == "resource"
+        ):
+            return None
+        if not resolved:
+            return None
+        return (resolved, soft_until)
+
+    def _sync_default_bucket(
+        self, pk: str, limits: list[Limit], soft_until: int, stale: set[str] | None
+    ) -> bool:
+        """Read one bucket and write it the limits it carries (#823).
+
+        Returns:
+            True if the item was written; False if it had vanished or carries
+            none of the limits and none of the dropped ones.
+        """
+        client = self._get_client()
+        response = client.get_item(
+            TableName=self.table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+            ConsistentRead=True,
+        )
+        item = cast(dict[str, Any] | None, response.get("Item"))
+        if item is None:
+            return False
+
+        def carries(name: str) -> bool:
+            return schema.bucket_attr(name, schema.BUCKET_FIELD_CP) in item and (
+                schema.bucket_attr(name, schema.BUCKET_FIELD_FI) in item
+                or schema.bucket_attr(name, schema.BUCKET_FIELD_TK) in item
+            )
+
+        carried = [limit for limit in limits if carries(limit.name)]
+        configured = {limit.name for limit in limits}
+        dropped = {
+            name
+            for name in stale or ()
+            if name not in configured and schema.bucket_attr(name, schema.BUCKET_FIELD_CP) in item
+        }
+        if not carried and (not dropped):
+            return False
+        update = self._build_bucket_param_update(
+            carried, self._bucket_ttl_refill_multiplier, dropped or None, soft_until
+        )
+        return self._sync_one_bucket_shard(pk, *update, image=item)
 
     def _fanout_soft(self, *, resource: str | None, names: set[str]) -> int:
         """Restamp ``b_{name}_soft`` after a resource- or system-level change (#467).

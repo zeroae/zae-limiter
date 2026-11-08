@@ -9953,7 +9953,8 @@ class TestOverrideMaterialisesItemLimits:
         repo._now_ms = lambda: _UTC_MIDNIGHT - 60000
         with sync_limiter.acquire("o", "r", consume={"q": 4, "rpm": 1}):
             pass
-        repo.set_resource_defaults("r", [_RPM_1000])
+        with patch.object(repo, "_fanout_params", MagicMock(return_value=0)):
+            repo.set_resource_defaults("r", [_RPM_1000])
         repo.invalidate_config_cache()
         repo._now_ms = lambda: _UTC_MIDNIGHT + 1000
         with slow.acquire("o", "r", consume={"rpm": 1}, limits=[_RPM_1000]):
