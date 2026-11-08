@@ -487,9 +487,11 @@ from:
 The multiplier is `bucket_ttl_refill_multiplier`, default 7; set it to 0 to disable expiry
 everywhere.
 
-For resource- and system-level limits this expiry is also the **propagation mechanism**:
-changing those defaults does not rewrite live buckets, so a bucket picks up the new numbers
-when it expires and is recreated. Entity-level changes fan out immediately and need no expiry.
+Changing resource- or system-level defaults rewrites the live buckets they decide, as an
+entity-level change does (#823): each bucket is read and written once, keeping its balance or
+trimming it to the new share. A bucket whose entity has its own config for the limit is left
+alone. The expiry still reaches a bucket that change missed: one created, from configuration a
+process had cached before the change, while the change's discovery ran.
 
 The recovery horizon is the longest a limit could need to come back:
 

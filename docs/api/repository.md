@@ -149,13 +149,13 @@ Implement this protocol to use a different storage backend (e.g., for testing).
     after a reset raced the retry but never lands one in the wrong period.
 
     **Known gaps (not a backend's to close).** A resource- or system-level
-    change never reaches the bucket item (it propagates through the TTL). A
-    lowered schedule there lets a refund land above the new ceiling until the
-    next slow pass clamps it; a reset-schedule change there leaves the period
-    guard following the lease's cron, so a reset under the new cron before
-    the old edge can let the old period's refund land. An entity-level change
-    reaches the item, and any reset-schedule change on the item drops the
-    in-flight quota refunds (one per open lease per change).
+    change reaches the bucket item through its fan-out (#823), but not one
+    its discovery missed. There, a lowered schedule lets a refund land above
+    the new ceiling until the next slow pass clamps it, and a reset-schedule
+    change leaves the period guard following the lease's cron, so a reset
+    under the new cron before the old edge can let the old period's refund
+    land. Any reset-schedule change that reaches the item drops the in-flight
+    quota refunds (one per open lease per change).
 
 !!! warning "Changed in v0.17.0: moving an entity (ADR-150)"
     A custom backend must implement `set_parent`, `build_owner_check` and

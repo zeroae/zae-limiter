@@ -964,7 +964,7 @@ change. Enforcement is again the client's conditional write —
 A client older than v0.14.0 has two effects during a rollout. It does not carry the `vu`
 condition, so it keeps spending tokens that were minted under a window which has since closed.
 And any bucket it creates carries no schedule at all, so the aggregator refills that bucket
-toward the base ceiling until an entity-level change fans out or the bucket's TTL expires.
+toward the base ceiling until a change to its limits fans out or the bucket's TTL expires.
 
 Treat a schedule or a calendar quota as effective only once every client is past v0.14.0.
 
