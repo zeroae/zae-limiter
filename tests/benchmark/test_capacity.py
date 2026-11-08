@@ -796,11 +796,13 @@ class TestSpeculativeCapacity:
     def test_soft_limit_in_debt_is_still_one_write_and_no_reads(
         self, sync_limiter, capacity_counter
     ):
-        """#467: an exhausted soft limit is admitted by the same single write.
+        """#467: an exhausted soft limit is admitted without a read.
 
         The server decides soft-ness from the item's own stamp, so the client
-        reads nothing to know it: 0 RCU + 1 WCU, exactly the hard success path.
-        The limit is stored config: only config stamps the bucket (ADR-151).
+        reads nothing to know it. A dripping soft limit is stored as a fill
+        instant (#821) and takes no part in the admission write: it is debited
+        by the unbounded pair after it (ADR-154), so 0 RCU + 2 WCU. The limit
+        is stored config: only config stamps the bucket (ADR-151).
         """
         limits = [Limit.per_minute("rpm", 1_000_000), Limit.per_minute("tpm", 100, soft=True)]
         sync_limiter._repository.set_resource_defaults("api", limits)
@@ -819,7 +821,7 @@ class TestSpeculativeCapacity:
 
         assert lease.overdrawn == ["tpm"]
         assert len(capacity_counter.batch_get_item) == 0
-        assert capacity_counter.update_item == 1
+        assert capacity_counter.update_item == 2  # the admission, then the soft debit
         assert capacity_counter.put_item == 0
         assert len(capacity_counter.transact_write_items) == 0
 
@@ -926,9 +928,14 @@ class TestScheduledFastPathCapacity:
     def test_the_fan_outs_forced_pass_costs_one_slow_acquire_not_every_one(
         self, sync_limiter, capacity_counter
     ):
-        """`vu = 0` buys the clamp for exactly one demoted acquire. Before
-        `clear_vu` the stamp was unremovable on an unscheduled bucket and every
-        subsequent acquire paid the slow path's 1 RCU + 2 WCU, forever."""
+        """A limit change forces no slow pass on a dripping bucket (#820, #821).
+
+        The param sync re-expresses each fill instant to the new parameters
+        exactly, and a fill instant is pinned on `xi`, never on `vu`, so the
+        `vu = 0` the sync stamps demotes nothing: every later acquire stays on
+        the fast path. The change cleared this process's image, so the first
+        one sends the write an item storing fill instants refuses to learn it
+        (+1 WCU); the next is one write."""
         sync_limiter.create_entity("vu-cap-fanout")
         sync_limiter.set_limits("vu-cap-fanout", [Limit.per_minute("rpm", 1_000_000)])
         with sync_limiter.acquire("vu-cap-fanout", "api", consume={"rpm": 1}):
@@ -939,7 +946,8 @@ class TestScheduledFastPathCapacity:
         with capacity_counter.counting():
             with sync_limiter.acquire("vu-cap-fanout", "api", consume={"rpm": 1}):
                 pass
-        assert capacity_counter.batch_get_item, "the forced pass IS a slow path"
+        assert capacity_counter.batch_get_item == [], "no forced slow pass"
+        assert capacity_counter.update_item == 2
 
         capacity_counter.reset()
         with capacity_counter.counting():
@@ -1254,10 +1262,11 @@ class TestLimitAddedToExistingBucketCapacity:
         assert counts["query"] == 1 and counts["batch_get_item"] == [3, 2, 2], (
             "the sibling read a quota seed takes on a sharded entity"
         )
-        # The failed speculative write, one failed probe of the other shard
-        # (the missing limit reads as an exhausted one, #633 notes), the seed,
-        # and the fan-out of the window it opened to shard 0.
-        assert counts["update_item"] == 4
+        # The failed speculative write (refused on `xi`: its image lacks the
+        # limit, which sends the request to the slow path at once rather than
+        # to a probe of the other shard, ADR-154), the seed, and the fan-out of
+        # the window it opened to shard 0.
+        assert counts["update_item"] == 3
 
 
 class TestQuotaGrantCapacity:
