@@ -20,7 +20,8 @@ import boto3
 from botocore.exceptions import ClientError
 from ulid import ULID
 
-from . import bucket_ops, schedule, schema
+from . import bucket_ops, fill_instant, schedule, schema
+from .bucket import balance_milli_at
 from .config_cache import CacheStats as CacheStats
 from .exceptions import (
     EntityExistsError,
@@ -68,7 +69,7 @@ from .rejection_cache import (
 from .sync_config_cache import ConfigSource, SyncConfigCache
 from .sync_repository_protocol import PRESERVE_CASCADE as _PRESERVE_CASCADE
 from .sync_repository_protocol import PRESERVE_DISABLED as _PRESERVE_DISABLED
-from .sync_repository_protocol import SpeculativeFailureReason, SpeculativeResult
+from .sync_repository_protocol import FillInstantWrite, SpeculativeFailureReason, SpeculativeResult
 
 if TYPE_CHECKING:
     from .sync_repository_builder import SyncRepositoryBuilder
@@ -167,6 +168,7 @@ _SEED_TOKEN = {
     schema.BUCKET_FIELD_GC: "k",
     schema.BUCKET_FIELD_SOFT: "o",
     schema.BUCKET_FIELD_TU: "u",
+    schema.BUCKET_FIELD_FI: "z",
 }
 _MAX_ANCESTOR_HOPS = 32
 
@@ -2889,8 +2891,13 @@ class SyncRepository:
                 path twice.
         """
         tc = state.total_consumed_milli if state.total_consumed_milli is not None else 0
+        balance = (
+            (schema.BUCKET_FIELD_TK, state.tokens_milli)
+            if state.fill_instant is None
+            else (schema.BUCKET_FIELD_FI, state.fill_instant)
+        )
         attrs: dict[str, dict[str, Any]] = {
-            schema.BUCKET_FIELD_TK: {"N": str(state.tokens_milli)},
+            balance[0]: {"N": str(balance[1])},
             schema.BUCKET_FIELD_CP: {"N": str(state.capacity_milli)},
             schema.BUCKET_FIELD_RA: {"N": str(state.refill_amount_milli)},
             schema.BUCKET_FIELD_RP: {"N": str(state.refill_period_ms)},
@@ -3046,7 +3053,23 @@ class SyncRepository:
         wcu_ra_milli = schema.WCU_LIMIT_REFILL_AMOUNT * 1000
         wcu_rp_ms = schema.WCU_LIMIT_REFILL_PERIOD_SECONDS * 1000
         wcu_name = schema.WCU_LIMIT_NAME
-        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_TK)] = {"N": str(wcu_cp_milli)}
+        expressed = [
+            st.expressed_ms
+            for st in states
+            if st.fill_instant is not None and st.expressed_ms is not None
+        ]
+        if expressed or schema.WRITE_FILL_INSTANTS:
+            xi = max(expressed, default=now_ms)
+            item[schema.BUCKET_FIELD_XI] = {"N": str(xi)}
+            item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_FI)] = {
+                "N": str(
+                    fill_instant.created_full(
+                        xi, fill_instant.ShardParams(wcu_cp_milli, wcu_ra_milli, wcu_rp_ms, 1)
+                    )
+                )
+            }
+        else:
+            item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_TK)] = {"N": str(wcu_cp_milli)}
         item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_CP)] = {"N": str(wcu_cp_milli)}
         item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_RA)] = {"N": str(wcu_ra_milli)}
         item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_RP)] = {"N": str(wcu_rp_ms)}
@@ -3092,10 +3115,27 @@ class SyncRepository:
         cleared_top_ups: Sequence[str] = (),
         bypass_stamp: tuple[int | None, int | None] | None = None,
         soft_reads: dict[str, int | None] | None = None,
+        fill_instants: dict[str, FillInstantWrite] | None = None,
+        expressed: tuple[int, int | None] | None = None,
+        pin_shard_count_equal: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
         ADD tk:(refill - consumed), tc:consumed for each limit.
+
+        ``fill_instants`` (#818): each dripping limit stored, or converted, as
+        a fill instant is written exactly from what the pass read, never by an
+        ``ADD``: ``SET b_{name}_fi`` to the fill instant the pass computed,
+        ``ADD b_{name}_tc``, pinned on the ``fi`` read or, for a conversion, on
+        no ``fi`` and the ``tk`` read (which it REMOVEs), and on the stored
+        ``cp``/``ra``/``rp`` it is expressed against. A name here appears in
+        none of ``consumed`` / ``refill_amounts`` / ``read_tokens``.
+        ``expressed`` is ``(xi, read)``: the item's expression instant to
+        stamp, pinned on the one read (``attribute_not_exists`` for None).
+        ``pin_shard_count_equal`` pins ``shard_count`` on the count the fill
+        instants were computed at: a doubling in between changes every share.
+        A lost pin fails the write; the lease then re-plans from a fresh read
+        rather than take the consumption-only retry, which would write ``tk``.
 
         ``read_tokens`` (limit name -> ``tk`` as read, millitokens): each
         limit whose refill delta is positive — a drip, a reset, a roll, a
@@ -3343,6 +3383,44 @@ class SyncRepository:
             if r > 0 and read_tokens is not None and (name in read_tokens):
                 attr_values[f":bk{i}"] = {"N": str(read_tokens[name])}
                 condition_parts.append(f"{tk_alias} <= :bk{i}")
+        for i, (name, write) in enumerate(sorted((fill_instants or {}).items())):
+            attr_names[f"#zf{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_FI)
+            attr_names[f"#zc{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
+            attr_names[f"#zp{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
+            attr_names[f"#za{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RA)
+            attr_names[f"#zr{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RP)
+            attr_values[f":zf{i}"] = {"N": str(write.fill_instant)}
+            attr_values[f":zc{i}"] = {"N": str(write.consumed_milli)}
+            attr_values[f":zp{i}"] = {"N": str(write.capacity_milli)}
+            attr_values[f":za{i}"] = {"N": str(write.refill_amount_milli)}
+            attr_values[f":zr{i}"] = {"N": str(write.refill_period_ms)}
+            set_parts.append(f"#zf{i} = :zf{i}")
+            add_parts.append(f"#zc{i} :zc{i}")
+            if write.read_fill_instant is not None:
+                attr_values[f":zfr{i}"] = {"N": str(write.read_fill_instant)}
+                condition_parts.append(f"#zf{i} = :zfr{i}")
+            else:
+                if write.read_tokens_milli is None:
+                    raise ValueError(f"a conversion of {name!r} needs the tk it read")
+                attr_names[f"#zt{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+                attr_values[f":ztr{i}"] = {"N": str(write.read_tokens_milli)}
+                condition_parts.append(f"attribute_not_exists(#zf{i}) AND #zt{i} = :ztr{i}")
+                remove_parts.append(f"#zt{i}")
+            condition_parts.append(f"#zp{i} = :zp{i} AND #za{i} = :za{i} AND #zr{i} = :zr{i}")
+        if expressed is not None:
+            xi, read_xi = expressed
+            attr_names["#zxi"] = schema.BUCKET_FIELD_XI
+            attr_values[":zxi"] = {"N": str(xi)}
+            set_parts.append("#zxi = :zxi")
+            if read_xi is None:
+                condition_parts.append("attribute_not_exists(#zxi)")
+            else:
+                attr_values[":zxir"] = {"N": str(read_xi)}
+                condition_parts.append("#zxi = :zxir")
+        if pin_shard_count_equal is not None:
+            attr_names["#zsc"] = "shard_count"
+            attr_values[":zsc"] = {"N": str(pin_shard_count_equal)}
+            condition_parts.append("#zsc = :zsc")
         for k, (name, deadline) in enumerate(sorted((soft_stamps or {}).items())):
             alias = soft_aliases.get(name)
             if alias is None:
@@ -3387,9 +3465,15 @@ class SyncRepository:
                 attr_names[alias] = schema.bucket_attr(name, field)
                 attr_values[placeholder] = value
                 set_parts.append(f"{alias} = {placeholder}")
-            condition_parts.append(
-                f"(attribute_not_exists(#sp{j}) OR attribute_not_exists(#st{j}))"
-            )
+            if state.fill_instant is None:
+                condition_parts.append(
+                    f"(attribute_not_exists(#sp{j}) OR attribute_not_exists(#st{j}))"
+                )
+            else:
+                attr_names[f"#st{j}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+                condition_parts.append(
+                    f"(attribute_not_exists(#sp{j}) OR (attribute_not_exists(#st{j}) AND attribute_not_exists(#sz{j})))"
+                )
         for i, (name, count) in enumerate(sorted((grant_counts or {}).items())):
             attr_names[f"#gc{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
             set_parts.append(f"#gc{i} = :gc{i}")
@@ -4418,7 +4502,10 @@ class SyncRepository:
                             failure_reason=SpeculativeFailureReason.APP_LIMIT_EXHAUSTED,
                         )
                     vu_raw = old_item.get(schema.BUCKET_FIELD_VU, {}).get("N")
-                    if (
+                    stores_fill_instants = any(
+                        b.stored_fill_instant is not None for b in old_buckets
+                    )
+                    if stores_fill_instants or (
                         not old_bypassed
                         and vu_raw is not None
                         and (int(vu_raw) <= now_ms)
@@ -6800,6 +6887,23 @@ class SyncRepository:
                 stack_name=self.stack_name,
             ) from exc
 
+    def _decode_stored_fill_int(self, attr_name: str, raw: str | None) -> int | None:
+        """Parse a `b_{name}_fi` / `xi` value, or declare the limiter unavailable (#818).
+
+        The same treatment `_decode_stored_window_int` gives a window: absent
+        is not corruption (every item stored as `tk`), a non-integral value is.
+        """
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise RateLimiterUnavailable(
+                f"stored fill instant in {attr_name} could not be decoded: {raw!r}: {exc}",
+                cause=exc,
+                stack_name=self.stack_name,
+            ) from exc
+
     def _deserialize_composite_bucket(self, item: dict[str, Any]) -> list[BucketState]:
         """Deserialize a composite DynamoDB item to a list of BucketStates.
 
@@ -6863,12 +6967,23 @@ class SyncRepository:
             return decoded[key]
 
         limit_names: list[str] = []
-        suffix = f"_{schema.BUCKET_FIELD_TK}"
+        suffixes = (f"_{schema.BUCKET_FIELD_TK}", f"_{schema.BUCKET_FIELD_FI}")
         for attr_name in item:
-            if attr_name.startswith(schema.BUCKET_ATTR_PREFIX) and attr_name.endswith(suffix):
+            if not attr_name.startswith(schema.BUCKET_ATTR_PREFIX):
+                continue
+            for suffix in suffixes:
+                if not attr_name.endswith(suffix):
+                    continue
                 name = attr_name[len(schema.BUCKET_ATTR_PREFIX) : -len(suffix)]
-                if name and schema.bucket_attr(name, schema.BUCKET_FIELD_CP) in item:
+                if (
+                    name
+                    and name not in limit_names
+                    and (schema.bucket_attr(name, schema.BUCKET_FIELD_CP) in item)
+                ):
                     limit_names.append(name)
+        stored_xi = self._decode_stored_fill_int(
+            schema.BUCKET_FIELD_XI, item.get(schema.BUCKET_FIELD_XI, {}).get("N")
+        )
         buckets: list[BucketState] = []
         for name in limit_names:
 
@@ -6914,40 +7029,52 @@ class SyncRepository:
                     item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT))
                 )
             )
-            buckets.append(
-                BucketState(
-                    entity_id=entity_id,
-                    resource=resource,
-                    limit_name=name,
-                    tokens_milli=_get(schema.BUCKET_FIELD_TK),
-                    last_refill_ms=rf,
-                    capacity_milli=_get(schema.BUCKET_FIELD_CP),
-                    refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
-                    refill_period_ms=_get(schema.BUCKET_FIELD_RP),
-                    total_consumed_milli=total_consumed,
-                    shard_count=1 if is_wcu else shard_count,
-                    sched=sched,
-                    reset_sched=reset_sched,
-                    window_start_ms=window_start_ms,
-                    reset_after_seconds=reset_after_seconds,
-                    window_applied_ms=window_applied_ms,
-                    window_consumed_mark_milli=window_consumed_mark,
-                    grant_count=grant_count,
-                    topped_up_milli=topped_up,
-                    reset_number=reset_number,
-                    stored_vu_ms=stored_vu,
-                    stored_vu_read=True,
-                    bypass=bypassed and (not is_wcu),
-                    bypass_until_ms=None if is_wcu else bypass_until,
-                    soft=soft_until is not None,
-                    soft_until_ms=soft_until,
-                    stored_item_sched_raw=(item_sched, item_rsched, raw_sched_tz),
-                    stored_sched_raw=(
-                        item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED), {}).get("S"),
-                        item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED), {}).get("S"),
-                    ),
-                )
+            fi_name = schema.bucket_attr(name, schema.BUCKET_FIELD_FI)
+            stored_fi = self._decode_stored_fill_int(fi_name, item.get(fi_name, {}).get("N"))
+            state = BucketState(
+                entity_id=entity_id,
+                resource=resource,
+                limit_name=name,
+                tokens_milli=_get(schema.BUCKET_FIELD_TK),
+                last_refill_ms=rf,
+                capacity_milli=_get(schema.BUCKET_FIELD_CP),
+                refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
+                refill_period_ms=_get(schema.BUCKET_FIELD_RP),
+                total_consumed_milli=total_consumed,
+                shard_count=1 if is_wcu else shard_count,
+                sched=sched,
+                reset_sched=reset_sched,
+                window_start_ms=window_start_ms,
+                reset_after_seconds=reset_after_seconds,
+                window_applied_ms=window_applied_ms,
+                window_consumed_mark_milli=window_consumed_mark,
+                grant_count=grant_count,
+                topped_up_milli=topped_up,
+                reset_number=reset_number,
+                stored_vu_ms=stored_vu,
+                stored_vu_read=True,
+                bypass=bypassed and (not is_wcu),
+                bypass_until_ms=None if is_wcu else bypass_until,
+                soft=soft_until is not None,
+                soft_until_ms=soft_until,
+                stored_item_sched_raw=(item_sched, item_rsched, raw_sched_tz),
+                stored_sched_raw=(
+                    item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED), {}).get("S"),
+                    item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED), {}).get("S"),
+                ),
+                fill_instant=stored_fi,
+                expressed_ms=stored_xi if stored_fi is not None else None,
+                stored_fill_instant=stored_fi,
+                stored_expressed_ms=stored_xi,
             )
+            if stored_fi is not None:
+                if not state.is_dripping_state:
+                    raise RateLimiterUnavailable(
+                        f"stored fill instant in {fi_name} belongs to a limit that does not drip",
+                        stack_name=self.stack_name,
+                    )
+                state.tokens_milli = balance_milli_at(state, rf)
+            buckets.append(state)
         return buckets
 
     def _serialize_composite_limits(

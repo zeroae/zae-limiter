@@ -175,6 +175,16 @@ def plan_operation(
             limit = by_name.get(name)
             if name != WCU_LIMIT_NAME and limit is None:
                 continue  # no longer configured: left exactly as an acquire leaves it
+            if stored.fill_instant is not None:
+                # Until #820 writes a fill instant exactly, an operation never
+                # adds to `tk` beside one (ADR-154). Only reachable while
+                # `schema.WRITE_FILL_INSTANTS` is on (#818). The reserved `wcu`
+                # is the partition's own budget and is left as it is.
+                if name == WCU_LIMIT_NAME:
+                    continue
+                raise NotImplementedError(
+                    f"resetting or topping up fill-instant limit {name!r} lands in #820"
+                )
             state = replace(stored)
             tokens[name] = stored.tokens_milli
             top_ups[name] = stored.topped_up_milli

@@ -973,6 +973,7 @@ class TestWriteOnEnter:
         state.stored_vu_ms = None
         state.stored_item_sched_raw = (None, None, None)
         state.stored_sched_raw = (None, None)
+        state.fill_instant = None  # stored as `tk` (#818)
         state.limit_name = "rpm"
         return LeaseEntry(
             entity_id=entity_id,

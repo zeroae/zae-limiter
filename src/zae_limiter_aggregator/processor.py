@@ -11,6 +11,7 @@ import boto3
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
+from zae_limiter import fill_instant
 from zae_limiter.bucket import refill_bucket
 from zae_limiter.models import (
     QuotaDonorDebit,
@@ -30,6 +31,7 @@ from zae_limiter.schedule import (
 from zae_limiter.schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
+    BUCKET_FIELD_FI,
     BUCKET_FIELD_GC,
     BUCKET_FIELD_PGEN,
     BUCKET_FIELD_PINC,
@@ -168,6 +170,9 @@ class LimitRefillInfo:
     # `b_{name}_tu` (ADR-149): allowance topped up above the grant this
     # period, millitokens. Raises a quota's ceiling; a reset or roll removes it.
     topped_up_milli: int | None = None
+    # `b_{name}_fi` (ADR-154, #818): a dripping limit stored as a fill
+    # instant, which carries no `tk`. None when stored as `tk`.
+    fill_instant: int | None = None
 
 
 @dataclass
@@ -201,6 +206,11 @@ class BucketRefillState:
     # newer client's encoding). The bucket is then skipped entirely rather
     # than refilled at the *base* rate, which would silently undo a scale-down.
     sched_error: str | None = None
+
+    @property
+    def stores_fill_instants(self) -> bool:
+        """Whether any limit on the item is stored as a fill instant (#818)."""
+        return any(info.fill_instant is not None for info in self.limits.values())
 
 
 def process_stream_records(
@@ -300,6 +310,11 @@ def process_stream_records(
     now_ms = int(time_module.time() * 1000)
 
     for state in bucket_states.values():
+        if state.stores_fill_instants:
+            # A fill instant is never refilled, and `tk` must never be written
+            # beside one (ADR-154, #818). A quota sharing the item is reset by
+            # the client's slow path; #821 gives the aggregator a write for it.
+            continue
         try:
             if try_refill_bucket(table, state, now_ms):
                 refills_written += 1
@@ -316,7 +331,9 @@ def process_stream_records(
     # Proactive sharding (check wcu token level per bucket)
     for state in bucket_states.values():
         wcu_info = state.limits.get(WCU_LIMIT_NAME)
-        if wcu_info:
+        # A bucket storing fill instants is raised only through ADR-156's raise
+        # (#821), never by this doubling, which reads `wcu` off `tk`.
+        if wcu_info and not state.stores_fill_instants:
             try:
                 try_proactive_shard(
                     table,
@@ -384,6 +401,7 @@ class ParsedBucketLimit:
     grant_count: int | None = None  # b_{name}_gc, shard's grant sizing (ADR-145)
     soft: bool = False  # b_{name}_soft, metered but never enforced (#467)
     topped_up_milli: int | None = None  # b_{name}_tu, top-up above the grant (ADR-149)
+    fill_instant: int | None = None  # b_{name}_fi, in place of tk (ADR-154, #818)
 
 
 @dataclass
@@ -598,6 +616,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         wtc_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WTC), {}).get("N")
         gc_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_GC), {}).get("N")
         tu_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_TU), {}).get("N")
+        fi_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_FI), {}).get("N")
 
         limits[limit_name] = ParsedBucketLimit(
             tc_delta=tc_delta,
@@ -619,6 +638,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
             soft=decode_stamp(new_image.get(bucket_attr(limit_name, BUCKET_FIELD_SOFT)))
             is not None,
             topped_up_milli=int(tu_raw) if tu_raw is not None else None,
+            fill_instant=int(fi_raw) if fi_raw is not None else None,
         )
 
     if not limits:
@@ -647,6 +667,19 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         vu_ms=vu_ms,
         sched_error=sched_error,
     )
+
+
+def _balance_milli(limit_name: str, info: ParsedBucketLimit, parsed: ParsedBucketRecord) -> int:
+    """A limit's balance as the record left it, at the record's ``rf`` (#467, #818).
+
+    ``tk`` for a limit stored as one; for a fill instant, its balance at ``rf``
+    against the item's base parameters (``wcu`` is never divided).
+    """
+    if info.fill_instant is None or info.ra_milli <= 0 or info.cp_milli <= 0 or info.rp_ms <= 0:
+        return info.tk_milli
+    shards = 1 if limit_name == WCU_LIMIT_NAME else parsed.shard_count
+    params = fill_instant.ShardParams(info.cp_milli, info.ra_milli, info.rp_ms, shards)
+    return fill_instant.balance_milli(info.fill_instant, parsed.rf_ms, params)
 
 
 def extract_deltas(record: dict[str, Any]) -> list[ConsumptionDelta]:
@@ -684,7 +717,9 @@ def extract_deltas(record: dict[str, Any]) -> list[ConsumptionDelta]:
                 timestamp_ms=parsed.rf_ms,
                 # The NewImage balance this record left, so the signal costs
                 # no read: a soft limit debited into debt (#467).
-                overdrawn=info.soft and info.tc_delta > 0 and info.tk_milli < 0,
+                overdrawn=info.soft
+                and info.tc_delta > 0
+                and _balance_milli(limit_name, info, parsed) < 0,
             )
         )
 
@@ -784,6 +819,7 @@ def aggregate_bucket_states(
                 existing.window_consumed_mark_milli = parsed_limit.window_consumed_mark_milli
                 existing.grant_count = parsed_limit.grant_count
                 existing.topped_up_milli = parsed_limit.topped_up_milli
+                existing.fill_instant = parsed_limit.fill_instant
             else:
                 state.limits[limit_name] = LimitRefillInfo(
                     tc_delta=parsed_limit.tc_delta,
@@ -800,6 +836,7 @@ def aggregate_bucket_states(
                     window_consumed_mark_milli=parsed_limit.window_consumed_mark_milli,
                     grant_count=parsed_limit.grant_count,
                     topped_up_milli=parsed_limit.topped_up_milli,
+                    fill_instant=parsed_limit.fill_instant,
                 )
 
     return bucket_states
@@ -2245,6 +2282,14 @@ def propagate_shard_count(
         )
         return updated
     if read_failed:
+        return updated
+    if any(
+        attr.startswith(BUCKET_ATTR_PREFIX) and attr.endswith(f"_{BUCKET_FIELD_FI}")
+        for attr in new_image
+    ):
+        # A bucket storing fill instants is never cloned: a clone would copy
+        # its parent's fill instant, or write `tk` beside it (ADR-154, #818).
+        # The client creates the shard; ADR-156's raise replaces both (#821).
         return updated
 
     # Path 2: Pre-create new shards (full item cloned from shard 0)

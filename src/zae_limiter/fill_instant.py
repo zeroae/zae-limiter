@@ -17,8 +17,9 @@ can land between integers, a re-expression against changed parameters, rounds
 toward the smaller balance (the later ``Z``).
 
 Pure: integers only, no I/O, and nothing imported beyond the standard library and
-``schedule``, so both Lambda packages can vendor it (#820, #821). Nothing in the
-library calls it yet.
+``schedule``, so both Lambda packages can vendor it. ``bucket.py`` projects a
+stored fill instant through it (#818), so the aggregator zip vendors it; the
+provisioner zip will once its parameter sync uses it (#820).
 """
 
 from __future__ import annotations

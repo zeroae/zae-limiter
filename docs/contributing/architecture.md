@@ -147,6 +147,16 @@ from acquiring each other's windows. `cp` / `ra` / `rp` stay the
 materialises only `tk`. `vu` is the earliest instant at which any limit here changes effective
 parameters — the fast path's condition compares against it and nothing else.
 
+**Fill instants (schema 0.11.0, ADR-154).** A dripping limit, `wcu` included, stores
+`b_{name}_fi` in place of `b_{name}_tk`: its fill instant, the instant its share is back at
+capacity, scaled by its undivided refill amount (`z_ms × ra`), so the balance at any instant is
+`C − r × max(0, z − t)`, exactly. The item gains one `xi` attribute, the instant its fill
+instants were last expressed against their parameters and schedule. A quota keeps `tk`, `rf` and
+`gc`, so one item can carry both forms. An item written in the `tk` form above is converted on
+its next slow pass, in a write pinned on the `tk` and `rf` it read. Writing the new form stays
+behind an internal switch until every writer understands it (#819–#821); the arithmetic and its
+proofs are in [Fill-instant proofs](fill-instant-proofs.md).
+
 The `wcu` (write capacity unit) limit is a reserved infrastructure limit auto-injected on every bucket. It tracks per-partition write pressure and is hidden from user-facing output (get_buckets, RateLimitExceeded, usage snapshots). When exhausted, the client doubles `shard_count` to spread writes across more DynamoDB partitions.
 
 The `total_consumed_milli` counter tracks net consumption (increases on consume,

@@ -71,6 +71,25 @@ BUCKET_FIELD_RP = "rp"  # refill period (ms)
 BUCKET_FIELD_TC = "tc"  # total consumed counter (millitokens)
 BUCKET_FIELD_RF = "rf"  # shared refill timestamp (ms) — optimistic lock
 
+# Fill instants (ADR-154, #818). A dripping limit, the reserved `wcu` included,
+# stores `b_{name}_fi` in place of `b_{name}_tk`: its scaled fill instant
+# `Z = z_ms × ra` (`zae_limiter.fill_instant`), the instant its share is back
+# at capacity times the undivided refill amount in force. `rf` is not its
+# baseline. A quota keeps `tk`, `rf` and `gc` (ADR-137, ADR-145), so one item
+# can carry both forms. `xi` is item-level: the instant (epoch ms) the item's
+# fill instants were last expressed against their parameters and schedule
+# (ADR-155), stamped by every write that expresses them.
+BUCKET_FIELD_FI = "fi"  # b_{name}_fi — scaled fill instant
+BUCKET_FIELD_XI = "xi"  # expression instant, epoch ms
+
+#: Internal switch (#818): whether a slow pass creates dripping limits as fill
+#: instants and converts legacy `tk`/`rf` ones. Off outside tests until every
+#: writer understands the form (#819, #820, #821); #821 removes it. A limit
+#: already stored as a fill instant is always read and written as one, whatever
+#: the switch says. Read at call time (`schema.WRITE_FILL_INSTANTS`), so a test
+#: can turn it on.
+WRITE_FILL_INSTANTS = False
+
 # Scheduled limits (#222, ADR-135). The compact encoding lives in
 # ``zae_limiter.schedule``; these are the attribute names it is stored under.
 #

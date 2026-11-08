@@ -1316,6 +1316,30 @@ class BucketState:
     # `shard_count` or (when the next boundary is unchanged) `vu`.
     stored_item_sched_raw: tuple[str | None, str | None, str | None] | None = None
     stored_sched_raw: tuple[str | None, str | None] | None = None
+    # A dripping limit's scaled fill instant (ADR-154, #818), or None for a
+    # quota and for a limit still stored as `tk`/`rf`. When set it is the
+    # balance: `bucket.py` projects it exactly at any instant, and
+    # `tokens_milli` / `last_refill_ms` are a snapshot kept for the readers that
+    # look at them raw. Set on a state read as a fill instant, on one the slow
+    # path converts (its write converts the item), and on one it creates while
+    # `schema.WRITE_FILL_INSTANTS` is on; kept in step with every in-memory
+    # debit and credit (`bucket.settle`, `bucket.apply_consume`).
+    fill_instant: int | None = None
+    # The instant `fill_instant` was expressed against `sched` and the stored
+    # base, epoch ms: the item's `xi` as read, or the clock reading of the
+    # in-memory step that last moved it.
+    expressed_ms: int | None = None
+    # The `b_{name}_fi` read off the item, or None when the limit was stored
+    # as `tk` (or the state was not read off an item); and the item's `xi` as
+    # read, None when it carries none. The slow path's write is pinned on both;
+    # a conversion is pinned on `tk` (and no `fi`) instead of the first.
+    stored_fill_instant: int | None = None
+    stored_expressed_ms: int | None = None
+
+    @property
+    def is_dripping_state(self) -> bool:
+        """Whether this state drips: a positive refill and no reset (ADR-137)."""
+        return not self.is_quota_state and self.refill_amount_milli > 0
 
     @property
     def tokens(self) -> int:

@@ -20,7 +20,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from zae_limiter import Limit, RateLimiter, Repository
-from zae_limiter.models import CreditCeiling, QuotaDonorDebit
+from zae_limiter.models import BucketState, CreditCeiling, QuotaDonorDebit
+from zae_limiter.repository_protocol import FillInstantWrite
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
     BUCKET_FIELD_GC,
@@ -306,6 +307,82 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         for name in (DOTTED, HYPHENATED, "sess.v1"):
             assert name not in update["UpdateExpression"]
+
+    def test_normal_with_fill_instants(self) -> None:
+        """#818: a read fill instant and a conversion share one expression with
+        the ADD branch, the expression instant and the shard-count pin."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={"tpm": 1000},
+            refill_amounts={"tpm": 0},
+            now_ms=2_000,
+            expected_rf=1_000,
+            fill_instants={
+                DOTTED: FillInstantWrite(
+                    fill_instant=9_000,
+                    consumed_milli=1000,
+                    read_fill_instant=8_000,
+                    read_tokens_milli=None,
+                    capacity_milli=100_000,
+                    refill_amount_milli=100_000,
+                    refill_period_ms=60_000,
+                ),
+                HYPHENATED: FillInstantWrite(
+                    fill_instant=7_000,
+                    consumed_milli=0,
+                    read_fill_instant=None,
+                    read_tokens_milli=50_000,
+                    capacity_milli=10_000,
+                    refill_amount_milli=10_000,
+                    refill_period_ms=1_000,
+                ),
+            },
+            expressed=(2_000, 1_500),
+            pin_shard_count_equal=4,
+        )["Update"]
+        assert_expression_safe(update)
+        assert "REMOVE" in update["UpdateExpression"]
+
+    @pytest.mark.parametrize("read_xi", [None, 1_500])
+    def test_normal_with_only_a_conversion(self, read_xi: int | None) -> None:
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            fill_instants={
+                HYPHENATED: FillInstantWrite(
+                    fill_instant=7_000,
+                    consumed_milli=0,
+                    read_fill_instant=None,
+                    read_tokens_milli=-3_000,
+                    capacity_milli=10_000,
+                    refill_amount_milli=10_000,
+                    refill_period_ms=1_000,
+                )
+            },
+            expressed=(2_000, read_xi),
+        )["Update"]
+        assert_expression_safe(update)
+
+    def test_normal_with_a_fill_instant_seed(self) -> None:
+        """#818: a dripping seed stored as a fill instant guards on neither form."""
+        state = BucketState.from_limit("user-1", "api", Limit.per_minute(DOTTED, 100), 2_000)
+        state.fill_instant, state.expressed_ms = 5_000, 2_000
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            seeds={DOTTED: state},
+        )["Update"]
+        assert_expression_safe(update)
+        assert "attribute_not_exists(#sz0)" in update["ConditionExpression"]
 
     def test_normal_with_only_seeds(self) -> None:
         """No ADD clause at all when every limit written is a seed."""

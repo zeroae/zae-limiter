@@ -24,6 +24,7 @@ For implementation details, see docs/contributing/architecture.md
 
 from dataclasses import dataclass, replace
 
+from . import fill_instant, schema
 from .models import BucketState, Limit, LimitStatus, is_accrual_rate
 from .schedule import retry_after_with_schedule
 
@@ -45,6 +46,10 @@ class ConsumeResult:
     new_last_refill_ms: int
     available: int  # tokens available before consume attempt
     retry_after_seconds: float  # 0 if success, time to wait if failed
+    # A fill-instant state's fill instant and expression instant after the
+    # consumption (#818), or None for a state stored as `tk`/`rf`.
+    new_fill_instant: int | None = None
+    new_expressed_ms: int | None = None
 
 
 def refill_bucket(
@@ -108,6 +113,163 @@ def refill_bucket(
     return RefillResult(new_tokens, new_last_refill)
 
 
+def fill_params(state: BucketState, t_ms: int) -> fill_instant.ShardParams:
+    """The parameters ``state``'s schedule puts in force at ``t_ms``, undivided (#818)."""
+    return fill_instant.params_at(
+        t_ms,
+        state.capacity_milli,
+        state.refill_amount_milli,
+        state.refill_period_ms,
+        state.sched,
+        state.shard_count,
+    )
+
+
+def fill_instant_at(state: BucketState, t_ms: int) -> tuple[int, int]:
+    """``state``'s fill instant re-expressed up to ``t_ms``, and the instant it now is.
+
+    Across every schedule boundary since it was expressed (ADR-155), so each
+    window drips at its own rate and caps at its own ceiling. A reading
+    before the expression instant (a lagging clock) keeps it as it is.
+    """
+    if state.fill_instant is None:
+        raise ValueError(f"limit {state.limit_name!r} is not stored as a fill instant")
+    expressed = state.expressed_ms if state.expressed_ms is not None else state.last_refill_ms
+    if not state.sched or t_ms <= expressed:
+        return state.fill_instant, expressed
+    return fill_instant.re_express_across(
+        state.fill_instant,
+        expressed,
+        t_ms,
+        state.capacity_milli,
+        state.refill_amount_milli,
+        state.refill_period_ms,
+        state.sched,
+        state.shard_count,
+    )
+
+
+def _refilled(state: BucketState, now_ms: int) -> RefillResult:
+    """The balance at ``now_ms``: exact from a fill instant, else the lazy refill."""
+    if state.fill_instant is None:
+        return refill_bucket(
+            tokens_milli=state.tokens_milli,
+            last_refill_ms=state.last_refill_ms,
+            now_ms=now_ms,
+            capacity_milli=state.ceiling_milli(now_ms),
+            refill_amount_milli=state.effective_refill_amount_milli(now_ms),
+            refill_period_ms=state.effective_refill_period_ms(now_ms),
+        )
+    z, expressed = fill_instant_at(state, now_ms)
+    params = fill_params(state, max(now_ms, expressed))
+    return RefillResult(fill_instant.balance_milli(z, now_ms, params), now_ms)
+
+
+def balance_milli_at(state: BucketState, t_ms: int) -> int:
+    """The balance at ``t_ms`` in millitokens: a fill instant's exactly, else the lazy refill."""
+    return _refilled(state, t_ms).new_tokens_milli
+
+
+def _moved(state: BucketState, amount: int, now_ms: int) -> tuple[int, int]:
+    """The fill instant after consuming ``amount`` tokens at ``now_ms`` (a credit if negative).
+
+    A debit records ``max(z, t) + c / r``, which is how a full bucket forgets
+    the time it sat full (#808); a credit moves ``z`` back, capped at capacity
+    for free (proofs Lemma 3). Returns the new fill instant and the instant it
+    is expressed at.
+    """
+    z, expressed = fill_instant_at(state, now_ms)
+    at = max(now_ms, expressed)
+    params = fill_params(state, at)
+    milli = amount * 1000
+    if milli > 0:
+        z = max(z, fill_instant.stamp(now_ms, params)) + fill_instant.span(milli, params)
+    elif milli < 0:
+        z = fill_instant.returned(z, -milli, params)
+    return z, at
+
+
+def convert_to_fill_instant(state: BucketState) -> None:
+    """Express a dripping state still stored as ``tk``/``rf`` as a fill instant, in place.
+
+    Exact (#817): the balance at ``rf`` is ``tk``, a surplus above the share
+    reads as a full bucket and a debt as a fill instant past ``rf``. A quota, or
+    a state already holding a fill instant, is left alone. The slow path calls
+    this only while ``schema.WRITE_FILL_INSTANTS`` is on; its write then
+    converts the item, pinned on the ``tk`` and ``rf`` it read.
+    """
+    if state.fill_instant is not None or not state.is_dripping_state:
+        return
+    params = fill_params(state, state.last_refill_ms)
+    state.fill_instant = fill_instant.from_tokens(state.tokens_milli, state.last_refill_ms, params)
+    state.expressed_ms = state.last_refill_ms
+
+
+def adopt_fill_instant(state: BucketState) -> None:
+    """On the slow path: convert a dripping state stored as ``tk``/``rf``, if the switch is on.
+
+    ``schema.WRITE_FILL_INSTANTS`` (#818) gates the conversion; a state read as
+    a fill instant already holds one either way.
+    """
+    if schema.WRITE_FILL_INSTANTS:
+        convert_to_fill_instant(state)
+
+
+def express_created(state: BucketState, now_ms: int) -> None:
+    """Give a dripping state the slow path creates full at ``now_ms`` its fill instant (#818).
+
+    Only while ``schema.WRITE_FILL_INSTANTS`` is on; otherwise it is created as
+    ``tk``, as before.
+    """
+    if (
+        not schema.WRITE_FILL_INSTANTS
+        or state.fill_instant is not None
+        or not state.is_dripping_state
+    ):
+        return
+    state.fill_instant = fill_instant.created_full(now_ms, fill_params(state, now_ms))
+    state.expressed_ms = now_ms
+
+
+def settle(state: BucketState, amount: int, now_ms: int) -> None:
+    """:func:`force_consume` applied in place, keeping a fill instant exact.
+
+    ``amount`` 0 materialises the balance at ``now_ms``. A fill instant moves
+    first and the snapshot is read off it, so a credit on a full bucket stays
+    at capacity in both.
+    """
+    if state.fill_instant is None:
+        state.tokens_milli, state.last_refill_ms = force_consume(state, amount, now_ms)
+        return
+    state.fill_instant, state.expressed_ms = _moved(state, amount, now_ms)
+    state.tokens_milli, state.last_refill_ms = _refilled(state, now_ms).new_tokens_milli, now_ms
+
+
+def credit_back(state: BucketState, amount: int) -> None:
+    """Undo an in-memory debit of ``amount`` tokens, at the instant it was made.
+
+    A rejected pass's admitted limits are credited back before its quota moves
+    are committed with nothing consumed (ADR-145 I5). A fill instant moves back
+    by the debit's span, which leaves ``max(z, t)``: the same balance from the
+    debit's instant on.
+    """
+    state.tokens_milli += amount * 1000
+    if state.fill_instant is not None and amount > 0:
+        at = state.expressed_ms if state.expressed_ms is not None else state.last_refill_ms
+        state.fill_instant = fill_instant.returned(
+            state.fill_instant, amount * 1000, fill_params(state, at)
+        )
+
+
+def apply_consume(state: BucketState, result: "ConsumeResult") -> None:
+    """Apply a successful :func:`try_consume` to ``state`` in place."""
+    state.tokens_milli = result.new_tokens_milli
+    state.last_refill_ms = result.new_last_refill_ms
+    if result.new_fill_instant is not None:
+        state.fill_instant = result.new_fill_instant
+        state.expressed_ms = result.new_expressed_ms
+
+
 def try_consume(
     state: BucketState,
     requested: int,
@@ -128,14 +290,7 @@ def try_consume(
         ConsumeResult indicating success/failure and new state
     """
     # First, refill the bucket
-    refill = refill_bucket(
-        tokens_milli=state.tokens_milli,
-        last_refill_ms=state.last_refill_ms,
-        now_ms=now_ms,
-        capacity_milli=state.ceiling_milli(now_ms),
-        refill_amount_milli=state.effective_refill_amount_milli(now_ms),
-        refill_period_ms=state.effective_refill_period_ms(now_ms),
-    )
+    refill = _refilled(state, now_ms)
 
     current_tokens_milli = refill.new_tokens_milli
     requested_milli = requested * 1000
@@ -149,13 +304,18 @@ def try_consume(
     # A bypassed bucket (#311) is admitted the same way; its writes never
     # debit `tk`, so the "new" balance here is in-memory only.
     if current_tokens_milli >= requested_milli or state.soft or state.bypass:
-        # Success - consume the tokens
+        # Success - consume the tokens. A fill instant admits exactly when
+        # this test does: its balance is exact, and `requested_milli` is a
+        # whole number of millitokens.
+        moved = _moved(state, requested, now_ms) if state.fill_instant is not None else None
         return ConsumeResult(
             success=True,
             new_tokens_milli=current_tokens_milli - requested_milli,
             new_last_refill_ms=refill.new_last_refill_ms,
             available=available,
             retry_after_seconds=0.0,
+            new_fill_instant=moved[0] if moved is not None else None,
+            new_expressed_ms=moved[1] if moved is not None else None,
         )
     else:
         # Failure - calculate retry time
@@ -417,14 +577,7 @@ def calculate_available(
     Returns:
         Available tokens (may be negative if bucket is in debt)
     """
-    refill = refill_bucket(
-        tokens_milli=state.tokens_milli,
-        last_refill_ms=state.last_refill_ms,
-        now_ms=now_ms,
-        capacity_milli=state.ceiling_milli(now_ms),
-        refill_amount_milli=state.effective_refill_amount_milli(now_ms),
-        refill_period_ms=state.effective_refill_period_ms(now_ms),
-    )
+    refill = _refilled(state, now_ms)
     return refill.new_tokens_milli // 1000
 
 
@@ -444,14 +597,7 @@ def calculate_time_until_available(
     Returns:
         Seconds until available (0.0 if already available)
     """
-    refill = refill_bucket(
-        tokens_milli=state.tokens_milli,
-        last_refill_ms=state.last_refill_ms,
-        now_ms=now_ms,
-        capacity_milli=state.ceiling_milli(now_ms),
-        refill_amount_milli=state.effective_refill_amount_milli(now_ms),
-        refill_period_ms=state.effective_refill_period_ms(now_ms),
-    )
+    refill = _refilled(state, now_ms)
 
     needed_milli = needed * 1000
     if refill.new_tokens_milli >= needed_milli:
@@ -479,14 +625,7 @@ def force_consume(
         Tuple of (new_tokens_milli, new_last_refill_ms)
     """
     # First refill
-    refill = refill_bucket(
-        tokens_milli=state.tokens_milli,
-        last_refill_ms=state.last_refill_ms,
-        now_ms=now_ms,
-        capacity_milli=state.ceiling_milli(now_ms),
-        refill_amount_milli=state.effective_refill_amount_milli(now_ms),
-        refill_period_ms=state.effective_refill_period_ms(now_ms),
-    )
+    refill = _refilled(state, now_ms)
 
     # Consume (can go negative)
     new_tokens_milli = refill.new_tokens_milli - (amount * 1000)

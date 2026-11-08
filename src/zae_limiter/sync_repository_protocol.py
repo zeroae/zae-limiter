@@ -66,6 +66,26 @@ class SpeculativeFailureReason(Enum):
     CONTENTION = "contention"
 
 
+@dataclass(frozen=True)
+class FillInstantWrite:
+    """One dripping limit's fill instant on the slow path's rf-locked write (#818).
+
+    The write SETs ``b_{name}_fi`` to ``fill_instant`` and ADDs
+    ``consumed_milli`` to ``b_{name}_tc``. It is pinned on what the pass read:
+    the stored fill instant, or, for a limit still stored as ``tk``, that
+    ``tk`` (and no fill instant), which the write then REMOVEs; and the
+    stored base ``cp``/``ra``/``rp`` the fill instant is expressed against.
+    """
+
+    fill_instant: int
+    consumed_milli: int
+    read_fill_instant: int | None
+    read_tokens_milli: int | None
+    capacity_milli: int
+    refill_amount_milli: int
+    refill_period_ms: int
+
+
 @dataclass
 class SpeculativeResult:
     """Result of a speculative UpdateItem attempt.
@@ -708,8 +728,19 @@ class SyncRepositoryProtocol(Protocol):
         cleared_top_ups: Sequence[str] = (),
         bypass_stamp: tuple[int | None, int | None] | None = None,
         soft_reads: dict[str, int | None] | None = None,
+        fill_instants: "dict[str, FillInstantWrite] | None" = None,
+        expressed: tuple[int, int | None] | None = None,
+        pin_shard_count_equal: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
+
+        ``fill_instants`` (#818): limits stored, or converted, as fill
+        instants, written as :class:`FillInstantWrite` describes instead of by
+        ``ADD tk``; a name here is in none of ``consumed``, ``refill_amounts``
+        or ``read_tokens``. ``expressed`` is ``(xi, read)``: the expression
+        instant the write stamps, pinned on the one read (absent when None).
+        ``pin_shard_count_equal`` pins ``shard_count`` on the count the fill
+        instants were computed at.
 
         ``read_tokens`` (limit name -> ``tk`` as read) pins every limit whose
         refill delta is positive on ``tk <= :read``, so a credit landing

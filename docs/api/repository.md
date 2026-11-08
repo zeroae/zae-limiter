@@ -211,6 +211,20 @@ Implement this protocol to use a different storage backend (e.g., for testing).
     limiter falls back to `get_buckets(entity_id)` filtered to the resource, as
     before, so an existing backend keeps working unchanged.
 
+!!! warning "Changing in v0.18.0: fill instants (ADR-154, #818)"
+    A dripping limit is stored as a fill instant, `b_{name}_fi`, in place of
+    `b_{name}_tk` (`schema.BUCKET_FIELD_FI`), beside an item-level expression
+    instant `xi`. A custom backend must decode one onto
+    `BucketState.fill_instant` / `expressed_ms` (and `stored_fill_instant` /
+    `stored_expressed_ms`, the values read), and accept
+    **`build_composite_normal(fill_instants=, expressed=, pin_shard_count_equal=)`**:
+    for each `FillInstantWrite`, SET `b_{name}_fi` and ADD `b_{name}_tc`, pinned
+    on the fill instant read (or, for a conversion, on no fill instant and the
+    `tk` read, which the write REMOVEs) and on the stored `cp` / `ra` / `rp`;
+    SET `xi` pinned on the one read; pin `shard_count`. The remaining writers
+    change with #819-#821, before the release; until then writing the form is
+    behind an internal switch that is off.
+
 ::: zae_limiter.repository_protocol.RepositoryProtocol
     options:
       show_root_heading: true

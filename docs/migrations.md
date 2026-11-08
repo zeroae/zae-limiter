@@ -851,3 +851,17 @@ zae-limiter upgrade --name NAME --region REGION [--lambda-only] [--force]
 ## Version-Specific Migration Guides
 
 - [Namespace-Prefixed Keys (v0.10.0)](migrations/namespace-keys.md) -- Migrate from bare DynamoDB keys to namespace-prefixed keys for multi-tenant isolation
+
+### Schema 0.11.0: fill instants for dripping limits
+
+Schema 0.11.0 ([ADR-154](adr/154-fill-instant-fast-path.md)) stores each dripping
+limit on a bucket item, the reserved `wcu` included, as a scaled fill instant
+`b_{name}_fi` in place of `b_{name}_tk`, beside one item-level expression instant
+`xi`. Quotas keep `tk`, `rf` and `gc`, so one item can carry both forms.
+
+Nothing to run: items are converted lazily, each on its next slow pass, by a write
+pinned on the `tk` and `rf` it read. There is no table scan and no registered
+migration. The minor version change refuses no 0.x client, but every client and
+Lambda sharing a table must run v0.18.0 or later
+([ADR-153](adr/153-admission-contract-for-dripping-limits.md)): an older one would
+write `tk` beside a converted fill instant and admit twice.

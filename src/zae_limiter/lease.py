@@ -9,9 +9,11 @@ from dataclasses import InitVar, dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from .bucket import (
+    ConsumeResult,
+    apply_consume,
     calculate_available,
-    force_consume,
     retry_after_for_deficit,
+    settle,
     try_consume,
     window_end_in_force,
 )
@@ -27,6 +29,7 @@ from .models import (
     QuotaDonorDebit,
     QuotaPeriodPin,
 )
+from .repository_protocol import FillInstantWrite
 from .schedule import next_reset_edge, prev_reset_edge
 from .schema import (
     BUCKET_ATTR_PREFIX,
@@ -553,6 +556,22 @@ class SeedNotAppliedError(RateLimitExceeded):
         super().__init__(statuses, contended=True)
 
 
+class FillInstantLostError(RateLimitExceeded):
+    """A slow-path write carrying fill instants did not land (#818).
+
+    Its fill instants were computed exactly from what the pass read, and a
+    lost pin means something moved since. The consumption-only retry cannot
+    follow: it debits ``tk``, which a limit stored as a fill instant does not
+    carry, and writing one beside it would admit twice (ADR-154). Nothing was
+    written, so the acquire re-plans once from a fresh read
+    (`RateLimiter._slow_acquire`); a second loss stands as the contended 429
+    (#724) it is raised as.
+    """
+
+    def __init__(self, statuses: list[LimitStatus]) -> None:
+        super().__init__(statuses, contended=True)
+
+
 class BypassLostError(Exception):
     """A bypass-shaped slow-path write found the bucket's stamp gone (internal, #311).
 
@@ -936,7 +955,7 @@ class Lease:
         """Consume ``amounts`` from ``resource``'s declared limits, all or none."""
         now_ms = self.repository._now_ms()
         statuses: list[LimitStatus] = []
-        updates: list[tuple[LeaseEntry, int, int]] = []  # (entry, new_tokens, new_refill)
+        updates: list[tuple[LeaseEntry, ConsumeResult]] = []
         scoped = self._scoped(resource)
 
         # Check all declared limits first
@@ -963,7 +982,7 @@ class Lease:
             statuses.append(status)
 
             if result.success:
-                updates.append((entry, result.new_tokens_milli, result.new_last_refill_ms))
+                updates.append((entry, result))
 
         # Also include statuses for limits not being consumed (for full visibility)
         for entry in scoped:
@@ -991,9 +1010,8 @@ class Lease:
             raise RateLimitExceeded(statuses)
 
         # Apply updates to local state (will be persisted on commit)
-        for entry, new_tokens, new_refill in updates:
-            entry.state.tokens_milli = new_tokens
-            entry.state.last_refill_ms = new_refill
+        for entry, result in updates:
+            apply_consume(entry.state, result)
             amount = amounts.get(entry.limit.name, 0)
             entry.consumed += amount
             # Update consumption counter if initialized (issue #179)
@@ -1038,9 +1056,7 @@ class Lease:
             if amount == 0:
                 continue
 
-            new_tokens, new_refill = force_consume(entry.state, amount, now_ms)
-            entry.state.tokens_milli = new_tokens
-            entry.state.last_refill_ms = new_refill
+            settle(entry.state, amount, now_ms)
             entry.consumed += amount
             # Update consumption counter if initialized (issue #179)
             # Net tracking: counter decreases on release/adjust(negative)
@@ -1245,9 +1261,26 @@ class Lease:
                     group_entries[0]._original_rf_ms,
                 )
 
+                # Limits stored, or converted, as fill instants (#818): each is
+                # written exactly from what this pass read, never by `ADD tk`.
+                fill_writes: dict[str, FillInstantWrite] = {}
                 for entry in group_entries:
                     name = entry.limit.name
                     consumed_milli = entry.consumed * 1000
+                    if not entry._seed and entry.state.fill_instant is not None:
+                        read_fi = entry.state.stored_fill_instant
+                        fill_writes[name] = FillInstantWrite(
+                            fill_instant=entry.state.fill_instant,
+                            consumed_milli=consumed_milli,
+                            read_fill_instant=read_fi,
+                            read_tokens_milli=(
+                                entry._original_tokens_milli if read_fi is None else None
+                            ),
+                            capacity_milli=entry.state.capacity_milli,
+                            refill_amount_milli=entry.state.refill_amount_milli,
+                            refill_period_ms=entry.state.refill_period_ms,
+                        )
+                        continue
                     if entry._seed:
                         seeds[name] = entry.state
                         # An edge or a window end crossed between the acquire
@@ -1485,6 +1518,16 @@ class Lease:
                         owner_pinc=(
                             owner_entry._parent_incarnation if owner_entry is not None else None
                         ),
+                        fill_instants=fill_writes or None,
+                        expressed=_expressed(group_entries) if fill_writes else None,
+                        pin_shard_count_equal=next(
+                            (
+                                e.state.shard_count
+                                for e in group_entries
+                                if e.limit.name in fill_writes and e.limit.name != WCU_LIMIT_NAME
+                            ),
+                            None,
+                        ),
                     )
                 )
                 # The rollover fan-out. A create fans out only in the one case
@@ -1592,6 +1635,17 @@ class Lease:
             # whole transaction rolled back; the acquire is planned again,
             # enforced, rather than retried bypass-shaped or debited here.
             raise BypassLostError(lost_bypass) from condition_exc
+
+        if condition_failed and any(
+            e.state.fill_instant is not None for group in groups.values() for e in group
+        ):
+            # A fill instant is written exactly from the read, so a lost pin or
+            # lock means it moved: re-plan from a fresh read rather than take
+            # the consumption-only retry, which writes `tk` (#818). The whole
+            # transaction rolled back, so nothing was written.
+            raise FillInstantLostError(
+                _contention_rejection(self.entries, now_ms).statuses
+            ) from condition_exc
 
         # Bucket items whose create `Put` was re-issued on the retry path and
         # landed there: a doubling can overtake them exactly as it can the
@@ -2208,11 +2262,30 @@ class Lease:
         now_ms = self.repository._now_ms()
         writes: list[_CreditWrite] = []
         for (entity_id, resource, shard_id), group_entries in groups.items():
+            # A bypassed item (#311) never had `tk` debited: its adjustments,
+            # releases and rollbacks write `tc` only.
+            shape = _bypass_shape(group_entries)
             deltas: dict[str, int] = {}
             for entry in group_entries:
                 delta = delta_of(entry)
-                if delta != 0:
-                    deltas[entry.limit.name] = delta  # millitokens
+                if delta == 0:
+                    continue
+                if entry.state.fill_instant is not None and not shape:
+                    # Until #820 makes these writes exact, a fill instant is
+                    # never adjusted by `ADD tk`, which would write a `tk` beside
+                    # it (ADR-154). Only reachable while
+                    # `schema.WRITE_FILL_INSTANTS` is on (#818). A credit is
+                    # dropped, an under-admission; a debit refuses, since
+                    # dropping it would forgive the debt.
+                    if delta > 0:
+                        raise NotImplementedError(
+                            f"debiting fill-instant limit {entry.limit.name!r} lands in #820"
+                        )
+                    logger.debug(
+                        "Credit to fill-instant limit %s dropped until #820", entry.limit.name
+                    )
+                    continue
+                deltas[entry.limit.name] = delta  # millitokens
             if not deltas:
                 continue
             images = {e._image for e in group_entries}
@@ -2227,9 +2300,6 @@ class Lease:
                 period_image,
             )
             pin = image.pin if image is not None else None
-            # A bypassed item (#311) never had `tk` debited: its adjustments,
-            # releases and rollbacks write `tc` only.
-            shape = _bypass_shape(group_entries)
             writes.append((entity_id, resource, shard_id, deltas, ceilings, pin, shape))
         return writes
 
@@ -2613,6 +2683,24 @@ def _stamp_deadline(entry: LeaseEntry, now_ms: int, repo: Any) -> int:
     if entry._stamp_deadline_ms is not None:
         return entry._stamp_deadline_ms
     return int(repo._stamp_deadline(now_ms))
+
+
+def _expressed(group_entries: list[LeaseEntry]) -> tuple[int, int | None]:
+    """The expression instant a write of fill instants stamps, and the one it read (#818).
+
+    The latest any of its fill instants was expressed at, and the item's `xi` as
+    the pass read it, off any limit read from the item.
+    """
+    stamped = max(
+        e.state.expressed_ms
+        for e in group_entries
+        if e.state.fill_instant is not None and e.state.expressed_ms is not None
+    )
+    read = next(
+        (e.state.stored_expressed_ms for e in group_entries if e.state.stored_vu_read),
+        None,
+    )
+    return stamped, read
 
 
 def _bypass_deadline(group: list[LeaseEntry], now_ms: int, repo: Any) -> int:

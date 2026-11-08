@@ -23,9 +23,13 @@ from .limiter import OnUnavailable as OnUnavailable
 if TYPE_CHECKING:
     from .sync_repository_protocol import SpeculativeResult, SyncRepositoryProtocol
 from .bucket import (
+    adopt_fill_instant,
+    apply_consume,
     calculate_available,
+    credit_back,
     declared_statuses,
-    force_consume,
+    express_created,
+    settle,
     try_consume,
     window_end_in_force,
     would_refill_satisfy,
@@ -66,6 +70,7 @@ from .sync_config_cache import ConfigSource
 from .sync_lease import (
     _CONTENTION_RETRY_AFTER_S,
     BypassLostError,
+    FillInstantLostError,
     LeaseEntry,
     OwnerStampLostError,
     PeriodNotAppliedError,
@@ -2005,7 +2010,7 @@ class SyncRateLimiter:
         in ``RateLimitExceeded``. Returns ``(None, 0)``.
         """
         if limit.name not in consume:
-            state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
+            settle(state, 0, now_ms)
             return (None, 0)
         amount = consume[limit.name]
         result = try_consume(state, amount, now_ms)
@@ -2022,8 +2027,7 @@ class SyncRateLimiter:
         )
         if not result.success:
             return (status, 0)
-        state.tokens_milli = result.new_tokens_milli
-        state.last_refill_ms = result.new_last_refill_ms
+        apply_consume(state, result)
         if state.total_consumed_milli is not None and amount > 0:
             state.total_consumed_milli += amount * 1000
         return (status, amount)
@@ -2049,8 +2053,9 @@ class SyncRateLimiter:
         state = buckets.get((entity_id, resource, WCU_LIMIT_NAME))
         if state is None:
             return None
+        adopt_fill_instant(state)
         original_tk, original_rf = (state.tokens_milli, state.last_refill_ms)
-        state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
+        settle(state, 0, now_ms)
         return LeaseEntry(
             entity_id=entity_id,
             resource=resource,
@@ -2124,6 +2129,7 @@ class SyncRateLimiter:
             state.reset_sched = limit.reset_schedule
             stored_rsa = state.reset_after_seconds
             state.reset_after_seconds = limit.reset_after_seconds
+            adopt_fill_instant(state)
             original_tk, original_rf = (state.tokens_milli, state.last_refill_ms)
             stored_top_up = state.topped_up_milli is not None
             window_end = state.window_end_ms
@@ -2136,7 +2142,7 @@ class SyncRateLimiter:
             new_ws = cls._open_window_if_elapsed(limit, state, now_ms) if anchor else None
             reset_applied = cls._apply_reset_edge(limit, state, now_ms)
             roll_applied = cls._apply_window_roll(limit, state, now_ms, opened=new_ws is not None)
-            state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
+            settle(state, 0, now_ms)
             boundary_ms, reset_edge_ms = cls._materialisation_stamps(limit, state, now_ms)
             if left_unopened:
                 boundary_ms = now_ms if boundary_ms is None else min(boundary_ms, now_ms)
@@ -2221,6 +2227,7 @@ class SyncRateLimiter:
             if parent_soft_authority == _SOFT_FROM_CONFIG:
                 existing.soft = limit.soft
             limit = replace(limit, soft=existing.soft)
+            adopt_fill_instant(existing)
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
             parent_stored_top_up = existing.topped_up_milli is not None
@@ -2353,7 +2360,7 @@ class SyncRateLimiter:
                     if disable_bypass:
                         raise AssertionError("an enforced plan carries no bypass write") from None
                     disable_bypass = True
-                except (PeriodNotAppliedError, SeedNotAppliedError):
+                except (PeriodNotAppliedError, SeedNotAppliedError, FillInstantLostError):
                     if period_redone:
                         raise
                     period_redone = True
@@ -2613,7 +2620,7 @@ class SyncRateLimiter:
                 if grown == enforced:
                     raise AssertionError("an enforced part carries no bypass write") from None
                 return plan_and_commit(disable_moves, moves_contended, redone, reread, grown)
-            except (PeriodNotAppliedError, SeedNotAppliedError):
+            except (PeriodNotAppliedError, SeedNotAppliedError, FillInstantLostError):
                 if redone:
                     raise
                 return plan_and_commit(disable_moves, moves_contended, True, reread, enforced)
@@ -3103,6 +3110,10 @@ class SyncRateLimiter:
                         if soft and soft_authority[eid] != _SOFT_FROM_OVERRIDE
                         else None
                     )
+                if existing is None:
+                    express_created(state, now_ms)
+                else:
+                    adopt_fill_instant(state)
                 original_tk = state.tokens_milli
                 stored_top_up = state.topped_up_milli is not None
                 original_rf = item_rf if seed else state.last_refill_ms
@@ -3353,7 +3364,7 @@ class SyncRateLimiter:
         for entry in entries:
             if entry.consumed:
                 if not entry._bypass:
-                    entry.state.tokens_milli += entry.consumed * 1000
+                    credit_back(entry.state, entry.consumed)
                 if entry.state.total_consumed_milli is not None:
                     entry.state.total_consumed_milli -= entry.consumed * 1000
                 entry.consumed = 0

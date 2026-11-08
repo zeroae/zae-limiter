@@ -15,9 +15,11 @@ from dataclasses import InitVar, dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from .bucket import (
+    ConsumeResult,
+    apply_consume,
     calculate_available,
-    force_consume,
     retry_after_for_deficit,
+    settle,
     try_consume,
     window_end_in_force,
 )
@@ -58,6 +60,7 @@ from .schema import (
     decode_stamp,
     explicit_schedule_overrides,
 )
+from .sync_repository_protocol import FillInstantWrite
 
 _CONFLICT_MAX_RETRIES = 3
 _CONFLICT_BASE_DELAY_S = 0.025
@@ -438,6 +441,22 @@ class SeedNotAppliedError(RateLimitExceeded):
         super().__init__(statuses, contended=True)
 
 
+class FillInstantLostError(RateLimitExceeded):
+    """A slow-path write carrying fill instants did not land (#818).
+
+    Its fill instants were computed exactly from what the pass read, and a
+    lost pin means something moved since. The consumption-only retry cannot
+    follow: it debits ``tk``, which a limit stored as a fill instant does not
+    carry, and writing one beside it would admit twice (ADR-154). Nothing was
+    written, so the acquire re-plans once from a fresh read
+    (`SyncRateLimiter._slow_acquire`); a second loss stands as the contended 429
+    (#724) it is raised as.
+    """
+
+    def __init__(self, statuses: list[LimitStatus]) -> None:
+        super().__init__(statuses, contended=True)
+
+
 class BypassLostError(Exception):
     """A bypass-shaped slow-path write found the bucket's stamp gone (internal, #311).
 
@@ -763,7 +782,7 @@ class SyncLease:
         """Consume ``amounts`` from ``resource``'s declared limits, all or none."""
         now_ms = self.repository._now_ms()
         statuses: list[LimitStatus] = []
-        updates: list[tuple[LeaseEntry, int, int]] = []
+        updates: list[tuple[LeaseEntry, ConsumeResult]] = []
         scoped = self._scoped(resource)
         for entry in scoped:
             amount = amounts.get(entry.limit.name, 0)
@@ -785,7 +804,7 @@ class SyncLease:
             )
             statuses.append(status)
             if result.success:
-                updates.append((entry, result.new_tokens_milli, result.new_last_refill_ms))
+                updates.append((entry, result))
         for entry in scoped:
             if entry.limit.name not in amounts:
                 available = calculate_available(entry.state, now_ms)
@@ -807,9 +826,8 @@ class SyncLease:
         violations = [s for s in statuses if s.exceeded]
         if violations:
             raise RateLimitExceeded(statuses)
-        for entry, new_tokens, new_refill in updates:
-            entry.state.tokens_milli = new_tokens
-            entry.state.last_refill_ms = new_refill
+        for entry, result in updates:
+            apply_consume(entry.state, result)
             amount = amounts.get(entry.limit.name, 0)
             entry.consumed += amount
             if entry.state.total_consumed_milli is not None:
@@ -851,9 +869,7 @@ class SyncLease:
             amount = amounts.get(entry.limit.name, 0)
             if amount == 0:
                 continue
-            new_tokens, new_refill = force_consume(entry.state, amount, now_ms)
-            entry.state.tokens_milli = new_tokens
-            entry.state.last_refill_ms = new_refill
+            settle(entry.state, amount, now_ms)
             entry.consumed += amount
             if entry.state.total_consumed_milli is not None:
                 entry.state.total_consumed_milli += amount * 1000
@@ -992,9 +1008,24 @@ class SyncLease:
                     (e._original_rf_ms for e in group_entries if not e._seed),
                     group_entries[0]._original_rf_ms,
                 )
+                fill_writes: dict[str, FillInstantWrite] = {}
                 for entry in group_entries:
                     name = entry.limit.name
                     consumed_milli = entry.consumed * 1000
+                    if not entry._seed and entry.state.fill_instant is not None:
+                        read_fi = entry.state.stored_fill_instant
+                        fill_writes[name] = FillInstantWrite(
+                            fill_instant=entry.state.fill_instant,
+                            consumed_milli=consumed_milli,
+                            read_fill_instant=read_fi,
+                            read_tokens_milli=entry._original_tokens_milli
+                            if read_fi is None
+                            else None,
+                            capacity_milli=entry.state.capacity_milli,
+                            refill_amount_milli=entry.state.refill_amount_milli,
+                            refill_period_ms=entry.state.refill_period_ms,
+                        )
+                        continue
                     if entry._seed:
                         seeds[name] = entry.state
                         restarted = (
@@ -1152,6 +1183,16 @@ class SyncLease:
                         owner_pinc=owner_entry._parent_incarnation
                         if owner_entry is not None
                         else None,
+                        fill_instants=fill_writes or None,
+                        expressed=_expressed(group_entries) if fill_writes else None,
+                        pin_shard_count_equal=next(
+                            (
+                                e.state.shard_count
+                                for e in group_entries
+                                if e.limit.name in fill_writes and e.limit.name != WCU_LIMIT_NAME
+                            ),
+                            None,
+                        ),
                     )
                 )
                 if windows:
@@ -1212,6 +1253,12 @@ class SyncLease:
             )
         if lost_bypass:
             raise BypassLostError(lost_bypass) from condition_exc
+        if condition_failed and any(
+            e.state.fill_instant is not None for group in groups.values() for e in group
+        ):
+            raise FillInstantLostError(
+                _contention_rejection(self.entries, now_ms).statuses
+            ) from condition_exc
         reissued_creates: set[tuple[str, str, int]] = set()
         if condition_failed:
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
@@ -1700,11 +1747,22 @@ class SyncLease:
         now_ms = self.repository._now_ms()
         writes: list[_CreditWrite] = []
         for (entity_id, resource, shard_id), group_entries in groups.items():
+            shape = _bypass_shape(group_entries)
             deltas: dict[str, int] = {}
             for entry in group_entries:
                 delta = delta_of(entry)
-                if delta != 0:
-                    deltas[entry.limit.name] = delta
+                if delta == 0:
+                    continue
+                if entry.state.fill_instant is not None and (not shape):
+                    if delta > 0:
+                        raise NotImplementedError(
+                            f"debiting fill-instant limit {entry.limit.name!r} lands in #820"
+                        )
+                    logger.debug(
+                        "Credit to fill-instant limit %s dropped until #820", entry.limit.name
+                    )
+                    continue
+                deltas[entry.limit.name] = delta
             if not deltas:
                 continue
             images = {e._image for e in group_entries}
@@ -1719,7 +1777,6 @@ class SyncLease:
                 period_image,
             )
             pin = image.pin if image is not None else None
-            shape = _bypass_shape(group_entries)
             writes.append((entity_id, resource, shard_id, deltas, ceilings, pin, shape))
         return writes
 
@@ -2102,6 +2159,23 @@ def _stamp_deadline(entry: LeaseEntry, now_ms: int, repo: Any) -> int:
     if entry._stamp_deadline_ms is not None:
         return entry._stamp_deadline_ms
     return int(repo._stamp_deadline(now_ms))
+
+
+def _expressed(group_entries: list[LeaseEntry]) -> tuple[int, int | None]:
+    """The expression instant a write of fill instants stamps, and the one it read (#818).
+
+    The latest any of its fill instants was expressed at, and the item's `xi` as
+    the pass read it, off any limit read from the item.
+    """
+    stamped = max(
+        e.state.expressed_ms
+        for e in group_entries
+        if e.state.fill_instant is not None and e.state.expressed_ms is not None
+    )
+    read = next(
+        (e.state.stored_expressed_ms for e in group_entries if e.state.stored_vu_read), None
+    )
+    return (stamped, read)
 
 
 def _bypass_deadline(group: list[LeaseEntry], now_ms: int, repo: Any) -> int:
