@@ -140,9 +140,13 @@ class TestUnreadableScheduleHonoursOnUnavailable:
             "not-a-schedule",
         )
 
+        # A request that fits: the fast write is pinned on the `sched` this
+        # process last saw (ADR-155), so it fails and its image carries the
+        # corrupt one. (One above the share would be rejected from that image
+        # with no write at all, never reading the item.)
         with pytest.raises(RateLimiterUnavailable):
             async with limiter.acquire(
-                "ou-5", "gpt-4", consume={"rpm": 5_000}, on_unavailable=OnUnavailable.BLOCK
+                "ou-5", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.BLOCK
             ):
                 pass
 
