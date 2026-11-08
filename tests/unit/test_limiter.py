@@ -201,6 +201,10 @@ async def as_legacy(repo, entity_id: str, resource: str, shard_id: int = 0) -> N
         ExpressionAttributeNames=names,
         **({"ExpressionAttributeValues": values} if values else {}),
     )
+    # An image this process kept of the item storing fill instants (the slow
+    # path keeps what it wrote) would send the next write down the
+    # fill-instant fast path, which its pins now refuse.
+    repo._fill_images.forget((repo._namespace_id, entity_id, resource, shard_id))
 
 
 async def drain_wcu_at(repo, entity_id: str, resource: str, shard_id: int, rf_ms: int) -> None:
@@ -15242,10 +15246,13 @@ class TestTransactionConflictIsContention:
         """Make the next ``times`` writes to ``entity_id``'s bucket conflict.
 
         ``speculative_only`` limits it to the fast path's conditional
-        ``UpdateItem`` (the only write carrying ``:thresh_wcu``);
+        ``UpdateItem``: today's write (the only one carrying ``:thresh_wcu``)
+        or, on an item storing fill instants, the admission write debiting
+        one, which carries its stamp ``:zs{i}`` (#819) and the fast path's
+        guards (``:vu_now``) — the first fast request after this process's own
+        slow pass is one, since the pass keeps the image it wrote (#821);
         ``refunds_only`` to every other ``UpdateItem`` (refunds, commits) except
-        a debit of a fill instant, which carries its stamp ``:zs{i}`` (#819):
-        on an item storing fill instants the fast path's admission is one.
+        a debit of a fill instant.
         """
         client = await repo._get_client()
         original = client.update_item
@@ -15254,8 +15261,8 @@ class TestTransactionConflictIsContention:
         async def conflicted(**kwargs):
             pk = kwargs.get("Key", {}).get("PK", {}).get("S", "")
             values = kwargs.get("ExpressionAttributeValues", {})
-            speculative = ":thresh_wcu" in values
             debit = any(token.startswith(":zs") and token[3:].isdigit() for token in values)
+            speculative = ":thresh_wcu" in values or (debit and ":vu_now" in values)
             if refunds_only:
                 targeted = not speculative and not debit
             else:

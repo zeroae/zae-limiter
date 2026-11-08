@@ -24,6 +24,7 @@ from .bucket import (
     window_end_in_force,
 )
 from .exceptions import LeaseExpiredError, RateLimitExceeded, ValidationError
+from .fill_images import FillImageCache
 from .models import (
     BucketState,
     CreditCeiling,
@@ -2415,10 +2416,10 @@ def _remember_fill_images(
     A backend without the cache keeps nothing.
     """
     cache = getattr(repo, "_fill_images", None)
-    if cache is None:
+    if not isinstance(cache, FillImageCache):
         return
-    images = [item["Put"]["Item"] for item in items if "Put" in item]
-    if written is not None:
+    images = [item["Put"]["Item"] for item in items if isinstance(item, dict) and "Put" in item]
+    if isinstance(written, dict):
         images.append(written)
     for image in images:
         pk = image.get("PK", {}).get("S", "")
