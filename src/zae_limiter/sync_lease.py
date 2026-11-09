@@ -1238,7 +1238,11 @@ class SyncLease:
                         pin_shard_count=min(pin, default=None),
                         rf_ms=written_rf,
                         clear_vu=not boundaries,
-                        pin_vu=read_state is not None and (bool(consumed) or bool(seeds)),
+                        pin_vu=read_state is not None
+                        and (
+                            bool(consumed)
+                            or any(state.fill_instant is None for state in seeds.values())
+                        ),
                         expected_vu=read_state.stored_vu_ms if read_state is not None else None,
                         owner=(owner_entry._cascade, owner_entry._parent_id)
                         if owner_entry is not None
