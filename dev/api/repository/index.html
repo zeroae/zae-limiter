@@ -13887,9 +13887,16 @@ lease adjustment, or a soft limit's debit after admission. <code>item</code> is
 the image to start from: this process's cached image when omitted, or
 one read. A schedule boundary since the item's <code>xi</code> is first
 re-expressed by one pinned write (:meth:<code>_reexpress_item</code>).</p>
-<p>Returns the states of the image the debit landed on. With <code>attempts</code>
-it gives up after that many failed writes and returns None; without, it
-is never given up — dropping it would forgive the debt — and raises
+<p>Returns the states of the image the debit landed on. A limit the item
+no longer stores as a fill instant (the item deleted or swept, the limit
+removed) is skipped, logged at debug: there is no debt to keep, since a
+recreated bucket starts from its own state (#839, as #721 skips an
+adjustment onto an item that is gone); the limits still held are
+debited, and with none left it returns None. Only the item decides
+that, never this process's cached image, which is read again first.
+With <code>attempts</code> it gives up after that many failed writes and returns
+None; without, a debit the item still holds is never given up —
+dropping it would forgive the debt — and raises
 <code>RateLimiterUnavailable</code> after :data:<code>_DEBIT_ATTEMPTS</code>, as a
 persistent backend error does (#682).</p>
 
@@ -19296,7 +19303,10 @@ the contended 429. A backend must implement <code>return_fill_instants</code>, t
 exact return of a fill instant (<code>ADD b_{name}_fi -c·S·rp</code> pinned on what the
 debit was computed against), which compensation and lease refunds call, and
 <code>debit_fill_instants</code>, ADR-154's debit pair with no upper bound, which a
-positive lease adjustment calls and which must never drop a debit (#820).
+positive lease adjustment calls and which must never drop a debit while the
+item still holds the limit (#820). A debit whose item is gone (deleted,
+TTL-swept) or no longer holds the limit as a fill instant has no debt to
+keep: it is skipped, returning <code>None</code> when nothing is left to debit (#839).
 Every bucket created stores its dripping limits, the reserved <code>wcu</code>
 included, as fill instants (#821).</p>
 </div>
@@ -22974,7 +22984,10 @@ where partial success is acceptable.</p>
 <p>Each limit in <code>debits</code> (millitokens) records <code>max(z, t) + c / r</code>,
 retried with a fresh stamp until one lands. With <code>attempts</code> it is
 given up after that many failed writes (returns None); without, it
-raises <code>RateLimiterUnavailable</code> rather than drop the debt.</p>
+raises <code>RateLimiterUnavailable</code> rather than drop the debt. A limit
+the item no longer stores as a fill instant (the item deleted or swept,
+the limit removed) has no debt to keep and is skipped; with none left
+it returns None (#839).</p>
 
 
     </div>

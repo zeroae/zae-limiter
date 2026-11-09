@@ -4854,7 +4854,7 @@ quota has no refill rate at all, so its next reset instant is the only finite wa
 </span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="c1"># Consume can go negative - no bounds checking</span>
 </span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="n">new_tokens_milli</span> <span class="o">=</span> <span class="n">refill</span><span class="o">.</span><span class="n">new_tokens_milli</span> <span class="o">-</span> <span class="p">(</span><span class="n">amount</span> <span class="o">*</span> <span class="mi">1000</span><span class="p">)</span>
 </span></code></pre></div>
-<p>The debt is repaid as tokens refill over time. A bucket at -1,500 tokens needs 1.5 minutes to reach 0 (at 1,000 tokens/minute). In a fill instant, debt is a <code>z</code> more than one fill (<code>C / r</code>) past now; a positive adjustment is a debit write, never rejected and never dropped (ADR-155).</p>
+<p>The debt is repaid as tokens refill over time. A bucket at -1,500 tokens needs 1.5 minutes to reach 0 (at 1,000 tokens/minute). In a fill instant, debt is a <code>z</code> more than one fill (<code>C / r</code>) past now; a positive adjustment is a debit write, never rejected and never dropped while the bucket holds the limit (ADR-155; skipped once the bucket or the limit is gone, #839).</p>
 <h3 id="design-decisions">Design Decisions<a class="headerlink" href="#design-decisions" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
