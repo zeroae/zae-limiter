@@ -121,6 +121,97 @@ class TestAdjustments:
         assert fi.balance_milli(z, clock.now, P_RPM) == 100_000  # capped for free
 
 
+class TestReturnsWhosePinsMoved:
+    """A return whose pins moved is rebuilt from the failure's image and re-sent.
+
+    ADR-155: a credit computed before a re-expression fails its pin and is
+    resent. Dropping it lost the return whenever another process's slow pass
+    moved `xi` while the lease was open (the #820 verification measured 50016
+    milli left where 100000 was owed).
+    """
+
+    async def test_a_release_after_another_writer_moved_xi_lands(self, limiter, clock) -> None:
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM])  # 98 left
+        async with limiter.acquire("e1", RESOURCE, consume={"rpm": 50}) as lease:
+            client = await repo._get_client()
+            await client.update_item(  # as another process's slow pass would
+                TableName=repo.table_name,
+                Key=_key(repo, "e1", RESOURCE),
+                UpdateExpression="SET xi = :x",
+                ExpressionAttributeValues={":x": {"N": str(clock.now + 1)}},
+            )
+            await lease.release(rpm=50)
+        assert fi.balance_milli(await _fi(repo, "e1", "rpm"), clock.now, P_RPM) == 98_000
+
+    async def test_a_rollback_after_a_parameter_change_lands_under_the_new_ones(
+        self, limiter, clock
+    ) -> None:
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM])  # 98 left
+        doubled = Limit.per_minute("rpm", 200)
+        with pytest.raises(ZeroDivisionError):
+            async with limiter.acquire("e1", RESOURCE, consume={"rpm": 50}):
+                await repo.set_limits("e1", [doubled], resource=RESOURCE)  # 48 kept
+                1 / 0
+        p_new = fi.ShardParams(200_000, 200_000, 60_000, 1)
+        assert fi.balance_milli(await _fi(repo, "e1", "rpm"), clock.now, p_new) == 98_000
+
+    async def test_a_return_to_an_item_that_is_gone_is_dropped(self, limiter, clock) -> None:
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM])
+        async with limiter.acquire("e1", RESOURCE, consume={"rpm": 50}) as lease:
+            client = await repo._get_client()
+            await client.delete_item(TableName=repo.table_name, Key=_key(repo, "e1", RESOURCE))
+            await lease.release(rpm=50)
+        assert await _raw(repo, "e1") == {}  # no stub created
+
+    async def test_a_return_whose_limit_is_gone_is_dropped(self, limiter, clock) -> None:
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM, TPM])
+        async with limiter.acquire("e1", RESOURCE, consume={"rpm": 50}) as lease:
+            client = await repo._get_client()
+            await client.update_item(  # the limit removed from the item
+                TableName=repo.table_name,
+                Key=_key(repo, "e1", RESOURCE),
+                UpdateExpression="REMOVE #f",
+                ExpressionAttributeNames={"#f": bucket_attr("rpm", BUCKET_FIELD_FI)},
+            )
+            await lease.release(rpm=50)
+        assert bucket_attr("rpm", BUCKET_FIELD_FI) not in await _raw(repo, "e1")
+
+    async def test_a_return_whose_pins_keep_moving_is_given_up(self, limiter, clock) -> None:
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM])
+        item = await _raw(repo, "e1")
+        state = next(s for s in repo._deserialize_composite_bucket(item) if s.limit_name == "rpm")
+        real = repo._update_item_retrying_conflict
+        sent = 0
+
+        async def move_xi_first(client: Any, **request: Any) -> Any:
+            nonlocal sent
+            sent += 1
+            await client.update_item(
+                TableName=repo.table_name,
+                Key=_key(repo, "e1", RESOURCE),
+                UpdateExpression="ADD xi :one",
+                ExpressionAttributeValues={":one": {"N": "1"}},
+            )
+            return await real(client, **request)
+
+        repo._update_item_retrying_conflict = move_xi_first
+        landed = await repo.return_fill_instants(
+            "e1",
+            RESOURCE,
+            0,
+            {"rpm": (1_000, state)},
+            expressed_ms=int(item["xi"]["N"]),
+            shard_count=1,
+        )
+        assert landed is False
+        assert sent == 4
+
+
 class TestResetAndTopUp:
     async def test_a_reset_of_both_forms_is_one_transaction(self, limiter, clock) -> None:
         repo = limiter._repository

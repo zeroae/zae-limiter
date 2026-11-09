@@ -631,16 +631,17 @@ class TestReturns:
             "e1", RESOURCE, 0, {}, expressed_ms=T0, shard_count=1
         )
 
-    async def test_a_return_whose_pins_moved_is_dropped(self, limiter, clock) -> None:
+    async def test_a_return_whose_pins_moved_is_resent(self, limiter, clock) -> None:
+        # ADR-155: rebuilt from the failure's image and re-sent, not dropped.
         repo = limiter._repository
         await _warm(limiter, "e1", [RPM])
         item = await _raw(repo, "e1")
         (rpm,) = [s for s in repo._deserialize_composite_bucket(item) if s.limit_name == "rpm"]
         before = await _fi(repo, "e1", "rpm")
-        assert not await repo.return_fill_instants(
+        assert await repo.return_fill_instants(
             "e1", RESOURCE, 0, {"rpm": (1_000, rpm)}, expressed_ms=T0 - 1, shard_count=1
         )
-        assert await _fi(repo, "e1", "rpm") == before
+        assert await _fi(repo, "e1", "rpm") == before - fi.span(1_000, P_RPM)
 
     async def test_any_other_error_is_raised(self, limiter, clock) -> None:
         from botocore.exceptions import ClientError
