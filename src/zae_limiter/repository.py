@@ -6106,35 +6106,49 @@ class Repository:
         one read. A schedule boundary since the item's ``xi`` is first
         re-expressed by one pinned write (:meth:`_reexpress_item`).
 
-        Returns the states of the image the debit landed on. With ``attempts``
-        it gives up after that many failed writes and returns None; without, it
-        is never given up — dropping it would forgive the debt — and raises
+        Returns the states of the image the debit landed on. A limit the item
+        no longer stores as a fill instant (the item deleted or swept, the limit
+        removed) is skipped, logged at debug: there is no debt to keep, since a
+        recreated bucket starts from its own state (#839, as #721 skips an
+        adjustment onto an item that is gone); the limits still held are
+        debited, and with none left it returns None. Only the item decides
+        that, never this process's cached image, which is read again first.
+        With ``attempts`` it gives up after that many failed writes and returns
+        None; without, a debit the item still holds is never given up —
+        dropping it would forgive the debt — and raises
         ``RateLimiterUnavailable`` after :data:`_DEBIT_ATTEMPTS`, as a
         persistent backend error does (#682).
         """
         client = await self._get_client()
         fill_key = (self._namespace_id, entity_id, resource, shard_id)
         current = item
+        # Whether `current` is the item as it stood (the caller's, a read or a
+        # write's image), not this process's cache, which may predate the slow
+        # pass that seeded or converted a limit: only the item says it is gone.
+        fresh = item is not None
         if current is None:
             cached = self._fill_images.get(fill_key)
-            current = (
-                cached.item
-                if cached is not None
-                else await self._read_bucket_item(entity_id, resource, shard_id)
-            )
+            if cached is not None:
+                current = cached.item
+            else:
+                current = await self._read_bucket_item(entity_id, resource, shard_id)
+                fresh = True
         for _attempt in range(attempts or _DEBIT_ATTEMPTS):
-            if current is None or schema.BUCKET_FIELD_XI not in current:
-                break
             if await self._wait_out_raise(current):
                 # A raise held the item (ADR-156): it has landed or lapsed by
                 # now, and the item it left is read again.
                 current = await self._read_bucket_item(entity_id, resource, shard_id)
+                fresh = True
                 continue
-            by_name = {s.limit_name: s for s in self._deserialize_composite_bucket(current)}
-            if any(
-                by_name.get(name) is None or by_name[name].fill_instant is None for name in debits
-            ):
-                break
+            by_name = self._held_fill_instants(current)
+            if current is None or not by_name or any(name not in by_name for name in debits):
+                if not fresh:
+                    current = await self._read_bucket_item(entity_id, resource, shard_id)
+                    fresh = True
+                    continue
+                debits = self._skip_gone_fill_debits(current, by_name, debits, resource, shard_id)
+                if current is None or not debits:
+                    return None
             t_ms = self._now_ms()
             xi = int(current[schema.BUCKET_FIELD_XI]["N"])
             if any(
@@ -6145,6 +6159,7 @@ class Repository:
                 if state.fill_instant is not None
             ):
                 current = await self._reexpress_item(entity_id, resource, shard_id, current, t_ms)
+                fresh = True
                 continue
             writes = {
                 name: (
@@ -6186,18 +6201,61 @@ class Repository:
                 if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                     raise
                 current = cast(dict[str, Any] | None, e.response.get("Item"))
+                fresh = True
                 continue
             new_item = response["Attributes"]
             self._fill_images.store(fill_key, new_item)
             self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
             return self._deserialize_composite_bucket(new_item)
-        if attempts is not None:
+        if fresh:
+            # The last write may have found the item gone or a limit removed.
+            debits = self._skip_gone_fill_debits(
+                current, self._held_fill_instants(current), debits, resource, shard_id
+            )
+        if attempts is not None or not debits:
             return None
         raise RateLimiterUnavailable(
             "a fill-instant debit could not land: the bucket kept changing under it",
             stack_name=self.stack_name,
             resource=resource,
         )
+
+    def _held_fill_instants(self, item: dict[str, Any] | None) -> dict[str, BucketState]:
+        """The limits ``item`` stores as fill instants, by name.
+
+        Empty when the item is gone or carries no ``xi``.
+        """
+        if item is None or schema.BUCKET_FIELD_XI not in item:
+            return {}
+        return {
+            state.limit_name: state
+            for state in self._deserialize_composite_bucket(item)
+            if state.fill_instant is not None
+        }
+
+    @staticmethod
+    def _skip_gone_fill_debits(
+        item: dict[str, Any] | None,
+        held: dict[str, BucketState],
+        debits: dict[str, int],
+        resource: str,
+        shard_id: int,
+    ) -> dict[str, int]:
+        """``debits`` less the limits ``item`` no longer holds as fill instants (#839).
+
+        Each of those is skipped, logged at debug. The entity id is never
+        logged: it is routinely an API key.
+        """
+        gone = sorted(name for name in debits if name not in held)
+        if gone:
+            logger.debug(
+                "fill-instant debit skipped for %s: the bucket for resource=%s shard=%d %s",
+                ", ".join(gone),
+                resource,
+                shard_id,
+                "is gone" if item is None else "no longer holds it as a fill instant",
+            )
+        return {name: milli for name, milli in debits.items() if name in held}
 
     async def _wait_out_raise(self, item: dict[str, Any] | None) -> bool:
         """Sleep until the live raise marker on ``item`` lapses; False when there is none.
