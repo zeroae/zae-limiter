@@ -30,6 +30,7 @@ from zae_limiter.schedule import (
     MAX_STORED_MILLI,
     MAX_TOKENS,
     ScheduleEntry,
+    next_boundary,
 )
 
 MODULE = Path(fi.__file__)
@@ -408,6 +409,64 @@ class TestReExpression:
         assert admitted == 116
         assert admitted * 1000 <= reference.balance(now)
 
+    @pytest.mark.parametrize("seed", range(6))
+    def test_piecewise_matches_the_reference_with_time_varying_parameters(self, seed: int) -> None:
+        """Across every boundary, the strict bucket whose parameters change at it.
+
+        Each window drips at its own rate and caps at its own ceiling (proofs
+        §8). Each boundary re-expresses with ``re_express``, which rounds toward
+        the smaller balance by less than one scaled unit, so the result may fall
+        short of the reference by at most one unit per boundary crossed.
+        """
+        rng = random.Random(700 + seed)
+        crons = ["*/2 * * * *", "0-29 * * * *", "15-44 * * * *", "* 0-5 * * *", "* 9-17 * * *"]
+        for _ in range(60):
+            entries = []
+            for cron in rng.sample(crons, rng.randint(1, 3)):
+                if rng.random() < 0.6:
+                    entries.append(
+                        ScheduleEntry(cron=cron, scale=rng.choice([0.1, 0.25, 0.5, 2, 4]))
+                    )
+                else:
+                    entries.append(
+                        ScheduleEntry(
+                            cron=cron,
+                            capacity=rng.randint(1, 2_000),
+                            refill_amount=rng.randint(1, 2_000),
+                        )
+                    )
+            sched = tuple(entries)
+            base = random_params(rng)
+            undivided = (base.capacity_milli, base.refill_amount_milli, base.refill_period_ms)
+            shards = base.shard_count
+            expressed = T0 + rng.randint(0, 86_400_000)
+            now = expressed + rng.randint(0, 3 * 3_600_000)
+            first = fi.params_at(expressed, *undivided, sched, shards)
+            z = z_with_balance(
+                expressed, rng.randint(-2 * first.capacity_units, first.capacity_units), first
+            )
+
+            got_z, last = fi.re_express_across(z, expressed, now, *undivided, sched, shards)
+
+            reference = Strict(
+                share(first),
+                rate(first),
+                min(exact_balance(z, expressed, first), share(first)),
+                expressed,
+            )
+            slack = Fraction(0)
+            at = expressed
+            while (boundary := next_boundary(sched, now_ms=at)) is not None and boundary <= now:
+                following = fi.params_at(boundary, *undivided, sched, shards)
+                reference.reparam(boundary, share(following), rate(following))
+                slack += Fraction(1, following.units_per_milli)
+                at = boundary
+            assert last == at
+            expected = reference.balance(last)
+            got = exact_balance(got_z, last, fi.params_at(last, *undivided, sched, shards))
+            assert got <= expected
+            assert expected - got <= slack
+
     def test_no_boundary_leaves_the_fill_instant_alone(self) -> None:
         base = (1_000_000, 1_000_000, 60_000)
         p = fi.params_at(T0, *base, (), 1)
@@ -583,6 +642,8 @@ class TestBounds:
         too_much = MAX_TOKENS * 1000 + 1
         for call in (
             lambda: fi.plan_first(T0, too_much, p, soft=True),
+            lambda: fi.plan_first(T0, too_much, p),  # hard: refused, not rejected
+            lambda: fi.plan_retry(T0, too_much, p, fi.created_full(T0, p)),
             lambda: fi.debit_write(T0, too_much, p),
             lambda: fi.returned(fi.created_full(T0, p), too_much, p),
             lambda: fi.topped_up(fi.created_full(T0, p), too_much, p),
