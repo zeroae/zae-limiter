@@ -525,6 +525,39 @@ class TestEdges:
         assert _n(item, "tpm", BUCKET_FIELD_FI) == fi.stamp(T0 + 1_000, p) + fi.span(7_000, p)
         assert bucket_attr("tpm", BUCKET_FIELD_TK) not in item
 
+    @pytest.mark.parametrize(
+        "cron, cap",
+        [("* 9 * * *", 5_000), ("* 8 * * *", 10_000)],
+        ids=["seeded-inside-a-half-window", "item-expressed-inside-it"],
+    )
+    async def test_a_seed_stamps_xi(self, limiter, clock, cron, cap) -> None:
+        """A seed is expressed at the write's `xi`, so the write stamps it.
+
+        Left at the item's older `xi`, across the 09:00 boundary, the seed was
+        read from there: 7 tokens over in a 0.5x window, or locked out (a
+        balance of about -150 billion) leaving one. Found by #818's verification.
+        """
+        repo = limiter._repository
+        await repo.set_limits("e1", [RPM], resource=RESOURCE)
+        async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}):
+            pass  # the item's `xi`: 08:00
+        half = Limit.per_minute("tpm", 10_000).with_schedule(
+            (ScheduleEntry(cron=cron, tz="UTC", scale=0.5),)
+        )
+        await repo.set_limits("e1", [RPM, half], resource=RESOURCE)
+        clock.now = T0 + 3_700_000  # 09:01:40, past the boundary
+        async with limiter.acquire("e1", RESOURCE, consume={"tpm": 7}):
+            pass
+        assert _n(await _raw(repo, "e1"), "tpm", BUCKET_FIELD_FI) is not None
+        assert int((await _raw(repo, "e1"))[BUCKET_FIELD_XI]["N"]) == clock.now
+        availability = await limiter.check_availability("e1", RESOURCE)
+        assert availability.status("tpm").available == cap - 7
+        async with limiter.acquire("e1", RESOURCE, consume={"tpm": cap - 7}):
+            pass
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("e1", RESOURCE, consume={"tpm": 1}):
+                pass
+
     async def test_a_reset_beside_a_fill_instant_wcu_leaves_it_alone(self, limiter, clock) -> None:
         repo = limiter._repository
         await repo.set_limits("e1", [RPD], resource=RESOURCE)
