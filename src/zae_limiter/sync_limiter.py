@@ -3099,6 +3099,17 @@ class SyncRateLimiter:
                 state for (b_eid, _res, _name), state in existing_buckets.items() if b_eid == eid
             ]
             any_existing = bool(item_states)
+            if (
+                not any_existing
+                and eid_shard == 0
+                and (eid_shard_count <= 1)
+                and any(not limit.is_quota for limit in entity_limits[eid])
+            ):
+                siblings = getattr(self._repository, "sibling_shard_count", None)
+                found = siblings(eid, resource) if siblings is not None else None
+                if found is not None:
+                    eid_shard_count = found
+                    entity_shards[eid] = (eid_shard, found)
             config_bypass = bypass_mode.get(eid, False)
             stamp_read = next(
                 (s.bypass_until_ms for s in item_states if s.bypass_until_ms is not None), None

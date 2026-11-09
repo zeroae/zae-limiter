@@ -2496,6 +2496,38 @@ class SyncRepository:
             if bucket.limit_name != schema.WCU_LIMIT_NAME
         ]
 
+    def sibling_shard_count(self, entity_id: str, resource: str) -> int | None:
+        """The shard count another shard of one (entity, resource) stores, or None.
+
+        Asked before the slow path creates shard 0 full (ADR-156): a missing
+        shard 0 starts full only when no shard of its bucket exists. A shard
+        swept by its TTL while a sibling lives would otherwise come back full,
+        at the count of a client that knows of no other shard, and claim a
+        whole capacity beside the sibling's share (1496 admitted against 1000).
+        GSI3 lists the bucket's shards; the highest one's stored count is read
+        strongly consistent, and a count that slot's id implies is the floor.
+
+        Cost: 1 GSI3 KEYS_ONLY Query (0.5 RCU), plus a projected strongly
+        consistent ``GetItem`` (1 RCU) when a sibling exists.
+        """
+        pks = self._discover_entity_bucket_pks(entity_id, resource)
+        siblings = sorted({schema.parse_bucket_pk(pk)[3] for pk in pks} - {0})
+        if not siblings:
+            return None
+        highest = siblings[-1]
+        client = self._get_client()
+        response = client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, highest)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ProjectionExpression="shard_count",
+            ConsistentRead=True,
+        )
+        stored = int(response.get("Item", {}).get("shard_count", {}).get("N", "1"))
+        return max(stored, 1 << highest.bit_length())
+
     def batch_get_buckets(
         self, keys: list[tuple[str, str, int]]
     ) -> dict[tuple[str, str, str], BucketState]:

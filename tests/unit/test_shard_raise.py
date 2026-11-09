@@ -15,7 +15,7 @@ import pytest
 from tests.fixtures.balances import balance_milli
 from tests.fixtures.sharding import pinned_shard
 from tests.unit.test_fill_instant_fast_path import RESOURCE, T0, Clock
-from zae_limiter import Limit, RateLimiter, RateLimitExceeded, schema, shard_raise
+from zae_limiter import Limit, RateLimiter, RateLimitExceeded, Repository, schema, shard_raise
 from zae_limiter import fill_instant as fi
 from zae_limiter.bucket import balance_milli_at
 from zae_limiter.schema import BUCKET_FIELD_FI, BUCKET_FIELD_TC, bucket_attr, pk_bucket, sk_state
@@ -236,6 +236,72 @@ class TestMissingShards:
         assert item is not None
         z = int(item[bucket_attr("rpm", BUCKET_FIELD_FI)]["N"])
         assert fi.balance_milli(z, clock.now, fi.ShardParams(1_000_000, 1_000_000, 60_000, 2)) == 0
+
+    async def test_a_swept_shard_0_is_created_empty_by_a_client_that_knows_no_sibling(
+        self, limiter, clock
+    ) -> None:
+        """ADR-156: created full only when no shard of the bucket exists.
+
+        Shard 0 is swept by its TTL while shard 1 lives. A client with a cold
+        cache knows of no other shard and used to create shard 0 full, at a
+        count of 1: 1496 admitted against 1000 (#821's verification).
+        """
+        slow = Limit.custom("rpm", 1000, refill_amount=1, refill_period_seconds=86_400)
+        repo = limiter._repository
+        await repo.set_limits("e1", [slow], resource=RESOURCE)
+        await _spend_on(limiter, "e1", 0, rpm=1)
+        assert await repo.raise_shards("e1", RESOURCE, 1) == 2  # 500 and 499
+        client = await repo._get_client()
+        await client.delete_item(TableName=repo.table_name, Key=_key(repo, "e1", 0))  # swept
+        cold = await Repository.open(stack="test-rate-limits")
+        cold._now_ms = lambda: clock.now
+        try:
+            with pytest.raises(RateLimitExceeded):  # created empty
+                async with RateLimiter(repository=cold).acquire("e1", RESOURCE, consume={"rpm": 5}):
+                    pass
+        finally:
+            await cold.close()
+        item = await _item(repo, "e1", 0)
+        assert item is not None and item["shard_count"]["N"] == "2"
+        assert await _balances(repo, "e1", "rpm", 2, clock.now) == [0, 499_000]
+
+    async def test_a_new_bucket_asks_once_and_is_created_full(self, limiter, clock) -> None:
+        repo = limiter._repository
+        await repo.set_limits("e1", [RPM], resource=RESOURCE)
+        asked: list[tuple[str, str]] = []
+        real = repo.sibling_shard_count
+
+        async def spy(entity_id: str, resource: str) -> int | None:
+            asked.append((entity_id, resource))
+            return await real(entity_id, resource)
+
+        repo.sibling_shard_count = spy
+        await _spend_on(limiter, "e1", 0, rpm=1)
+        await _spend_on(limiter, "e1", 0, rpm=1)
+        assert asked == [("e1", RESOURCE)]  # the create only
+        assert await _balances(repo, "e1", "rpm", 1, clock.now) == [998_000]
+
+    async def test_a_sibling_swept_since_the_index_listed_it_floors_the_count(
+        self, limiter, clock
+    ) -> None:
+        repo = limiter._repository
+        await repo.set_limits("e1", [RPM], resource=RESOURCE)
+        await _spend_on(limiter, "e1", 0, rpm=1)
+        assert await repo.raise_shards("e1", RESOURCE, 1) == 2
+        assert await repo.raise_shards("e1", RESOURCE, 2) == 4
+        client = await repo._get_client()
+        real_get = client.get_item
+
+        async def gone(**kwargs: Any) -> Any:
+            if kwargs.get("ProjectionExpression") == "shard_count":
+                return {}  # deleted between the Query and this read
+            return await real_get(**kwargs)
+
+        client.get_item = gone
+        try:
+            assert await repo.sibling_shard_count("e1", RESOURCE) == 4  # shard 3 exists
+        finally:
+            client.get_item = real_get
 
 
 P_WCU = fi.ShardParams(1_000_000, 1_000_000, 1_000, 1)
