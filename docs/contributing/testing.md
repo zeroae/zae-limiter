@@ -245,7 +245,8 @@ pytest tests/e2e/test_aws.py --run-aws -v
 
 The `AWS E2E` workflow (`.github/workflows/aws-e2e.yml`) runs `pytest -m aws --run-aws` with
 short-lived credentials from GitHub OIDC; no access keys are stored. It runs on a manual
-dispatch, on every push to a `release/v*` branch, and on a pull request labelled `aws-e2e`
+dispatch, on every push to `main` (each merge) and to a `release/v*` branch, and on a pull
+request labelled `aws-e2e`
 (same-repository PRs only; the label is removed when the run ends). Runs are serialized, and
 each one deletes any `zci-*` stack left behind. The daily `AWS E2E Reaper` workflow deletes any
 `zci-*` stack older than a day.

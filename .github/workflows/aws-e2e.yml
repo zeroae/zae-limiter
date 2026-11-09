@@ -7,7 +7,9 @@ name: AWS E2E
 #
 # Runs on:
 # - workflow_dispatch, from any branch
-# - a push to a release branch, so a release's AWS coverage comes from CI
+# - every push to main (each merge), and to a release branch, so main's and a
+#   release's AWS coverage come from CI. No paths filter: it would also skip a
+#   docs-only release-prep commit, which the release rules require a run on.
 # - a same-repository pull request labelled `aws-e2e` (the label is removed when
 #   the run ends; label it again to re-run). Fork PRs get no OIDC token.
 
@@ -24,6 +26,7 @@ on:
         default: false
   push:
     branches:
+      - main
       - 'release/v*'
       - 'release/[0-9]*'
   pull_request:
@@ -34,7 +37,9 @@ permissions:
 
 # One run in the account at a time: the cleanup step deletes every zci-* stack,
 # which is only safe while no other run owns one. Never cancel a run mid-way,
-# or its stacks outlive it until the next run's cleanup.
+# or its stacks outlive it until the next run's cleanup. GitHub keeps only the
+# newest waiting run in a group, so a burst of merges to main tests the newest
+# commit rather than each one.
 concurrency:
   group: aws-e2e
   cancel-in-progress: false
