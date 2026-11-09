@@ -4488,6 +4488,18 @@ class TestSpeculativeConsume:
         assert result.success is False
         assert result.failure_reason == SpeculativeFailureReason.BOTH_EXHAUSTED
 
+    async def test_speculative_failure_reason_both_exhausted_on_a_legacy_item(self, repo):
+        """Today's write classifies a pre-#821 `tk` item the same way: `wcu` and
+        the app limit both spent is BOTH_EXHAUSTED."""
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("e1", "gpt-4", Limit.per_minute("rpm", 1), now_ms)
+        await repo.transact_write([repo.build_composite_create("e1", "gpt-4", [state], now_ms)])
+        await _as_legacy_item(repo, "e1", "gpt-4", tokens={"rpm": 0, "wcu": 0})
+
+        result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+        assert result.success is False
+        assert result.failure_reason == SpeculativeFailureReason.BOTH_EXHAUSTED
+
     async def test_speculative_with_ttl(self, repo):
         """Speculative consume handles TTL correctly."""
         now_ms = int(time.time() * 1000)
