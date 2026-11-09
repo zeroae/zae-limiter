@@ -7,7 +7,12 @@ parameter sync re-expresses every fill instant against the parameters it
 writes; a schedule boundary is integrated window by window.
 """
 
+import asyncio
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
+from unittest.mock import patch
 
 import boto3
 import pytest
@@ -27,8 +32,16 @@ from tests.unit.test_fill_instant_fast_path import (
     _set_fi,
     _warm,
 )
-from zae_limiter import Limit, RateLimiter, RateLimiterUnavailable, ScheduleEntry, schema
+from zae_limiter import (
+    Limit,
+    RateLimiter,
+    RateLimiterUnavailable,
+    RateLimitExceeded,
+    ScheduleEntry,
+    schema,
+)
 from zae_limiter import fill_instant as fi
+from zae_limiter import limiter as limiter_module
 from zae_limiter.schema import BUCKET_FIELD_FI, bucket_attr
 
 MIDNIGHT = 1_800_057_600_000  # 2027-01-15 00:00 UTC
@@ -658,3 +671,240 @@ class TestFillSync:
         )
         assert extended is not None
         assert "#yf0" not in extended[1] and "REMOVE #f" in extended[0]
+
+
+@contextmanager
+def racing_commits(repo: Any) -> Iterator[None]:
+    """Release every slow-path commit sent within 50 ms together.
+
+    moto serialises requests (#656), so without this each pass reads after the
+    previous one wrote and none ever loses. Here every pass of a round plans
+    from the same read, and each round of re-plans races again, as concurrent
+    callers do on a real table.
+    """
+    real = repo.transact_write
+    window: dict[str, asyncio.Event] = {}
+
+    async def gated(*args: Any, **kwargs: Any) -> Any:
+        event = window.get("open")
+        if event is None:
+            event = window["open"] = asyncio.Event()
+
+            async def release() -> None:
+                await asyncio.sleep(0.05)
+                del window["open"]
+                event.set()
+
+            asyncio.ensure_future(release())
+        await event.wait()
+        return await real(*args, **kwargs)
+
+    with patch.object(repo, "transact_write", gated):
+        yield
+
+
+@pytest.fixture
+def moving_clock(limiter) -> None:
+    """A clock that moves with wall time from T0.
+
+    A frozen clock hides the race: every pass then stamps the same instant.
+    """
+    base = time.monotonic()
+    limiter._repository._now_ms = lambda: T0 + int((time.monotonic() - base) * 1000)
+
+
+async def _consumed(repo: Any, entity_id: str, limit: str, resource: str = RESOURCE) -> int:
+    item = await _raw(repo, entity_id, resource)
+    return int(item[bucket_attr(limit, schema.BUCKET_FIELD_TC)]["N"])
+
+
+async def _outcomes(calls: list[Any]) -> list[str]:
+    async def one(call: Any) -> str:
+        try:
+            await call()
+        except RateLimitExceeded as exc:
+            return "contended" if exc.contended else "exhausted"
+        return "admitted"
+
+    return await asyncio.gather(*[one(call) for call in calls])
+
+
+class TestConcurrentSlowPasses:
+    """A slow pass that loses its fill-instant write retries through the pair.
+
+    The slow pass's write is pinned on what it read, so concurrent passes on
+    one bucket serialise. With no consumption-only retry for a fill instant
+    (#818), eight of ten concurrent requests on a new bucket got the contended
+    429; the LocalStack e2e's `test_concurrent_lease_acquisition` caught it.
+    """
+
+    @pytest.mark.parametrize("override", [False, True], ids=["config", "override"])
+    async def test_a_burst_on_a_new_bucket_is_admitted(
+        self, limiter, moving_clock, override
+    ) -> None:
+        repo = limiter._repository
+        await limiter.create_entity("e1")
+        if not override:
+            await repo.set_limits("e1", [RPM], resource=RESOURCE)
+        limits = [RPM] if override else None
+
+        def call() -> Any:
+            async def run() -> None:
+                async with limiter.acquire("e1", RESOURCE, limits=limits, consume={"rpm": 5}):
+                    pass
+
+            return run
+
+        with racing_commits(repo):
+            outcomes = await _outcomes([call() for _ in range(10)])
+        assert outcomes == ["admitted"] * 10
+        assert await _consumed(repo, "e1", "rpm") == 50_000
+
+    async def test_a_burst_across_a_schedule_boundary_is_admitted(self, limiter) -> None:
+        # Every request reaching the first instant past a boundary takes the
+        # slow path, which re-expresses the bucket.
+        repo = limiter._repository
+        windowed = Limit.per_minute("rpm", 100).with_schedule(
+            (ScheduleEntry(cron="* 9-17 * * *", tz="UTC", scale=0.5),)
+        )
+        boundary = 1_800_003_600_000  # 2027-01-15 09:00 UTC, an hour after T0
+        repo._now_ms = lambda: boundary - 1_000
+        await _warm(limiter, "e1", [windowed])
+        base = time.monotonic()
+        repo._now_ms = lambda: boundary + int((time.monotonic() - base) * 1000)
+
+        async def run() -> None:
+            async with limiter.acquire("e1", RESOURCE, consume={"rpm": 3}):
+                pass
+
+        with racing_commits(repo):
+            outcomes = await _outcomes([run for _ in range(10)])
+        # 50 in the window: ten requests of 3 fit.
+        assert outcomes == ["admitted"] * 10
+        assert await _consumed(repo, "e1", "rpm") == 32_000  # _warm debited 2
+
+    async def test_the_redo_never_over_admits(self, limiter, moving_clock) -> None:
+        repo = limiter._repository
+        await repo.set_limits("e1", [RPM], resource=RESOURCE)
+
+        async def run() -> None:
+            async with limiter.acquire("e1", RESOURCE, consume={"rpm": 30}):
+                pass
+
+        with racing_commits(repo):
+            outcomes = await _outcomes([run for _ in range(6)])
+        # 100 fit three requests of 30: the rest are rejected as exhausted,
+        # not as contended, and never admitted.
+        assert sorted(outcomes) == ["admitted"] * 3 + ["exhausted"] * 3
+        assert await _consumed(repo, "e1", "rpm") == 90_000
+
+    async def test_a_multi_resource_burst_is_admitted(self, limiter, moving_clock) -> None:
+        repo = limiter._repository
+        await repo.set_limits("e1", [RPM], resource=RESOURCE)
+        await repo.set_limits("e1", [TPM], resource="budget")
+
+        async def run() -> None:
+            async with limiter.acquire(
+                "e1", RESOURCE, consume={"rpm": 5}, also={"budget": {"tpm": 100}}
+            ):
+                pass
+
+        with racing_commits(repo):
+            outcomes = await _outcomes([run for _ in range(6)])
+        assert outcomes == ["admitted"] * 6
+        assert await _consumed(repo, "e1", "rpm") == 30_000
+        assert await _consumed(repo, "e1", "tpm", "budget") == 600_000
+
+    @pytest.mark.parametrize("multi", [False, True], ids=["single", "multi"])
+    async def test_a_redo_that_cannot_decide_plans_the_pass_again(
+        self, limiter, moving_clock, multi
+    ) -> None:
+        # The pre-redo behaviour: one re-plan, then the contended 429.
+        repo = limiter._repository
+        await repo.set_limits("e1", [RPM], resource=RESOURCE)
+        await repo.set_limits("e1", [TPM], resource="budget")
+        also = {"budget": {"tpm": 100}} if multi else None
+
+        async def run() -> None:
+            async with limiter.acquire("e1", RESOURCE, consume={"rpm": 5}, also=also):
+                pass
+
+        async def undecided(*args: Any, **kwargs: Any) -> None:
+            return None
+
+        with (
+            racing_commits(repo),
+            patch.object(limiter, "_redo_lost_fill_instants", undecided),
+        ):
+            outcomes = await _outcomes([run for _ in range(6)])
+        assert "contended" in outcomes
+        assert "exhausted" not in outcomes
+
+    async def test_an_override_soft_limit_is_left_to_the_slow_path(self, limiter) -> None:
+        soft = Limit.per_minute("rpm", 100, soft=True)
+        assert (
+            await limiter._redo_lost_fill_instants("e1", [(RESOURCE, {"rpm": 1})], [soft]) is None
+        )
+
+    async def test_no_redo_without_speculative_writes(self, limiter) -> None:
+        # Those writes trust the item's owner stamps, which this caller asked
+        # the slow path to check.
+        limiter._speculative_writes = False
+        assert await limiter._redo_lost_fill_instants("e1", [(RESOURCE, {"rpm": 1})], None) is None
+
+    async def test_an_admission_the_override_forbids_is_refunded(
+        self, limiter, moving_clock
+    ) -> None:
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM])
+        before = await _fi(repo, "e1", "rpm")
+        with patch.object(limiter_module, "_waived_against_override", lambda lease, limits: True):
+            redo = await limiter._redo_lost_fill_instants("e1", [(RESOURCE, {"rpm": 1})], [RPM])
+        assert redo is None
+        assert await _fi(repo, "e1", "rpm") == before
+
+    async def test_a_part_that_needs_the_slow_path_refunds_the_others(
+        self, limiter, moving_clock
+    ) -> None:
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM])
+        before = await _fi(repo, "e1", "rpm")
+        # "budget" has no bucket: its write reports it missing.
+        redo = await limiter._redo_lost_fill_instants(
+            "e1", [(RESOURCE, {"rpm": 1}), ("budget", {"tpm": 1})], None
+        )
+        assert redo is None
+        assert await _fi(repo, "e1", "rpm") == before
+
+    async def test_a_rejected_part_refunds_the_others(self, limiter, moving_clock) -> None:
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM])
+        await _warm(limiter, "e1", [TPM], resource="budget")
+        before = await _fi(repo, "e1", "rpm")
+        with pytest.raises(RateLimitExceeded):
+            await limiter._redo_lost_fill_instants(
+                "e1", [(RESOURCE, {"rpm": 1}), ("budget", {"tpm": 20_000})], None
+            )
+        assert await _fi(repo, "e1", "rpm") == before
+
+    async def test_a_cancelled_redo_refunds_what_landed(self, limiter, moving_clock) -> None:
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM])
+        await _warm(limiter, "e1", [TPM], resource="budget")
+        before = await _fi(repo, "e1", "rpm")
+        real = limiter._try_speculative_acquire
+
+        async def cancel_budget(*args: Any, **kwargs: Any) -> Any:
+            if kwargs["resource"] == "budget":
+                await asyncio.sleep(0.01)  # let the other part land first
+                raise asyncio.CancelledError
+            return await real(*args, **kwargs)
+
+        with (
+            patch.object(limiter, "_try_speculative_acquire", cancel_budget),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await limiter._redo_lost_fill_instants(
+                "e1", [(RESOURCE, {"rpm": 1}), ("budget", {"tpm": 1})], None
+            )
+        assert await _fi(repo, "e1", "rpm") == before

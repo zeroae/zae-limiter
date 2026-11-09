@@ -7139,7 +7139,7 @@ class TestSpeculativeAcquire:
         transact_call_count = 0
 
         async def mock_speculative(
-            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None, **kwargs
         ):
             nonlocal call_count
             call_count += 1
@@ -7152,8 +7152,16 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
+            # The redo of the full slow path's lost write (below) passes its
+            # write budget through.
             return await original_speculative(
-                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+                entity_id,
+                resource,
+                consume,
+                ttl_seconds,
+                shard_id=shard_id,
+                now_ms=now_ms,
+                **kwargs,
             )
 
         async def mock_transact_write(items):
@@ -7178,7 +7186,8 @@ class TestSpeculativeAcquire:
         limiter._repository.transact_write = mock_transact_write
         try:
             # Parent-only _commit_initial fails (ConditionalCheckFailed → retry also fails)
-            # → return None → compensate child → full slow path
+            # → return None → compensate child → full slow path, whose own
+            # lost write is retried through the fill-instant write pair
             async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
                 entity_ids = {e.entity_id for e in lease.entries}
                 assert "child-1" in entity_ids
