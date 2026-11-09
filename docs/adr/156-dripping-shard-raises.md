@@ -1,10 +1,11 @@
 # ADR-156: Shard creation and raises for dripping limits
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-11-07
 **Issue:** Refs [#808](https://github.com/zeroae/zae-limiter/issues/808)
 **Partially supersedes:** [ADR-133](133-client-shard-creation.md) for dripping limits (a raise creates every new shard at once, funded from its parent, instead of each shard being created at a full share on first use)
-**Related:** [ADR-134](134-random-shard-selection.md), [ADR-136](136-entity-config-bucket-ttl.md), [ADR-140](140-duration-window-shard-coherence.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-150](150-move-entity-to-new-parent.md), [ADR-151](151-non-enforcing-limits.md), [ADR-153](153-admission-contract-for-dripping-limits.md), [ADR-155](155-fill-instant-writers.md)
+**Amends:** [ADR-151](151-non-enforcing-limits.md) (decision 8: a raise, by the client or the aggregator, copies a parent's `bypass` and soft deadlines onto its new shards, pinned on the parent's, so a copy never outlives the deadline it was copied from)
+**Related:** [ADR-134](134-random-shard-selection.md), [ADR-136](136-entity-config-bucket-ttl.md), [ADR-140](140-duration-window-shard-coherence.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-150](150-move-entity-to-new-parent.md), [ADR-153](153-admission-contract-for-dripping-limits.md), [ADR-155](155-fill-instant-writers.md)
 **Design:** [Fill-instant proofs](../contributing/fill-instant-proofs.md) (§8)
 
 ## Context
@@ -29,9 +30,10 @@ count refuses while it is live, then read every shard strongly consistently and,
 transaction pinned on what it read (the stamps a write it does not hold off can change
 included), re-express each existing shard at the new count and create each new shard as a copy
 of its parent holding the parent's dripping balance above the parent's new share; an expired
-marker is ignored. A shard is created full only when no shard of its bucket exists, any other
-missing shard is created empty, and every new shard's `wcu` starts full, because that budget
-belongs to the partition.
+marker is ignored. A shard the client creates holds its dripping limits full only when it is
+shard 0, the shard count the client knows is one, and a look-up finds no other shard of its
+bucket; any other missing shard holds them empty, and every new shard's `wcu` starts full,
+because that budget belongs to the partition.
 
 ## Consequences
 
@@ -44,18 +46,25 @@ belongs to the partition.
 
 **Negative:**
 - Every write that moves a dripping balance gains one condition term. One arriving during a
-  raise waits until the marker's deadline (a debit, a parameter sync, a reset) or is answered as
-  contended (an acquire, #724); a return is dropped, an under-admission. A `disabled`, owner or
-  soft stamp fan-out is not held off: the raise is pinned on what it copies, and cancels.
+  raise waits until the marker's deadline (a debit, a return, a parameter sync, a reset) and is
+  rebuilt from what the raise left, or is answered as contended (an acquire, #724). A
+  `disabled`, owner or soft stamp fan-out is not held off: the raise is pinned on what it copies,
+  and cancels.
 - A raise costs a marker write and a strongly consistent read per shard, then one transaction
   as large as the new count (at most 32 items, plus ADR-150's owner check). It happens at most
   five times per bucket.
-- A new shard copies its parent's item: owner, cascade and `disabled` stamps, schedules, `ttl`
-  and ADR-151's deadlines. Its session windows join shard 0's as ADR-140 requires, and its quotas
-  are planned as ADR-145 plans them, including the grant-size freeze for legacy quotas.
-- A missing shard created empty under-admits until it refills: up to one share, once. The client
-  creates one empty whenever the count it knows is above one, so a bucket whose every shard was
-  swept starts empty too.
+- A new shard copies its parent's item: owner, cascade and `disabled` stamps, schedules, `ttl`,
+  and the `bypass` deadline and each dripping limit's soft deadline, pinned on the parent's, so a
+  copy never outlives what it copied (ADR-151 let only the aggregator copy one). It carries no
+  quota, session quotas included: its first slow pass seeds each, funded as ADR-145 funds a seed
+  and joining shard 0's live window as ADR-140 requires. The raise freezes each legacy quota's
+  grant size on the existing shards (ADR-145).
+- A missing shard created empty under-admits until it refills: up to one share, once. A client
+  that knows a count above one creates any missing shard empty; one that knows a count of one
+  looks first (an index query, plus a consistent read when another shard lives), so a bucket
+  whose every shard was swept starts full only for a client that knows of no other shard. On an
+  item that also carries quotas, a created shard's quotas keep ADR-145's funding: a move off the
+  sibling covering the slot, or a fresh grant when none covers it.
 - The aggregator neither refills nor clones a dripping limit, and raises a bucket holding one
   only this way. A bucket with no dripping limit keeps ADR-133's and ADR-145's lazy creation.
   A quota reset on an item not yet converted moves `rf` past refill its dripping `tk` never

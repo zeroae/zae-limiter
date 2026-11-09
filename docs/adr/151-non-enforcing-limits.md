@@ -1,6 +1,6 @@
 # ADR-151: Soft limits and bypass, decided on the bucket item
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-154](154-fill-instant-fast-path.md): on the fast path a soft limit is debited after admission; by [ADR-156](156-dripping-shard-raises.md): a raise copies `bypass` and soft deadlines onto new shards)
 **Date:** 2026-10-09
 **Issue:** [#467](https://github.com/zeroae/zae-limiter/issues/467), [#311](https://github.com/zeroae/zae-limiter/issues/311)
 **Amends:** [ADR-115](115-add-based-writes-lazy-refill.md) (a soft limit may go negative on admission, not only on adjust), [ADR-125](125-resource-disable.md) (`disabled` gains a fourth value, `bypass`), [ADR-139](139-duration-reset-windows.md) (a window opens on the first *enforced* admitted request; a bypassed one does not anchor it), [ADR-147](147-client-side-rejection-cache.md) (local rejection never rejects on a soft or bypassed limit)

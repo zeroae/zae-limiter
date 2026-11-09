@@ -1,6 +1,6 @@
 # ADR-114: Composite Bucket Items
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-154](154-fill-instant-fast-path.md): a dripping limit's fill instant replaces its `tk` on the item)
 **Date:** 2026-01-28
 **Issue:** [#248](https://github.com/zeroae/zae-limiter/issues/248)
 

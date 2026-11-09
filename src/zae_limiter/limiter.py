@@ -4190,14 +4190,10 @@ class RateLimiter:
                     )
                 elif existing is None:
                     is_new = True
-                    # A new shard of a sharded *dripping* bucket starts at its
-                    # effective per-shard share — capacity_milli //
-                    # shard_count, exactly like the aggregator's
-                    # propagate_shard_count Path 2. The stored ra is
-                    # undivided, so the ceilings across all shards still sum
-                    # to the configured capacity and the entity's long-run
-                    # admission rate is unchanged by the doubling (issue
-                    # #439). Stored cp/ra stay undivided.
+                    # A new shard of a sharded *dripping* bucket is built at
+                    # its per-shard share here; `express_created` below then
+                    # empties it when other shards of its bucket exist
+                    # (ADR-156). Stored cp/ra stay undivided.
                     #
                     # A quota is the exception: it never drips, so a fresh
                     # share would be net-new allowance nothing reclaims before

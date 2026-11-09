@@ -1,6 +1,6 @@
 # ADR-002: Integer Arithmetic with Millitokens
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-154](154-fill-instant-fast-path.md): a dripping limit's state is a scaled fill instant, still an exact integer)
 **Date:** 2026-01-09
 **Commit:** [3902c8c](https://github.com/zeroae/zae-limiter/commit/3902c8c)
 **Milestone:** v0.1.0
