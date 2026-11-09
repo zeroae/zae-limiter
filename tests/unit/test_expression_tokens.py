@@ -605,6 +605,28 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert update["UpdateExpression"].endswith("#ottl")
 
+    @pytest.mark.parametrize("read_xi", [1_500, None])
+    def test_bucket_operation_with_fill_instants(self, read_xi: int | None) -> None:
+        """#820: a reset or top-up that SETs fill instants and stamps `xi` (ADR-155)."""
+        from zae_limiter.bucket_ops import ShardWrite
+
+        write = ShardWrite(
+            shard_id=0,
+            shard_count=1,
+            shard_count_stored=True,
+            expected_rf=1,
+            written_rf=2,
+            deltas={HYPHENATED: 5},
+            fill_sets={
+                DOTTED: (7_000, self._fill_state(DOTTED)),
+                HYPHENATED: (9_000, self._fill_state(HYPHENATED)),
+            },
+            expressed=(2_000, read_xi),
+        )
+        update = _repo().build_bucket_operation("e", "r", write)["Update"]
+        assert_expression_safe(update)
+        assert "#oxi = :oxi" in update["UpdateExpression"]
+
     def test_bucket_operation_with_nothing_but_the_lock(self) -> None:
         from zae_limiter.bucket_ops import ShardWrite
 
