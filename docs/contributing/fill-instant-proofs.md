@@ -366,9 +366,11 @@ full.
 **Theorem 5 (ADR-153's bound for every writer).** If every write of a dripping limit takes one
 of ADR-155's forms, then on one (entity, resource), summed over its shards, tokens debited minus
 tokens returned, counted from the start of a window to its last admission, is at most
-`C + R(w) + 2 r s` plus what resets and top-ups grant in the window, where `C` is the largest
-ceiling in force from `s` before the window's start to its start, `R(w)` the refill the
-schedule grants across the window, and `r` the largest rate in force across it.
+`C + R(w) + 2 r s` plus what resets and top-ups grant in the window, plus the debt held at that
+admission on shards other than the one it lands on, where `C` is the largest ceiling in force
+from `s` before the window's start to its start, `R(w)` the refill the schedule grants across
+the window, and `r` the largest rate in force across it. With one shard, or no positive
+adjustments, the last term is zero.
 
 *Proof sketch.* Apply Theorem 1's window argument to the total balance over shards. It starts
 the window at most `C`: every shard holds at most its share and the shares sum to the ceiling
@@ -379,9 +381,14 @@ exceeded the bound by 3 to 54 times the `2 r s` term.
 It gains at most `R(w)` of refill: within a schedule window the shards' rates sum to the rate
 in force, and across boundaries each shard drips at each window's own rate. A split conserves
 it, a shard created empty adds nothing, a re-expression keeps or lowers it, returns add at most
-what they return, and resets and top-ups add what they grant. Theorem 1's clock-offset induction holds shard by shard, each
-reference bucket falling at most `2 r_S s` below zero, and the shards' rates `r_S` sum to at
-most `r`. ∎
+what they return, and resets and top-ups add what they grant. Theorem 1's clock-offset
+induction holds shard by shard, and the shards' rates `r_S` sum to at most `r`. It ends at
+least `−2 r s` less the debt the other shards hold: the shard the last admission lands on falls
+at most `2 r_S s` below zero just after it, and so does every other shard just after its own
+last admission, but a positive adjustment landing there afterwards carries it lower with no
+admission on it to bound. Each shard is its own bucket, so that debt holds back only its shard.
+An earlier sketch claimed every shard ends at most `2 r_S s` below zero; the #825 harness found
+the counterexample, an adjustment's debt on one shard while another admitted. ∎
 
 ## 9. What this does not cover
 

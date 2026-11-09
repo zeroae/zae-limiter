@@ -40,7 +40,8 @@ For every dripping limit outside the exclusions above, tokens debited (by `acqui
 `lease.consume()` and positive adjustments) minus tokens returned (release, negative
 adjustment, rollback) on one (entity, resource), summed over its shards and counted from the
 start of any real-time window `w` to its last admission, must not exceed `C + R(w) + 2 r s`
-plus what operator resets and top-ups grant in `w`. Here `C` is the largest ceiling in force
+plus what operator resets and top-ups grant in `w`, plus the debt positive adjustments leave on
+shards other than the one that admits last (zero for one shard). Here `C` is the largest ceiling in force
 from `s` before the window's start to its start, `R(w)` the refill the configured schedule
 grants across `w`, `r` the largest refill rate in force across it, and `s` the largest gap
 between a writer's clock reading and the instant its write lands (clock skew plus time in
@@ -75,6 +76,8 @@ bound through ADR-154, every other writer through ADR-155, and shard raises thro
   expires: an accepted residual.
 - Clock skew reaches the ceiling too: a write stamped before a boundary that lowers capacity can
   land after it and spend the old ceiling, which is why `C` covers the `s` before the window.
+- Each shard is its own bucket, so a positive adjustment's debt holds back only its shard while
+  the others keep admitting, as before fill instants; spreading it would write every shard.
 - A refund applied twice after an ambiguous write (#731) becomes a defect.
 - There is no version gate. The release ships with no deployments to protect, so ADR-141's
   ratchet is not raised, and every client and Lambda sharing a table must run v0.18.0 or later.
