@@ -444,6 +444,29 @@ class TestNoLegacyWriters:
 
 
 class TestBuildersPinXiAndNeverVu:
+    async def test_a_slow_pass_seeding_a_fill_instant_is_not_pinned_on_vu(
+        self, limiter, clock
+    ) -> None:
+        # A limit configured after its item existed is seeded by the next slow
+        # pass. Seeded as a fill instant, that write is pinned on `xi` alone.
+        repo = limiter._repository
+        await _warm(limiter, "e1", [RPM])
+        await repo.set_limits("e1", [RPM, TPM], resource=RESOURCE)
+        sent: list[dict[str, Any]] = []
+        real = repo.transact_write
+
+        async def spy(items: list[dict[str, Any]], *args: Any, **kwargs: Any) -> Any:
+            sent.extend(items)
+            return await real(items, *args, **kwargs)
+
+        repo.transact_write = spy
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        async with slow.acquire("e1", RESOURCE, consume={"tpm": 7}):
+            pass
+        (update,) = [item["Update"] for item in sent if "Update" in item]
+        assert bucket_attr("tpm", BUCKET_FIELD_FI) in update["ExpressionAttributeNames"].values()
+        assert ":evu" not in update["ExpressionAttributeValues"]
+
     def test_every_dripping_builder(self, limiter) -> None:
         from zae_limiter import fill_sync
         from zae_limiter.bucket_ops import ShardWrite

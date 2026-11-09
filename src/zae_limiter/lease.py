@@ -1526,10 +1526,15 @@ class Lease:
                         # or not, to force exactly this pass), and the fast
                         # path would fail its `vu > now` guard forever.
                         clear_vu=not boundaries,
-                        # #701 for the `tk` limits on the write; a write of
-                        # fill instants alone is pinned on `xi` instead and
-                        # never on `vu`, which quota writers also stamp (ADR-155).
-                        pin_vu=read_state is not None and (bool(consumed) or bool(seeds)),
+                        # #701 for the `tk` limits on the write, a seed's
+                        # included; a write of fill instants alone, a seeded
+                        # one too, is pinned on `xi` instead and never on `vu`,
+                        # which quota writers also stamp (ADR-155).
+                        pin_vu=read_state is not None
+                        and (
+                            bool(consumed)
+                            or any(state.fill_instant is None for state in seeds.values())
+                        ),
                         expected_vu=read_state.stored_vu_ms if read_state is not None else None,
                         owner=(
                             (owner_entry._cascade, owner_entry._parent_id)
