@@ -3089,6 +3089,15 @@ class RateLimiter:
                     # the redo reads META strongly consistently. Its own flag:
                     # a lost META check still gets its redo.
                     fill_reread = isinstance(lost, FillInstantLostError)
+                    if fill_reread:
+                        # Concurrent passes lose to each other; the write pair
+                        # does not. Only when it cannot decide is the pass
+                        # planned again.
+                        redo = await self._redo_lost_fill_instants(
+                            entity_id, [(resource, consume)], limits_override
+                        )
+                        if redo is not None:
+                            return redo[0]
                 except OwnerStampLostError:
                     # A bucket this pass created lost its META check: the
                     # owner moved since the read (ADR-150). Nothing was
@@ -3425,6 +3434,22 @@ class RateLimiter:
                 # strongly consistently, as `_slow_acquire` does (ADR-150).
                 if redone:
                     raise
+                if isinstance(lost, FillInstantLostError):
+                    # Through the write pair first, as `_slow_acquire` does.
+                    redo = await self._redo_lost_fill_instants(
+                        entity_id, [(part[0], part[1]) for part in slow_parts], None
+                    )
+                    if redo is not None:
+                        merged = Lease(
+                            repository=self._repository,
+                            entries=[entry for part_lease in redo for entry in part_lease.entries],
+                            compute_images=False,
+                        )
+                        merged._initial_committed = True
+                        return merged, {
+                            part[0]: plan._unknown_keys
+                            for part, plan in zip(slow_parts, planned, strict=True)
+                        }
                 return await plan_and_commit(
                     disable_moves,
                     moves_contended,
@@ -3523,6 +3548,72 @@ class RateLimiter:
         except Exception:
             return None
         return None
+
+    async def _redo_lost_fill_instants(
+        self,
+        entity_id: str,
+        parts: list[tuple[str, dict[str, int]]],
+        limits: list[Limit] | None,
+    ) -> list[Lease] | None:
+        """Retry a slow pass whose fill-instant write lost, through ADR-154's pair.
+
+        The slow pass's write is pinned on what it read (``rf``, ``xi``, each
+        fill instant), so concurrent passes on one bucket serialise and a
+        loser's re-plan loses again; with no consumption-only retry for a fill
+        instant (#818) a burst that all missed the fast path — a new bucket, a
+        schedule boundary, a ``vu = 0`` stamp — got mostly contended 429s.
+        ADR-154's two writes commute with concurrent debits, so the loser asks
+        them first, from a fresh image and with its own write budget. A genuine
+        exhaustion raises as a fast rejection would. Not with
+        ``speculative_writes=False``: those writes trust the item's own owner
+        stamps, which that caller asked the slow path to check.
+
+        Returns:
+            One committed lease per part, or None when any part needs the slow
+            path again (a boundary, a missing shard, a part the override
+            forbids). Whatever landed is then refunded and the caller re-plans.
+        """
+        if not self._speculative_writes or (
+            limits is not None
+            and any(
+                limit.soft and limit.name in consume for _, consume in parts for limit in limits
+            )
+        ):
+            # The fast path would read an override's soft limit hard (review D11).
+            return None
+        budget = WriteBudget()
+        landed: list[Lease] = []
+
+        async def _attempt(resource: str, consume: dict[str, int]) -> Lease | None | Exception:
+            try:
+                outcome = await self._try_speculative_acquire(
+                    entity_id=entity_id,
+                    resource=resource,
+                    consume=consume,
+                    use_rejection_cache=False,
+                    write_budget=budget,
+                )
+            except Exception as exc:
+                return exc
+            # Recorded the moment it lands, as `_acquire_resources` does.
+            if outcome[0] is not None:
+                landed.append(outcome[0])
+            return outcome[0]
+
+        try:
+            outcomes = await asyncio.gather(*[_attempt(name, amounts) for name, amounts in parts])
+        except BaseException:
+            await self._refund(landed)
+            raise
+        errors = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
+        if errors:
+            await self._refund(landed)
+            raise self._combined_error(errors, [])
+        leases = [outcome for outcome in outcomes if isinstance(outcome, Lease)]
+        if len(leases) < len(parts) or any(_waived_against_override(x, limits) for x in leases):
+            await self._refund(landed)
+            return None
+        return leases
 
     async def _refund(self, leases: list[Lease]) -> None:
         """Refund every debit these committed leases wrote, concurrently (ADR-148).
