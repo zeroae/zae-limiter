@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794244124628,
+  "lastUpdate": 1794247102901,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -40578,6 +40578,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0018444801627346085",
             "extra": "mean: 1.0979040267999949 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3e3432e8af3dd30e53884dd4648fb91f0ccabfa2",
+          "message": "✅ test(limiter): check ADR-153's bound over every window (#837)\n\nStacked on #836 (#824). It is the last PR of epic #816's stack and\ntargets `feat/824-max-tokens-bound`; its own diff is six commits (the\nothers are merges of the base). It changes tests and docs only.\n\n## Summary\n\n**Sliding-window harness** (`tests/unit/test_admission_bound.py`). Turns\nADR-153's bound into a check that runs in the default unit run.\n- **Setup.** Several consumers drive the real limiter on moto. Each is a\nrepository of its own, so it has its own caches as another process\nwould, and each runs on its own clock, offset by up to `s` from the true\none.\n- **Measurement.** Each operation's net debit is read off the items'\n`tc`, summed over shards. A return the library dropped therefore never\ncounts as returned. Each reset or top-up's grant is read off the shards'\nexact balances. Each lease step (admission, `consume()`, adjustment,\nrelease, exit write, rollback) is its own event at its own instant.\n- **Checker.** `window_excess` is `sim.py`'s window checker from the\n2026-11-07 review, in exact integers. No window from a debit to an\nadmission may exceed `C + R(w) + 2·r·s`, plus the debt other shards hold\nat that admission (see below).\n\n**The Context cases:** #808's burst after idling to full; the doublings\nthat admitted 1252, 1402 and 1902 against 1000; a schedule boundary that\nraises the rate (1000 against 117); two leases calling `consume()` (18\nagainst 10); and a lowered resource-level limit. One more case comes\nfrom the fuzz: a positive adjustment's debt on one shard while another\nshard keeps admitting.\n\n**The dripping-limit conservation fuzz:** 8 fixed seeds. It mixes leases\n(with `consume()`, adjustments, releases and rollbacks), idle time,\nparameter changes, resets, top-ups and raises. After every step, no\nshard holds more than its share and every raise conserves the total\nexactly. The window bound is checked at the end.\n\n**Two teeth tests:** the checker on its own (it allows for debt held on\nanother shard and for nothing else), and a balance minted behind the\nlibrary's back, which shows up as exactly the minted excess.\n\nBuilding the harness first turned up two harness bugs. Reading shards at\ndifferent instants made a raise look like it minted a fraction of a\nmillitoken, and several configuration changes at one true instant were\nall read as the last one. Snapshots are now compared at one common\ninstant, and every operation runs at its own instant.\n\n**Capacity benchmarks** (`TestFillInstantCapacity`, all measured at a\nfrozen clock):\n\n| Case | Cost |\n|---|---|\n| Predicted admission | 0 RCU + 1 WCU |\n| Misprediction | +1 WCU, no read |\n| Soft dripping debit | +1 WCU |\n| `consume()` | one write |\n| Positive adjustment | one write at exit |\n| Reset or top-up, S = 1 or 2 | a 4-key config read and a transaction of\nS + 2 items |\n| Raise 1 → 2 | 7 WCU |\n| Raise 16 → 32 | 82 WCU |\n| Resource-level fan-out | per bucket, one consistent GetItem and one\nUpdateItem |\n\n**AWS e2e** (`TestE2EAWSFillInstants`): a fast-path misprediction and a\n1 → 2 raise on real DynamoDB. The same commit repairs two AWS tests that\nbroke when every bucket started storing fill instants (#821): the\nbypass/soft test read `b_*_tk` on dripping limits, and the speculative\nsuccess tests compared balances that drift with the wall clock.\n\n**Docs:**\n- `docs/guide/token-bucket.md`: strict bursts, and sharded buckets whose\nnew shards can start nearly empty.\n- `docs/contributing/architecture.md`: the fill instant, `xi`, the raise\nmarker, and the bucket example in its v0.18 form.\n- The proofs page now says the design ships in v0.18.0, and Theorem 5's\nsketch is corrected (below).\n- `docs/performance.md` and `docs/infra/deployment.md`: sharding by\nraise, and no dripping refill from the aggregator.\n- CLAUDE.md: ADR-153's bound as Important Invariant 11, and fill\ninstants across the sections #825 lists. Two pricing lines are\ncorrected: the raise is 82 WCU at 16 → 32 (165 for the whole walk), not\n\"157 at the last step\", and the reset/top-up config read is a 4-key\nread, up to 2 RCU.\n\n## The fuzz's intermittent CI failure\n\n`TestTheFuzz` failed now and then in CI. It had three causes: two\nharness artifacts and one real over-admission in the library.\n\n| Cause | Kind | Change |\n|---|---|---|\n| A lease's admission and its later steps were recorded as one event at\nthe admission instant, so a window ending at that admission counted debt\nthat a positive adjustment took on after it | Harness | 99cb13cf: each\nstep is its own event. The admission, then a `consume()` (an admission\nof its own), then the adjustment, release, exit write or rollback |\n| Each shard is its own bucket, so an adjustment's debt holds back only\nits own shard while another keeps admitting. Summed over shards, that\nexceeds `C` by exactly the debt | Harness, and how ADR-153 states the\nbound | 99cb13cf: an admission event carries the debt held on every\nshard except the one it landed on, and the checker allows for it. The\nadmitting shard's own debt is never allowed for: an admission that\nover-admits leaves its own shard below zero, and that still counts.\ncb253a3b adds the term to the bound (next section) |\n| A writer whose clock lags read a fill instant against the refill\namount in force at its own clock, not at the instant's `xi`. Under a\n0.25x schedule window, a writer 200 ms behind read the bucket as full at\nthe unscaled ceiling: 351 admitted after a reset granted 250 | Library |\n8bce591b, on #833, which reaches this branch through the base merges:\nthe fast path, its utilisation finding, the debit pair, the reset and\nthe slow path's pair choice now take the parameters at `max(now, xi)`,\nas the readers in `bucket.py` already did |\n\nWith the caches disabled, 10 of 48 seeded runs failed before these\nchanges. All 48 pass now.\n\n\n`TestTheContextCases::test_an_adjustments_debt_holds_back_its_own_shard_only`\npins the second cause on the real limiter. A 100/day bucket is raised to\ntwo shards (50 and 49). An adjustment takes shard 0 to −11, and shard 1\nstill admits 49. With the other shard's debt left out the window exceeds\nthe bound by 11 tokens; with it, by nothing.\n\n## ADR-153's bound gains a term (cb253a3b)\n\nTheorem 5's sketch claimed every shard ends a window at most `2·r_S·s`\nbelow zero. That holds just after each shard's own last admission. A\npositive adjustment landing on a shard after that carries it lower, and\nno admission on that shard bounds it. The bound therefore gains a last\nterm: the debt held, at the window's last admission, on shards other\nthan the one it lands on. With one shard, or with no positive\nadjustments, the term is zero.\n\n`tk`-era buckets behaved the same way. Spreading the debt across shards\nwould mean writing every shard on each adjustment. ADR-153 (still\nProposed) and its Consequences, CLAUDE.md Invariant 11, the proofs page\nand `architecture.md` now state the term.\n\n## Acceptance criteria (#825)\n\n| Criterion | Where |\n|---|---|\n| Sliding-window harness under `tests/unit/`, in the default xdist run,\nwith each ADR-153 Context case |\n`test_admission_bound.py::TestTheContextCases` (5 Context cases, the\ndoublings parametrized over 1, 2 and 3 raises, plus the cross-shard debt\ncase) |\n| Dripping-limit conservation fuzz with fixed seeds |\n`test_admission_bound.py::TestTheFuzz::test_no_window_over_admits[0..7]`\n|\n| `test_capacity.py` pins the costs listed | `TestFillInstantCapacity`\n(12 tests) |\n| AWS e2e: a misprediction and a shard raise on real DynamoDB |\n`test_aws.py::TestE2EAWSFillInstants`. Collected but not run here; it\nruns in the release's AWS e2e pass. |\n| CLAUDE.md coverage | Bucket attributes (`fi`, `xi`, `rx`), the writer\ntable, Speculative Writes, the aggregator, Pre-Shard Buckets, Bucket\nTTL, Important Invariants (11: the bound), and the pricing reference |\n| `token-bucket.md` covers strict bursts and nearly-empty new shards;\n`architecture.md` describes the fill instant | Yes |\n| Proofs page: \"A proposed design\" replaced | It now says it ships in\nv0.18.0 |\n| `mkdocs build --strict` passes | Yes, in the `Docs` run on cb253a3b |\n\n## Test plan\n\n- [x] `Tests` run\n[42561590615](https://github.com/zeroae/zae-limiter/actions/runs/42561590615)\non head cb253a3b: unit 8242 passed, gevent 45 passed, integration 218\npassed (230 skipped), benchmark-moto and benchmark-localstack passed,\nsync code verified.\n- [x] LocalStack e2e in the same run: 36 passed, 1 skipped. This PR\nheads #816's stack, so the run covers every PR in it.\n- [x] `Docs` run on cb253a3b: doctests and `mkdocs build --strict`.\n`Lint` passed.\n- [x] `TestTheFuzz` with the caches disabled, 48 seeded runs: 48 passed\n(10 failed before 99cb13cf and 8bce591b).\n- [x] AWS e2e run\n[42605936459](https://github.com/zeroae/zae-limiter/actions/runs/42605936459)\non head cb253a3b (2026-11-09): 83 passed, 2 skipped (gevent benchmark\nvariants), 1 xfailed (X-Ray traces), 2 xpassed (cascade concurrent\nthroughput benchmarks), 17m30s. It includes `TestE2EAWSFillInstants` (a\nmisprediction and a 1 → 2 raise).\n- [ ] The release still needs its own AWS e2e run on the exact commit\ntagged for v0.18.0.\n\nCloses #825. Part of #816.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-11-09T12:51:38-05:00",
+          "tree_id": "9b7af6e355ca45b1ee0a5eebe26a420a488e0321",
+          "url": "https://github.com/zeroae/zae-limiter/commit/3e3432e8af3dd30e53884dd4648fb91f0ccabfa2"
+        },
+        "date": 1794247101681,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 28.993773880220306,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005727318730284189",
+            "extra": "mean: 34.49016344444229 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 13.293125147328167,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09033626665770986",
+            "extra": "mean: 75.22685515384572 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.093611987761406,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01605888839398507",
+            "extra": "mean: 26.958819764706064 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 45.04896340493926,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0041911155915978476",
+            "extra": "mean: 22.198069043478988 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 27.368924439176435,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009712940039846915",
+            "extra": "mean: 36.53778949999875 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 122.1609821677913,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001020849517400232",
+            "extra": "mean: 8.185919777777114 msec\nrounds: 54"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 32.60082952086383,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006483822060458336",
+            "extra": "mean: 30.674066111109884 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 27.75134163208274,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009296234539455365",
+            "extra": "mean: 36.0342938823513 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 33.202994846853755,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005381887303504837",
+            "extra": "mean: 30.117765117647448 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 29.493743813791504,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0064951878893045245",
+            "extra": "mean: 33.90549556249933 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 34.3958865159302,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008237858439518735",
+            "extra": "mean: 29.07324396296218 msec\nrounds: 54"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 27.32794068290087,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01934460762605382",
+            "extra": "mean: 36.59258528125031 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 34.3978743141001,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01202554839252794",
+            "extra": "mean: 29.071563866668587 msec\nrounds: 45"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9034083559123216,
+            "unit": "iter/sec",
+            "range": "stddev: 0.018729158895183683",
+            "extra": "mean: 525.3733371999886 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9331366898235127,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007624835291187555",
+            "extra": "mean: 517.2939944000007 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9421540739518656,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010518245507098123",
+            "extra": "mean: 1.0613975225999923 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9231066501786139,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010318386240036033",
+            "extra": "mean: 1.0832984463999993 sec\nrounds: 5"
           }
         ]
       }
