@@ -168,6 +168,7 @@ _WRITE_BUDGET: ContextVar["fill_instant.WriteBudget | None"] = ContextVar(
 _SOFT_DEBIT_ATTEMPTS = 4
 _SYNC_ATTEMPTS = 8
 _DEBIT_ATTEMPTS = 16
+_RETURN_ATTEMPTS = 4
 _SEED_TOKEN = {
     schema.BUCKET_FIELD_TK: "t",
     schema.BUCKET_FIELD_TC: "c",
@@ -5487,31 +5488,69 @@ class SyncRepository:
     ) -> bool:
         """Return fill-instant debits exactly (:meth:`build_fill_return`).
 
-        Returns whether the write landed; a lost pin (the item re-expressed or
-        reparameterised since the debit) drops the return, an under-admission,
-        and is logged at debug. Any other error is raised.
+        A return that loses its pins (another writer re-expressed or
+        reparameterised the item since the debit) is rebuilt against the
+        failure's image, its ``xi``, parameters and shard count, and re-sent, up
+        to ``_RETURN_ATTEMPTS`` times (ADR-155). Only then, or when the item or
+        the limit is gone, is it dropped: an under-admission, logged at debug.
+        Returns whether it landed. Any other error is raised.
         """
         if not returns:
             return True
         client = self._get_client()
-        request = self.build_fill_return(
-            entity_id,
-            resource,
-            shard_id,
-            returns,
-            expressed_ms=expressed_ms,
-            shard_count=shard_count,
-            counter=counter,
+        for _attempt in range(_RETURN_ATTEMPTS):
+            request = self.build_fill_return(
+                entity_id,
+                resource,
+                shard_id,
+                returns,
+                expressed_ms=expressed_ms,
+                shard_count=shard_count,
+                counter=counter,
+            )
+            request["ReturnValuesOnConditionCheckFailure"] = "ALL_OLD"
+            try:
+                self._update_item_retrying_conflict(client, **request)
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                rebuilt = self._returns_against(
+                    cast(dict[str, Any] | None, e.response.get("Item")), returns
+                )
+                if rebuilt is None:
+                    logger.debug("Fill-instant return dropped: the item no longer carries it")
+                    return False
+                returns, expressed_ms, shard_count = rebuilt
+                continue
+            self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
+            return True
+        logger.debug("Fill-instant return dropped: its pins kept moving")
+        return False
+
+    def _returns_against(
+        self, image: dict[str, Any] | None, returns: dict[str, tuple[int, BucketState]]
+    ) -> tuple[dict[str, tuple[int, BucketState]], int, int] | None:
+        """``returns`` rebuilt against the item as a failed return found it.
+
+        Each limit the item still stores as a fill instant, with its parameters
+        and the item's ``xi`` and shard count as they now stand; None when the
+        item is gone or carries none of them.
+        """
+        if image is None or schema.BUCKET_FIELD_XI not in image:
+            return None
+        states = {state.limit_name: state for state in self._deserialize_composite_bucket(image)}
+        rebuilt = {
+            name: (milli, states[name])
+            for name, (milli, _state) in returns.items()
+            if name in states and states[name].fill_instant is not None
+        }
+        if not rebuilt:
+            return None
+        return (
+            rebuilt,
+            int(image[schema.BUCKET_FIELD_XI]["N"]),
+            int(image.get("shard_count", {"N": "1"})["N"]),
         )
-        try:
-            self._update_item_retrying_conflict(client, **request)
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-                raise
-            logger.debug("Fill-instant return dropped: its pins no longer hold")
-            return False
-        self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
-        return True
 
     def _learn_bypass(self, key: tuple[str, str, str], item: dict[str, Any], now_ms: int) -> bool:
         """Learn a pair's bypass mode from the item a write returned (#311).
