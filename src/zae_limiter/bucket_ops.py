@@ -35,6 +35,7 @@ from .bucket import (
     fill_params,
     force_consume,
     settle,
+    under_item_schedule,
 )
 from .exceptions import ValidationError
 from .models import BucketState, Limit
@@ -195,11 +196,14 @@ def plan_operation(
         for name, stored in shard.states.items():
             limit = by_name.get(name)
             if stored.fill_instant is not None:
-                # Re-expressed at this instant, under config's schedule, so a
-                # write stamping `xi = now` skips no boundary for any of them.
+                # Re-expressed at this instant, so a write stamping `xi = now`
+                # skips no boundary for any of them, and under the item's own
+                # schedule, the one every reader reads it under (#841): config's
+                # is read uncached here, but a bucket the change's fan-out
+                # missed still carries the old one.
                 state = replace(stored)
                 if limit is not None:
-                    adopt_schedule(state, limit.schedule, now_ms)
+                    adopt_schedule(state, under_item_schedule(limit, state).schedule, now_ms)
                 express_at(state, now_ms)
                 fills[name] = state
                 continue
@@ -209,8 +213,10 @@ def plan_operation(
             tokens[name] = stored.tokens_milli
             top_ups[name] = stored.topped_up_milli
             if limit is not None:
-                # Config is the fresher source, exactly as on the slow path.
-                state.sched = limit.schedule
+                # Config's schedule for a quota, exactly as on the slow path; a
+                # dripping limit still stored as `tk` keeps its item's (#841),
+                # the one its next slow pass converts it under.
+                state.sched = under_item_schedule(limit, state).schedule
                 state.reset_sched = limit.reset_schedule
                 state.reset_after_seconds = limit.reset_after_seconds
                 if limit.is_quota and state.grant_count is None:

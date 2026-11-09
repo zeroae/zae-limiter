@@ -32,6 +32,7 @@ from .bucket import (
     express_created,
     settle,
     try_consume,
+    under_item_schedule,
     window_end_in_force,
     would_refill_satisfy,
 )
@@ -2230,11 +2231,14 @@ class SyncRateLimiter:
         would materialise it as an undeclared limit: the **configured**
         ``Limit`` (``configured``, the entity's resolved config) supplies the
         schedule, the reset schedule and the window length, and the item
-        supplies the state. Reading those off the item instead let a
-        resource- or system-level change that never fans out to buckets
+        supplies the state. Reading a quota's off the item instead let a
+        resource- or system-level change that never fanned out to buckets
         (daily to monthly) go on resetting daily on every override pass — 31
-        admitted in a month configured for 10. A limit on the item that config
-        no longer has is skipped, as such a pass skips it.
+        admitted in a month configured for 10. A dripping limit is the
+        exception, as on every slow pass: it keeps its item's schedule, under
+        which its fill instant is stored (``under_item_schedule``, #841). A
+        limit on the item that config no longer has is skipped, as such a pass
+        skips it.
 
         The steps are the slow path's for an undeclared limit: open an
         elapsed window, apply a pending reset or roll (a quota re-granted at
@@ -2256,6 +2260,7 @@ class SyncRateLimiter:
             if state.limit_name in resolved or state.limit_name not in config:
                 continue
             limit = replace(config[state.limit_name], soft=state.soft)
+            limit = under_item_schedule(limit, state)
             adopt_schedule(state, limit.schedule, now_ms)
             state.reset_sched = limit.reset_schedule
             stored_rsa = state.reset_after_seconds
@@ -2351,6 +2356,7 @@ class SyncRateLimiter:
                 return None
             if existing.soft_until_ms is not None and parent_soft_authority != _SOFT_FROM_CONFIG:
                 return None
+            limit = under_item_schedule(limit, existing)
             adopt_schedule(existing, limit.schedule, now_ms)
             existing.reset_sched = limit.reset_schedule
             stored_rsa = existing.reset_after_seconds
@@ -3347,6 +3353,7 @@ class SyncRateLimiter:
                 else:
                     is_new = False
                     state = existing
+                    limit = under_item_schedule(limit, state)
                     adopt_schedule(state, limit.schedule, now_ms)
                     state.reset_sched = limit.reset_schedule
                     stored_rsa = state.reset_after_seconds
@@ -3584,6 +3591,8 @@ class SyncRateLimiter:
         statuses = []
         for limit in reported:
             state = existing.get((entity_id, resource, limit.name))
+            if state is not None:
+                limit = under_item_schedule(limit, state)
             statuses.append(
                 LimitStatus(
                     entity_id=entity_id,

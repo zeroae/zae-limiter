@@ -8185,10 +8185,10 @@ class SyncRepository:
         applies, so the ``ALL_OLD`` / ``ALL_NEW`` images behind the speculative
         path carry the schedule that was in force for the write. Without them
         every fast-path ``LimitStatus`` reports the base capacity, flat, inside
-        a window that has already halved it. The slow path overwrites
-        ``state.sched`` from the config it just resolved (``_do_acquire``),
-        which is the fresher of the two — that ordering is deliberate and this
-        does not change it.
+        a window that has already halved it. The slow path keeps this
+        ``state.sched`` for a dripping limit, whose fill instant is stored under
+        it (``bucket.under_item_schedule``, #841), and gives a quota the
+        schedule of the config it resolved (``_do_acquire``).
         """
         entity_id = item.get("entity_id", {}).get("S", "")
         resource = item.get("resource", {}).get("S", "")

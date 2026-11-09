@@ -166,7 +166,11 @@ time (#808). The item gains one `xi` attribute, the instant its fill instants we
 expressed against their parameters and schedule. A quota keeps `tk`, `rf` and `gc`, so one item
 can carry both forms, and `rf` is not a fill instant's baseline. An item written before v0.18.0
 (dripping limits in `tk`) is converted on its next slow pass, in a write pinned on the `tk` and
-`rf` it read; every bucket created stores the new form.
+`rf` it read; every bucket created stores the new form. A fill instant is read, debited and
+written only under the schedule stored on its item, never under a schedule from config
+(#841): read under another schedule's refill amount it reads as full or as a vast debt. A
+schedule change reaches an existing item only through its fan-out, which re-expresses its fill
+instants and rewrites the schedule in one write, as capacity and refill do (ADR-153).
 
 The decisions are four ADRs: [ADR-153](../adr/153-admission-contract-for-dripping-limits.md)
 (the admission bound), [ADR-154](../adr/154-fill-instant-fast-path.md) (storage and the fast
