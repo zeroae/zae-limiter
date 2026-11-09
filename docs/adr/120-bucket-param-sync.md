@@ -1,6 +1,6 @@
 # ADR-120: Bucket Param Sync
 
-**Status:** Accepted
+**Status:** Accepted (partially superseded by [ADR-155](155-fill-instant-writers.md) for dripping limits: a parameter sync is a read and a pinned write that re-expresses fill instants)
 **Date:** 2026-02-02
 **Issue:** [#294](https://github.com/zeroae/zae-limiter/issues/294)
 

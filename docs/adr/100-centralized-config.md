@@ -34,6 +34,7 @@ Implement centralized configuration with these architectural choices:
 | Read consistency | [ADR-105](105-eventual-consistency.md) | Eventually consistent reads |
 | Disable flag | [ADR-125](125-resource-disable.md) | Tri-state `disabled` beside limits, resolved by an independent walk over the entity and resource levels |
 | Bucket TTL | [ADR-136](136-entity-config-bucket-ttl.md) | The resolved level decides whether a bucket persists or expires |
+| Default-level change propagation | [ADR-153](153-admission-contract-for-dripping-limits.md) | A resource- or system-level change fans out, change-only, to the active buckets that level decides |
 | Schedules on config | [ADR-135](135-scheduled-limits.md) | Per-limit `sched`/`rsched`, with one `sched_tz` hoisted per item |
 | Duration window on config | [ADR-139](139-duration-reset-windows.md) | Per-limit `rsa` (`reset_after` seconds), the alternative to `rsched` |
 | Hidden session-limit config | [ADR-142](142-hide-reset-after-config.md) | A `reset_after` limit's config is stored under `w_`, which pre-v0.15 readers do not scan |
@@ -48,7 +49,7 @@ Implement centralized configuration with these architectural choices:
 
 **Negative:**
 - Config resolution is stale for up to the cache TTL (60s by default; entity-level setters evict eagerly)
-- Resource- and system-level changes reach an existing bucket only when its TTL expires, not within the cache TTL ([ADR-136](136-entity-config-bucket-ttl.md))
+- Resource- and system-level changes reach existing buckets through a fan-out when they are written, not through TTL expiry ([ADR-153](153-admission-contract-for-dripping-limits.md)); a bucket created from config cached before the change and missed by the fan-out keeps the old parameters until the level changes again or its TTL expires ([ADR-136](136-entity-config-bucket-ttl.md))
 - Additional complexity in resolution logic
 - Breaking change for explicit-limits-only users
 

@@ -4,7 +4,7 @@
 **Date:** 2026-11-06
 **Issue:** Refs [#808](https://github.com/zeroae/zae-limiter/issues/808), [#587](https://github.com/zeroae/zae-limiter/issues/587), [#731](https://github.com/zeroae/zae-limiter/issues/731)
 **Partially supersedes:** [ADR-133](133-client-shard-creation.md) for dripping limits (a new shard is funded by moving tokens, and the 1.5x doubling transient becomes a defect)
-**Amends:** [ADR-135](135-scheduled-limits.md) (refill is integrated across schedule windows), [ADR-136](136-entity-config-bucket-ttl.md) (resource- and system-level changes reach active buckets within the config cache TTL), [ADR-148](148-multi-resource-acquire.md) (`lease.consume()` debits when called)
+**Amends:** [ADR-135](135-scheduled-limits.md) (refill is integrated across schedule windows; a resource- or system-level change, a schedule change included, fans out to active buckets instead of waiting for their TTL to expire; the slow path applies config's schedules and window length over the item's, but takes capacity and refill from the item), [ADR-136](136-entity-config-bucket-ttl.md) (resource- and system-level changes fan out to active buckets, so TTL expiry is no longer how they arrive), [ADR-148](148-multi-resource-acquire.md) (`lease.consume()` debits when called)
 **Related:** [ADR-100](100-centralized-config.md), [ADR-125](125-resource-disable.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-151](151-non-enforcing-limits.md), [ADR-154](154-fill-instant-fast-path.md), [ADR-155](155-fill-instant-writers.md), [ADR-156](156-dripping-shard-raises.md)
 **Design:** [Fill-instant proofs](../contributing/fill-instant-proofs.md)
 
@@ -29,10 +29,9 @@ between.
 Quotas keep ADR-145's per-period conservation (I8). Soft and bypassed limits (ADR-151),
 `on_unavailable=ALLOW` and degraded leases are non-enforcing by design and are outside the
 bound, as is the reserved `wcu` budget, which belongs to each partition (ADR-156). An operator
-reset or top-up (ADR-149) adds what it grants. Configuration and stamp
-changes take effect within the config cache TTL and `stamp_ttl`, except on a bucket a change's
-fan-out missed (Consequences). The bound assumes every process sharing the table runs the
-release that ships it.
+reset or top-up (ADR-149) adds what it grants. Configuration and stamp changes take effect
+within the config cache TTL and `stamp_ttl`, except on a bucket a change's fan-out missed
+(Consequences). The bound assumes every process sharing the table runs the release that ships it.
 
 ## Decision
 
@@ -58,9 +57,9 @@ bound through ADR-154, every other writer through ADR-155, and shard raises thro
 **Negative:**
 - #808 is a defect, and its fix is ADR-154's change of representation.
 - A new shard of an existing dripping bucket is funded by moving tokens from the shard it splits
-  off (ADR-156), so it can start nearly empty; only a bucket's first shard, or a limit added
-  after its item existed, starts full. This partially supersedes ADR-133 and reverses #587's
-  ruling for dripping limits.
+  off, and a missing one is created empty (ADR-156); only a shard 0 created when no other shard
+  of its bucket is known or found, or a limit added after its item existed, starts full. This
+  partially supersedes ADR-133 and reverses #587's ruling for dripping limits.
 - Refill is integrated across schedule windows (amending ADR-135): a limit raised at a boundary
   accrues from there instead of arriving full.
 - `lease.consume()` debits when called, admitted as `acquire()` admits a request (one write and

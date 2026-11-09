@@ -1,6 +1,6 @@
 # ADR-134: Random Shard Selection
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-154](154-fill-instant-fast-path.md): a dripping limit's per-shard share is exactly `1/S`, not floored by `// shard_count`)
 **Date:** 2026-09-12
 **Issue:** [#439](https://github.com/zeroae/zae-limiter/issues/439)
 

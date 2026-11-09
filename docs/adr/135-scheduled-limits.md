@@ -1,6 +1,6 @@
 # ADR-135: Scheduled limits are resolved at read time
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-153](153-admission-contract-for-dripping-limits.md): refill is integrated across windows, resource- and system-level changes fan out, the slow path takes capacity and refill from the item; by [ADR-154](154-fill-instant-fast-path.md): the fast path evaluates the stored schedule)
 **Date:** 2026-09-15
 **Issue:** [#222](https://github.com/zeroae/zae-limiter/issues/222)
 

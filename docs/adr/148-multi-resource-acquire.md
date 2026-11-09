@@ -1,6 +1,6 @@
 # ADR-148: One acquire may debit several resources, all or none
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-153](153-admission-contract-for-dripping-limits.md): `lease.consume()` debits when called)
 **Date:** 2026-10-09
 **Issue:** [#675](https://github.com/zeroae/zae-limiter/issues/675)
 **Amends:** [ADR-145](145-sharded-quota-conserves-allowance.md) (a covered slot whose move is dropped to fit one transaction is granted 0 this period: an under-admission, neither a move nor a fresh grant)

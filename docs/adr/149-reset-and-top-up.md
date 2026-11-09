@@ -1,6 +1,6 @@
 # ADR-149: Reset and top-up are in-place, rf-locked passes over every shard
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-155](155-fill-instant-writers.md): a dripping limit's reset and top-up set its fill instant from the read, pinned on it, not by a token delta)
 **Date:** 2026-10-09
 **Issue:** [#470](https://github.com/zeroae/zae-limiter/issues/470)
 **Amends:** [ADR-145](145-sharded-quota-conserves-allowance.md) (I1, I7, I8: a top-up is an operator grant above the plan), [ADR-139](139-duration-reset-windows.md) (a session top-up with no live window opens one at the top-up instant: an operator action, not an admitted request, anchors it)

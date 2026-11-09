@@ -1,6 +1,6 @@
 # ADR-133: Client-Side Shard Bucket Creation
 
-**Status:** Accepted (partially superseded by [ADR-145](145-sharded-quota-conserves-allowance.md) for quota limits; create shape amended by [ADR-150](150-move-entity-to-new-parent.md))
+**Status:** Accepted (partially superseded by [ADR-145](145-sharded-quota-conserves-allowance.md) for quota limits; create shape amended by [ADR-150](150-move-entity-to-new-parent.md); partially superseded by [ADR-153](153-admission-contract-for-dripping-limits.md) and [ADR-156](156-dripping-shard-raises.md) for dripping limits: a raise funds new shards from their parents, and a missing shard is created empty)
 **Date:** 2026-09-11
 **Issue:** [#439](https://github.com/zeroae/zae-limiter/issues/439)
 

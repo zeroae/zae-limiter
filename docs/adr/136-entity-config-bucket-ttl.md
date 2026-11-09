@@ -1,6 +1,6 @@
 # ADR-136: Entity Configuration Determines Bucket TTL
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-153](153-admission-contract-for-dripping-limits.md): resource- and system-level changes fan out to active buckets)
 **Supersedes:** ADR-119 (in full); ADR-118's TTL clause only
 **Date:** 2026-09-14
 **Issue:** [#487](https://github.com/zeroae/zae-limiter/issues/487), [#489](https://github.com/zeroae/zae-limiter/issues/489)

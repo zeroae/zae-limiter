@@ -4,7 +4,7 @@
 **Date:** 2026-11-07
 **Issue:** Refs [#808](https://github.com/zeroae/zae-limiter/issues/808)
 **Partially supersedes:** [ADR-115](115-add-based-writes-lazy-refill.md) for dripping limits (refill materialised into `tk` under the shared `rf` lock, and its write paths)
-**Amends:** [ADR-002](002-integer-arithmetic-millitokens.md) (a dripping limit's state is a scaled time, still an exact integer), [ADR-114](114-composite-bucket-items.md) (the fill instant replaces `tk` for dripping limits), [ADR-135](135-scheduled-limits.md) (the fast path evaluates the stored schedule on the client), [ADR-147](147-client-side-rejection-cache.md) (an image may choose which conditional write is sent), [ADR-151](151-non-enforcing-limits.md) (a soft limit is debited by a separate write after admission)
+**Amends:** [ADR-002](002-integer-arithmetic-millitokens.md) (a dripping limit's state is a scaled time, still an exact integer), [ADR-114](114-composite-bucket-items.md) (the fill instant replaces `tk` for dripping limits), [ADR-134](134-random-shard-selection.md) (a dripping limit's share on each of `S` shards is exactly `1/S` of its capacity and refill, never floored by `// shard_count`; random selection stands), [ADR-135](135-scheduled-limits.md) (the fast path evaluates the stored schedule on the client), [ADR-147](147-client-side-rejection-cache.md) (an image may choose which conditional write is sent), [ADR-151](151-non-enforcing-limits.md) (on the fast path a soft limit is debited by a separate write after admission, given up after a fixed number of failed writes)
 **Related:** [ADR-146](146-per-resource-cascade-policy.md), [ADR-148](148-multi-resource-acquire.md), [ADR-153](153-admission-contract-for-dripping-limits.md), [ADR-155](155-fill-instant-writers.md), [ADR-156](156-dripping-shard-raises.md)
 **Design:** [Fill-instant proofs](../contributing/fill-instant-proofs.md) (the bounds, and the behaviour with many consumers)
 
@@ -35,12 +35,12 @@ without using the shared `rf` as its refill baseline; every fast-path admission 
 hard limit, one of two writes whose condition proves which side of the write's clock reading
 `t` that instant lies on (not full: add `c/r` under `t ≤ z ≤ t + (C − c)/r`; full: set
 `t + c/r` under `z < t`), pinned as ADR-155 requires and kept beside today's guards, while a
-soft limit takes no part and is debited afterwards as ADR-155 debits a positive adjustment.
-The client must not send the full write when `c` exceeds the per-shard capacity in force
-(rejecting without a write), predicts each side from its images and an estimate of the shard's
-utilisation, retries with the same `t` from the image each failed write returns, answers a
-request still undecided after a fixed number of writes as contended (#724), and never lets an
-image decide an admission.
+soft limit takes no part and is debited afterwards by the debit pair ADR-155 gives a positive
+adjustment, given up after a fixed number of failed writes. The client must not send the full
+write when `c` exceeds the per-shard capacity in force (rejecting without a write), predicts each
+side from its images and an estimate of the shard's utilisation, retries with the same `t` from
+the image each failed write returns, answers a request still undecided after a fixed number of
+writes as contended (#724), and never lets an image decide an admission.
 
 ## Consequences
 
@@ -50,8 +50,8 @@ image decide an admission.
   failed fast-path write is three. Only a hard limit can reject (ADR-151).
 - Nothing refills a dripping limit and no write can lift it above capacity, so the aggregator's
   refill and trim (#317), the self-trimming credit (#721) and #808 go away for these limits.
-- No share is divided by the shard count, so a heavily sharded entity's per-shard rate can no
-  longer floor to zero.
+- No share is divided by the shard count (amending ADR-134's `// shard_count` shares), so a
+  heavily sharded entity's per-shard rate can no longer floor to zero.
 
 **Negative:**
 - Every hard limit on the write must be predicted, the reserved `wcu` included, from a
@@ -62,7 +62,9 @@ image decide an admission.
   resource's limits.
 - A request whose writes keep being overtaken, which takes tokens returned between them, is
   answered as contended though tokens may remain: an under-admission. A request naming a soft
-  limit costs one more write, and a soft debit that keeps failing loses only reporting.
+  limit costs one more write. A soft debit still failing after its fixed number of writes, or
+  meeting a backend error, is logged and dropped, its debt and `tc` alike: only reporting (usage
+  and the overdraw) is lost, since a soft limit never rejects.
 - Every other writer changes with it (ADR-155, ADR-156), and `RepositoryProtocol`'s write
   builders change, which breaks custom backends (ADR-108). An item without a fill instant is
   converted from its `tk` and `rf` on its next slow pass. The schema version moves to 0.11.0
