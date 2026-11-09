@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from botocore.exceptions import ClientError
 
 from tests.fixtures.balances import balance_milli
 from tests.unit.test_admission_bound import ENTITY, RESOURCE, T0, Model, World, window_excess
@@ -54,6 +55,8 @@ NOW_DOUBLED = _window("* 8-9 * * *", 2.0)
 NOW_HALVED = _window("* 8-9 * * *", 0.5)
 SOON_DOUBLED = _window("1-59 8 * * *", 2.0)
 SOON_HALVED = _window("1-59 8 * * *", 0.5)
+#: The doubled window beside a daily quota the bucket does not carry yet.
+NOW_DOUBLED_WITH_QUOTA = [NOW_DOUBLED, Limit.quota("rpd", 100, cron="0 0 * * *")]
 
 
 @pytest.fixture
@@ -63,12 +66,12 @@ async def fresh_repo(limiter):
     await repo.close()
 
 
-async def _item(repo: Repository, entity_id: str = ENTITY) -> dict[str, Any]:
+async def _item(repo: Repository, entity_id: str = ENTITY, shard: int = 0) -> dict[str, Any]:
     client = await repo._get_client()
     response = await client.get_item(
         TableName=repo.table_name,
         Key={
-            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, RESOURCE, 0)},
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, RESOURCE, shard)},
             "SK": {"S": schema.sk_state()},
         },
         ConsistentRead=True,
@@ -88,14 +91,15 @@ async def _balance(world: World, entity_id: str = ENTITY) -> float:
     return balance_milli(world.admin, item, "rpm", world.now) / 1000
 
 
-async def _set_default(world: World, level: str, limit: Limit) -> None:
+async def _set_default(world: World, level: str, limit: Limit | list[Limit]) -> None:
     """The change, through the public setter, from ``fresh``: each fans out."""
+    limits = limit if isinstance(limit, list) else [limit]
     if level == "resource":
-        await world.admin.set_resource_defaults(RESOURCE, [limit])
+        await world.admin.set_resource_defaults(RESOURCE, limits)
     elif level == "system":
-        await world.admin.set_system_defaults([limit])
+        await world.admin.set_system_defaults(limits)
     else:  # the entity-level sync (#468); its bucket carries no TTL (ADR-136)
-        await world.admin.set_limits(ENTITY, [limit], resource=RESOURCE)
+        await world.admin.set_limits(ENTITY, limits, resource=RESOURCE)
 
 
 async def _drain(world: World, amount: int = 100, limit: int = 40) -> int:
@@ -204,6 +208,38 @@ class TestWhatThePassDerives:
         assert status.available == 500
         # ~99.5 short at the 2x rate, 2000 an hour: ~179 s (not ~358 at 1x).
         assert 170 < status.retry_after_seconds <= 180
+
+    async def test_a_contended_planning_rejection_reports_the_items_schedule(
+        self, limiter, fresh_repo, monkeypatch
+    ):
+        """A conflict while planning a quota seed is the contended 429 (#729),
+        built before any lease entry: its statuses come straight from the
+        resolved limits and the states read. On a bucket the fan-out missed,
+        the dripping limit's status is under its item's schedule (1x), not
+        config's (2x): 1000 // 2 shards, not 2000 // 2."""
+        world = _world(limiter, fresh_repo)
+        await _set_default(world, "resource", BASE)
+        assert await world.acquire(0, 1)
+        await world.raise_shards()  # two shards: a quota seed must be planned
+        missed = [await _item(fresh_repo, shard=shard) for shard in (0, 1)]
+        world.now += 1_000
+        await _set_default(world, "resource", NOW_DOUBLED_WITH_QUOTA)
+        for item in missed:
+            await _put_back(fresh_repo, item)  # neither change reached them
+
+        async def busy(*args: Any, **kwargs: Any) -> Any:
+            raise ClientError(
+                {"Error": {"Code": "TransactionConflictException", "Message": "busy"}},
+                "TransactWriteItems",
+            )
+
+        monkeypatch.setattr(fresh_repo, "plan_quota_shard", busy)
+        with pytest.raises(RateLimitExceeded) as caught:
+            async with world.limiters[0].acquire(ENTITY, RESOURCE, {"rpm": 1, "rpd": 1}):
+                pass
+        assert caught.value.contended
+        rpm = next(s for s in caught.value.statuses if s.limit_name == "rpm")
+        assert rpm.limit.capacity == 500
 
 
 class TestDefaultSettings:
