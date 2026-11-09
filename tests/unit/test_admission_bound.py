@@ -4,11 +4,14 @@ For every dripping limit (soft and bypassed limits, ``on_unavailable=ALLOW``
 and the reserved ``wcu`` aside), the tokens debited minus the tokens returned
 on one (entity, resource), summed over its shards, from the start of any
 window to its last admission, is at most ``C + R(w) + 2·r·s`` plus what
-operator resets and top-ups grant in it (ADR-153, the proofs page's Theorem
-5). ``C`` is the largest ceiling in force from ``s`` before the window's start
-to its start, ``R(w)`` the refill the configured schedule grants across it,
-``r`` the largest refill rate in force, ``s`` the largest gap between a
-writer's clock and the instant its write lands.
+operator resets and top-ups grant in it, plus the debt positive adjustments
+leave on shards other than the one that last admitted (ADR-153, the proofs
+page's Theorem 5). Each shard is its own bucket, so an adjustment's debt holds
+back only its own shard; with one shard the term is zero. ``C`` is the
+largest ceiling in force from ``s`` before the window's start to its start,
+``R(w)`` the refill the configured schedule grants across it, ``r`` the
+largest refill rate in force, ``s`` the largest gap between a writer's clock
+and the instant its write lands.
 
 The harness drives the real ``RateLimiter`` and ``Repository`` on moto with
 several consumers, each a repository of its own (its own caches, as another
@@ -36,6 +39,7 @@ from typing import Any
 
 import pytest
 
+from tests.fixtures.sharding import pinned_shard
 from zae_limiter import Limit, RateLimiter, RateLimitExceeded, Repository, ScheduleEntry, schema
 from zae_limiter import fill_instant as fi
 from zae_limiter.bucket import balance_milli_at, fill_instant_at, fill_params
@@ -55,11 +59,19 @@ MINUTE_MS = 60_000
 
 @dataclass(frozen=True)
 class Event:
-    """One operation: its true instant, net millitokens debited, whether it admitted."""
+    """One operation: its true instant, net millitokens debited, whether it admitted.
+
+    ``debt`` is, for an admission, the debt held right after it on every shard
+    but the one it landed on: what positive adjustments left there, which holds
+    back those shards only (ADR-153's last term). Never the admitting shard's
+    own: an admission that over-admits leaves its shard below zero, and that
+    must still count.
+    """
 
     t: int
     delta: int
     admission: bool
+    debt: Fraction = Fraction(0)
 
 
 class Model:
@@ -132,8 +144,9 @@ def window_excess(events: list[Event], model: Model, skew_ms: int) -> tuple[Frac
 
     Every window from a debit (``i``) to an admission (``j``): the net debit
     from ``i`` through ``j``, less ``C`` (the largest ceiling over the ``s``
-    before ``T_i``), the refill across ``[T_i, T_j]`` and ``2·r·s``. A value
-    above zero is an over-admission.
+    before ``T_i``), the refill across ``[T_i, T_j]``, ``2·r·s`` and the debt
+    other shards hold at ``j`` (``Event.debt``). A value above zero is an
+    over-admission.
     """
     if not events:
         return Fraction(0), None
@@ -148,7 +161,7 @@ def window_excess(events: list[Event], model: Model, skew_ms: int) -> tuple[Frac
         for end in events[i:]:
             net += end.delta
             if end.admission:
-                excess = net - base - model.refilled(end.t)
+                excess = net - base - model.refilled(end.t) - end.debt
                 if excess > worst[0]:
                     worst = (excess, (start.t - T0, end.t - T0, net))
     return worst
@@ -162,6 +175,10 @@ def test_the_checker_has_teeth() -> None:
     assert window_excess([Event(T0, 10_000, True)], model, 0)[0] == 0
     later = [Event(T0, 10_000, True), Event(T0 + 30_000, 5_000, True)]
     assert window_excess(later, model, 0)[0] == 0  # half a minute refilled 5
+    # Debt another shard holds is allowed for; nothing else is.
+    debt_elsewhere = [Event(T0, 15_000, False), Event(T0, 1_000, True, Fraction(6_000))]
+    assert window_excess(debt_elsewhere, model, 0)[0] == 0
+    assert window_excess([Event(T0, 16_000, True, Fraction(5_000))], model, 0)[0] == 1_000
 
 
 # ---------------------------------------------------------------------------
@@ -209,8 +226,7 @@ class World:
 
     async def consumed(self) -> int:
         """``tc`` over every shard, millitokens: the net debit so far."""
-        attr = schema.bucket_attr("rpm", schema.BUCKET_FIELD_TC)
-        return sum(int(item[attr]["N"]) for item in await self._items() if attr in item)
+        return sum(_consumed_by_shard(await self._items()).values())
 
     def instant(self, *snapshots: list[dict[str, Any]]) -> int:
         """The true instant, or the latest ``xi`` a write stamped ahead of it.
@@ -241,6 +257,14 @@ class World:
                     out.append((_exact(state, at), state.shard_count))
         return out
 
+    def balances_by_shard(self, items: list[dict[str, Any]]) -> dict[int, Fraction]:
+        """Each shard's exact balance in millitokens, by shard id."""
+        return {
+            _shard_of(item): balance
+            for item in items
+            for balance, _count in self.balances_of([item], self.instant(items))
+        }
+
     async def balances(self) -> list[tuple[Fraction, int]]:
         return self.balances_of(await self._items())
 
@@ -260,17 +284,48 @@ class World:
         release: int = 0,
         rollback: bool = False,
     ) -> bool:
-        """One lease by consumer ``k``; records its net debit. Returns whether it admitted."""
-        before = await self.consumed()
+        """One lease by consumer ``k``; records its debits. Returns whether it admitted.
+
+        Each step is its own event, in order: the admission, a ``consume()``
+        (an admission of its own), then what the lease does after it (an
+        adjustment, a release, the exit's write or a rollback). The bound runs
+        to a window's last admission, so debt an adjustment takes on after it
+        belongs to later windows only.
+        """
+        mark = _consumed_by_shard(await self._items())
+
+        async def record(admission: bool) -> None:
+            nonlocal mark
+            items = await self._items()
+            now = _consumed_by_shard(items)
+            delta = sum(now.values()) - sum(mark.values())
+            debt = Fraction(0)
+            if admission:
+                landed = {shard for shard, tc in now.items() if tc > mark.get(shard, 0)}
+                debt = sum(
+                    (
+                        -balance
+                        for shard, balance in self.balances_by_shard(items).items()
+                        if shard not in landed and balance < 0
+                    ),
+                    Fraction(0),
+                )
+            if delta or admission:
+                self.events.append(Event(self.now, delta, admission, debt))
+            mark = now
+
         admitted = False
         try:
             async with self.limiters[k].acquire(ENTITY, RESOURCE, {"rpm": amount}) as lease:
                 admitted = True
+                await record(True)
                 if more:
                     try:
                         await lease.consume(rpm=more)
                     except RateLimitExceeded:
-                        pass
+                        await record(False)
+                    else:
+                        await record(True)
                 if adjust:
                     await lease.adjust(rpm=adjust)
                 if release:
@@ -281,9 +336,7 @@ class World:
             admitted = False
         except _RollbackError:
             admitted = False
-        delta = await self.consumed() - before
-        if delta or admitted:
-            self.events.append(Event(self.now, delta, admitted))
+        await record(False)
         return admitted
 
     async def burst(self, k: int, amount: int, limit: int = 2_000, *, tries: int = 1) -> int:
@@ -335,6 +388,16 @@ class World:
     def assert_bound(self) -> None:
         excess, where = window_excess(self.events, self.model, self.skew)
         assert excess <= 0, f"over-admitted {float(excess) / 1000:.3f} tokens at {where}"
+
+
+def _shard_of(item: dict[str, Any]) -> int:
+    return schema.parse_bucket_pk(item["PK"]["S"])[3]
+
+
+def _consumed_by_shard(items: list[dict[str, Any]]) -> dict[int, int]:
+    """Each shard's ``tc``, millitokens."""
+    attr = schema.bucket_attr("rpm", schema.BUCKET_FIELD_TC)
+    return {_shard_of(item): int(item[attr]["N"]) for item in items if attr in item}
 
 
 class _RollbackError(Exception):
@@ -459,6 +522,23 @@ class TestTheContextCases:
         world.events.append(Event(world.now, await world.consumed() - before, True))
         assert world.events[-1].delta <= 10_000
         world.assert_bound()
+
+    async def test_an_adjustments_debt_holds_back_its_own_shard_only(self, limiter):
+        """Each shard is its own bucket: a positive adjustment's debt on one does
+        not stop another admitting. Summed over shards that exceeds ``C``, by
+        exactly the debt the other shard holds, ADR-153's last term."""
+        limit = Limit.custom("rpm", 100, refill_amount=100, refill_period_seconds=86_400)
+        world = await _world(limiter, limit, [0])
+        await world.acquire(0, 1)  # create the bucket
+        await world.raise_shards()  # 99 split: 50 on shard 0, 49 on shard 1
+        with pinned_shard(0):
+            await world.acquire(0, 1, adjust=60)  # shard 0: 50 - 1 - 60 = -11
+        with pinned_shard(1):
+            assert await world.acquire(0, 49)  # shard 1 still holds 49
+        assert world.events[-1].debt == 11_000
+        assert window_excess(world.events, world.model, 0)[0] <= 0
+        bare = [Event(e.t, e.delta, e.admission) for e in world.events]
+        assert window_excess(bare, world.model, 0)[0] == 11_000
 
     async def test_a_lowered_resource_level_limit(self, limiter):
         """A resource-level change reaches an active bucket (#823)."""
