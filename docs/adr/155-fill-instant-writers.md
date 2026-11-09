@@ -32,7 +32,8 @@ adding `c/r` forgives the debt whenever `z + c/r` is still before the write's cl
 
 Every write of a dripping limit's fill instant to an existing item must be pinned on the
 parameters, schedule and shard count it was computed against and on the item's recorded
-expression instant, with its clock reading before the next schedule boundary after that instant,
+expression instant (which pins the schedule, since a write changing it records a new one), with
+its clock reading before the next schedule boundary after that instant,
 and must take one of three forms: one of ADR-154's two conditional writes, which a positive
 adjustment uses without the upper bound, retrying with a fresh clock reading each time rather
 than dropping it, because dropping it would forgive the debt; a write exact on every item

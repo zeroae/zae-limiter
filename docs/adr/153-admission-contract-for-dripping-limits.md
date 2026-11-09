@@ -4,7 +4,7 @@
 **Date:** 2026-11-06
 **Issue:** Refs [#808](https://github.com/zeroae/zae-limiter/issues/808), [#587](https://github.com/zeroae/zae-limiter/issues/587), [#731](https://github.com/zeroae/zae-limiter/issues/731)
 **Partially supersedes:** [ADR-133](133-client-shard-creation.md) for dripping limits (a new shard is funded by moving tokens, and the 1.5x doubling transient becomes a defect)
-**Amends:** [ADR-135](135-scheduled-limits.md) (refill is integrated across schedule windows; a resource- or system-level change, a schedule change included, fans out to active buckets instead of waiting for their TTL to expire; the slow path applies config's schedules and window length over the item's, but takes capacity and refill from the item), [ADR-136](136-entity-config-bucket-ttl.md) (resource- and system-level changes fan out to active buckets, so TTL expiry is no longer how they arrive), [ADR-148](148-multi-resource-acquire.md) (`lease.consume()` debits when called)
+**Amends:** [ADR-135](135-scheduled-limits.md) (refill is integrated across schedule windows; a resource- or system-level change, a schedule change included, fans out to active buckets instead of waiting for their TTL to expire; the slow path takes a dripping limit's capacity, refill and schedule from the item, a quota's schedules and window length from config), [ADR-136](136-entity-config-bucket-ttl.md) (resource- and system-level changes fan out to active buckets, so TTL expiry is no longer how they arrive), [ADR-148](148-multi-resource-acquire.md) (`lease.consume()` debits when called)
 **Related:** [ADR-100](100-centralized-config.md), [ADR-125](125-resource-disable.md), [ADR-141](141-reset-after-version-gate.md), [ADR-145](145-sharded-quota-conserves-allowance.md), [ADR-151](151-non-enforcing-limits.md), [ADR-154](154-fill-instant-fast-path.md), [ADR-155](155-fill-instant-writers.md), [ADR-156](156-dripping-shard-raises.md)
 **Design:** [Fill-instant proofs](../contributing/fill-instant-proofs.md)
 
@@ -68,11 +68,12 @@ bound through ADR-154, every other writer through ADR-155, and shard raises thro
   methods keep their meaning.
 - A lowered resource- or system-level limit must reach active buckets: a fan-out ADR-136
   rejected as O(all buckets) replaces ADR-135's and ADR-100's arrival at TTL expiry; a
-  namespace-wide fan-out is the decision ADR-125 deferred. The slow path does not take capacity
-  and refill from config, because from a cached config it wrote an older change back over a
-  newer one. A bucket created from configuration cached before a change, and missed by both of
-  its discovery passes, keeps the old parameters until the level changes again or its TTL
-  expires: an accepted residual.
+  namespace-wide fan-out is the decision ADR-125 deferred. The slow path does not take a
+  dripping limit's capacity, refill or schedule from config: from a cached config it wrote an
+  older change back over a newer one, and a fill instant expressed under a schedule other than
+  its item's reads as full or as a vast debt (#841). A bucket created from configuration cached
+  before a change, and missed by both of its discovery passes, keeps the old parameters, read
+  consistently, until the level changes again or its TTL expires: an accepted residual.
 - Clock skew reaches the ceiling too: a write stamped before a boundary that lowers capacity can
   land after it and spend the old ceiling, which is why `C` covers the `s` before the window.
 - Each shard is its own bucket, so a positive adjustment's debt holds back only its shard while
