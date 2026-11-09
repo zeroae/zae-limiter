@@ -1513,14 +1513,11 @@ class TestE2EAWSProvisionerCFNStack:
             "provisioner_arn": provisioner_arn,
         }
 
-        # Cleanup: delete the tenant stack first (if it still exists), then main
+        # Cleanup: delete the tenant stack first (a no-op if the test deleted it),
+        # then main. StackManager.delete_stack retries a DELETE_FAILED once (#812).
         tenant_stack = f"{unique_name_class}-limits"
-        try:
-            cfn.delete_stack(StackName=tenant_stack)
-            waiter = cfn.get_waiter("stack_delete_complete")
-            waiter.wait(StackName=tenant_stack, WaiterConfig={"Delay": 5, "MaxAttempts": 60})
-        except Exception:
-            pass  # May already be deleted by the test
+        async with StackManager(repo.stack_name, repo.region, repo.endpoint_url) as manager:
+            await manager.delete_stack(tenant_stack)
 
         await repo.delete_stack()
         await repo.close()
@@ -1654,12 +1651,10 @@ class TestE2EAWSProvisionerCFNStack:
         assert any(lim.name == "rpm" and lim.capacity == 500 for lim in claude3_limits)
 
         # --- Step 3: Delete stack (removes all managed limits) ---
-        cfn.delete_stack(StackName=tenant_stack)
-        delete_waiter = cfn.get_waiter("stack_delete_complete")
-        delete_waiter.wait(
-            StackName=tenant_stack,
-            WaiterConfig={"Delay": 5, "MaxAttempts": 120},
-        )
+        from zae_limiter.infra.stack_manager import StackManager
+
+        async with StackManager(main_stack, repo.region, repo.endpoint_url) as manager:
+            await manager.delete_stack(tenant_stack)
 
         # Verify all managed limits removed
         await repo.invalidate_config_cache()
