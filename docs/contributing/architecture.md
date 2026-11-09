@@ -303,10 +303,10 @@ failed write's `ALL_OLD` with the same `t`, and answers a request still undecide
 write budget as contended (#724). Stored values are scaled by the undivided refill
 amount: `d` is `c × S × rp` and the slack `(C_b − c × S) × rp` (capacities in millitokens,
 `rp` in milliseconds, `S` shards, `C_b` the undivided capacity), so nothing is divided and no
-rounding enters. Every write is pinned on the `cp` / `ra` / `rp`, schedule, `shard_count` and
-`xi` it was computed against (ADR-155), and a write that changes any of them re-expresses the
-fill instant in the same write (`re_express`: the balance is kept, or trimmed to the new
-ceiling, never raised).
+rounding enters. Every write is pinned on the `cp` / `ra` / `rp`, `shard_count` and `xi` it was
+computed against (ADR-155), and a write that changes any of them, or the schedule, re-expresses
+the fill instant in the same write and stamps a new `xi` (`re_express`: the balance is kept, or
+trimmed to the new ceiling, never raised), so the pin on `xi` is also the pin on the schedule.
 
 ### Mathematical Formulas
 
