@@ -1024,7 +1024,10 @@ class RepositoryProtocol(Protocol):
         Each limit in ``debits`` (millitokens) records ``max(z, t) + c / r``,
         retried with a fresh stamp until one lands. With ``attempts`` it is
         given up after that many failed writes (returns None); without, it
-        raises ``RateLimiterUnavailable`` rather than drop the debt.
+        raises ``RateLimiterUnavailable`` rather than drop the debt. A limit
+        the item no longer stores as a fill instant (the item deleted or swept,
+        the limit removed) has no debt to keep and is skipped; with none left
+        it returns None (#839).
         """
         ...
 
