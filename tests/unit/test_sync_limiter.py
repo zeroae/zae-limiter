@@ -12623,6 +12623,149 @@ class TestAdjustmentCommitFailure:
         assert self._consumed(repo, "org") == 15
 
 
+class TestADebitWhoseBucketIsGone:
+    """A positive adjustment whose bucket or limit is gone is skipped (#839).
+
+    A dripping limit's positive adjustment is ADR-155's debit pair, never
+    dropped while the item holds the limit. Once the item is gone (deleted,
+    TTL-swept) or no longer holds the limit, there is no debt to keep: a
+    recreated bucket starts from its own state. The exit raised
+    ``RateLimiterUnavailable`` for work that had finished; v0.17.0 skipped the
+    adjustment with a debug log (#721), and so does this.
+    """
+
+    ENTITY = "key-839-secret"
+    RESOURCE = "gpt-4"
+    RPM = Limit.per_minute("rpm", 100)
+    TPM = Limit.per_minute("tpm", 10000)
+
+    def _key(self, repo) -> dict:
+        return {
+            "PK": {"S": pk_bucket(repo._namespace_id, self.ENTITY, self.RESOURCE, 0)},
+            "SK": {"S": sk_state()},
+        }
+
+    def _item(self, repo) -> dict | None:
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name, Key=self._key(repo), ConsistentRead=True
+        )
+        return response.get("Item")
+
+    def _delete(self, repo) -> None:
+        client = repo._get_client()
+        client.delete_item(TableName=repo.table_name, Key=self._key(repo))
+
+    def _assert_skip_logged(self, caplog) -> None:
+        import logging
+
+        records = [r for r in caplog.records if r.name.startswith("zae_limiter")]
+        assert any(
+            r.levelno == logging.DEBUG
+            and "skipped" in r.getMessage()
+            and (f"resource={self.RESOURCE}" in r.getMessage())
+            and ("shard=0" in r.getMessage())
+            for r in records
+        )
+        assert not [r.getMessage() for r in records if self.ENTITY in r.getMessage()]
+
+    def test_an_adjustment_on_a_deleted_bucket_is_skipped(self, sync_limiter, caplog):
+        import logging
+
+        repo = sync_limiter._repository
+        repo.set_limits(self.ENTITY, [self.RPM], resource=self.RESOURCE)
+        caplog.set_level(logging.DEBUG, logger="zae_limiter")
+        with sync_limiter.acquire(self.ENTITY, self.RESOURCE, consume={"rpm": 1}) as lease:
+            self._delete(repo)
+            lease.adjust(rpm=5)
+        assert self._item(repo) is None
+        self._assert_skip_logged(caplog)
+
+    def test_an_adjustment_whose_limit_was_removed_is_skipped(self, sync_limiter, caplog):
+        import logging
+
+        repo = sync_limiter._repository
+        sync_limiter.set_resource_defaults(self.RESOURCE, [self.TPM])
+        sync_limiter.set_limits(self.ENTITY, [self.RPM, self.TPM], resource=self.RESOURCE)
+        caplog.set_level(logging.DEBUG, logger="zae_limiter")
+        with sync_limiter.acquire(self.ENTITY, self.RESOURCE, consume={"rpm": 1}) as lease:
+            sync_limiter.delete_limits(self.ENTITY, resource=self.RESOURCE)
+            lease.adjust(rpm=5)
+        item = self._item(repo)
+        assert item is not None
+        assert bucket_attr("rpm", BUCKET_FIELD_FI) not in item
+        assert bucket_attr("rpm", BUCKET_FIELD_TK) not in item
+        self._assert_skip_logged(caplog)
+
+    def test_the_limits_still_held_are_debited(self, sync_limiter):
+        repo = sync_limiter._repository
+        sync_limiter.set_resource_defaults(self.RESOURCE, [self.RPM, self.TPM])
+        with sync_limiter.acquire(
+            self.ENTITY, self.RESOURCE, consume={"rpm": 1, "tpm": 1}
+        ) as lease:
+            sync_limiter.set_resource_defaults(self.RESOURCE, [self.TPM])
+            before = self._item(repo)
+            lease.adjust(rpm=5, tpm=7)
+        after = self._item(repo)
+        tc = bucket_attr("tpm", "tc")
+        assert int(after[tc]["N"]) - int(before[tc]["N"]) == 7000
+        assert bucket_attr("rpm", BUCKET_FIELD_FI) not in after
+
+    def test_a_bucket_deleted_under_the_last_write_is_skipped(self, sync_limiter):
+        """The 16th write's failure image decides too: gone, not "kept changing"."""
+        repo = sync_limiter._repository
+        sync_limiter.set_limits(self.ENTITY, [self.RPM], resource=self.RESOURCE)
+        real = repo._update_item_retrying_conflict
+        sent = 0
+
+        def overtaken_then_deleted(client, **request):
+            nonlocal sent
+            sent += 1
+            if sent < 16:
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key=self._key(repo),
+                    UpdateExpression="ADD xi :one",
+                    ExpressionAttributeValues={":one": {"N": "1"}},
+                )
+            else:
+                client.delete_item(TableName=repo.table_name, Key=self._key(repo))
+            return real(client, **request)
+
+        with sync_limiter.acquire(self.ENTITY, self.RESOURCE, consume={"rpm": 1}) as lease:
+            lease.adjust(rpm=5)
+            repo._update_item_retrying_conflict = overtaken_then_deleted
+        assert sent == 16
+        assert self._item(repo) is None
+
+    def test_a_cached_image_that_lacks_the_limit_is_read_again(self, sync_limiter):
+        """Only the item says a debit is gone, never this process's cached image."""
+        repo = sync_limiter._repository
+        repo.set_limits(self.ENTITY, [self.RPM, self.TPM], resource=self.RESOURCE)
+        with sync_limiter.acquire(self.ENTITY, self.RESOURCE, consume={"rpm": 1}):
+            pass
+        item = self._item(repo)
+        stale = {k: v for k, v in item.items() if not k.startswith("b_rpm_")}
+        repo._fill_images.store((repo._namespace_id, self.ENTITY, self.RESOURCE, 0), stale)
+        landed = repo.debit_fill_instants(self.ENTITY, self.RESOURCE, 0, {"rpm": 5000})
+        assert landed is not None
+        tc = bucket_attr("rpm", "tc")
+        assert int(self._item(repo)[tc]["N"]) - int(item[tc]["N"]) == 5000
+
+    def test_a_debit_given_attempts_on_a_deleted_bucket_returns_none(self, sync_limiter):
+        repo = sync_limiter._repository
+        repo.set_limits(self.ENTITY, [self.RPM], resource=self.RESOURCE)
+        with sync_limiter.acquire(self.ENTITY, self.RESOURCE, consume={"rpm": 1}):
+            pass
+        item = self._item(repo)
+        self._delete(repo)
+        landed = repo.debit_fill_instants(
+            self.ENTITY, self.RESOURCE, 0, {"rpm": 5000}, item=item, attempts=4
+        )
+        assert landed is None
+        assert self._item(repo) is None
+
+
 class TestBypass:
     """Bypass admits, debits nothing and keeps counting (#311); sync twin generated."""
 

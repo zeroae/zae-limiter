@@ -408,7 +408,7 @@ The `force_consume()` function handles this:
 new_tokens_milli = refill.new_tokens_milli - (amount * 1000)
 ```
 
-The debt is repaid as tokens refill over time. A bucket at -1,500 tokens needs 1.5 minutes to reach 0 (at 1,000 tokens/minute). In a fill instant, debt is a `z` more than one fill (`C / r`) past now; a positive adjustment is a debit write, never rejected and never dropped (ADR-155).
+The debt is repaid as tokens refill over time. A bucket at -1,500 tokens needs 1.5 minutes to reach 0 (at 1,000 tokens/minute). In a fill instant, debt is a `z` more than one fill (`C / r`) past now; a positive adjustment is a debit write, never rejected and never dropped while the bucket holds the limit (ADR-155; skipped once the bucket or the limit is gone, #839).
 
 ### Design Decisions
 

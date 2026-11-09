@@ -52,10 +52,11 @@ record when it did so.
 - Quota writers keep stamping `vu` as they do: no dripping pin depends on it.
 
 **Negative:**
-- A positive adjustment (the LLM reconcile) is never rejected and never dropped. It predicts its
-  side and re-stamps each retry, so its lateness never counts as clock gap; returns landing
-  between its writes can delay a lease's exit, and a persistent backend error raises as today
-  (#682).
+- A positive adjustment (the LLM reconcile) is never rejected and never dropped while its bucket
+  holds the limit; one whose bucket is gone or no longer holds the limit has no debt to keep and
+  is skipped (#839). It predicts its side and re-stamps each retry, so its lateness never counts
+  as clock gap; returns landing between its writes can delay a lease's exit, and a persistent
+  backend error raises as today (#682).
 - A parameter sync, ADR-153's resource- and system-level fan-out, and a top-up become a read and
   a pinned write per bucket, retried when a fast write lands in between; a credit computed
   before a re-expression fails its pin and is resent the same way.

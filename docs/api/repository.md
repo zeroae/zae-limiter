@@ -231,7 +231,10 @@ Implement this protocol to use a different storage backend (e.g., for testing).
     exact return of a fill instant (`ADD b_{name}_fi -c·S·rp` pinned on what the
     debit was computed against), which compensation and lease refunds call, and
     `debit_fill_instants`, ADR-154's debit pair with no upper bound, which a
-    positive lease adjustment calls and which must never drop a debit (#820).
+    positive lease adjustment calls and which must never drop a debit while the
+    item still holds the limit (#820). A debit whose item is gone (deleted,
+    TTL-swept) or no longer holds the limit as a fill instant has no debt to
+    keep: it is skipped, returning `None` when nothing is left to debit (#839).
     Every bucket created stores its dripping limits, the reserved `wcu`
     included, as fill instants (#821).
 
