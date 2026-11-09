@@ -225,6 +225,12 @@ _SYNC_ATTEMPTS = 8
 # ADR-155) may take before it is raised as an outage (#682).
 _DEBIT_ATTEMPTS = 16
 
+# How many times a fill-instant return that lost its pins is re-sent from the
+# failure's image (ADR-155) before it is dropped: another writer re-expressed or
+# reparameterised the item since the debit. A return can only lower a debt or
+# refill a balance up to capacity, so a re-send never over-admits.
+_RETURN_ATTEMPTS = 4
+
 _SEED_TOKEN = {
     schema.BUCKET_FIELD_TK: "t",
     schema.BUCKET_FIELD_TC: "c",
@@ -2951,6 +2957,39 @@ class Repository:
             for bucket in self._deserialize_composite_bucket(item)
             if bucket.limit_name != schema.WCU_LIMIT_NAME
         ]
+
+    async def sibling_shard_count(self, entity_id: str, resource: str) -> int | None:
+        """The shard count another shard of one (entity, resource) stores, or None.
+
+        Asked before the slow path creates shard 0 full (ADR-156): a missing
+        shard 0 starts full only when no shard of its bucket exists. A shard
+        swept by its TTL while a sibling lives would otherwise come back full,
+        at the count of a client that knows of no other shard, and claim a
+        whole capacity beside the sibling's share (1496 admitted against 1000).
+        GSI3 lists the bucket's shards; the highest one's stored count is read
+        strongly consistent, and a count that slot's id implies is the floor.
+
+        Cost: 1 GSI3 KEYS_ONLY Query (0.5 RCU), plus a projected strongly
+        consistent ``GetItem`` (1 RCU) when a sibling exists.
+        """
+        pks = await self._discover_entity_bucket_pks(entity_id, resource)
+        siblings = sorted({schema.parse_bucket_pk(pk)[3] for pk in pks} - {0})
+        if not siblings:
+            return None
+        highest = siblings[-1]
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, highest)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ProjectionExpression="shard_count",
+            ConsistentRead=True,
+        )
+        stored = int(response.get("Item", {}).get("shard_count", {}).get("N", "1"))
+        # Shard `i` exists only at a count above `i`, a power of two.
+        return max(stored, 1 << highest.bit_length())
 
     async def batch_get_buckets(
         self,
@@ -6513,31 +6552,73 @@ class Repository:
     ) -> bool:
         """Return fill-instant debits exactly (:meth:`build_fill_return`).
 
-        Returns whether the write landed; a lost pin (the item re-expressed or
-        reparameterised since the debit) drops the return, an under-admission,
-        and is logged at debug. Any other error is raised.
+        A return that loses its pins (another writer re-expressed or
+        reparameterised the item since the debit) is rebuilt against the
+        failure's image, its ``xi``, parameters and shard count, and re-sent, up
+        to ``_RETURN_ATTEMPTS`` times (ADR-155). Only then, or when the item or
+        the limit is gone, is it dropped: an under-admission, logged at debug.
+        Returns whether it landed. Any other error is raised.
         """
         if not returns:
             return True
         client = await self._get_client()
-        request = self.build_fill_return(
-            entity_id,
-            resource,
-            shard_id,
-            returns,
-            expressed_ms=expressed_ms,
-            shard_count=shard_count,
-            counter=counter,
+        for _attempt in range(_RETURN_ATTEMPTS):
+            request = self.build_fill_return(
+                entity_id,
+                resource,
+                shard_id,
+                returns,
+                expressed_ms=expressed_ms,
+                shard_count=shard_count,
+                counter=counter,
+            )
+            request["ReturnValuesOnConditionCheckFailure"] = "ALL_OLD"
+            try:
+                await self._update_item_retrying_conflict(client, **request)
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                image = cast(dict[str, Any] | None, e.response.get("Item"))
+                if await self._wait_out_raise(image):
+                    # A raise held the item (ADR-156): rebuilt from what it left.
+                    image = await self._read_bucket_item(entity_id, resource, shard_id)
+                rebuilt = self._returns_against(image, returns)
+                if rebuilt is None:
+                    logger.debug("Fill-instant return dropped: the item no longer carries it")
+                    return False
+                returns, expressed_ms, shard_count = rebuilt
+                continue
+            self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
+            return True
+        logger.debug("Fill-instant return dropped: its pins kept moving")
+        return False
+
+    def _returns_against(
+        self,
+        image: dict[str, Any] | None,
+        returns: dict[str, tuple[int, BucketState]],
+    ) -> tuple[dict[str, tuple[int, BucketState]], int, int] | None:
+        """``returns`` rebuilt against the item as a failed return found it.
+
+        Each limit the item still stores as a fill instant, with its parameters
+        and the item's ``xi`` and shard count as they now stand; None when the
+        item is gone or carries none of them.
+        """
+        if image is None or schema.BUCKET_FIELD_XI not in image:
+            return None
+        states = {state.limit_name: state for state in self._deserialize_composite_bucket(image)}
+        rebuilt = {
+            name: (milli, states[name])
+            for name, (milli, _state) in returns.items()
+            if name in states and states[name].fill_instant is not None
+        }
+        if not rebuilt:
+            return None
+        return (
+            rebuilt,
+            int(image[schema.BUCKET_FIELD_XI]["N"]),
+            int(image.get("shard_count", {"N": "1"})["N"]),
         )
-        try:
-            await self._update_item_retrying_conflict(client, **request)
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-                raise
-            logger.debug("Fill-instant return dropped: its pins no longer hold")
-            return False
-        self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
-        return True
 
     def _learn_bypass(self, key: tuple[str, str, str], item: dict[str, Any], now_ms: int) -> bool:
         """Learn a pair's bypass mode from the item a write returned (#311).
