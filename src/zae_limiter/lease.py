@@ -2894,7 +2894,7 @@ def _pair_for(entry: LeaseEntry, consumed_milli: int) -> fill_instant.Write | No
     if read is None or consumed_milli <= 0 or state.fill_instant is None:
         return None
     t_ms = state.last_refill_ms
-    params = fill_params(state, t_ms)
+    params = fill_params(state, max(t_ms, state.expressed_ms or t_ms))
     if read >= fill_instant.stamp(t_ms, params):
         pair = fill_instant.not_full_write(t_ms, consumed_milli, params, bounded=not state.soft)
     else:

@@ -17,6 +17,7 @@ from unittest.mock import patch
 import boto3
 import pytest
 
+from tests.fixtures.balances import balance_milli
 from tests.fixtures.capacity import CapacityCounter, _counting_client
 from tests.fixtures.sharding import pinned_shard
 from tests.unit.test_fill_instant_fast_path import (
@@ -37,6 +38,7 @@ from zae_limiter import (
     RateLimiter,
     RateLimiterUnavailable,
     RateLimitExceeded,
+    Repository,
     ScheduleEntry,
     schema,
 )
@@ -908,3 +910,59 @@ class TestConcurrentSlowPasses:
                 "e1", [(RESOURCE, {"rpm": 1}), ("budget", {"tpm": 1})], None
             )
         assert await _fi(repo, "e1", "rpm") == before
+
+
+# A quarter of the rate and the ceiling from minute 0 to 14 of every hour: T0 is
+# the first instant of such a window.
+QUARTER = (ScheduleEntry(cron="0-14 * * * *", tz="UTC", scale=0.25),)
+WINDOWED = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=600).with_schedule(
+    QUARTER
+)
+AHEAD = T0 + 100  # a clock inside the window: the item's `xi`
+BEHIND = T0 - 200  # a lagging clock, still in the minute before it
+
+
+class TestALaggingClockAcrossABoundary:
+    """A fill instant is scaled by the refill amount in force at its `xi`.
+
+    A writer whose clock is before `xi`, across a schedule boundary, must read
+    it with the parameters in force at `xi`, as every reader does
+    (`bucket.fill_instant_at`). Read with those of its own clock, the stored
+    value divides by another window's refill amount: here four times too far
+    back, a full bucket at the unscaled ceiling (the #825 fuzz admitted 351
+    after a reset granted 250).
+    """
+
+    @pytest.fixture
+    async def lagging(self, limiter):
+        repo = limiter._repository
+        repo._now_ms = lambda: AHEAD
+        await repo.set_limits("e1", [WINDOWED], resource=RESOURCE)
+        async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}):
+            pass  # created inside the window: 250 in force, 249 left
+        other = await Repository.open(stack="test-rate-limits", config_cache_ttl=0)
+        other._now_ms = lambda: BEHIND
+        yield other
+        await other.close()
+
+    async def test_the_fast_path_reads_the_ceiling_in_force_at_xi(self, limiter, lagging) -> None:
+        with pytest.raises(RateLimitExceeded):
+            async with RateLimiter(repository=lagging).acquire(
+                "e1", RESOURCE, consume={"rpm": 500}
+            ):
+                pass
+        item = await _raw(limiter._repository, "e1")
+        assert balance_milli(limiter._repository, item, "rpm", AHEAD) == 249_000
+
+    async def test_a_debit_takes_the_parameters_in_force_at_xi(self, limiter, lagging) -> None:
+        async with RateLimiter(repository=lagging).acquire(
+            "e1", RESOURCE, consume={"rpm": 1}
+        ) as lease:
+            await lease.adjust(rpm=100)
+        item = await _raw(limiter._repository, "e1")
+        assert balance_milli(limiter._repository, item, "rpm", AHEAD) == 148_000
+
+    async def test_a_reset_fills_to_the_ceiling_in_force_at_xi(self, limiter, lagging) -> None:
+        await lagging.reset_bucket("e1", RESOURCE)
+        item = await _raw(limiter._repository, "e1")
+        assert balance_milli(limiter._repository, item, "rpm", AHEAD) == 250_000

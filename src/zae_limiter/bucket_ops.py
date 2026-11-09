@@ -242,7 +242,8 @@ def plan_operation(
                     continue
                 # Full now, debt forgiven (ADR-155): `Z = t·ra`.
                 was = balance_milli_at(held, now_ms)
-                held.fill_instant = fill_instant.reset(now_ms, fill_params(held, now_ms))
+                at = max(now_ms, held.expressed_ms or now_ms)  # a lagging clock reads at `xi`
+                held.fill_instant = fill_instant.reset(now_ms, fill_params(held, at))
                 restored += balance_milli_at(held, now_ms) - was
             for write, work, regranted, before in zip(
                 writes, working, granted, materialised, strict=True
