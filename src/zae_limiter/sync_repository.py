@@ -5546,9 +5546,10 @@ class SyncRepository:
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                     raise
-                rebuilt = self._returns_against(
-                    cast(dict[str, Any] | None, e.response.get("Item")), returns
-                )
+                image = cast(dict[str, Any] | None, e.response.get("Item"))
+                if self._wait_out_raise(image):
+                    image = self._read_bucket_item(entity_id, resource, shard_id)
+                rebuilt = self._returns_against(image, returns)
                 if rebuilt is None:
                     logger.debug("Fill-instant return dropped: the item no longer carries it")
                     return False

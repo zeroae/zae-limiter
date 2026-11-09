@@ -6578,9 +6578,11 @@ class Repository:
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                     raise
-                rebuilt = self._returns_against(
-                    cast(dict[str, Any] | None, e.response.get("Item")), returns
-                )
+                image = cast(dict[str, Any] | None, e.response.get("Item"))
+                if await self._wait_out_raise(image):
+                    # A raise held the item (ADR-156): rebuilt from what it left.
+                    image = await self._read_bucket_item(entity_id, resource, shard_id)
+                rebuilt = self._returns_against(image, returns)
                 if rebuilt is None:
                     logger.debug("Fill-instant return dropped: the item no longer carries it")
                     return False

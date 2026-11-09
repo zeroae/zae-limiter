@@ -470,15 +470,16 @@ class TestWritersAndTheMarker:
         assert sleeps
         assert (await _balances(repo, "e1", "rpm", 1, clock.now))[0] == RPM.capacity * 1000
 
-    async def test_a_return_during_a_raise_is_dropped(self, limiter, clock) -> None:
+    async def test_a_return_waits_the_raise_out(self, limiter, clock, sleeps) -> None:
+        # Re-sent from what the raise left (ADR-155), not dropped.
         repo = limiter._repository
         await repo.set_limits("e1", [RPM], resource=RESOURCE)
         await _spend_on(limiter, "e1", 0, rpm=1)
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 50}) as lease:
             await _hold(repo, "e1", 0, clock.now + 700, clock.now)
             await lease.release(rpm=50)
-        # Under-admission only: the 50 stay debited.
-        assert (await _balances(repo, "e1", "rpm", 1, clock.now))[0] == RPM.capacity * 1000 - 51_000
+        assert sleeps and sleeps[0] <= 700
+        assert (await _balances(repo, "e1", "rpm", 1, clock.now))[0] == RPM.capacity * 1000
 
     async def test_the_aggregator_refill_refuses_a_live_marker(self, limiter, clock) -> None:
         import boto3
