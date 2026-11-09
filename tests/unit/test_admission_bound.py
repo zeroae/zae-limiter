@@ -540,16 +540,24 @@ class TestTheContextCases:
         bare = [Event(e.t, e.delta, e.admission) for e in world.events]
         assert window_excess(bare, world.model, 0)[0] == 11_000
 
-    async def test_a_lowered_resource_level_limit(self, limiter):
-        """A resource-level change reaches an active bucket (#823)."""
+    @pytest.mark.parametrize("level", ["resource", "system"])
+    async def test_a_lowered_default_limit(self, limiter, level):
+        """A resource- or system-level change reaches an active bucket (#823)."""
         world = await _world(limiter, Limit.per_minute("rpm", 1000), [0, 50])
-        await world.admin.set_resource_defaults(RESOURCE, [Limit.per_minute("rpm", 1000)])
-        await world.admin.delete_limits(ENTITY, RESOURCE)  # the bucket now on the resource's
+
+        async def set_default(limit: Limit) -> None:
+            if level == "resource":
+                await world.admin.set_resource_defaults(RESOURCE, [limit])
+            else:
+                await world.admin.set_system_defaults([limit])
+
+        await set_default(Limit.per_minute("rpm", 1000))
+        await world.admin.delete_limits(ENTITY, RESOURCE)  # the bucket now on the default
         for _ in range(3):
             await world.burst(0, 50, limit=3)
             world.now += 1_000
         world.model.set(world.now, Limit.per_minute("rpm", 100))
-        await world.admin.set_resource_defaults(RESOURCE, [Limit.per_minute("rpm", 100)])
+        await set_default(Limit.per_minute("rpm", 100))
         await world.check_shares()
         world.now += MINUTE_MS
         assert await world.burst(1, 10) <= 100
