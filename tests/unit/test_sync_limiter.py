@@ -14724,6 +14724,27 @@ class TestAmountBounds:
         tokens = _raw_bucket(repo, "e1", resource="gpt-4")
         assert int(tokens[bucket_attr("rpm", "tc")]["N"]) == 1000
 
+    def test_a_leases_net_adjustment_is_bounded_too(self, sync_limiter):
+        """Two accepted calls cannot add up past MAX_TOKENS: the exit writes the
+        net as one debit or return, which would otherwise fail there."""
+        from zae_limiter.schedule import MAX_TOKENS
+
+        repo = sync_limiter._repository
+        repo.set_limits("e1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        with sync_limiter.acquire("e1", "gpt-4", {"rpm": 1}) as lease:
+            lease.adjust(rpm=-MAX_TOKENS)
+            with pytest.raises(ValidationError, match="net adjustment"):
+                lease.release(rpm=MAX_TOKENS)
+            handle = lease.resource("gpt-4")
+            with pytest.raises(ValidationError, match="net adjustment"):
+                handle.adjust(rpm=-2)
+            lease.adjust(rpm=MAX_TOKENS)
+            assert lease.consumed == {"rpm": 1}
+            lease.adjust(rpm=MAX_TOKENS)
+            with pytest.raises(ValidationError, match="net adjustment"):
+                handle.release(rpm=-1)
+        assert lease.consumed == {"rpm": 1 + MAX_TOKENS}
+
     def test_exactly_max_tokens_is_accepted(self, sync_limiter):
         from zae_limiter.schedule import MAX_TOKENS
 
