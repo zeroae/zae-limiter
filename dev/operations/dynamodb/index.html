@@ -4420,7 +4420,7 @@
 <h3 id="mitigations">Mitigations<a class="headerlink" href="#mitigations" title="Permanent link">&para;</a></h3>
 <p>Once you've identified a hot partition:</p>
 <h4 id="1-write-sharding-recommended-for-cascade">1. Write Sharding (Recommended for Cascade)<a class="headerlink" href="#1-write-sharding-recommended-for-cascade" title="Permanent link">&para;</a></h4>
-<p>Split high-fanout parent into sharded parents. See <a href="../../performance/#write-sharding-for-high-fanout-parents">Write Sharding Guide</a> for detailed example.</p>
+<p>Split high-fanout parent into sharded parents. See <a href="../../performance/#write-sharding-automatic-pre-shard-buckets">Write Sharding Guide</a> for detailed example.</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="c1"># Instead of:</span>
 </span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="c1">#   API Key → project-123 (1000+ children, hotspot)</span>
 </span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="c1">#</span>

@@ -1426,6 +1426,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Version-Specific Migration Guides">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#schema-0110-fill-instants-for-dripping-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schema 0.11.0: fill instants for dripping limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
     </ul>
@@ -4592,6 +4609,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Version-Specific Migration Guides">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#schema-0110-fill-instants-for-dripping-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schema 0.11.0: fill instants for dripping limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
     </ul>
@@ -5450,6 +5484,17 @@ and Lambda auto-updates keep the stored minimum; storing a <code>reset_after</co
 <ul>
 <li><a href="namespace-keys/">Namespace-Prefixed Keys (v0.10.0)</a> -- Migrate from bare DynamoDB keys to namespace-prefixed keys for multi-tenant isolation</li>
 </ul>
+<h3 id="schema-0110-fill-instants-for-dripping-limits">Schema 0.11.0: fill instants for dripping limits<a class="headerlink" href="#schema-0110-fill-instants-for-dripping-limits" title="Permanent link">&para;</a></h3>
+<p>Schema 0.11.0 (<a href="../adr/154-fill-instant-fast-path/">ADR-154</a>) stores each dripping
+limit on a bucket item, the reserved <code>wcu</code> included, as a scaled fill instant
+<code>b_{name}_fi</code> in place of <code>b_{name}_tk</code>, beside one item-level expression instant
+<code>xi</code>. Quotas keep <code>tk</code>, <code>rf</code> and <code>gc</code>, so one item can carry both forms.</p>
+<p>Nothing to run: items are converted lazily, each on its next slow pass, by a write
+pinned on the <code>tk</code> and <code>rf</code> it read. There is no table scan and no registered
+migration. The minor version change refuses no 0.x client, but every client and
+Lambda sharing a table must run v0.18.0 or later
+(<a href="../adr/153-admission-contract-for-dripping-limits/">ADR-153</a>): an older one would
+write <code>tk</code> beside a converted fill instant and admit twice.</p>
 
 
 

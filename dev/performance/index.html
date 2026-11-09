@@ -1803,10 +1803,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#aggregator-assisted-refill-issue-317" class="md-nav__link">
+  <a href="#aggregator-assisted-quota-resets-issue-317" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Aggregator-Assisted Refill (Issue #317)
+        Aggregator-Assisted Quota Resets (Issue #317)
       
     </span>
   </a>
@@ -5159,10 +5159,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#aggregator-assisted-refill-issue-317" class="md-nav__link">
+  <a href="#aggregator-assisted-quota-resets-issue-317" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Aggregator-Assisted Refill (Issue #317)
+        Aggregator-Assisted Quota Resets (Issue #317)
       
     </span>
   </a>
@@ -5719,29 +5719,29 @@ infrastructure limit tracks per-partition write pressure.</p>
 <ol>
 <li>Every bucket starts with <code>shard_count=1</code> (shard 0)</li>
 <li>An internal <code>wcu</code> limit (capacity: 1000 millitokens) is auto-injected on every bucket</li>
-<li>When <code>wcu</code> is exhausted on a speculative write, the client doubles <code>shard_count</code> via a
-   conditional write on shard 0 (source of truth) and moves to one of the new shards</li>
-<li>The client creates the new shard's bucket item itself on its next slow-path acquire,
-   with <code>capacity / shard_count</code> tokens — the aggregator is <strong>not</strong> required for
-   sharding to engage (ADR-133)</li>
-<li>The Lambda aggregator, when deployed, is a backstop: it can also double shards when the
-   stored <code>wcu</code> balance, projected to now, is below 20% of capacity (never past 32), though it
-   rarely does so before the client has (step 3 is what protects a hot shard). It pre-creates
-   the new shard items so clients skip that one-time slow path</li>
-<li>Shard count changes on shard 0 are propagated to all other shards by the aggregator</li>
+<li>When <code>wcu</code> is exhausted on a speculative write, the client <strong>raises</strong> the bucket from <code>S</code>
+   to <code>2S</code> shards (<a href="../adr/156-dripping-shard-raises/">ADR-156</a>): one transaction splits every
+   existing shard and creates every new one, moving tokens rather than minting them, so the
+   total balance is kept exactly and a new shard can start nearly empty. The aggregator is
+   <strong>not</strong> required for sharding to engage. A bucket holding only quotas doubles <code>shard_count</code>
+   on shard 0 instead and creates its new shards on first use (ADR-133, ADR-145)</li>
+<li>A dripping shard the client creates later, while others of its bucket exist (one a TTL
+   swept, say), starts empty and fills at its share's rate</li>
+<li>The Lambda aggregator, when deployed, is a backstop: it raises the bucket the same way when
+   the stored <code>wcu</code> balance, projected to now, is below 20% of capacity (never past 32), though
+   it rarely does so before the client has (step 3 is what protects a hot shard)</li>
+<li>For a quota-only bucket, shard count changes on shard 0 are propagated to the other shards
+   by the aggregator, which also pre-creates the new shard items</li>
 <li>Clients pick a random shard from the entity cache: <code>random.randrange(shard_count)</code></li>
 <li>If application limits are exhausted on one shard but the entity has multiple shards,
    the client retries on up to 2 other randomly chosen shards, creating any it finds
    missing</li>
 </ol>
-<p><strong>Shard-aware capacity:</strong> The aggregator's refill, the client's slow-path refill and the
-client's shard creation all divide capacity and refill amount by <code>shard_count</code>, so each
-shard holds its proportional share and the entity admits at most its configured capacity
-per refill window. A doubling does not rewrite shard 0's balance, but the refill
-calculation clamps tokens to the shard's share on every pass — including the passes that
-add no tokens — so shard 0 is trimmed to its new share by the next refiller to touch it
-(the client slow path, or the aggregator, which writes the trim as a negative delta).
-There is no transient above the configured capacity.</p>
+<p><strong>Shard-aware capacity:</strong> Each shard holds at most <code>capacity / shard_count</code> and refills at
+<code>refill_amount / shard_count</code>, so the entity admits at most its configured capacity plus the
+refill across any window (<a href="../adr/153-admission-contract-for-dripping-limits/">ADR-153</a>). A
+raise splits each shard's balance at the new share in the same transaction that creates the
+new shards, so there is no transient above the configured capacity.</p>
 <p>A <strong>quota</strong> (<code>Limit.quota()</code>) never refills, so it is handled differently: a new shard is funded
 by an atomic move off the shard whose grant covers it — or, when no shard covers it, by a fresh
 share — and each shard's ceiling is the share it was granted, not the current share. A doubling
@@ -5751,9 +5751,9 @@ reads the entity's other shards once and writes one transaction carrying the new
 then reads shard 0's count once (1 RCU) to catch a doubling that landed while it was being
 created.</p>
 <p><strong>Works without the aggregator:</strong> Deployments using <code>--no-aggregator</code> get the same
-write-sharding behaviour; the only difference is that each new shard costs one slow-path
-acquire (about 2.5 RCU + 2 WCU) to create, once, instead of being pre-created from the
-stream.</p>
+write-sharding behaviour. A raise costs <code>5S + 2</code> WCU from <code>S</code> to <code>2S</code> shards (82 WCU at the last
+step, 16 to 32); a quota-only bucket's new shard costs one slow-path acquire to create, once,
+instead of being pre-created from the stream.</p>
 <p><strong>Known limitation — a single request cannot exceed <code>capacity // shard_count</code>.</strong> No shard ever
 holds more than its share, so once a bucket has sharded, a request larger than one share is
 rejected on <em>every</em> shard even while the entity is well under its configured limit. For
@@ -6609,16 +6609,23 @@ cache (one per entity, as in earlier releases).</p>
 </span><span id="__span-31-10"><a id="__codelineno-31-10" name="__codelineno-31-10" href="#__codelineno-31-10"></a><span class="nb">print</span><span class="p">(</span><span class="n">repo</span><span class="o">.</span><span class="n">get_cache_stats</span><span class="p">()</span><span class="o">.</span><span class="n">local_rejections</span><span class="p">)</span>  <span class="c1"># rejections answered without DynamoDB</span>
 </span></code></pre></div>
 <p>The builder takes the same options: <code>.rejection_cache_ttl(seconds)</code>, <code>.rejection_cache_size(entries)</code>.</p>
-<h3 id="aggregator-assisted-refill-issue-317">Aggregator-Assisted Refill (Issue #317)<a class="headerlink" href="#aggregator-assisted-refill-issue-317" title="Permanent link">&para;</a></h3>
-<p>When the Lambda aggregator is enabled, it proactively refills token buckets for active entities between client requests. This keeps speculative writes on the fast path (1 RT, 0 RCU, 1 WCU) by ensuring buckets have sufficient tokens, reducing fallback to the slow path (3 RT, 1 RCU, 2 WCU).</p>
+<h3 id="aggregator-assisted-quota-resets-issue-317">Aggregator-Assisted Quota Resets (Issue #317)<a class="headerlink" href="#aggregator-assisted-quota-resets-issue-317" title="Permanent link">&para;</a></h3>
+<p>Since v0.18.0 the aggregator no longer refills dripping limits: a dripping limit stores the
+instant it will be full again, whose balance the fast path reads exactly at any instant, so no
+refill write is needed to keep it on the fast path
+(<a href="../adr/154-fill-instant-fast-path/">ADR-154</a>, <a href="../adr/156-dripping-shard-raises/">ADR-156</a>).
+What it still writes is a <strong>quota's</strong> reset or session-window roll, so the next request finds
+the allowance already restored.</p>
 <p><strong>How it works:</strong></p>
 <ol>
 <li>The aggregator processes DynamoDB Stream events for bucket modifications</li>
 <li>For each active (entity, resource) bucket, it aggregates consumption deltas from the batch</li>
-<li>If projected tokens after natural refill are insufficient to cover the observed consumption rate, it writes a proactive refill</li>
-<li>The refill uses <code>ADD</code> (commutative with concurrent speculative writes) and an optimistic lock on <code>rf</code> to prevent double-refill</li>
+<li>When a quota on the item has crossed its reset edge, or its session window has rolled, it
+   writes the reset</li>
+<li>The reset uses <code>ADD</code> (commutative with concurrent speculative writes) and an optimistic lock
+   on <code>rf</code> to prevent a double reset</li>
 </ol>
-<p><strong>Cost:</strong> 1 WCU per refill attempted, including one that loses the lock because another writer updated <code>rf</code> first (a failed conditional write is still charged). The cost is amortized across all stream records in a batch, so high-throughput workloads see fewer refills per request.</p>
+<p><strong>Cost:</strong> 1 WCU per reset attempted, including one that loses the lock because another writer updated <code>rf</code> first (a failed conditional write is still charged).</p>
 <div class="admonition tip">
 <p class="admonition-title">Aggregator refill + speculative writes</p>
 <p>The combination of aggregator-assisted refill and speculative writes provides the best latency and cost profile: the aggregator keeps buckets warm so speculative writes rarely fall back, achieving ~5-8ms p50 latency at $0.625/M requests (non-cascade).</p>

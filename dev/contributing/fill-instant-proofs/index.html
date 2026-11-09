@@ -4013,9 +4013,11 @@
 and <a href="../../adr/156-dripping-shard-raises/">ADR-156</a>
 <strong>Date:</strong> 2026-11-07</p>
 <div class="admonition note">
-<p class="admonition-title">A proposed design</p>
-<p>This page proves properties of the design ADR-154, ADR-155 and ADR-156 propose for v0.18.0.
-Until that ships, the fast path still stores <code>tk</code> and <code>rf</code>, and #808 still applies.</p>
+<p class="admonition-title">Ships in v0.18.0</p>
+<p>The design ADR-154, ADR-155 and ADR-156 describe ships in v0.18.0: every bucket created
+from that release stores its dripping limits as fill instants, and an item written before
+it is converted on its next slow pass. Where this page says "today's" fast path or
+design, it means the <code>tk</code> and <code>rf</code> form that release replaces, which #808 describes.</p>
 </div>
 <p>ADR-153 makes the strict token bucket the admission contract for dripping limits. ADR-154
 changes how a dripping limit is stored and written so the fast path can meet it, ADR-155 holds
@@ -4384,7 +4386,9 @@ at its own ceiling: the strict bucket with time-varying parameters. Crediting th
 interval at the rate in force at its end, as the code does today, admitted 1000 against 117
 across a boundary from 0.1x to 1x.</p>
 <p><strong>Shard split (ADR-156).</strong> A raise from <code>S</code> to <code>2S</code> shards first stamps a short-lived marker on
-every shard, which other writes refuse while it is live, so their writes cannot break its pins.
+every shard, which every write that moves a fill instant, the expression instant or the shard
+count refuses while it is live, so their writes cannot break its pins; one it does not hold off
+(a stamp fan-out) cancels it, since it is pinned on what it copies.
 It then reads every shard and, in one transaction pinned on what it read, re-expresses each
 shard <code>i</code> (holding <code>b_i ≤ C / S</code>) at the new share <code>C / 2S</code>, keeping <code>min(b_i, C / 2S)</code>, and
 creates shard <code>i + S</code> holding <code>max(0, b_i − C / 2S)</code>, which is at most <code>C / 2S</code>. Every shard
@@ -4395,9 +4399,11 @@ full.</p>
 <p><strong>Theorem 5 (ADR-153's bound for every writer).</strong> If every write of a dripping limit takes one
 of ADR-155's forms, then on one (entity, resource), summed over its shards, tokens debited minus
 tokens returned, counted from the start of a window to its last admission, is at most
-<code>C + R(w) + 2 r s</code> plus what resets and top-ups grant in the window, where <code>C</code> is the largest
-ceiling in force from <code>s</code> before the window's start to its start, <code>R(w)</code> the refill the
-schedule grants across the window, and <code>r</code> the largest rate in force across it.</p>
+<code>C + R(w) + 2 r s</code> plus what resets and top-ups grant in the window, plus the debt held at that
+admission on shards other than the one it lands on, where <code>C</code> is the largest ceiling in force
+from <code>s</code> before the window's start to its start, <code>R(w)</code> the refill the schedule grants across
+the window, and <code>r</code> the largest rate in force across it. With one shard, or no positive
+adjustments, the last term is zero.</p>
 <p><em>Proof sketch.</em> Apply Theorem 1's window argument to the total balance over shards. It starts
 the window at most <code>C</code>: every shard holds at most its share and the shares sum to the ceiling
 in force, and a write stamped up to <code>s</code> before a boundary that lowers capacity can still land
@@ -4407,9 +4413,14 @@ exceeded the bound by 3 to 54 times the <code>2 r s</code> term.
 It gains at most <code>R(w)</code> of refill: within a schedule window the shards' rates sum to the rate
 in force, and across boundaries each shard drips at each window's own rate. A split conserves
 it, a shard created empty adds nothing, a re-expression keeps or lowers it, returns add at most
-what they return, and resets and top-ups add what they grant. Theorem 1's clock-offset induction holds shard by shard, each
-reference bucket falling at most <code>2 r_S s</code> below zero, and the shards' rates <code>r_S</code> sum to at
-most <code>r</code>. ∎</p>
+what they return, and resets and top-ups add what they grant. Theorem 1's clock-offset
+induction holds shard by shard, and the shards' rates <code>r_S</code> sum to at most <code>r</code>. It ends at
+least <code>−2 r s</code> less the debt the other shards hold: the shard the last admission lands on falls
+at most <code>2 r_S s</code> below zero just after it, and so does every other shard just after its own
+last admission, but a positive adjustment landing there afterwards carries it lower with no
+admission on it to bound. Each shard is its own bucket, so that debt holds back only its shard.
+An earlier sketch claimed every shard ends at most <code>2 r_S s</code> below zero; the #825 harness found
+the counterexample, an adjustment's debt on one shard while another admitted. ∎</p>
 <h2 id="9-what-this-does-not-cover">9. What this does not cover<a class="headerlink" href="#9-what-this-does-not-cover" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>An encoding where attribute presence tracks time.</strong> <code>if_not_exists</code> is the only update that

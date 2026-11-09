@@ -4247,6 +4247,9 @@ new template, policies included (see the
   reports keys outside <code>consume</code> is skipped for a degraded lease, so an outage never
   turns into a warning storm</li>
 <li><code>lease.degraded</code> is the only signal; a real lease with no entries is not degraded</li>
+<li>On a real lease, a <code>lease.consume()</code> call that meets an outage under <code>ALLOW</code> is let
+  through unwritten (it is admitted as <code>acquire()</code> is); under <code>BLOCK</code> it raises
+  <code>RateLimiterUnavailable</code></li>
 </ul>
 <p>To detect and log degraded operations, wrap with custom error handling:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">acquire_with_metrics</span><span class="p">(</span><span class="n">limiter</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>

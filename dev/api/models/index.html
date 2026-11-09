@@ -2047,6 +2047,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.is_dripping_state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;is_dripping_state
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.BucketState.tokens" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5831,6 +5842,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.is_dripping_state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;is_dripping_state
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.BucketState.tokens" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -8815,7 +8837,7 @@ restored across every shard.</p>
   </span>
 
 <a href="#zae_limiter.models.BucketState" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">window_start_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reset_after_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_applied_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_consumed_mark_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">grant_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">topped_up_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reset_number</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_vu_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_vu_read</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">bypass</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">bypass_until_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">soft_until_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_item_sched_raw</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_sched_raw</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">window_start_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reset_after_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_applied_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_consumed_mark_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">grant_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">topped_up_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reset_number</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_vu_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_vu_read</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">bypass</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">bypass_until_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">soft</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">soft_until_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_item_sched_raw</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_sched_raw</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">fill_instant</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">expressed_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_fill_instant</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stored_expressed_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">raise_until_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -8845,6 +8867,30 @@ deserialization and avoid performance overhead on frequent operations.</p>
 
 
 
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.BucketState.is_dripping_state" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">is_dripping_state</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.BucketState.is_dripping_state" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">is_dripping_state</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Whether this state drips: a positive refill and no reset (ADR-137).</p>
+
+    </div>
+
+</div>
 
 <div class="doc doc-object doc-attribute">
 

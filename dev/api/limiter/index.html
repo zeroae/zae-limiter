@@ -8422,7 +8422,9 @@ resources — is disabled. Outranks <code>RateLimitExceeded</code>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If DynamoDB unavailable and BLOCK</p>
+                <p>If DynamoDB unavailable and BLOCK; and,
+under every mode, if a computed fill instant would leave
+DynamoDB's exact integer range (#824), as for an IAM denial.</p>
               </div>
             </td>
           </tr>
@@ -8433,9 +8435,10 @@ resources — is disabled. Outranks <code>RateLimitExceeded</code>.</p>
             <td>
               <div class="doc-md-description">
                 <p>If no limits configured at any level, an amount
-in <code>consume</code> or <code>also</code> is negative, or <code>also</code> is invalid
-(a bad or repeated resource name, too many resources, or
-combined with <code>limits</code>)</p>
+in <code>consume</code> or <code>also</code> is negative or above
+<code>MAX_TOKENS</code> (10**15, before any I/O, #824), or <code>also</code> is
+invalid (a bad or repeated resource name, too many resources,
+or combined with <code>limits</code>)</p>
               </div>
             </td>
           </tr>
@@ -11954,7 +11957,9 @@ resources — is disabled. Outranks <code>RateLimitExceeded</code>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If DynamoDB unavailable and BLOCK</p>
+                <p>If DynamoDB unavailable and BLOCK; and,
+under every mode, if a computed fill instant would leave
+DynamoDB's exact integer range (#824), as for an IAM denial.</p>
               </div>
             </td>
           </tr>
@@ -11965,9 +11970,10 @@ resources — is disabled. Outranks <code>RateLimitExceeded</code>.</p>
             <td>
               <div class="doc-md-description">
                 <p>If no limits configured at any level, an amount
-in <code>consume</code> or <code>also</code> is negative, or <code>also</code> is invalid
-(a bad or repeated resource name, too many resources, or
-combined with <code>limits</code>)</p>
+in <code>consume</code> or <code>also</code> is negative or above
+<code>MAX_TOKENS</code> (10**15, before any I/O, #824), or <code>also</code> is
+invalid (a bad or repeated resource name, too many resources,
+or combined with <code>limits</code>)</p>
               </div>
             </td>
           </tr>
@@ -13640,6 +13646,17 @@ or entity level.</p>
 A lease from <code>acquire(..., also={...})</code> covers several resources: its own
 methods act on the primary resource and <code>resource(name)</code> reaches the others; see
 <a href="../../guide/multi-resource/">Several Resources in One Acquire</a>.</p>
+<div class="admonition note">
+<p class="admonition-title">Amounts are bounded</p>
+<p><code>acquire()</code> (every <code>consume</code> and <code>also</code> amount), <code>consume()</code>, <code>adjust()</code> and <code>release()</code>,
+on the lease and on a <code>resource(name)</code> handle, raise <code>ValidationError</code> for an amount above
+<code>MAX_TOKENS</code> (10<sup>15</sup>) in magnitude, before any request is sent. So do <code>adjust()</code>
+and <code>release()</code> when the lease's net adjustment of a limit would pass it, since the exit
+writes that net as one debit or return. Past it a stored value would leave DynamoDB's
+exact integer range. A computed value that would still leave
+it raises <code>RateLimiterUnavailable</code> under every <code>on_unavailable</code> mode, never a degraded
+lease.</p>
+</div>
 
 
 <div class="doc doc-object doc-class">
@@ -13655,7 +13672,7 @@ methods act on the primary resource and <code>resource(name)</code> reaches the 
   </span>
 
 <a href="#zae_limiter.lease.Lease" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Lease</span><span class="p">(</span><span class="n">repository</span><span class="p">,</span> <span class="n">entries</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_rolled_back</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_initial_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">degraded</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_unknown_keys</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">_carriers</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_cache_mark</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">_resources</span><span class="o">=</span><span class="p">(),</span> <span class="n">_unknown_keys_by_resource</span><span class="o">=</span><span class="n"><span title="dict">dict</span></span><span class="p">(),</span> <span class="n">compute_images</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Lease</span><span class="p">(</span><span class="n">repository</span><span class="p">,</span> <span class="n">entries</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_rolled_back</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_initial_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">degraded</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_unknown_keys</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">_carriers</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_cache_mark</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">_resources</span><span class="o">=</span><span class="p">(),</span> <span class="n">_unknown_keys_by_resource</span><span class="o">=</span><span class="n"><span title="dict">dict</span></span><span class="p">(),</span> <span class="n">_consumes</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_admit</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">compute_images</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -13901,6 +13918,31 @@ reach the others through :meth:<code>resource</code> (ADR-148).</p>
     </table>
 
 
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a delta, or the lease's net adjustment of a
+limit, is above <code>MAX_TOKENS</code> in magnitude (#824); nothing is
+recorded.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
     </div>
 
 </div>
@@ -13922,8 +13964,19 @@ reach the others through :meth:<code>resource</code> (ADR-148).</p>
 
     <div class="doc doc-contents ">
 
-        <p>Consume additional capacity from the buckets.</p>
-<p>Raises RateLimitExceeded if any bucket has insufficient capacity.</p>
+        <p>Consume additional capacity, written when called (ADR-153, #822).</p>
+<p>Admitted exactly as <code>acquire()</code> admits a request for these amounts,
+in the same write and round trip: the speculative write (one write
+when this process predicts it), else the slow path. It is committed
+before this call returns, so concurrent callers see it at once, and it
+can raise inside the caller's block.</p>
+<p>A rejected call debits nothing and leaves the lease open. A call that
+landed is rolled back with the lease when the block raises, and
+committed with it otherwise; <code>lease.consumed</code> includes it, and it is
+never written again at exit. Under <code>on_unavailable=ALLOW</code> a backend
+error lets the call through unwritten, as it lets <code>acquire()</code>
+through. The amounts may land on another shard of the bucket than
+the initial consumption (ADR-134).</p>
 <p>Only limits declared in <code>acquire(consume=...)</code> can be consumed;
 other keys are reported (Issue #455) and ignored.
 On a multi-resource lease this acts on the primary resource only;
@@ -13955,6 +14008,71 @@ reach the others through :meth:<code>resource</code> (ADR-148).</p>
             </td>
             <td>
                   <code>{}</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an amount is above <code>MAX_TOKENS</code> (#824);
+nothing is sent.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            RateLimitExceeded (zae_limiter.exceptions.RateLimitExceeded)" href="../exceptions/#zae_limiter.exceptions.RateLimitExceeded">RateLimitExceeded</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a limit cannot cover it, or the bucket is
+contended (<code>contended=True</code>); nothing was debited.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            ResourceDisabled (zae_limiter.exceptions.ResourceDisabled)" href="../exceptions/#zae_limiter.exceptions.ResourceDisabled">ResourceDisabled</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the resource was disabled since the acquire.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            RateLimiterUnavailable (zae_limiter.exceptions.RateLimiterUnavailable)" href="../exceptions/#zae_limiter.exceptions.RateLimiterUnavailable">RateLimiterUnavailable</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>On a backend error under <code>on_unavailable=BLOCK</code>.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            LeaseExpiredError (zae_limiter.exceptions.LeaseExpiredError)" href="../exceptions/#zae_limiter.exceptions.LeaseExpiredError">LeaseExpiredError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the lease has already exited.</p>
+              </div>
             </td>
           </tr>
       </tbody>
@@ -14025,6 +14143,31 @@ reach the others through :meth:<code>resource</code> (ADR-148).</p>
     </table>
 
 
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an amount, or the lease's net adjustment of a
+limit, is above <code>MAX_TOKENS</code> in magnitude (#824); nothing is
+recorded.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
     </div>
 
 </div>
@@ -14051,7 +14194,7 @@ reach the others through :meth:<code>resource</code> (ADR-148).</p>
   </span>
 
 <a href="#zae_limiter.sync_lease.SyncLease" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncLease</span><span class="p">(</span><span class="n">repository</span><span class="p">,</span> <span class="n">entries</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_rolled_back</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_initial_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">degraded</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_unknown_keys</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">_carriers</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_cache_mark</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">_resources</span><span class="o">=</span><span class="p">(),</span> <span class="n">_unknown_keys_by_resource</span><span class="o">=</span><span class="n"><span title="dict">dict</span></span><span class="p">(),</span> <span class="n">compute_images</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncLease</span><span class="p">(</span><span class="n">repository</span><span class="p">,</span> <span class="n">entries</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_rolled_back</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_initial_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">degraded</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_unknown_keys</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">_carriers</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_cache_mark</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">_resources</span><span class="o">=</span><span class="p">(),</span> <span class="n">_unknown_keys_by_resource</span><span class="o">=</span><span class="n"><span title="dict">dict</span></span><span class="p">(),</span> <span class="n">_consumes</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_admit</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">compute_images</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -14231,6 +14374,31 @@ reach the others through :meth:<code>resource</code> (ADR-148).</p>
     </table>
 
 
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a delta, or the lease's net adjustment of a
+limit, is above <code>MAX_TOKENS</code> in magnitude (#824); nothing is
+recorded.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
     </div>
 
 </div>
@@ -14248,8 +14416,19 @@ reach the others through :meth:<code>resource</code> (ADR-148).</p>
 
     <div class="doc doc-contents ">
 
-        <p>Consume additional capacity from the buckets.</p>
-<p>Raises RateLimitExceeded if any bucket has insufficient capacity.</p>
+        <p>Consume additional capacity, written when called (ADR-153, #822).</p>
+<p>Admitted exactly as <code>acquire()</code> admits a request for these amounts,
+in the same write and round trip: the speculative write (one write
+when this process predicts it), else the slow path. It is committed
+before this call returns, so concurrent callers see it at once, and it
+can raise inside the caller's block.</p>
+<p>A rejected call debits nothing and leaves the lease open. A call that
+landed is rolled back with the lease when the block raises, and
+committed with it otherwise; <code>lease.consumed</code> includes it, and it is
+never written again at exit. Under <code>on_unavailable=ALLOW</code> a backend
+error lets the call through unwritten, as it lets <code>acquire()</code>
+through. The amounts may land on another shard of the bucket than
+the initial consumption (ADR-134).</p>
 <p>Only limits declared in <code>acquire(consume=...)</code> can be consumed;
 other keys are reported (Issue #455) and ignored.
 On a multi-resource lease this acts on the primary resource only;
@@ -14281,6 +14460,71 @@ reach the others through :meth:<code>resource</code> (ADR-148).</p>
             </td>
             <td>
                   <code>{}</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an amount is above <code>MAX_TOKENS</code> (#824);
+nothing is sent.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            RateLimitExceeded (zae_limiter.exceptions.RateLimitExceeded)" href="../exceptions/#zae_limiter.exceptions.RateLimitExceeded">RateLimitExceeded</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a limit cannot cover it, or the bucket is
+contended (<code>contended=True</code>); nothing was debited.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            ResourceDisabled (zae_limiter.exceptions.ResourceDisabled)" href="../exceptions/#zae_limiter.exceptions.ResourceDisabled">ResourceDisabled</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the resource was disabled since the acquire.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            RateLimiterUnavailable (zae_limiter.exceptions.RateLimiterUnavailable)" href="../exceptions/#zae_limiter.exceptions.RateLimiterUnavailable">RateLimiterUnavailable</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>On a backend error under <code>on_unavailable=BLOCK</code>.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            LeaseExpiredError (zae_limiter.exceptions.LeaseExpiredError)" href="../exceptions/#zae_limiter.exceptions.LeaseExpiredError">LeaseExpiredError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the lease has already exited.</p>
+              </div>
             </td>
           </tr>
       </tbody>
@@ -14341,6 +14585,31 @@ reach the others through :meth:<code>resource</code> (ADR-148).</p>
             </td>
             <td>
                   <code>{}</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an amount, or the lease's net adjustment of a
+limit, is above <code>MAX_TOKENS</code> in magnitude (#824); nothing is
+recorded.</p>
+              </div>
             </td>
           </tr>
       </tbody>
@@ -14443,8 +14712,9 @@ name returns a no-op handle.</p>
 <p><code>adjust()</code>, <code>consume()</code>, <code>release()</code> and <code>consumed</code> behave exactly
 as the lease-level methods do, scoped to this resource's declared limits:
 the ones named for it in <code>acquire()</code>'s <code>consume</code> (the primary
-resource) or <code>also</code> (every other one). Nothing is written until the
-lease's context exits, where every resource is reconciled together.</p>
+resource) or <code>also</code> (every other one). <code>consume()</code> is written when
+called (#822); adjustments are written when the lease's context exits,
+where every resource is reconciled together.</p>
 
 
 
@@ -14594,6 +14864,17 @@ lease's context exits, where every resource is reconciled together.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an amount is above <code>MAX_TOKENS</code> (#824);
+nothing is requested.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                   <code><a class="autorefs autorefs-internal" title="            RateLimitExceeded (zae_limiter.exceptions.RateLimitExceeded)" href="../exceptions/#zae_limiter.exceptions.RateLimitExceeded">RateLimitExceeded</a></code>
             </td>
             <td>
@@ -14652,6 +14933,18 @@ lease's context exits, where every resource is reconciled together.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a delta, or the lease's net adjustment of a
+limit, is above <code>MAX_TOKENS</code> in magnitude (#824); nothing is
+recorded.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                   <code><a class="autorefs autorefs-internal" title="            LeaseExpiredError (zae_limiter.exceptions.LeaseExpiredError)" href="../exceptions/#zae_limiter.exceptions.LeaseExpiredError">LeaseExpiredError</a></code>
             </td>
             <td>
@@ -14699,6 +14992,18 @@ lease's context exits, where every resource is reconciled together.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an amount, or the lease's net adjustment of a
+limit, is above <code>MAX_TOKENS</code> in magnitude (#824); nothing is
+recorded.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                   <code><a class="autorefs autorefs-internal" title="            LeaseExpiredError (zae_limiter.exceptions.LeaseExpiredError)" href="../exceptions/#zae_limiter.exceptions.LeaseExpiredError">LeaseExpiredError</a></code>
             </td>
             <td>
@@ -14744,8 +15049,9 @@ lease's context exits, where every resource is reconciled together.</p>
 <p><code>adjust()</code>, <code>consume()</code>, <code>release()</code> and <code>consumed</code> behave exactly
 as the lease-level methods do, scoped to this resource's declared limits:
 the ones named for it in <code>acquire()</code>'s <code>consume</code> (the primary
-resource) or <code>also</code> (every other one). Nothing is written until the
-lease's context exits, where every resource is reconciled together.</p>
+resource) or <code>also</code> (every other one). <code>consume()</code> is written when
+called (#822); adjustments are written when the lease's context exits,
+where every resource is reconciled together.</p>
 
 
 
@@ -14891,6 +15197,17 @@ lease's context exits, where every resource is reconciled together.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an amount is above <code>MAX_TOKENS</code> (#824);
+nothing is requested.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                   <code><a class="autorefs autorefs-internal" title="            RateLimitExceeded (zae_limiter.exceptions.RateLimitExceeded)" href="../exceptions/#zae_limiter.exceptions.RateLimitExceeded">RateLimitExceeded</a></code>
             </td>
             <td>
@@ -14945,6 +15262,18 @@ lease's context exits, where every resource is reconciled together.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a delta, or the lease's net adjustment of a
+limit, is above <code>MAX_TOKENS</code> in magnitude (#824); nothing is
+recorded.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                   <code><a class="autorefs autorefs-internal" title="            LeaseExpiredError (zae_limiter.exceptions.LeaseExpiredError)" href="../exceptions/#zae_limiter.exceptions.LeaseExpiredError">LeaseExpiredError</a></code>
             </td>
             <td>
@@ -14986,6 +15315,18 @@ lease's context exits, where every resource is reconciled together.</p>
         </tr>
       </thead>
       <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an amount, or the lease's net adjustment of a
+limit, is above <code>MAX_TOKENS</code> in magnitude (#824); nothing is
+recorded.</p>
+              </div>
+            </td>
+          </tr>
           <tr class="doc-section-item">
             <td>
                   <code><a class="autorefs autorefs-internal" title="            LeaseExpiredError (zae_limiter.exceptions.LeaseExpiredError)" href="../exceptions/#zae_limiter.exceptions.LeaseExpiredError">LeaseExpiredError</a></code>

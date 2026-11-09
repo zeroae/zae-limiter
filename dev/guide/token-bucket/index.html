@@ -479,6 +479,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#bursts-are-strict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bursts Are Strict
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#lazy-refill" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -533,6 +544,17 @@
     <span class="md-ellipsis">
       
         Why retry_after is accurate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sharded-buckets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sharded buckets
       
     </span>
   </a>
@@ -3883,6 +3905,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#bursts-are-strict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bursts Are Strict
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#lazy-refill" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3937,6 +3970,17 @@
     <span class="md-ellipsis">
       
         Why retry_after is accurate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sharded-buckets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sharded buckets
       
     </span>
   </a>
@@ -4096,13 +4140,40 @@ not drip at all.</p>
 <li><strong>Bursty workloads</strong>: Allow temporary spikes followed by quiet periods</li>
 <li><strong>User experience</strong>: Don't reject the first request just because a minute hasn't passed</li>
 </ul>
+<h3 id="bursts-are-strict">Bursts Are Strict<a class="headerlink" href="#bursts-are-strict" title="Permanent link">&para;</a></h3>
+<p>The capacity is a ceiling over every stretch of time, not an average. Over any window, a
+dripping limit admits at most its capacity plus what refills during that window. A bucket
+cannot bank idle time: once it is full, waiting longer adds nothing, so a bucket that sat idle
+for an hour admits one burst of at most its capacity, not two.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Idle for an hour, then a flood of requests:</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">100</span><span class="p">)</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="c1"># admits 100 at once, then about 100 per minute.</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># Over any 30 seconds: at most 100 + 50 = 150.</span>
+</span></code></pre></div>
+<p>This holds however many processes share the bucket and however it is
+<a href="#sharded-buckets">sharded</a>. Each process stamps its writes with its own clock, so the bound
+allows a little for clock skew and time in flight: at most <code>2 × r × s</code> extra tokens, where <code>r</code>
+is the refill rate and <code>s</code> the largest gap between a process's clock reading and the moment its
+write lands. At 10,000 tokens per minute with clocks and round trips within 100 ms, that is
+about 33 tokens.</p>
+<p>The guarantee does not cover what you have chosen not to enforce:
+<a href="../soft-limits-and-bypass/">soft limits and bypass</a>, and requests admitted under
+<code>on_unavailable="allow"</code> while DynamoDB is unreachable. An operator
+<a href="../reset-and-top-up/">reset or top-up</a> adds what it grants. A quota does not drip, so it follows
+its own rule: one allowance per window.</p>
+<div class="admonition note">
+<p class="admonition-title">v0.18.0</p>
+<p>Before v0.18.0 a bucket that sat full could admit close to twice its capacity in a short
+burst. The strict bound needs every client and Lambda sharing the table to run v0.18.0 or
+later.</p>
+</div>
 <h3 id="lazy-refill">Lazy Refill<a class="headerlink" href="#lazy-refill" title="Permanent link">&para;</a></h3>
 <p>Unlike traditional implementations that continuously add tokens, zae-limiter calculates refills on-demand:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>When a request arrives:
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>1. Calculate elapsed time since last refill
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>2. Add tokens based on elapsed time
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>3. Check if enough tokens are available
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>4. Consume tokens if allowed
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>When a request arrives:
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>1. Calculate elapsed time since last refill
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>2. Add tokens based on elapsed time
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>3. Check if enough tokens are available
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>4. Consume tokens if allowed
 </span></code></pre></div>
 <p><strong>Why this matters:</strong></p>
 <ul>
@@ -4111,11 +4182,16 @@ not drip at all.</p>
 <li><strong>Efficient</strong>: No background processes consuming resources</li>
 </ul>
 <p>The refill formula:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>tokens_to_add = elapsed_time × refill_rate
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>             = elapsed_ms × refill_amount / refill_period
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>tokens_to_add = elapsed_time × refill_rate
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>             = elapsed_ms × refill_amount / refill_period
 </span></code></pre></div>
 <p><code>refill_amount</code> here is the value in force at that instant. With a schedule, that is the
 scheduled value rather than the configured base.</p>
+<p>Under the hood, a dripping limit does not store a token count. It stores the instant its
+bucket will be full again, and the balance at any moment follows from that instant and the
+refill rate. A full bucket simply has that instant in the past, which is how it forgets idle
+time and keeps <a href="#bursts-are-strict">bursts strict</a>. See
+<a href="../../contributing/architecture/#fill-instants">Architecture</a> for the details.</p>
 <h3 id="negative-buckets-debt">Negative Buckets (Debt)<a class="headerlink" href="#negative-buckets-debt" title="Permanent link">&para;</a></h3>
 <p>zae-limiter allows buckets to go negative, creating a "debt" that must be repaid before more tokens are available. This enables the <strong>estimate-then-reconcile</strong> pattern for operations with unknown cost.</p>
 <div class="mermaid">sequenceDiagram
@@ -4171,15 +4247,15 @@ scheduled value rather than the configured base.</p>
 <li><strong>Reconcile</strong> based on actual cost (adjust)</li>
 </ol>
 <p>The debt is automatically repaid as tokens refill over time.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"api"</span><span class="p">,</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">5</span><span class="p">},</span>  <span class="c1"># Estimate 5 units</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">execute_operation</span><span class="p">()</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="n">actual</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">units_consumed</span>  <span class="c1"># 12</span>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    <span class="k">await</span> <span class="n">lease</span><span class="o">.</span><span class="n">adjust</span><span class="p">(</span><span class="n">rpm</span><span class="o">=</span><span class="n">actual</span> <span class="o">-</span> <span class="mi">5</span><span class="p">)</span>  <span class="c1"># Add 7 to debt</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"api"</span><span class="p">,</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">5</span><span class="p">},</span>  <span class="c1"># Estimate 5 units</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">execute_operation</span><span class="p">()</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>    <span class="n">actual</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">units_consumed</span>  <span class="c1"># 12</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>    <span class="k">await</span> <span class="n">lease</span><span class="o">.</span><span class="n">adjust</span><span class="p">(</span><span class="n">rpm</span><span class="o">=</span><span class="n">actual</span> <span class="o">-</span> <span class="mi">5</span><span class="p">)</span>  <span class="c1"># Add 7 to debt</span>
 </span></code></pre></div>
 <p>See <a href="../llm-integration/">LLM Integration</a> for a specific application of this pattern.</p>
 <h2 id="practical-implications">Practical Implications<a class="headerlink" href="#practical-implications" title="Permanent link">&para;</a></h2>
@@ -4191,19 +4267,37 @@ scheduled value rather than the configured base.</p>
 </ul>
 <h3 id="why-retry_after-is-accurate">Why <code>retry_after</code> is accurate<a class="headerlink" href="#why-retry_after-is-accurate" title="Permanent link">&para;</a></h3>
 <p>The lazy refill with drift compensation means <code>retry_after</code> tells you exactly when tokens will be available:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">try</span><span class="p">:</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>        <span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>        <span class="n">resource</span><span class="o">=</span><span class="s2">"api"</span><span class="p">,</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"tpm"</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)],</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>        <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"tpm"</span><span class="p">:</span> <span class="mi">1000</span><span class="p">},</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="p">):</span>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>        <span class="k">pass</span>
-</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="k">except</span> <span class="n">RateLimitExceeded</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>    <span class="c1"># This is the exact time to wait</span>
-</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>    <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">e</span><span class="o">.</span><span class="n">retry_after_seconds</span><span class="p">)</span>
-</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>    <span class="c1"># Now the request will succeed</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">try</span><span class="p">:</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>        <span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>        <span class="n">resource</span><span class="o">=</span><span class="s2">"api"</span><span class="p">,</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"tpm"</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)],</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>        <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"tpm"</span><span class="p">:</span> <span class="mi">1000</span><span class="p">},</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="p">):</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>        <span class="k">pass</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="k">except</span> <span class="n">RateLimitExceeded</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    <span class="c1"># This is the exact time to wait</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>    <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">e</span><span class="o">.</span><span class="n">retry_after_seconds</span><span class="p">)</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>    <span class="c1"># Now the request will succeed</span>
 </span></code></pre></div>
+<h3 id="sharded-buckets">Sharded buckets<a class="headerlink" href="#sharded-buckets" title="Permanent link">&para;</a></h3>
+<p>When one entity writes to a bucket faster than a single DynamoDB partition accepts (about
+1,000 writes a second), zae-limiter splits the bucket across more shards, each holding an
+equal share of the limit (see <a href="../../performance/#write-sharding-automatic-pre-shard-buckets">Write Sharding</a>).
+A split moves the balance; it never creates tokens. Each new shard takes the part of its
+parent's balance above the parent's new, smaller share, so the bucket holds exactly what it
+held before the split. A new shard can therefore start nearly empty, when its parent had little
+above its new share, and fills at its share of the refill rate.</p>
+<p>A shard created later while the bucket's other shards exist, for example one that expired
+through its TTL, starts empty and fills the same way. A brand-new bucket still starts full.</p>
+<p>Two things follow:</p>
+<ul>
+<li>The entity as a whole never admits more than its limit across a split.</li>
+<li>Right after a split, a request can be rejected while some shard still holds tokens. The
+  client tries up to two other shards before it rejects, not every shard.</li>
+</ul>
+<p>A <a href="../scheduled-limits/#quotas">quota</a> is split by its own rule: a new shard is funded by moving
+part of another shard's allowance, so a split never adds to the period's allowance either.</p>
 <h3 id="choosing-the-right-limits">Choosing the right limits<a class="headerlink" href="#choosing-the-right-limits" title="Permanent link">&para;</a></h3>
 <table>
 <thead>

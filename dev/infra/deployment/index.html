@@ -4904,7 +4904,7 @@
 <ul>
 <li><strong>DynamoDB Table</strong> - Stores rate limit state, entities, and usage data</li>
 <li><strong>DynamoDB Streams</strong> - Captures changes for usage aggregation</li>
-<li><strong>Lambda Function</strong> - Aggregates usage into hourly/daily snapshots, proactively refills token buckets for active entities, and archives audit events</li>
+<li><strong>Lambda Function</strong> - Aggregates usage into hourly/daily snapshots, applies quota resets for active entities, and archives audit events</li>
 <li><strong>S3 Bucket</strong> - Archives expired audit events (when audit archival is enabled)</li>
 <li><strong>IAM Policies</strong> - Least-privilege managed policies (AcquireOnly/FullAccess/ReadOnly)</li>
 <li><strong>CloudWatch Logs</strong> - Lambda function logs</li>
@@ -5982,8 +5982,8 @@ change. Enforcement is again the client's conditional write —
 <code>attribute_not_exists(vu) OR vu &gt; now</code> — and only a client writes those attributes.</p>
 <p>A client older than v0.14.0 has two effects during a rollout. It does not carry the <code>vu</code>
 condition, so it keeps spending tokens that were minted under a window which has since closed.
-And any bucket it creates carries no schedule at all, so the aggregator refills that bucket
-toward the base ceiling until an entity-level change fans out or the bucket's TTL expires.</p>
+And any bucket it creates carries no schedule at all, so it is enforced at its base
+parameters until a change to its limits fans out or the bucket's TTL expires.</p>
 <p>Treat a schedule or a calendar quota as effective only once every client is past v0.14.0.</p>
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>

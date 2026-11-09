@@ -1736,6 +1736,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fill-instant-arithmetic-adr-154" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fill-Instant Arithmetic (ADR-154)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#mathematical-formulas" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1863,10 +1874,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#aggregator-refill-path-issue-317" class="md-nav__link">
+  <a href="#aggregator-write-paths-issue-317-adr-156" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Aggregator Refill Path (Issue #317)
+        Aggregator Write Paths (Issue #317, ADR-156)
       
     </span>
   </a>
@@ -4104,6 +4115,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fill-instant-arithmetic-adr-154" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fill-Instant Arithmetic (ADR-154)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#mathematical-formulas" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4231,10 +4253,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#aggregator-refill-path-issue-317" class="md-nav__link">
+  <a href="#aggregator-write-paths-issue-317-adr-156" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Aggregator Refill Path (Issue #317)
+        Aggregator Write Paths (Issue #317, ADR-156)
       
     </span>
   </a>
@@ -4530,33 +4552,42 @@ See <a href="../../adr/111-flatten-all-records/">ADR-111</a>.</p>
 </span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="p">}</span>
 </span></code></pre></div>
 <p><strong>Bucket records</strong> (composite, one item per entity+resource+shard, v0.9.0+):</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Bucket record (FLAT structure, ADR-114/115, GHSA-76rv):</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Bucket record (FLAT structure, ADR-114, GHSA-76rv, ADR-154), v0.18.0+:</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="p">{</span>
 </span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="s2">"PK"</span><span class="p">:</span> <span class="s2">"</span><span class="si">{ns}</span><span class="s2">/BUCKET#user-1#gpt-4#0"</span><span class="p">,</span>  <span class="c1"># per-(entity, resource, shard) PK</span>
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="s2">"SK"</span><span class="p">:</span> <span class="s2">"#STATE"</span><span class="p">,</span>
 </span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="s2">"entity_id"</span><span class="p">:</span> <span class="s2">"user-1"</span><span class="p">,</span>
 </span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="s2">"resource"</span><span class="p">:</span> <span class="s2">"gpt-4"</span><span class="p">,</span>
 </span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="s2">"shard_count"</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span>  <span class="c1"># total shards for this entity+resource</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="s2">"b_tpm_tk"</span><span class="p">:</span> <span class="mi">9500000</span><span class="p">,</span>  <span class="c1"># tokens_milli for tpm limit</span>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    <span class="s2">"b_tpm_cp"</span><span class="p">:</span> <span class="mi">10000000</span><span class="p">,</span>  <span class="c1"># capacity_milli for tpm limit</span>
-</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>    <span class="s2">"b_tpm_tc"</span><span class="p">:</span> <span class="mi">500000</span><span class="p">,</span>  <span class="c1"># total_consumed_milli for tpm</span>
-</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>    <span class="s2">"b_rpm_tk"</span><span class="p">:</span> <span class="mi">95000</span><span class="p">,</span>  <span class="c1"># tokens_milli for rpm limit</span>
-</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>    <span class="s2">"b_rpm_cp"</span><span class="p">:</span> <span class="mi">100000</span><span class="p">,</span>  <span class="c1"># capacity_milli for rpm limit</span>
-</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>    <span class="s2">"b_rpm_tc"</span><span class="p">:</span> <span class="mi">5000</span><span class="p">,</span>  <span class="c1"># total_consumed_milli for rpm</span>
-</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>    <span class="s2">"b_wcu_tk"</span><span class="p">:</span> <span class="mi">999000</span><span class="p">,</span>  <span class="c1"># wcu infrastructure limit tokens</span>
-</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>    <span class="s2">"b_wcu_cp"</span><span class="p">:</span> <span class="mi">1000000</span><span class="p">,</span>  <span class="c1"># wcu capacity (1000 WCU/sec)</span>
-</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>    <span class="s2">"b_wcu_tc"</span><span class="p">:</span> <span class="mi">1000</span><span class="p">,</span>  <span class="c1"># wcu total consumed</span>
-</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>    <span class="s2">"rf"</span><span class="p">:</span> <span class="mi">1704067200000</span><span class="p">,</span>  <span class="c1"># last_refill_ms (shared across limits)</span>
-</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>    <span class="s2">"sched"</span><span class="p">:</span> <span class="s2">"1h9-17w1-5s500"</span><span class="p">,</span>  <span class="c1"># item-level schedule, compact encoding (#222, #515)</span>
-</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>    <span class="s2">"sched_tz"</span><span class="p">:</span> <span class="s2">"America/New_York"</span><span class="p">,</span>  <span class="c1"># IANA zone shared by every schedule here</span>
-</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>    <span class="s2">"vu"</span><span class="p">:</span> <span class="mi">1704088800000</span><span class="p">,</span>  <span class="c1"># valid_until_ms: next boundary on this item</span>
-</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>    <span class="s2">"cascade"</span><span class="p">:</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a>    <span class="s2">"GSI2PK"</span><span class="p">:</span> <span class="s2">"</span><span class="si">{ns}</span><span class="s2">/RESOURCE#gpt-4"</span><span class="p">,</span>
-</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a>    <span class="s2">"GSI2SK"</span><span class="p">:</span> <span class="s2">"BUCKET#user-1#0"</span><span class="p">,</span>
-</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a>    <span class="s2">"GSI3PK"</span><span class="p">:</span> <span class="s2">"</span><span class="si">{ns}</span><span class="s2">/ENTITY#user-1"</span><span class="p">,</span>  <span class="c1"># bucket discovery by entity</span>
-</span><span id="__span-3-25"><a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a>    <span class="s2">"GSI3SK"</span><span class="p">:</span> <span class="s2">"BUCKET#gpt-4#0"</span><span class="p">,</span>
-</span><span id="__span-3-26"><a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a>    <span class="s2">"ttl"</span><span class="p">:</span> <span class="mi">1234567890</span><span class="p">,</span>
-</span><span id="__span-3-27"><a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a><span class="p">}</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="c1"># tpm: 10,000/min, a dripping limit stored as a fill instant (ADR-154)</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    <span class="s2">"b_tpm_fi"</span><span class="p">:</span> <span class="mi">17040672030000000000</span><span class="p">,</span>  <span class="c1"># z_ms × ra: full again 3 s after 1704067200000</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>    <span class="s2">"b_tpm_cp"</span><span class="p">:</span> <span class="mi">10000000</span><span class="p">,</span>  <span class="c1"># capacity_milli (undivided)</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>    <span class="s2">"b_tpm_ra"</span><span class="p">:</span> <span class="mi">10000000</span><span class="p">,</span>  <span class="c1"># refill_amount_milli (undivided)</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>    <span class="s2">"b_tpm_rp"</span><span class="p">:</span> <span class="mi">60000</span><span class="p">,</span>  <span class="c1"># refill_period_ms</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>    <span class="s2">"b_tpm_tc"</span><span class="p">:</span> <span class="mi">500000</span><span class="p">,</span>  <span class="c1"># total_consumed_milli for tpm</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>    <span class="s2">"b_tpm_rsched"</span><span class="p">:</span> <span class="s2">"-"</span><span class="p">,</span>  <span class="c1"># tpm has no reset: it must not inherit the item's (#541)</span>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>    <span class="c1"># rpd: 1,000/day, a quota, which keeps tk (ADR-137, ADR-145)</span>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>    <span class="s2">"b_rpd_tk"</span><span class="p">:</span> <span class="mi">999000</span><span class="p">,</span>  <span class="c1"># tokens_milli for the quota</span>
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>    <span class="s2">"b_rpd_cp"</span><span class="p">:</span> <span class="mi">1000000</span><span class="p">,</span>
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>    <span class="s2">"b_rpd_ra"</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>  <span class="c1"># a quota does not drip</span>
+</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>    <span class="s2">"b_rpd_tc"</span><span class="p">:</span> <span class="mi">1000</span><span class="p">,</span>
+</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>    <span class="s2">"b_rpd_gc"</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span>  <span class="c1"># shard count its current grant was sized at</span>
+</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>    <span class="s2">"rsched"</span><span class="p">:</span> <span class="s2">"1m0h0"</span><span class="p">,</span>  <span class="c1"># item-level reset schedule ("0 0 * * *"), here rpd's</span>
+</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a>    <span class="c1"># wcu: the reserved per-partition write budget, also a fill instant</span>
+</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a>    <span class="s2">"b_wcu_fi"</span><span class="p">:</span> <span class="mi">1704067200001000000</span><span class="p">,</span>  <span class="c1"># z_ms × ra, undivided at any shard count</span>
+</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a>    <span class="s2">"b_wcu_cp"</span><span class="p">:</span> <span class="mi">1000000</span><span class="p">,</span>  <span class="c1"># wcu capacity (1000 writes/sec)</span>
+</span><span id="__span-3-25"><a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a>    <span class="s2">"b_wcu_tc"</span><span class="p">:</span> <span class="mi">1000</span><span class="p">,</span>
+</span><span id="__span-3-26"><a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a>    <span class="s2">"xi"</span><span class="p">:</span> <span class="mi">1704067200000</span><span class="p">,</span>  <span class="c1"># instant the fill instants were last expressed</span>
+</span><span id="__span-3-27"><a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a>    <span class="s2">"rf"</span><span class="p">:</span> <span class="mi">1704067200000</span><span class="p">,</span>  <span class="c1"># last refill / reset of the quota (not a fill-instant baseline)</span>
+</span><span id="__span-3-28"><a id="__codelineno-3-28" name="__codelineno-3-28" href="#__codelineno-3-28"></a>    <span class="s2">"sched_tz"</span><span class="p">:</span> <span class="s2">"America/New_York"</span><span class="p">,</span>  <span class="c1"># IANA zone shared by every schedule here</span>
+</span><span id="__span-3-29"><a id="__codelineno-3-29" name="__codelineno-3-29" href="#__codelineno-3-29"></a>    <span class="s2">"vu"</span><span class="p">:</span> <span class="mi">1704085200000</span><span class="p">,</span>  <span class="c1"># valid_until_ms: next boundary on this item (midnight local)</span>
+</span><span id="__span-3-30"><a id="__codelineno-3-30" name="__codelineno-3-30" href="#__codelineno-3-30"></a>    <span class="s2">"cascade"</span><span class="p">:</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-3-31"><a id="__codelineno-3-31" name="__codelineno-3-31" href="#__codelineno-3-31"></a>    <span class="s2">"GSI2PK"</span><span class="p">:</span> <span class="s2">"</span><span class="si">{ns}</span><span class="s2">/RESOURCE#gpt-4"</span><span class="p">,</span>
+</span><span id="__span-3-32"><a id="__codelineno-3-32" name="__codelineno-3-32" href="#__codelineno-3-32"></a>    <span class="s2">"GSI2SK"</span><span class="p">:</span> <span class="s2">"BUCKET#user-1#0"</span><span class="p">,</span>
+</span><span id="__span-3-33"><a id="__codelineno-3-33" name="__codelineno-3-33" href="#__codelineno-3-33"></a>    <span class="s2">"GSI3PK"</span><span class="p">:</span> <span class="s2">"</span><span class="si">{ns}</span><span class="s2">/ENTITY#user-1"</span><span class="p">,</span>  <span class="c1"># bucket discovery by entity</span>
+</span><span id="__span-3-34"><a id="__codelineno-3-34" name="__codelineno-3-34" href="#__codelineno-3-34"></a>    <span class="s2">"GSI3SK"</span><span class="p">:</span> <span class="s2">"BUCKET#gpt-4#0"</span><span class="p">,</span>
+</span><span id="__span-3-35"><a id="__codelineno-3-35" name="__codelineno-3-35" href="#__codelineno-3-35"></a>    <span class="s2">"ttl"</span><span class="p">:</span> <span class="mi">1234567890</span><span class="p">,</span>
+</span><span id="__span-3-36"><a id="__codelineno-3-36" name="__codelineno-3-36" href="#__codelineno-3-36"></a><span class="p">}</span>
 </span></code></pre></div>
 <p><code>sched</code> / <code>rsched</code> / <code>sched_tz</code> are the schedule denormalized onto the item (#222, ADR-135).
 They are absent on an unscheduled bucket, and a limit whose schedule differs from the item
@@ -4565,10 +4596,34 @@ a limit with <strong>no</strong> schedule is stamped with the reserved marker <c
 (<code>schema.BUCKET_SCHED_NONE</code>), because a missing override already means "inherit the default" and
 cannot also mean "unscheduled" — that is what keeps a quota and a rate limit sharing one item
 from acquiring each other's windows. <code>cp</code> / <code>ra</code> / <code>rp</code> stay the
-<strong>base</strong> parameters: every refiller applies the schedule on top of them at read time and
-materialises only <code>tk</code>. <code>vu</code> is the earliest instant at which any limit here changes effective
-parameters — the fast path's condition compares against it and nothing else.</p>
-<p>The <code>wcu</code> (write capacity unit) limit is a reserved infrastructure limit auto-injected on every bucket. It tracks per-partition write pressure and is hidden from user-facing output (get_buckets, RateLimitExceeded, usage snapshots). When exhausted, the client doubles <code>shard_count</code> to spread writes across more DynamoDB partitions.</p>
+<strong>base</strong> parameters: every reader applies the schedule on top of them at read time, and the
+only materialised state is a quota's <code>tk</code> and a dripping limit's fill instant. <code>vu</code> is the
+earliest instant at which any limit here changes effective parameters.</p>
+<p><a id="fill-instants"></a><strong>Fill instants (schema 0.11.0, ADR-154).</strong> A dripping limit,
+<code>wcu</code> included, stores <code>b_{name}_fi</code> in place of <code>b_{name}_tk</code>: its fill instant <code>z</code>, the
+instant its share is back at capacity, scaled by its undivided refill amount in force
+(<code>b_{name}_fi = z_ms × ra</code>) so every quantity is an exact integer. The balance at any instant
+<code>t</code> is <code>C − r × max(0, z − t)</code>, exactly, where <code>C</code> and <code>r</code> are the shard's share of the
+capacity and rate; every <code>z</code> before <code>t</code> reads as full, which is how a full bucket forgets idle
+time (#808). The item gains one <code>xi</code> attribute, the instant its fill instants were last
+expressed against their parameters and schedule. A quota keeps <code>tk</code>, <code>rf</code> and <code>gc</code>, so one item
+can carry both forms, and <code>rf</code> is not a fill instant's baseline. An item written before v0.18.0
+(dripping limits in <code>tk</code>) is converted on its next slow pass, in a write pinned on the <code>tk</code> and
+<code>rf</code> it read; every bucket created stores the new form.</p>
+<p>The decisions are four ADRs: <a href="../../adr/153-admission-contract-for-dripping-limits/">ADR-153</a>
+(the admission bound), <a href="../../adr/154-fill-instant-fast-path/">ADR-154</a> (storage and the fast
+path's two writes), <a href="../../adr/155-fill-instant-writers/">ADR-155</a> (every other writer is exact
+and pinned on the parameters, shard count and <code>xi</code> it read) and
+<a href="../../adr/156-dripping-shard-raises/">ADR-156</a> (shard raises). The arithmetic and its proofs are
+in <a href="../fill-instant-proofs/">Fill-instant proofs</a>; the pure functions are in
+<a href="https://github.com/zeroae/zae-limiter/blob/main/src/zae_limiter/fill_instant.py"><code>fill_instant.py</code></a>.</p>
+<p>The <code>wcu</code> (write capacity unit) limit is a reserved infrastructure limit auto-injected on every bucket. It tracks per-partition write pressure and is hidden from user-facing output (get_buckets, RateLimitExceeded, usage snapshots). It is never divided by the shard count: each partition has its own budget. When it is exhausted on a bucket with no dripping limit (quotas only), the client doubles <code>shard_count</code> to spread writes across more DynamoDB partitions. A bucket holding a dripping limit is <strong>raised</strong> instead (ADR-156, <code>shard_raise.py</code>):</p>
+<ol>
+<li>A <strong>raise marker</strong> <code>rx</code> (a deadline 2 s out, <code>schema.RAISE_MARKER_MS</code>) is set on every shard below the count. Every write that moves a fill instant, <code>xi</code> or the shard count refuses an item with a live marker (<code>schema.raise_guard</code>): an acquire answers contended, a debit, parameter sync, reset or top-up waits it out, and a return is dropped. A marker past its deadline is ignored. Each marker write's <code>ALL_NEW</code> is the raise's strongly consistent read.</li>
+<li>One <code>TransactWriteItems</code> raises the count from <code>S</code> to <code>2S</code>, pinned on the markers and on everything it read, plus ADR-150's owner check. With <code>C</code> the undivided capacity and <code>b_i</code> shard <code>i</code>'s balance, it re-expresses each shard <code>i</code> at the new count keeping <code>min(b_i, C / 2S)</code>, creates shard <code>i + S</code> as a copy of its parent holding <code>max(0, b_i − C / 2S)</code> and a full <code>wcu</code>, and removes the markers. The total balance is conserved exactly (<a href="../fill-instant-proofs/#8-other-writers-adr-155">proofs §8</a>).</li>
+<li>A raise that finds another raise's live marker, a larger stored count, or a cancelled transaction removes its own markers and gives up.</li>
+</ol>
+<p>A dripping shard the slow path creates while others of its bucket exist (a TTL swept it, or no raise created it) starts <strong>empty</strong>: creating it full would mint a share.</p>
 <p>The <code>total_consumed_milli</code> counter tracks net consumption (increases on consume,
 decreases on release) and is used by the aggregator Lambda to accurately calculate
 consumption deltas. This counter is independent of token bucket refill, solving
@@ -4677,7 +4732,63 @@ aggregation, so they use a flat structure to enable single-call atomic updates.<
 </tr>
 </tbody>
 </table>
+<p><code>bucket.py</code> reads a state stored either way: a quota's <code>tk</code> (and a dripping limit's on an item
+written before v0.18.0) through <code>refill_bucket()</code>, a fill instant through the exact arithmetic
+in <a href="https://github.com/zeroae/zae-limiter/blob/main/src/zae_limiter/fill_instant.py"><code>fill_instant.py</code></a>
+below.</p>
+<h3 id="fill-instant-arithmetic-adr-154">Fill-Instant Arithmetic (ADR-154)<a class="headerlink" href="#fill-instant-arithmetic-adr-154" title="Permanent link">&para;</a></h3>
+<p>For one shard with share <code>C</code>, rate <code>r</code> and fill instant <code>z</code>, a request of <code>c ≤ C</code> tokens at
+clock reading <code>t</code> (<code>d = c / r</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Condition</th>
+<th>Records</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Admit, bucket not full (<code>plan_first</code> / <code>plan_retry</code> pick the side)</td>
+<td><code>t ≤ z ≤ t + (C − c) / r</code></td>
+<td><code>z + d</code></td>
+</tr>
+<tr>
+<td>Admit, bucket full</td>
+<td><code>z &lt; t</code></td>
+<td><code>t + d</code></td>
+</tr>
+<tr>
+<td>Debit after the fact (positive adjustment, soft limit)</td>
+<td>either side, no upper bound</td>
+<td>as above</td>
+</tr>
+<tr>
+<td>Return / negative adjustment</td>
+<td>none</td>
+<td><code>z − d</code></td>
+</tr>
+<tr>
+<td>Reset</td>
+<td>none</td>
+<td><code>t</code></td>
+</tr>
+</tbody>
+</table>
+<p>The two admission writes together record <code>max(z, t) + d</code>, the strict token bucket's step; no
+single DynamoDB write can (proofs §4), so the fast path predicts the side, retries from each
+failed write's <code>ALL_OLD</code> with the same <code>t</code>, and answers a request still undecided after its
+write budget as contended (#724). Stored values are scaled by the undivided refill
+amount: <code>d</code> is <code>c × S × rp</code> and the slack <code>(C_b − c × S) × rp</code> (capacities in millitokens,
+<code>rp</code> in milliseconds, <code>S</code> shards, <code>C_b</code> the undivided capacity), so nothing is divided and no
+rounding enters. Every write is pinned on the <code>cp</code> / <code>ra</code> / <code>rp</code>, schedule, <code>shard_count</code> and
+<code>xi</code> it was computed against (ADR-155), and a write that changes any of them re-expresses the
+fill instant in the same write (<code>re_express</code>: the balance is kept, or trimmed to the new
+ceiling, never raised).</p>
 <h3 id="mathematical-formulas">Mathematical Formulas<a class="headerlink" href="#mathematical-formulas" title="Permanent link">&para;</a></h3>
+<p>The refill and drift formulas below apply to a dripping limit still stored as <code>tk</code> (an item
+written before v0.18.0, until its next slow pass converts it). A quota does not drip, and a
+fill instant needs neither.</p>
 <p><strong>Refill calculation</strong> (lazy, on-demand):</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>tokens_to_add = (elapsed_ms × refill_amount_milli) // refill_period_ms
 </span></code></pre></div>
@@ -4743,7 +4854,7 @@ quota has no refill rate at all, so its next reset instant is the only finite wa
 </span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="c1"># Consume can go negative - no bounds checking</span>
 </span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="n">new_tokens_milli</span> <span class="o">=</span> <span class="n">refill</span><span class="o">.</span><span class="n">new_tokens_milli</span> <span class="o">-</span> <span class="p">(</span><span class="n">amount</span> <span class="o">*</span> <span class="mi">1000</span><span class="p">)</span>
 </span></code></pre></div>
-<p>The debt is repaid as tokens refill over time. A bucket at -1500 millitokens needs 1.5 minutes to reach 0 (at 1000 tokens/minute).</p>
+<p>The debt is repaid as tokens refill over time. A bucket at -1,500 tokens needs 1.5 minutes to reach 0 (at 1,000 tokens/minute). In a fill instant, debt is a <code>z</code> more than one fill (<code>C / r</code>) past now; a positive adjustment is a debit write, never rejected and never dropped (ADR-155).</p>
 <h3 id="design-decisions">Design Decisions<a class="headerlink" href="#design-decisions" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -4808,11 +4919,18 @@ atomicity and cost characteristics:</p>
 <td>Independent per item</td>
 </tr>
 <tr>
-<td>Aggregator refill</td>
+<td>Aggregator quota reset or roll</td>
 <td><code>try_refill_bucket()</code></td>
 <td><code>UpdateItem</code></td>
 <td>1 WCU</td>
 <td>Single item</td>
+</tr>
+<tr>
+<td>Shard raise (ADR-156)</td>
+<td><code>Repository.raise_shards()</code>, <code>processor.raise_bucket_shards()</code></td>
+<td><code>S</code> marker <code>UpdateItem</code>s, then one <code>TransactWriteItems</code> of <code>2S + 1</code> items</td>
+<td>1 WCU per marker, 2 per transaction item</td>
+<td>Cross-item atomic</td>
 </tr>
 </tbody>
 </table>
@@ -4834,7 +4952,10 @@ selects the DynamoDB API based on item count:</p>
 which dispatches each item independently as a single PutItem, UpdateItem, or DeleteItem
 call (1 WCU each). This is safe because:</p>
 <ul>
-<li>These operations produce <strong>unconditional ADD</strong> expressions (no condition checks)</li>
+<li>Each write is exact on the item it lands on, so it needs no lock: a fill instant's return
+  moves it earlier (capped at capacity by construction) and a debit is ADR-154's pair, retried
+  with a fresh clock reading until it lands (ADR-155); a quota's credit is an <code>ADD</code> conditioned
+  on staying within its ceiling and its period (#721)</li>
 <li>Partial success is acceptable -- each item's delta is self-contained</li>
 <li>No cross-item invariant needs to hold between adjustment writes</li>
 </ul>
@@ -4890,6 +5011,18 @@ call (1 WCU each). This is safe because:</p>
 <p>The speculative path uses <code>ReturnValuesOnConditionCheckFailure=ALL_OLD</code> to inspect bucket state
 on failure without a separate read. On success, <code>ReturnValues=ALL_NEW</code> provides the post-write
 state including denormalized <code>cascade</code> and <code>parent_id</code> fields.</p>
+<p><strong>On an item storing fill instants</strong> (every bucket created since v0.18.0) the flow below
+changes (<a href="../../adr/154-fill-instant-fast-path/">ADR-154</a>). The <code>tk</code> write in
+step 2 is refused (<code>attribute_not_exists(xi)</code>), and its <code>ALL_OLD</code> becomes the image the
+fill-instant write starts from; later requests on that shard start from this process's cached
+image (<code>fill_images.FillImageCache</code>), so they skip it. Each hard limit, <code>wcu</code> included, then
+gets the not-full or full write of <a href="#fill-instant-arithmetic-adr-154">Fill-Instant Arithmetic</a>,
+chosen from the image and a per-shard utilisation estimate. A failed write is retried from its
+own <code>ALL_OLD</code> with the same clock reading rather than falling back to the slow path, until the
+request is admitted, rejected (a limit past its slack), or undecided after its write budget
+(the contended 429, #724). Only what the two writes cannot express (a schedule boundary since
+<code>xi</code>, a closed <code>vu</code> window, an expired stamp, a missing limit or bucket) takes the slow path.
+<code>wcu</code> exhaustion raises the bucket (ADR-156) instead of doubling <code>shard_count</code>.</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>Speculative flow (first acquire — sequential, populates entity cache):
 </span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>1. Pick shard: random.randrange(shard_count) from entity cache (shard 0 if no cache)
 </span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>2. UpdateItem on PK={ns}/BUCKET#{id}#{resource}#{shard} with condition:
@@ -4945,8 +5078,9 @@ UpdateItem (1 WCU). This avoids the cost of compensating the child (1 WCU), re-r
 only compensated when the parent-only path also fails.</p>
 <p><strong>Entity metadata cache (issue #318, GHSA-76rv):</strong> <code>Repository._entity_cache</code> stores
 <code>{(namespace_id, entity_id): (cascade, parent_id, shard_counts)}</code> where <code>shard_counts</code> is
-<code>dict[str, int]</code> mapping resource to shard count. <code>cascade</code> and <code>parent_id</code> are immutable
-(no TTL); <code>shard_counts</code> is updated when shard doubling occurs. After the first acquire
+<code>dict[str, int]</code> mapping resource to shard count. The cache has no TTL: <code>parent_id</code> changes
+only through <code>set_parent()</code> (ADR-150), which the next returned bucket item reveals, and
+<code>shard_counts</code> is updated when the shard count grows. After the first acquire
 populates the cache, <code>speculative_consume()</code> issues child and parent speculative writes
 concurrently via <code>asyncio.gather</code>. This reduces cascade latency
 from 2 sequential round trips to 1 parallel round trip. In the sync codepath,
@@ -4957,9 +5091,11 @@ one side of the parallel write fails.</p>
 <p>The shard_count from the cache determines which shard to target. With multiple shards,
 <code>speculative_consume()</code> picks a random shard via <code>random.randrange(shard_count)</code>. When the
 speculative write succeeds, the returned <code>shard_count</code> from ALL_NEW updates the cache.</p>
-<h3 id="aggregator-refill-path-issue-317">Aggregator Refill Path (Issue #317)<a class="headerlink" href="#aggregator-refill-path-issue-317" title="Permanent link">&para;</a></h3>
-<p>The Lambda aggregator proactively refills token buckets for active entities, keeping
-speculative writes on the fast path (1 RT) instead of falling back to the slow path (3 RT).</p>
+<h3 id="aggregator-write-paths-issue-317-adr-156">Aggregator Write Paths (Issue #317, ADR-156)<a class="headerlink" href="#aggregator-write-paths-issue-317-adr-156" title="Permanent link">&para;</a></h3>
+<p>The Lambda aggregator counts usage from each bucket's <code>tc</code> counter and writes buckets for three
+reasons. Since v0.18.0 it never refills, trims or clones a <strong>dripping</strong> limit, <code>wcu</code> included
+(<code>processor._drips</code>, #821): every write of a fill instant is exact (ADR-155), and the fast path
+reads a fill instant's balance at any instant with nothing to refill.</p>
 <table>
 <thead>
 <tr>
@@ -4972,11 +5108,25 @@ speculative writes on the fast path (1 RT) instead of falling back to the slow p
 </thead>
 <tbody>
 <tr>
-<td>Aggregator refill</td>
+<td>Quota reset or roll</td>
 <td><code>try_refill_bucket()</code></td>
 <td>Conditional <code>UpdateItem</code></td>
 <td>1 WCU either way (a failed condition is still charged)</td>
 <td>Single item</td>
+</tr>
+<tr>
+<td>Shard raise (a bucket holding a dripping limit)</td>
+<td><code>raise_bucket_shards()</code></td>
+<td>marker <code>UpdateItem</code>s + one <code>TransactWriteItems</code></td>
+<td>as the client's raise</td>
+<td>Cross-item atomic</td>
+</tr>
+<tr>
+<td>Shard doubling and propagation (quota-only buckets)</td>
+<td><code>try_proactive_shard()</code>, <code>propagate_shard_count()</code></td>
+<td>Conditional <code>UpdateItem</code> per existing shard; one <code>TransactWriteItems</code> per pre-created shard</td>
+<td>1 WCU per restamp, 2 per transaction item</td>
+<td>Single item / per clone</td>
 </tr>
 </tbody>
 </table>
@@ -4984,66 +5134,47 @@ speculative writes on the fast path (1 RT) instead of falling back to the slow p
 <ol>
 <li><strong>Aggregate bucket states</strong> -- <code>aggregate_bucket_states()</code> accumulates <code>tc</code> deltas and keeps
    the last NewImage per (entity_id, resource, shard_id) across all stream records in the batch</li>
-<li><strong>Compute refill</strong> -- For each bucket, <code>try_refill_bucket()</code> calls <code>refill_bucket()</code> with
-   effective capacity (<code>cp // shard_count</code>) and effective refill amount (<code>ra // shard_count</code>),
-   then checks if projected tokens are insufficient to cover the observed consumption rate</li>
-<li><strong>Write refill</strong> -- Issues a single <code>UpdateItem</code> with <code>ADD #rt{i} :rd{i}</code> (the alias
-   <code>#rt{i}</code> names <code>b_{limit}_tk</code>; tokens are positional because a limit name may contain <code>.</code>
-   or <code>-</code>) and <code>SET rf = :new_rf</code>, conditioned on <code>rf = :expected_rf</code> (optimistic lock)</li>
-<li><strong>Proactive sharding</strong> -- <code>try_proactive_shard()</code> projects shard 0's stored wcu balance from
-   <code>rf</code> to now and, if it is below 20% of capacity, conditionally doubles <code>shard_count</code>, never
-   past <code>MAX_SHARD_COUNT</code> (32)</li>
-<li><strong>Shard propagation</strong> -- <code>propagate_shard_count()</code> detects shard_count changes in stream records
-   from shard 0 and propagates to all other shards via conditional writes (<code>shard_count &lt; :new</code>)</li>
+<li><strong>Apply quota resets</strong> -- <code>try_refill_bucket()</code> writes only when a quota crossed a reset edge
+   or a session window rolled: <code>ADD #rt{i} :rd{i}</code> (the alias <code>#rt{i}</code> names <code>b_{limit}_tk</code>;
+   tokens are positional because a limit name may contain <code>.</code> or <code>-</code>) and <code>SET rf = :new_rf</code>,
+   conditioned on <code>rf = :expected_rf AND vu = :expected_vu</code> (optimistic lock, #508). When that
+   write moves <code>vu</code> past a schedule boundary of a fill instant on the item, it re-expresses the
+   item's fill instants in the same write, pinned on each and on <code>xi</code> as read</li>
+<li><strong>Proactive sharding</strong> -- <code>try_proactive_shard()</code> projects shard 0's <code>wcu</code> balance to now and,
+   if it is below 20% of capacity, raises a bucket holding a dripping limit through ADR-156's
+   raise (the same planner the client uses, <code>shard_raise.py</code>) or doubles <code>shard_count</code> on a
+   quota-only bucket, never past <code>MAX_SHARD_COUNT</code> (32)</li>
+<li><strong>Shard propagation</strong> -- for a quota-only bucket, <code>propagate_shard_count()</code> propagates a
+   <code>shard_count</code> change on shard 0 to the other shards (<code>shard_count &lt; :new</code>) and pre-creates the
+   new shards, each funded by an ADR-145 quota move. A raise already wrote every shard, so it
+   propagates nothing for a bucket holding a dripping limit</li>
 </ol>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>Aggregator refill flow (per composite bucket shard):
+<div class="language-text highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>Quota reset flow (per composite bucket shard):
 </span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>1. Aggregate tc deltas + last NewImage across stream batch per (entity, resource, shard)
-</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>2. For each limit: refill_bucket(tk, rf, now, cp/shard_count, ra/shard_count, rp)
-</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>   +- refill_delta = new_tk - current_tk
-</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>   +- projected = new_tk after refill
-</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a>   +- consumption_estimate = max(0, accumulated tc_delta)
-</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a>   +- projected &gt;= consumption_estimate -&gt; SKIP (sufficient tokens)
-</span><span id="__span-18-8"><a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a>3. Any limit needs refill?
-</span><span id="__span-18-9"><a id="__codelineno-18-9" name="__codelineno-18-9" href="#__codelineno-18-9"></a>   +- NO -&gt; SKIP
-</span><span id="__span-18-10"><a id="__codelineno-18-10" name="__codelineno-18-10" href="#__codelineno-18-10"></a>   +- YES -&gt; UpdateItem (ADD tk +delta, SET rf = :now, condition rf = :expected_rf)
-</span><span id="__span-18-11"><a id="__codelineno-18-11" name="__codelineno-18-11" href="#__codelineno-18-11"></a>      +- SUCCESS -&gt; refill written (1 WCU)
-</span><span id="__span-18-12"><a id="__codelineno-18-12" name="__codelineno-18-12" href="#__codelineno-18-12"></a>      +- ConditionalCheckFailedException -&gt; silently skip (another writer updated rf)
-</span><span id="__span-18-13"><a id="__codelineno-18-13" name="__codelineno-18-13" href="#__codelineno-18-13"></a>
-</span><span id="__span-18-14"><a id="__codelineno-18-14" name="__codelineno-18-14" href="#__codelineno-18-14"></a>Proactive sharding flow (per bucket):
-</span><span id="__span-18-15"><a id="__codelineno-18-15" name="__codelineno-18-15" href="#__codelineno-18-15"></a>1. Check wcu limit info in aggregated state
-</span><span id="__span-18-16"><a id="__codelineno-18-16" name="__codelineno-18-16" href="#__codelineno-18-16"></a>2. shard_count &gt;= MAX_SHARD_COUNT (32) -&gt; SKIP
-</span><span id="__span-18-17"><a id="__codelineno-18-17" name="__codelineno-18-17" href="#__codelineno-18-17"></a>3. projected = refill_bucket(wcu_tk, rf, now, wcu_cp, wcu_ra, wcu_rp)
-</span><span id="__span-18-18"><a id="__codelineno-18-18" name="__codelineno-18-18" href="#__codelineno-18-18"></a>   token_ratio = projected / wcu_capacity_milli
-</span><span id="__span-18-19"><a id="__codelineno-18-19" name="__codelineno-18-19" href="#__codelineno-18-19"></a>   +- ratio &gt;= 0.2 -&gt; SKIP
-</span><span id="__span-18-20"><a id="__codelineno-18-20" name="__codelineno-18-20" href="#__codelineno-18-20"></a>4. Is this shard 0?
-</span><span id="__span-18-21"><a id="__codelineno-18-21" name="__codelineno-18-21" href="#__codelineno-18-21"></a>   +- NO -&gt; SKIP (only shard 0 is source of truth)
-</span><span id="__span-18-22"><a id="__codelineno-18-22" name="__codelineno-18-22" href="#__codelineno-18-22"></a>   +- YES -&gt; UpdateItem (SET shard_count = :new, condition shard_count = :old),
-</span><span id="__span-18-23"><a id="__codelineno-18-23" name="__codelineno-18-23" href="#__codelineno-18-23"></a>             :new = min(shard_count * 2, MAX_SHARD_COUNT)
-</span><span id="__span-18-24"><a id="__codelineno-18-24" name="__codelineno-18-24" href="#__codelineno-18-24"></a>      +- SUCCESS -&gt; shard_count doubled
-</span><span id="__span-18-25"><a id="__codelineno-18-25" name="__codelineno-18-25" href="#__codelineno-18-25"></a>      +- ConditionalCheckFailedException -&gt; concurrent bump, skip
-</span><span id="__span-18-26"><a id="__codelineno-18-26" name="__codelineno-18-26" href="#__codelineno-18-26"></a>
-</span><span id="__span-18-27"><a id="__codelineno-18-27" name="__codelineno-18-27" href="#__codelineno-18-27"></a>Shard propagation flow (per stream record):
-</span><span id="__span-18-28"><a id="__codelineno-18-28" name="__codelineno-18-28" href="#__codelineno-18-28"></a>1. Detect shard_count increase (new &gt; old) in stream record
-</span><span id="__span-18-29"><a id="__codelineno-18-29" name="__codelineno-18-29" href="#__codelineno-18-29"></a>2. Is this shard 0?
-</span><span id="__span-18-30"><a id="__codelineno-18-30" name="__codelineno-18-30" href="#__codelineno-18-30"></a>   +- NO -&gt; SKIP
-</span><span id="__span-18-31"><a id="__codelineno-18-31" name="__codelineno-18-31" href="#__codelineno-18-31"></a>   +- new &gt; MAX_SHARD_COUNT -&gt; SKIP (a runaway count, never propagated)
-</span><span id="__span-18-32"><a id="__codelineno-18-32" name="__codelineno-18-32" href="#__codelineno-18-32"></a>   +- YES -&gt; For each target shard 1..new_count:
-</span><span id="__span-18-33"><a id="__codelineno-18-33" name="__codelineno-18-33" href="#__codelineno-18-33"></a>      UpdateItem (SET shard_count = :new, condition shard_count &lt; :new OR not exists)
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>2. Any quota past a reset edge, or a session window rolled?
+</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>   +- NO -&gt; SKIP (a dripping limit is never refilled)
+</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>   +- YES -&gt; UpdateItem (ADD tk +reset, SET rf = :new_rf,
+</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a>             condition rf = :expected_rf AND vu = :expected_vu)
+</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a>      +- SUCCESS -&gt; reset written (1 WCU)
+</span><span id="__span-18-8"><a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a>      +- ConditionalCheckFailedException -&gt; silently skip (another writer moved the item)
+</span><span id="__span-18-9"><a id="__codelineno-18-9" name="__codelineno-18-9" href="#__codelineno-18-9"></a>
+</span><span id="__span-18-10"><a id="__codelineno-18-10" name="__codelineno-18-10" href="#__codelineno-18-10"></a>Proactive sharding flow (shard 0 only):
+</span><span id="__span-18-11"><a id="__codelineno-18-11" name="__codelineno-18-11" href="#__codelineno-18-11"></a>1. shard_count &gt;= MAX_SHARD_COUNT (32) -&gt; SKIP
+</span><span id="__span-18-12"><a id="__codelineno-18-12" name="__codelineno-18-12" href="#__codelineno-18-12"></a>2. wcu balance projected to now &gt;= 20% of capacity -&gt; SKIP
+</span><span id="__span-18-13"><a id="__codelineno-18-13" name="__codelineno-18-13" href="#__codelineno-18-13"></a>3. Holds a dripping limit?
+</span><span id="__span-18-14"><a id="__codelineno-18-14" name="__codelineno-18-14" href="#__codelineno-18-14"></a>   +- YES -&gt; raise_bucket_shards(): markers, read, one transaction (ADR-156)
+</span><span id="__span-18-15"><a id="__codelineno-18-15" name="__codelineno-18-15" href="#__codelineno-18-15"></a>   +- NO  -&gt; UpdateItem (SET shard_count = :new, condition shard_count = :old)
 </span></code></pre></div>
 <p><strong>Key design properties:</strong></p>
 <ul>
-<li><strong>ADD is commutative</strong> with concurrent speculative writes -- the aggregator uses <code>ADD</code>
-  for token deltas, so a concurrent <code>speculative_consume()</code> (also <code>ADD</code>) does not conflict</li>
-<li><strong>Optimistic lock on <code>rf</code></strong> prevents double-refill with the client slow path or another
-  aggregator invocation</li>
-<li><strong>No read required</strong> -- all state is derived from stream record NewImage fields</li>
-<li><strong>Shard-aware capacity</strong> -- effective capacity and refill amount are divided by <code>shard_count</code>
-  so each shard gets its proportional share of tokens</li>
-<li><strong>Proactive sharding</strong> -- the aggregator doubles shard_count when its stored wcu balance,
-  projected to now, is below 20% of capacity, never past <code>MAX_SHARD_COUNT</code>. A backstop: the client's own doubling on wcu exhaustion is what protects a
-  hot shard, and the aggregator rarely doubles before the client has</li>
-<li><strong>Shard propagation</strong> -- shard_count changes on shard 0 are propagated to other shards
-  via conditional writes that only update if the target has a lower value</li>
+<li><strong>No dripping refill</strong> -- nothing refills a fill instant, so the aggregator cannot race the
+  fast path on one, and <code>--no-aggregator</code> loses no refill</li>
+<li><strong>Optimistic lock on <code>rf</code> and <code>vu</code></strong> prevents a double reset with the client slow path or
+  another aggregator invocation, and keeps a stale image from undoing a parameter change</li>
+<li><strong>No read for a reset</strong> -- its state comes from the stream record's NewImage; a raise reads
+  every shard strongly consistently, through its marker writes</li>
+<li><strong>A backstop</strong> -- the client's own raise or doubling on <code>wcu</code> exhaustion is what protects a hot
+  shard, and the aggregator rarely acts before the client has</li>
 </ul>
 <h3 id="optimistic-locking">Optimistic Locking<a class="headerlink" href="#optimistic-locking" title="Permanent link">&para;</a></h3>
 <p>Entity metadata uses version numbers for optimistic locking:</p>
@@ -5058,28 +5189,32 @@ speculative writes on the fast path (1 RT) instead of falling back to the slow p
 </span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>├── exceptions.py          # RateLimitExceeded, RateLimiterUnavailable, etc.
 </span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a>├── naming.py              # Resource name validation
 </span><span id="__span-20-6"><a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a>├── bucket.py              # Token bucket math (integer arithmetic)
-</span><span id="__span-20-7"><a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a>├── schema.py              # DynamoDB key builders (namespace-prefixed)
-</span><span id="__span-20-8"><a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a>├── repository_protocol.py # RepositoryProtocol for backend abstraction
-</span><span id="__span-20-9"><a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a>├── repository.py          # DynamoDB operations
-</span><span id="__span-20-10"><a id="__codelineno-20-10" name="__codelineno-20-10" href="#__codelineno-20-10"></a>├── config_cache.py        # Client-side config caching with TTL
-</span><span id="__span-20-11"><a id="__codelineno-20-11" name="__codelineno-20-11" href="#__codelineno-20-11"></a>├── lease.py               # Lease context manager
-</span><span id="__span-20-12"><a id="__codelineno-20-12" name="__codelineno-20-12" href="#__codelineno-20-12"></a>├── limiter.py             # RateLimiter, SyncRateLimiter
-</span><span id="__span-20-13"><a id="__codelineno-20-13" name="__codelineno-20-13" href="#__codelineno-20-13"></a>├── local.py               # LocalStack management commands
-</span><span id="__span-20-14"><a id="__codelineno-20-14" name="__codelineno-20-14" href="#__codelineno-20-14"></a>├── cli.py                 # CLI commands (deploy, delete, status, list, local, ...)
-</span><span id="__span-20-15"><a id="__codelineno-20-15" name="__codelineno-20-15" href="#__codelineno-20-15"></a>├── version.py             # Version tracking and compatibility
-</span><span id="__span-20-16"><a id="__codelineno-20-16" name="__codelineno-20-16" href="#__codelineno-20-16"></a>├── migrations/            # Schema migration framework
-</span><span id="__span-20-17"><a id="__codelineno-20-17" name="__codelineno-20-17" href="#__codelineno-20-17"></a>├── visualization/         # Usage snapshot formatting and display
-</span><span id="__span-20-18"><a id="__codelineno-20-18" name="__codelineno-20-18" href="#__codelineno-20-18"></a>└── infra/
-</span><span id="__span-20-19"><a id="__codelineno-20-19" name="__codelineno-20-19" href="#__codelineno-20-19"></a>    ├── stack_manager.py    # CloudFormation stack operations
-</span><span id="__span-20-20"><a id="__codelineno-20-20" name="__codelineno-20-20" href="#__codelineno-20-20"></a>    ├── lambda_builder.py   # Lambda deployment package builder
-</span><span id="__span-20-21"><a id="__codelineno-20-21" name="__codelineno-20-21" href="#__codelineno-20-21"></a>    ├── discovery.py        # Multi-stack discovery and listing
-</span><span id="__span-20-22"><a id="__codelineno-20-22" name="__codelineno-20-22" href="#__codelineno-20-22"></a>    └── cfn_template.yaml   # CloudFormation template
-</span><span id="__span-20-23"><a id="__codelineno-20-23" name="__codelineno-20-23" href="#__codelineno-20-23"></a>
-</span><span id="__span-20-24"><a id="__codelineno-20-24" name="__codelineno-20-24" href="#__codelineno-20-24"></a>src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
-</span><span id="__span-20-25"><a id="__codelineno-20-25" name="__codelineno-20-25" href="#__codelineno-20-25"></a>├── __init__.py               # Re-exports handler, processor types
-</span><span id="__span-20-26"><a id="__codelineno-20-26" name="__codelineno-20-26" href="#__codelineno-20-26"></a>├── handler.py                # Lambda entry point (returns refills_written count)
-</span><span id="__span-20-27"><a id="__codelineno-20-27" name="__codelineno-20-27" href="#__codelineno-20-27"></a>├── processor.py              # Stream processing: usage snapshots + bucket refill
-</span><span id="__span-20-28"><a id="__codelineno-20-28" name="__codelineno-20-28" href="#__codelineno-20-28"></a>└── archiver.py               # S3 audit archival (gzip JSONL)
+</span><span id="__span-20-7"><a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a>├── fill_instant.py        # Fill-instant arithmetic for dripping limits (ADR-154)
+</span><span id="__span-20-8"><a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a>├── fill_images.py         # Cached shard images for the fill-instant fast path
+</span><span id="__span-20-9"><a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a>├── fill_sync.py           # Re-expressing fill instants on a parameter change (ADR-155)
+</span><span id="__span-20-10"><a id="__codelineno-20-10" name="__codelineno-20-10" href="#__codelineno-20-10"></a>├── shard_raise.py         # Shard raise planner, shared with the aggregator (ADR-156)
+</span><span id="__span-20-11"><a id="__codelineno-20-11" name="__codelineno-20-11" href="#__codelineno-20-11"></a>├── schema.py              # DynamoDB key builders (namespace-prefixed)
+</span><span id="__span-20-12"><a id="__codelineno-20-12" name="__codelineno-20-12" href="#__codelineno-20-12"></a>├── repository_protocol.py # RepositoryProtocol for backend abstraction
+</span><span id="__span-20-13"><a id="__codelineno-20-13" name="__codelineno-20-13" href="#__codelineno-20-13"></a>├── repository.py          # DynamoDB operations
+</span><span id="__span-20-14"><a id="__codelineno-20-14" name="__codelineno-20-14" href="#__codelineno-20-14"></a>├── config_cache.py        # Client-side config caching with TTL
+</span><span id="__span-20-15"><a id="__codelineno-20-15" name="__codelineno-20-15" href="#__codelineno-20-15"></a>├── lease.py               # Lease context manager
+</span><span id="__span-20-16"><a id="__codelineno-20-16" name="__codelineno-20-16" href="#__codelineno-20-16"></a>├── limiter.py             # RateLimiter, SyncRateLimiter
+</span><span id="__span-20-17"><a id="__codelineno-20-17" name="__codelineno-20-17" href="#__codelineno-20-17"></a>├── local.py               # LocalStack management commands
+</span><span id="__span-20-18"><a id="__codelineno-20-18" name="__codelineno-20-18" href="#__codelineno-20-18"></a>├── cli.py                 # CLI commands (deploy, delete, status, list, local, ...)
+</span><span id="__span-20-19"><a id="__codelineno-20-19" name="__codelineno-20-19" href="#__codelineno-20-19"></a>├── version.py             # Version tracking and compatibility
+</span><span id="__span-20-20"><a id="__codelineno-20-20" name="__codelineno-20-20" href="#__codelineno-20-20"></a>├── migrations/            # Schema migration framework
+</span><span id="__span-20-21"><a id="__codelineno-20-21" name="__codelineno-20-21" href="#__codelineno-20-21"></a>├── visualization/         # Usage snapshot formatting and display
+</span><span id="__span-20-22"><a id="__codelineno-20-22" name="__codelineno-20-22" href="#__codelineno-20-22"></a>└── infra/
+</span><span id="__span-20-23"><a id="__codelineno-20-23" name="__codelineno-20-23" href="#__codelineno-20-23"></a>    ├── stack_manager.py    # CloudFormation stack operations
+</span><span id="__span-20-24"><a id="__codelineno-20-24" name="__codelineno-20-24" href="#__codelineno-20-24"></a>    ├── lambda_builder.py   # Lambda deployment package builder
+</span><span id="__span-20-25"><a id="__codelineno-20-25" name="__codelineno-20-25" href="#__codelineno-20-25"></a>    ├── discovery.py        # Multi-stack discovery and listing
+</span><span id="__span-20-26"><a id="__codelineno-20-26" name="__codelineno-20-26" href="#__codelineno-20-26"></a>    └── cfn_template.yaml   # CloudFormation template
+</span><span id="__span-20-27"><a id="__codelineno-20-27" name="__codelineno-20-27" href="#__codelineno-20-27"></a>
+</span><span id="__span-20-28"><a id="__codelineno-20-28" name="__codelineno-20-28" href="#__codelineno-20-28"></a>src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
+</span><span id="__span-20-29"><a id="__codelineno-20-29" name="__codelineno-20-29" href="#__codelineno-20-29"></a>├── __init__.py               # Re-exports handler, processor types
+</span><span id="__span-20-30"><a id="__codelineno-20-30" name="__codelineno-20-30" href="#__codelineno-20-30"></a>├── handler.py                # Lambda entry point (returns refills_written count)
+</span><span id="__span-20-31"><a id="__codelineno-20-31" name="__codelineno-20-31" href="#__codelineno-20-31"></a>├── processor.py              # Stream processing: usage snapshots, quota resets, shard raises
+</span><span id="__span-20-32"><a id="__codelineno-20-32" name="__codelineno-20-32" href="#__codelineno-20-32"></a>└── archiver.py               # S3 audit archival (gzip JSONL)
 </span></code></pre></div>
 <h2 id="key-design-decisions">Key Design Decisions<a class="headerlink" href="#key-design-decisions" title="Permanent link">&para;</a></h2>
 <ol>
@@ -5088,11 +5223,12 @@ speculative writes on the fast path (1 RT) instead of falling back to the slow p
 <li><strong>Cascade is per-entity config</strong>: Set <code>cascade=True</code> on <code>create_entity()</code> to auto-cascade to parent on every <code>acquire()</code></li>
 <li><strong>Stored limits are the default (v0.5.0+)</strong>: Limits resolved from System/Resource/Entity config automatically. Pass <code>limits</code> parameter to override</li>
 <li><strong>Initial writes are atomic</strong>: Multi-entity initial consumption uses <code>transact_write()</code> for cross-item atomicity</li>
-<li><strong>Adjustments and rollbacks use independent writes</strong>: <code>write_each()</code> dispatches each item as a single-item API call (1 WCU each), avoiding transaction overhead for unconditional ADD operations</li>
+<li><strong>Adjustments and rollbacks use independent writes</strong>: <code>write_each()</code> dispatches each item as a single-item API call (1 WCU each), avoiding transaction overhead; each write is exact on the item it lands on, so none needs cross-item atomicity</li>
 <li><strong>Speculative writes skip reads</strong>: With <code>speculative_writes=True</code>, <code>acquire()</code> tries a conditional UpdateItem first, saving 1 round trip and 1 RCU when the bucket has sufficient tokens</li>
-<li><strong>Entity metadata cache enables parallel cascade</strong>: <code>Repository._entity_cache</code> stores <code>(cascade, parent_id, shard_counts)</code> per entity. <code>cascade</code> and <code>parent_id</code> are immutable; <code>shard_counts</code> (<code>dict[str, int]</code>) is updated on shard doubling. After first acquire, cascade speculative writes run concurrently via <code>asyncio.gather</code></li>
-<li><strong>Aggregator-assisted refill</strong>: The Lambda aggregator proactively refills buckets for active entities, keeping speculative writes on the fast path by ensuring buckets have sufficient tokens between client requests. Effective capacity and refill amount are divided by <code>shard_count</code> so each shard receives its proportional share</li>
-<li><strong>Pre-shard buckets (GHSA-76rv)</strong>: Each bucket item lives on its own DynamoDB partition (<code>PK={ns}/BUCKET#{id}#{resource}#{shard}</code>). An auto-injected <code>wcu:1000</code> infrastructure limit tracks per-partition write pressure. When wcu is exhausted, the client doubles shard_count (conditional write on shard 0); that is what protects a hot shard. As a backstop, the aggregator also doubles shards when the projected wcu balance is below 20% of capacity (never past <code>MAX_SHARD_COUNT</code>) and propagates shard_count changes from shard 0 to all other shards</li>
+<li><strong>Entity metadata cache enables parallel cascade</strong>: <code>Repository._entity_cache</code> stores <code>(cascade, parent_id, shard_counts)</code> per entity. The cache has no TTL: a bucket item the fast path returns overrules it (<code>parent_id</code> moves only through <code>set_parent()</code>, ADR-150), and <code>shard_counts</code> (<code>dict[str, int]</code>) is updated when the shard count grows. After first acquire, cascade speculative writes run concurrently via <code>asyncio.gather</code></li>
+<li><strong>Nothing refills a dripping limit</strong>: a dripping limit stores its fill instant (ADR-154), whose balance is exact at any instant, so the aggregator only counts usage, applies quota resets, and backs up the client's sharding</li>
+<li><strong>Pre-shard buckets (GHSA-76rv)</strong>: Each bucket item lives on its own DynamoDB partition (<code>PK={ns}/BUCKET#{id}#{resource}#{shard}</code>). An auto-injected <code>wcu:1000</code> infrastructure limit tracks per-partition write pressure. When wcu is exhausted, the client raises a bucket holding a dripping limit (ADR-156: balances moved, never minted) and doubles shard_count on a quota-only one; that is what protects a hot shard. As a backstop, the aggregator does the same when the projected wcu balance is below 20% of capacity (never past <code>MAX_SHARD_COUNT</code>)</li>
+<li><strong>Strict admission bound (ADR-153)</strong>: over any window, a dripping limit admits at most its capacity plus the refill across the window plus <code>2·r·s</code> for clock skew and time in flight, summed over shards (plus, with several shards, the debt a positive adjustment leaves on a shard other than the one admitting: each shard is its own bucket); the fast path (ADR-154), every other writer (ADR-155) and shard raises (ADR-156) each hold it (<a href="../fill-instant-proofs/">proofs</a>)</li>
 </ol>
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>

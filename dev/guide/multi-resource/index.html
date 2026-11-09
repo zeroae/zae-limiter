@@ -3933,9 +3933,11 @@ so code written for one resource keeps working unchanged. Reach every other reso
 </span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">lease</span><span class="o">.</span><span class="n">resource</span><span class="p">(</span><span class="s2">"budget"</span><span class="p">)</span><span class="o">.</span><span class="n">consumed</span><span class="p">)</span>  <span class="c1"># {'units': 80}</span>
 </span></code></pre></div>
 <p>Two resources may declare limits with the same name (<code>units</code> above); each handle sees only
-its own. Nothing is written until the context exits, where every resource is reconciled in
-one go — one write per bucket, issued together. An exception inside the block refunds every
-resource.</p>
+its own. Adjustments are written when the context exits, where every resource is reconciled
+in one go — one write per bucket, issued together. <code>consume()</code> on a handle is a request of its
+own, admitted and written when called (see
+<a href="../basic-usage/#consuming-more-inside-the-block">Consuming more inside the block</a>). An
+exception inside the block refunds every resource, landed <code>consume()</code> calls included.</p>
 <p><code>lease.resource()</code> raises <code>ValidationError</code> for a resource the lease does not cover, so a typo
 is never silent. On the no-op lease yielded under <code>on_unavailable=ALLOW</code>, every name returns a
 no-op handle.</p>
