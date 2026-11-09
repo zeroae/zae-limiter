@@ -1,6 +1,6 @@
 # ADR-154: Fill-instant fast path for dripping limits
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-11-07
 **Issue:** Refs [#808](https://github.com/zeroae/zae-limiter/issues/808)
 **Partially supersedes:** [ADR-115](115-add-based-writes-lazy-refill.md) for dripping limits (refill materialised into `tk` under the shared `rf` lock, and its write paths)

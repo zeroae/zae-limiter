@@ -1,6 +1,6 @@
 # ADR-155: Every write of a fill instant is exact
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-11-07
 **Issue:** Refs [#808](https://github.com/zeroae/zae-limiter/issues/808)
 **Partially supersedes:** [ADR-120](120-bucket-param-sync.md) for dripping limits (a parameter sync is a read and a pinned write, not a blind update)

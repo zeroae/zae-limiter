@@ -1,6 +1,6 @@
 # ADR-153: Admission contract for dripping limits
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-11-06
 **Issue:** Refs [#808](https://github.com/zeroae/zae-limiter/issues/808), [#587](https://github.com/zeroae/zae-limiter/issues/587), [#731](https://github.com/zeroae/zae-limiter/issues/731)
 **Partially supersedes:** [ADR-133](133-client-shard-creation.md) for dripping limits (a new shard is funded by moving tokens, and the 1.5x doubling transient becomes a defect)

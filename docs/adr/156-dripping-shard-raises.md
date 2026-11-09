@@ -1,6 +1,6 @@
 # ADR-156: Shard creation and raises for dripping limits
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-11-07
 **Issue:** Refs [#808](https://github.com/zeroae/zae-limiter/issues/808)
 **Partially supersedes:** [ADR-133](133-client-shard-creation.md) for dripping limits (a raise creates every new shard at once, funded from its parent, instead of each shard being created at a full share on first use)
