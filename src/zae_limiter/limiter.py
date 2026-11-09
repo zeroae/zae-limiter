@@ -3954,6 +3954,20 @@ class RateLimiter:
                 state for (b_eid, _res, _name), state in existing_buckets.items() if b_eid == eid
             ]
             any_existing = bool(item_states)
+            if (
+                not any_existing
+                and eid_shard == 0
+                and eid_shard_count <= 1
+                and any(not limit.is_quota for limit in entity_limits[eid])
+            ):
+                # A missing shard 0 is created full only when no shard of its
+                # bucket exists (ADR-156). This client knows of no other shard,
+                # but one may live while shard 0 was swept by its TTL: ask.
+                siblings = getattr(self._repository, "sibling_shard_count", None)
+                found = await siblings(eid, resource) if siblings is not None else None
+                if found is not None:
+                    eid_shard_count = found
+                    entity_shards[eid] = (eid_shard, found)
             # Bypass (#311) needs both the uncached config and, for an existing
             # item, its stamp: a stamp alone may be stale (a clear whose fan-out
             # has not reached it yet, or missed it), and config alone may be

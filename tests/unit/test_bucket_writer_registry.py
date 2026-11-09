@@ -10,8 +10,9 @@ Discovery is deliberately broad rather than clever:
 
 - every ``Repository`` method named ``build_*`` / ``_build_*`` (the write
   builders, whether or not they issue the call themselves), and
-- every ``Repository`` method and every ``zae_limiter_aggregator.processor``
-  function whose source issues a DynamoDB write (``update_item(``,
+- every ``Repository`` method, and every function of
+  ``zae_limiter_aggregator.processor`` and of the provisioner's bucket writers
+  (``bucket_sync``, ``fanout``), whose source issues a DynamoDB write (``update_item(``,
   ``put_item(``, ``delete_item(``, ``transact_write_items(``, or a
   ``"Update"`` / ``"Put"`` / ``"Delete"`` transaction item), or builds an
   ``UpdateExpression`` for someone else to issue.
@@ -36,6 +37,7 @@ from zae_limiter import Limit, Repository
 from zae_limiter.models import BucketState, CreditCeiling, QuotaDonorDebit, QuotaPeriodPin
 from zae_limiter.schema import BUCKET_FIELD_GC
 from zae_limiter_aggregator import processor
+from zae_limiter_provisioner import bucket_sync, fanout
 
 NOT_BUCKET = None
 
@@ -126,6 +128,16 @@ AGGREGATOR = {
     "update_snapshot": NOT_BUCKET,  # usage snapshot items
 }
 
+# The provisioner's bucket writers mirror the Repository's (its zip vendors only
+# a stub of zae_limiter); its config writers are the applier's, not listed here.
+PROVISIONER = {
+    "build_bucket_param_update": (False, False),  # param sync plan: cp/ra/rp/sched, vu = 0
+    "_update_one_shard": (False, False),  # that plan, fill instants re-expressed (#820)
+    "stamp_bucket": (False, False),  # disabled / bypass stamp (ADR-125, #311)
+    "stamp_bucket_cascade": (False, False),  # owner and cascade stamp (ADR-146)
+    "stamp_bucket_soft": (False, False),  # soft stamp (#467)
+}
+
 _WRITE = re.compile(
     r"update_item\(|_update_item_retrying_conflict\(|_put_item_retrying_conflict\(|put_item\("
     r"|delete_item\("
@@ -154,6 +166,16 @@ def _aggregator_writers() -> set[str]:
     }
 
 
+def _provisioner_writers() -> set[str]:
+    return {
+        name
+        for module in (bucket_sync, fanout)
+        for name, fn in inspect.getmembers(module, inspect.isfunction)
+        if fn.__module__ == module.__name__
+        and (name.startswith(("build_", "_build_")) or _writes(fn))
+    }
+
+
 def _message(kind: str, missing: set[str], stale: set[str]) -> str:
     return (
         f"{kind} writers changed. Unregistered: {sorted(missing)}; registered but gone: "
@@ -174,6 +196,13 @@ def test_every_aggregator_writer_is_registered():
     found = _aggregator_writers()
     assert found == set(AGGREGATOR), _message(
         "Aggregator", found - set(AGGREGATOR), set(AGGREGATOR) - found
+    )
+
+
+def test_every_provisioner_bucket_writer_is_registered():
+    found = _provisioner_writers()
+    assert found == set(PROVISIONER), _message(
+        "Provisioner", found - set(PROVISIONER), set(PROVISIONER) - found
     )
 
 

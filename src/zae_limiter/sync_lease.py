@@ -902,16 +902,38 @@ class SyncLease:
             **amounts: Mapping of limit_name -> delta (positive = consume more)
 
         Raises:
-            ValidationError: If a delta is above ``MAX_TOKENS`` in magnitude
-                (#824); nothing is recorded.
+            ValidationError: If a delta, or the lease's net adjustment of a
+                limit, is above ``MAX_TOKENS`` in magnitude (#824); nothing is
+                recorded.
         """
         self._require_open()
         check_amounts(amounts, "adjust")
         self._check_declared(amounts, "adjust")
         self._apply_adjust(amounts, self._primary)
 
-    def _apply_adjust(self, amounts: dict[str, int], resource: str | None = None) -> None:
-        """Apply adjust() deltas to declared entries (shared with release())."""
+    def _apply_adjust(
+        self, amounts: dict[str, int], resource: str | None = None, method: str = "adjust"
+    ) -> None:
+        """Apply adjust() deltas to declared entries (shared with release()).
+
+        Each call is bounded on its own (:func:`check_amounts`), and so is the
+        net the exit writes per limit, ``consumed - _initial_consumed``: two
+        accepted calls could otherwise add up past ``MAX_TOKENS`` and fail at
+        exit instead (#824). Refused before anything is recorded.
+        """
+        too_large = sorted(
+            entry.limit.name
+            for entry in self._scoped(resource)
+            if amounts.get(entry.limit.name, 0)
+            and abs(entry.consumed + amounts[entry.limit.name] - entry._initial_consumed)
+            > MAX_TOKENS
+        )
+        if too_large:
+            raise ValidationError(
+                method,
+                ", ".join(too_large),
+                f"a lease's net adjustment must stay within MAX_TOKENS ({MAX_TOKENS})",
+            )
         now_ms = self.repository._now_ms()
         for entry in self._scoped(resource):
             amount = amounts.get(entry.limit.name, 0)
@@ -941,13 +963,14 @@ class SyncLease:
             **amounts: Mapping of limit_name -> amount to return
 
         Raises:
-            ValidationError: If an amount is above ``MAX_TOKENS`` in magnitude
-                (#824); nothing is recorded.
+            ValidationError: If an amount, or the lease's net adjustment of a
+                limit, is above ``MAX_TOKENS`` in magnitude (#824); nothing is
+                recorded.
         """
         self._require_open()
         check_amounts(amounts, "release")
         self._check_declared(amounts, "release")
-        self._apply_adjust({k: -v for k, v in amounts.items()}, self._primary)
+        self._apply_adjust({k: -v for k, v in amounts.items()}, self._primary, "release")
 
     def _commit_initial(self) -> None:
         """Write initial consumption to DynamoDB on context enter (Issue #309).
@@ -1238,7 +1261,11 @@ class SyncLease:
                         pin_shard_count=min(pin, default=None),
                         rf_ms=written_rf,
                         clear_vu=not boundaries,
-                        pin_vu=read_state is not None and (bool(consumed) or bool(seeds)),
+                        pin_vu=read_state is not None
+                        and (
+                            bool(consumed)
+                            or any(state.fill_instant is None for state in seeds.values())
+                        ),
                         expected_vu=read_state.stored_vu_ms if read_state is not None else None,
                         owner=(owner_entry._cascade, owner_entry._parent_id)
                         if owner_entry is not None
@@ -2204,6 +2231,8 @@ class SyncLeaseResource:
         """Consume more of this resource; see :meth:`SyncLease.consume`.
 
         Raises:
+            ValidationError: If an amount is above ``MAX_TOKENS`` (#824);
+                nothing is requested.
             RateLimitExceeded: If any of this resource's limits cannot cover it.
             LeaseExpiredError: If the lease has already exited.
         """
@@ -2219,6 +2248,9 @@ class SyncLeaseResource:
         Never raises for capacity: the bucket may go negative.
 
         Raises:
+            ValidationError: If a delta, or the lease's net adjustment of a
+                limit, is above ``MAX_TOKENS`` in magnitude (#824); nothing is
+                recorded.
             LeaseExpiredError: If the lease has already exited.
         """
         lease = self._lease
@@ -2231,13 +2263,16 @@ class SyncLeaseResource:
         """Return unused capacity of this resource; see :meth:`SyncLease.release`.
 
         Raises:
+            ValidationError: If an amount, or the lease's net adjustment of a
+                limit, is above ``MAX_TOKENS`` in magnitude (#824); nothing is
+                recorded.
             LeaseExpiredError: If the lease has already exited.
         """
         lease = self._lease
         lease._require_open()
         check_amounts(amounts, "release")
         lease._check_declared(amounts, "release", self.name)
-        lease._apply_adjust({k: -v for k, v in amounts.items()}, self.name)
+        lease._apply_adjust({k: -v for k, v in amounts.items()}, self.name, "release")
 
     def __repr__(self) -> str:
         return f"SyncLeaseResource({self.name!r})"
