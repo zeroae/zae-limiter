@@ -1215,7 +1215,10 @@ class SyncLease:
                         if owner_entry is not None
                         else None,
                         fill_instants=fill_writes or None,
-                        expressed=_expressed(group_entries) if fill_writes else None,
+                        expressed=_expressed(group_entries)
+                        if fill_writes
+                        or any(e._seed and e.state.fill_instant is not None for e in group_entries)
+                        else None,
                         pin_shard_count_equal=next(
                             (
                                 e.state.shard_count
