@@ -4885,7 +4885,7 @@ class SyncRepository:
             for name, milli in hard.items():
                 state = by_name[name]
                 assert state.fill_instant is not None
-                params = fill_params(state, now_ms)
+                params = fill_params(state, max(now_ms, xi))
                 if fill_instant.exceeds_share(milli, params):
                     if trusted:
                         short.add(name)
@@ -4990,7 +4990,10 @@ class SyncRepository:
                                 fill_key,
                                 name,
                                 found.fill_instant
-                                >= fill_instant.stamp(now_ms, fill_params(found, now_ms)),
+                                >= fill_instant.stamp(
+                                    now_ms,
+                                    fill_params(found, max(now_ms, found.expressed_ms or now_ms)),
+                                ),
                             )
                 item, fresh = (old_item, True)
                 continue
@@ -5106,7 +5109,7 @@ class SyncRepository:
                     fill_instant.debit_write(
                         t_ms,
                         milli,
-                        fill_params(by_name[name], t_ms),
+                        fill_params(by_name[name], max(t_ms, xi)),
                         image=by_name[name].fill_instant,
                     ),
                     by_name[name],
