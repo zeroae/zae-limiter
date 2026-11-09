@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794247102901,
+  "lastUpdate": 1794257533132,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -40721,6 +40721,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.010318386240036033",
             "extra": "mean: 1.0832984463999993 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c63699a5bf3d3f378503b218d1c194946864b2bc",
+          "message": "🐛 fix(repository): skip a fill-instant debit whose bucket is gone (#842)\n\n## Summary\n\nA positive lease adjustment of a dripping limit is ADR-155's debit pair,\nsent at lease exit by `Repository.debit_fill_instants`. When the bucket\nitem had been deleted or TTL-swept during the lease, or no longer held\nthe limit, the debit's retry loop ended and raised\n`RateLimiterUnavailable(\"a fill-instant debit could not land: the bucket\nkept changing under it\")`. The caller's work had already finished, and\nthe `async with` exit raised anyway. A limit stops being held when\n`delete_limits` reverts to defaults that lack it, or when the defaults\nchange. v0.17.0 skipped the same adjustment with a debug log (#721).\n\nNow:\n\n- Each limit the item no longer stores as a fill instant is skipped and\nlogged at DEBUG with the resource and shard. The entity id is never\nlogged. A recreated bucket starts from its own state, so there is no\ndebt to keep.\n- Limits the item still holds are debited. With none left, the call\nreturns `None`.\n- A stale cached image that lacks a limit is read again before that\nlimit is skipped, so the decision comes from the item alone. A stale\ncache cannot drop a debit the item still holds.\n- \"Kept changing\" is raised only when the item still holds the limits\nafter `_DEBIT_ATTEMPTS`. The failure image of the last write is checked\ntoo.\n- The soft-debit path (`attempts=`) is unchanged and still returns\n`None`.\n\nDocs: CLAUDE.md (3 places), `docs/api/repository.md`,\n`docs/contributing/architecture.md`, and the Negative bullet of ADR-155,\nwhich is still Proposed on `main`.\n\n## Test plan\n\n- [x] `TestADebitWhoseBucketIsGone` in `tests/unit/test_limiter.py`,\nplus its generated sync twin. 5 of its 6 tests failed before the fix\nwith `RateLimiterUnavailable: a fill-instant debit could not land: the\nbucket kept changing under it`\n- [x] Full unit suite: 8290 passed\n- [x] gevent tests (`-m gevent -n 0`): 45 passed\n- [x] `uv run mypy` clean\n- [x] `uv run ruff check` / `ruff format` clean\n\nFixes #839\n\nPart of the v0.18.0 release. Refs #816.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-11-09T15:47:11-05:00",
+          "tree_id": "a35eae7f153a785e977c34c8ecfbbe91dba8c599",
+          "url": "https://github.com/zeroae/zae-limiter/commit/c63699a5bf3d3f378503b218d1c194946864b2bc"
+        },
+        "date": 1794257531605,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.448372566127087,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007599760576757085",
+            "extra": "mean: 46.62358399999432 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 15.810814789151904,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012891797483177862",
+            "extra": "mean: 63.24784733334038 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.36992932567515,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005907792255363251",
+            "extra": "mean: 26.75948330769109 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 36.93388135437647,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0060154502340742",
+            "extra": "mean: 27.075410526316244 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.831151806229407,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004932608833518085",
+            "extra": "mean: 45.80610353846081 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 82.64619006387237,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0023852957197339417",
+            "extra": "mean: 12.099771317070502 msec\nrounds: 41"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.980698507165826,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005610899757898838",
+            "extra": "mean: 40.030906250005195 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 25.245213012699384,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004860460597473213",
+            "extra": "mean: 39.61147008333654 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 20.60595128767147,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0407925908117663",
+            "extra": "mean: 48.52966922222608 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 29.3392683032056,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004280953914176312",
+            "extra": "mean: 34.08401292307417 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 27.43067401445556,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003653906970081515",
+            "extra": "mean: 36.45553876922655 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 24.399352433109204,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0072352643290350335",
+            "extra": "mean: 40.984694275862395 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 28.666287679967752,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004031205880757039",
+            "extra": "mean: 34.88418211538457 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9295192040216702,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0023181353883598888",
+            "extra": "mean: 518.2638234000024 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9402698248883445,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008896422601909865",
+            "extra": "mean: 515.392234199976 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.947775591811947,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007107800379127615",
+            "extra": "mean: 1.055102081799987 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9186406818932006,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011399593079561997",
+            "extra": "mean: 1.0885648978000062 sec\nrounds: 5"
           }
         ]
       }
