@@ -30,8 +30,9 @@ Quotas keep ADR-145's per-period conservation (I8). Soft and bypassed limits (AD
 `on_unavailable=ALLOW` and degraded leases are non-enforcing by design and are outside the
 bound, as is the reserved `wcu` budget, which belongs to each partition (ADR-156). An operator
 reset or top-up (ADR-149) adds what it grants. Configuration and stamp
-changes take effect within the config cache TTL and `stamp_ttl`. The bound assumes every
-process sharing the table runs the release that ships it.
+changes take effect within the config cache TTL and `stamp_ttl`, except on a bucket a change's
+fan-out missed (Consequences). The bound assumes every process sharing the table runs the
+release that ships it.
 
 ## Decision
 
@@ -39,7 +40,8 @@ For every dripping limit outside the exclusions above, tokens debited (by `acqui
 `lease.consume()` and positive adjustments) minus tokens returned (release, negative
 adjustment, rollback) on one (entity, resource), summed over its shards and counted from the
 start of any real-time window `w` to its last admission, must not exceed `C + R(w) + 2 r s`
-plus what operator resets and top-ups grant in `w`. Here `C` is the largest ceiling in force
+plus what operator resets and top-ups grant in `w`, plus the debt positive adjustments leave on
+shards other than the one that admits last (zero for one shard). Here `C` is the largest ceiling in force
 from `s` before the window's start to its start, `R(w)` the refill the configured schedule
 grants across `w`, `r` the largest refill rate in force across it, and `s` the largest gap
 between a writer's clock reading and the instant its write lands (clock skew plus time in
@@ -61,15 +63,21 @@ bound through ADR-154, every other writer through ADR-155, and shard raises thro
   ruling for dripping limits.
 - Refill is integrated across schedule windows (amending ADR-135): a limit raised at a boundary
   accrues from there instead of arriving full.
-- `lease.consume()` debits when called, one write and one round trip per call, and can raise
-  `RateLimitExceeded` (contended included) inside the caller's block, departing from #309 and
-  from ADR-148's promise that the single-resource methods keep their meaning.
-- A lowered resource- or system-level limit must reach active buckets within the config cache
-  TTL: the slow path takes capacity and refill from config, and a fan-out ADR-136 rejected as
-  O(all buckets) replaces ADR-135's and ADR-100's arrival at TTL expiry; a namespace-wide
-  fan-out is the decision ADR-125 deferred.
+- `lease.consume()` debits when called, admitted as `acquire()` admits a request (one write and
+  one round trip when predicted), and can raise `RateLimitExceeded` (contended included) inside
+  the caller's block, departing from #309 and from ADR-148's promise that the single-resource
+  methods keep their meaning.
+- A lowered resource- or system-level limit must reach active buckets: a fan-out ADR-136
+  rejected as O(all buckets) replaces ADR-135's and ADR-100's arrival at TTL expiry; a
+  namespace-wide fan-out is the decision ADR-125 deferred. The slow path does not take capacity
+  and refill from config, because from a cached config it wrote an older change back over a
+  newer one. A bucket created from configuration cached before a change, and missed by both of
+  its discovery passes, keeps the old parameters until the level changes again or its TTL
+  expires: an accepted residual.
 - Clock skew reaches the ceiling too: a write stamped before a boundary that lowers capacity can
   land after it and spend the old ceiling, which is why `C` covers the `s` before the window.
+- Each shard is its own bucket, so a positive adjustment's debt holds back only its shard while
+  the others keep admitting, as before fill instants; spreading it would write every shard.
 - A refund applied twice after an ambiguous write (#731) becomes a defect.
 - There is no version gate. The release ships with no deployments to protect, so ADR-141's
   ratchet is not raised, and every client and Lambda sharing a table must run v0.18.0 or later.

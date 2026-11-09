@@ -11,6 +11,7 @@ import warnings
 import pytest
 
 from zae_limiter import OnUnavailable, RateLimitExceeded, SyncRateLimiter, SyncRepository, schema
+from zae_limiter.bucket import balance_milli_at
 from zae_limiter.models import Limit
 
 SLOW = dict(refill_amount=1, refill_period_seconds=3600)
@@ -25,8 +26,10 @@ def repo(mock_dynamodb):
 
 
 def _tokens(repo, entity_id, resource):
+    """Each limit's balance now, millitokens: exact for a fill instant (#821)."""
     buckets = repo.get_buckets(entity_id, resource=resource)
-    return {b.limit_name: b.tokens_milli for b in buckets}
+    now_ms = repo._now_ms()
+    return {b.limit_name: balance_milli_at(b, now_ms) for b in buckets}
 
 
 @pytest.mark.parametrize("speculative", [True, False])
@@ -81,6 +84,20 @@ class TestZeroEstimateIsStillAdjustable:
                 lease.consume(rpm=50)
                 lease.release(rpm=20)
         assert _tokens(repo, "e1", "api")["rpm"] == 1000000 - 100000 - 30000
+
+    def test_a_release_after_a_pass_that_moved_nothing_lands(self, repo, speculative):
+        """A slow pass that moves no fill instant stamps no ``xi``: the return
+        is pinned on the ``xi`` the item kept, not on the one the pass would
+        have stamped, so it lands rather than being dropped (ADR-155)."""
+        repo.set_system_defaults([Limit.custom("rpm", 1000, **SLOW)])
+        repo.create_entity("e1", parent_id=None, name="e1")
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        with limiter:
+            with limiter.acquire("e1", "api", {"rpm": 100}):
+                pass
+            with limiter.acquire("e1", "api", {"rpm": 0}) as lease:
+                lease.release(rpm=20)
+        assert _tokens(repo, "e1", "api")["rpm"] == 1000000 - 100000 + 20000
 
 
 @pytest.mark.parametrize("speculative", [True, False])
@@ -666,12 +683,12 @@ class TestShardRetryLeaseIsUsable:
 
         repo = sync_limiter._repository
         ns = repo._namespace_id
-        limit = Limit.custom("rpm", 10, **SLOW)
+        limit = Limit.custom("rpm", 20, **SLOW)
         sync_limiter.create_entity("user-1")
         sync_limiter.set_system_defaults([limit])
         now_ms = int(time.time() * 1000)
         for shard_id in (0, 1):
-            states = [BucketState.from_limit("user-1", "gpt-4", limit, now_ms)]
+            states = [BucketState.from_limit("user-1", "gpt-4", limit, now_ms, 2)]
             repo.transact_write(
                 [
                     repo.build_composite_create(
@@ -692,7 +709,7 @@ class TestShardRetryLeaseIsUsable:
             lease.adjust(rpm=5)
         buckets = repo.get_buckets("user-1", resource="gpt-4", shard_id=1)
         rpm = next(b for b in buckets if b.limit_name == "rpm")
-        assert rpm.tokens_milli == 10000 - 10000 - 5000
+        assert balance_milli_at(rpm, repo._now_ms()) == 10000 - 10000 - 5000
 
     def test_shard_retry_lease_rolls_back_on_exception(self, sync_limiter, monkeypatch):
         repo = self._two_shards_first_exhausted(sync_limiter, monkeypatch)
@@ -701,6 +718,6 @@ class TestShardRetryLeaseIsUsable:
                 raise RuntimeError("caller blew up")
         buckets = repo.get_buckets("user-1", resource="gpt-4", shard_id=1)
         rpm = next(b for b in buckets if b.limit_name == "rpm")
-        assert rpm.tokens_milli == 10000, (
+        assert balance_milli_at(rpm, repo._now_ms()) == 10000, (
             "the speculative UpdateItem consumed these tokens; rollback skipped compensation because the lease was born _committed=True"
         )

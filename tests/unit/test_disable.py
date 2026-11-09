@@ -1,5 +1,7 @@
 """Tests for resource/entity disable (ADR-125)."""
 
+from unittest.mock import AsyncMock
+
 import pytest
 from botocore.exceptions import ClientError
 
@@ -1131,6 +1133,9 @@ class TestDeleteSkipsFanoutWhenNothingWasDisabled:
 
         client = await disable_repo._get_client()
         counts = self._count_calls(client, monkeypatch)
+        # The parameter fan-out the delete owes its buckets (#823) has its own
+        # tests; stubbed, the counts measure the disabled fan-out alone.
+        monkeypatch.setattr(disable_repo, "_fanout_params", AsyncMock(return_value=0))
 
         await disable_repo.delete_resource_defaults("gpt-4")
 

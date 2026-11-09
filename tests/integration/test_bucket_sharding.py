@@ -18,6 +18,8 @@ from decimal import Decimal
 import boto3
 import pytest
 
+from tests.fixtures.balances import balance_milli
+from tests.fixtures.sharding import drain_wcu
 from zae_limiter.schema import (
     BUCKET_FIELD_CP,
     BUCKET_FIELD_RA,
@@ -296,8 +298,13 @@ class TestProactiveShardingIntegration:
 class TestShardCountPropagationIntegration:
     """Integration tests for shard_count propagation."""
 
-    def test_propagate_creates_new_shard(self, dynamodb_table) -> None:
-        """propagate_shard_count creates shard 1 when shard_count goes from 1 to 2."""
+    def test_a_dripping_bucket_is_left_to_the_raise(self, dynamodb_table) -> None:
+        """propagate_shard_count writes nothing for a bucket holding a dripping limit.
+
+        Such a bucket is raised whole (ADR-156, #821): every shard is written in
+        the raise's own transaction, so there is nothing to propagate or clone.
+        Quota-only buckets keep Path 1 and Path 2 (`TestAggregatorQuotaClone...`).
+        """
         entity_id = f"entity-{uuid.uuid4().hex[:8]}"
         resource = "gpt-4"
         now_ms = int(time.time() * 1000)
@@ -341,13 +348,8 @@ class TestShardCountPropagationIntegration:
             },
         }
 
-        propagate_shard_count(dynamodb_table, record)
-
-        # Verify shard 1 was created
-        shard_1 = _get_sharded_bucket(dynamodb_table, entity_id, resource, 1)
-        assert shard_1 is not None
-        assert len(shard_1) > 0, "Shard 1 should have been created by propagation"
-        assert shard_1["shard_count"] == Decimal("2")
+        assert propagate_shard_count(dynamodb_table, record) == 0
+        assert _get_sharded_bucket(dynamodb_table, entity_id, resource, 1) == {}
 
 
 @pytest.mark.integration
@@ -365,11 +367,12 @@ class TestShardedAdjustmentRouting:
     See GHSA-76rv-2r9v-c5m6 and issue #453.
     """
 
+    # Each shard's share of a limit twice this size (#475, ADR-156).
     LIMIT_CAPACITY = 10
 
     @classmethod
     async def _two_shards_first_exhausted(cls, limiter, monkeypatch, entity_id):
-        """Two shards, rpm drained on shard 0, selection pinned to shard 0."""
+        """Two shards each holding its share, rpm drained on shard 0, selection pinned to 0."""
         import random as _random
 
         from zae_limiter import repository as _repo_mod
@@ -377,15 +380,18 @@ class TestShardedAdjustmentRouting:
 
         repo = limiter._repository
         ns = repo._namespace_id
-        # refill 1/hour keeps refill out of the assertions
-        limit = Limit.custom("rpm", cls.LIMIT_CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        # Two shards of twice the capacity: each holds LIMIT_CAPACITY.
+        limit = Limit.custom(
+            "rpm", 2 * cls.LIMIT_CAPACITY, refill_amount=1, refill_period_seconds=3600
+        )
 
         await limiter.create_entity(entity_id)
         await limiter.set_system_defaults([limit])
 
         now_ms = int(time.time() * 1000)
+        repo._now_ms = lambda: now_ms  # nothing refills: balances read exactly
         for shard_id in (0, 1):
-            states = [BucketState.from_limit(entity_id, "gpt-4", limit, now_ms)]
+            states = [BucketState.from_limit(entity_id, "gpt-4", limit, now_ms, shard_count=2)]
             await repo.transact_write(
                 [
                     repo.build_composite_create(
@@ -471,9 +477,15 @@ class TestClientShardCreation:
         )
         return resp.get("Item")
 
-    async def test_wcu_exhaustion_creates_shard_one_without_aggregator(
+    async def test_wcu_exhaustion_raises_the_bucket_without_aggregator(
         self, localstack_limiter, monkeypatch, unique_name
     ):
+        """ADR-156: the client raises a hot dripping bucket in one transaction.
+
+        Every existing shard is split and every new one created by the raise,
+        each holding at most its share, and the total balance is exactly what
+        the bucket held: nothing minted, as ADR-133's lazy creation did.
+        """
         from zae_limiter import repository as _repo_mod
         from zae_limiter.models import Limit
 
@@ -482,7 +494,8 @@ class TestClientShardCreation:
         ns = repo._namespace_id
         entity_id = f"shard-create-{unique_name}"
         cp_milli = self.CAPACITY * 1000
-        # 1 token/hour keeps refill out of the token assertions below
+        now_ms = int(time.time() * 1000)
+        repo._now_ms = lambda: now_ms  # nothing refills: balances read exactly
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
 
         await limiter.create_entity(entity_id)
@@ -495,107 +508,38 @@ class TestClientShardCreation:
                 pass
         assert repo._entity_cache[(ns, entity_id)][2]["gpt-4"] == 1
 
-        # Exhaust wcu on shard 0 directly (equivalent to 1000 speculative writes)
-        client = await repo._get_client()
-        await client.update_item(
-            TableName=repo.table_name,
-            Key={
-                "PK": {"S": pk_bucket(ns, entity_id, "gpt-4", 0)},
-                "SK": {"S": sk_state()},
-            },
-            # wcu drained AND refilling 1 milli/hour: a hot partition. With the
-            # default 1000/s refill any elapsed millisecond would restore a
-            # write and the client correctly takes the slow path instead.
-            UpdateExpression="SET #wcu = :zero, #rf = :rf, #ra = :one, #rp = :hour",
-            ExpressionAttributeNames={
-                "#wcu": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK),
-                "#rf": "rf",
-                "#ra": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RA),
-                "#rp": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RP),
-            },
-            # rf pinned to now: an exhausted wcu whose refill would help is not
-            # a hot partition and takes the slow path instead of doubling
-            ExpressionAttributeValues={
-                ":zero": {"N": "0"},
-                ":rf": {"N": str(int(time.time() * 1000))},
-                ":one": {"N": "1"},
-                ":hour": {"N": "3600000"},
-            },
-        )
-        shard0_before = int(
-            (await self._raw_item(repo, entity_id, 0))[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]
-        )
+        async def shards(count: int) -> list[dict]:
+            items = []
+            for shard_id in range(count):
+                item = await self._raw_item(repo, entity_id, shard_id)
+                assert item is not None, f"shard {shard_id} is created"
+                items.append(item)
+            return items
 
-        slow_path_shards: list[int | None] = []
-        original_do_acquire = limiter._do_acquire
+        # A hot partition: shard 0's wcu drained and refilling once an hour.
+        await drain_wcu(repo, entity_id, 0)
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}):
+            pass
+        assert repo._entity_cache[(ns, entity_id)][2]["gpt-4"] == 2
+        items = await shards(2)
+        assert {item["shard_count"]["N"] for item in items} == {"2"}
+        balances = [balance_milli(repo, item, "rpm", now_ms) for item in items]
+        assert sum(balances) == cp_milli - 3_000, "three admitted, nothing minted"
+        assert all(b <= cp_milli // 2 for b in balances)
+        assert int(items[1][bucket_attr("rpm", BUCKET_FIELD_CP)]["N"]) == cp_milli
 
-        async def spy(*args, **kwargs):
-            slow_path_shards.append(kwargs.get("shard_id"))
-            return await original_do_acquire(*args, **kwargs)
-
-        monkeypatch.setattr(limiter, "_do_acquire", spy)
-
-        # wcu exhausted -> shard_count 1 -> 2 -> slow path targets the new shard 1
-        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}) as lease:
-            assert {e._shard_id for e in lease.entries} == {1}
-        assert slow_path_shards == [1]
-
-        shard1 = await self._raw_item(repo, entity_id, 1)
-        assert shard1 is not None, "shard 1 must exist without any aggregator"
-        assert shard1["shard_count"]["N"] == "2"
-        assert int(shard1[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == cp_milli // 2 - 1000
-        assert int(shard1[bucket_attr("rpm", BUCKET_FIELD_CP)]["N"]) == cp_milli
-        assert int(shard1[bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK)]["N"]) == 1_000_000
-        shard0_after = int(
-            (await self._raw_item(repo, entity_id, 0))[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]
-        )
-        assert shard0_after == shard0_before, "the hot shard must not absorb the write"
-
-        # Subsequent acquires on shard 1 are fast-path hits: no BUCKET_MISSING fallback
-        slow_path_shards.clear()
-        # randrange(n) -> 1 (pin the fast-path draw); randrange(old, new) -> old
-        # (the post-bump draw from the newly added range, used further below)
+        # Second raise: shard 1 hot too -> 2 -> 4. Draws pinned to shard 1, and
+        # to the first new shard once the count has grown.
         monkeypatch.setattr(_repo_mod.random, "randrange", lambda *a: a[0] if len(a) == 2 else 1)
-        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}) as lease:
-            assert {e._shard_id for e in lease.entries} == {1}
-        assert slow_path_shards == []
-        shard1 = await self._raw_item(repo, entity_id, 1)
-        assert int(shard1[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == cp_milli // 2 - 2000
-
-        # Second doubling: exhaust shard 1 the same way -> 2 -> 4, and the
-        # slow path creates one of the two new shards (2 or 3).
-        await client.update_item(
-            TableName=repo.table_name,
-            Key={
-                "PK": {"S": pk_bucket(ns, entity_id, "gpt-4", 1)},
-                "SK": {"S": sk_state()},
-            },
-            # wcu drained AND refilling 1 milli/hour: a hot partition. With the
-            # default 1000/s refill any elapsed millisecond would restore a
-            # write and the client correctly takes the slow path instead.
-            UpdateExpression="SET #wcu = :zero, #rf = :rf, #ra = :one, #rp = :hour",
-            ExpressionAttributeNames={
-                "#wcu": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK),
-                "#rf": "rf",
-                "#ra": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RA),
-                "#rp": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RP),
-            },
-            ExpressionAttributeValues={
-                ":zero": {"N": "0"},
-                ":rf": {"N": str(int(time.time() * 1000))},
-                ":one": {"N": "1"},
-                ":hour": {"N": "3600000"},
-            },
-        )
-        slow_path_shards.clear()
-        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}) as lease:
-            (new_shard,) = {e._shard_id for e in lease.entries}
-        assert new_shard == 2
-        assert slow_path_shards == [new_shard]
+        await drain_wcu(repo, entity_id, 1)
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}):
+            pass
         assert repo._entity_cache[(ns, entity_id)][2]["gpt-4"] == 4
-        created = await self._raw_item(repo, entity_id, new_shard)
-        assert created["shard_count"]["N"] == "4"
-        assert int(created[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == cp_milli // 4 - 1000
+        items = await shards(4)
+        assert {item["shard_count"]["N"] for item in items} == {"4"}
+        balances = [balance_milli(repo, item, "rpm", now_ms) for item in items]
+        assert sum(balances) == cp_milli - 4_000
+        assert all(b <= cp_milli // 4 for b in balances)
 
     async def test_real_writes_double_and_stop_at_the_cap(self, localstack_limiter, unique_name):
         """Real speculative writes exhaust a shard whose wcu does not refill
@@ -636,7 +580,9 @@ class TestClientShardCreation:
             if count == MAX_SHARD_COUNT:
                 break
 
-        assert {1, 2, 4} <= counts_seen, f"expected at least two doublings, saw {counts_seen}"
+        # The first acquire already raises: an hour's refill re-reads shard 0's
+        # `wcu` fill instant as empty (ADR-154), so 1 is never cached after it.
+        assert {2, 4} <= counts_seen, f"expected at least two doublings, saw {counts_seen}"
         final = repo._entity_cache[(ns, entity_id)][2]["gpt-4"]
         existing = []
         for shard_id in range(MAX_SHARD_COUNT):
@@ -739,7 +685,9 @@ class TestClientShardCreation:
 
         await limiter.create_entity(entity_id)
         await limiter.set_system_defaults([limit])
-        past_ms = int(time.time() * 1000) - 120_000  # two windows ago
+        now_ms = int(time.time() * 1000)
+        repo._now_ms = lambda: now_ms  # balances read exactly
+        past_ms = now_ms - 120_000  # two windows ago
         for shard_id in (0, 1):
             state = BucketState.from_limit(entity_id, "gpt-4", limit, past_ms)
             state.tokens_milli = 0
@@ -765,7 +713,7 @@ class TestClientShardCreation:
 
         for shard_id in (0, 1):
             item = await self._raw_item(repo, entity_id, shard_id)
-            assert int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == 0
+            assert balance_milli(repo, item, "rpm", now_ms) == 0
 
 
 @pytest.mark.integration
@@ -1104,30 +1052,49 @@ class TestQuotaShardCreationIsATransfer:
         assert await self._tokens(repo, entity_id, 0, "rpd") == 0
         assert await self._tokens(repo, entity_id, 1, "rpd") == 1_000
 
-    async def test_a_dripping_limit_still_mints_a_full_share(
+    async def test_a_dripping_limit_s_new_shard_starts_empty(
         self, localstack_limiter, monkeypatch, unique_name
     ):
-        """The regression pin, against real DynamoDB."""
+        """A dripping shard created while another exists starts empty (ADR-156).
+
+        Minting it a full share let a doubling admit 1.5x the limit. The
+        rejected pass still writes the create, nothing consumed, so the shard
+        exists to refill.
+        """
         import random as _random
 
+        from zae_limiter.exceptions import RateLimitExceeded
         from zae_limiter.models import Limit
 
         limiter = localstack_limiter
+        repo = limiter._repository
+        now_ms = repo._now_ms()
+        repo._now_ms = lambda: now_ms  # nothing refills: balances read exactly
         entity_id = f"drip-mint-{unique_name}"
-        # 1 token/hour keeps refill out of the assertion
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = await self._seed(limiter, entity_id, limit)
 
         await repo._speculative_consume_single(
-            entity_id, "gpt-4", {"rpm": self.CAPACITY - 2}, shard_id=0
+            entity_id, "gpt-4", {"rpm": self.CAPACITY // 2 - 2}, shard_id=0
         )
         monkeypatch.setattr(_random, "randrange", lambda *a: 1)
         monkeypatch.setattr(_random, "choice", lambda seq: 1 if 1 in seq else seq[0])
-        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}):
-            pass
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}):
+                pass
 
-        assert await self._tokens(repo, entity_id, 0, "rpm") == 2_000  # not clamped early
-        assert await self._tokens(repo, entity_id, 1, "rpm") == 499_000  # full share, less one
+        client = await repo._get_client()
+
+        async def balance(shard_id: int) -> int:
+            key = {
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": sk_state()},
+            }
+            item = (await client.get_item(TableName=repo.table_name, Key=key))["Item"]
+            return balance_milli(repo, item, "rpm", now_ms)
+
+        assert await balance(0) == 2_000  # untouched
+        assert await balance(1) == 0  # created empty, and written
 
 
 @pytest.mark.integration

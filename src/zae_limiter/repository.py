@@ -9,13 +9,22 @@ import secrets
 import time
 import warnings
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from aiobotocore.session import AioSession, get_session
 from botocore.exceptions import ClientError
 from ulid import ULID
 
-from . import bucket_ops, schedule, schema
+from . import bucket_ops, fill_instant, fill_sync, schedule, schema, shard_raise
+from .bucket import (
+    balance_milli_at,
+    convert_to_fill_instant,
+    express_at,
+    express_created,
+    fill_params,
+)
 from .config_cache import CacheStats, ConfigCache, ConfigSource
 from .exceptions import (
     EntityExistsError,
@@ -25,6 +34,7 @@ from .exceptions import (
     ResourceDisabled,
     ValidationError,
 )
+from .fill_images import FillImageCache
 from .models import (
     AuditAction,
     AuditEvent,
@@ -65,7 +75,7 @@ from .repository_protocol import (
 from .repository_protocol import (
     PRESERVE_DISABLED as _PRESERVE_DISABLED,
 )
-from .repository_protocol import SpeculativeFailureReason, SpeculativeResult
+from .repository_protocol import FillInstantWrite, SpeculativeFailureReason, SpeculativeResult
 
 if TYPE_CHECKING:
     from .repository_builder import RepositoryBuilder
@@ -198,6 +208,30 @@ def _conflict_backoff_s(attempt: int) -> float:
 # never the limit name (#634), alphanumeric only, and disjoint from every other
 # family on the same expression (`#bt{i}`, `#ws{i}`, `#rsa{i}`, `#wl{i}`, the
 # fixed `#rf` / `#ttl` / `#vu`).
+# The write budget of the acquire in flight (ADR-154, #819): set by
+# `speculative_consume`, read by every speculative write it makes.
+_WRITE_BUDGET: ContextVar["fill_instant.WriteBudget | None"] = ContextVar(
+    "zae_limiter_write_budget", default=None
+)
+
+# How many writes a soft limit's debit after admission may take before it is
+# given up (ADR-154): it never rejects, so losing it loses only the reporting.
+_SOFT_DEBIT_ATTEMPTS = 4
+
+# How many writes one shard's parameter sync may take when a fill instant on it
+# keeps moving between its read and its write (ADR-155).
+_SYNC_ATTEMPTS = 8
+
+# How many writes a debit that must not be dropped (a positive adjustment,
+# ADR-155) may take before it is raised as an outage (#682).
+_DEBIT_ATTEMPTS = 16
+
+# How many times a fill-instant return that lost its pins is re-sent from the
+# failure's image (ADR-155) before it is dropped: another writer re-expressed or
+# reparameterised the item since the debit. A return can only lower a debt or
+# refill a balance up to capacity, so a re-send never over-admits.
+_RETURN_ATTEMPTS = 4
+
 _SEED_TOKEN = {
     schema.BUCKET_FIELD_TK: "t",
     schema.BUCKET_FIELD_TC: "c",
@@ -212,6 +246,7 @@ _SEED_TOKEN = {
     schema.BUCKET_FIELD_GC: "k",
     schema.BUCKET_FIELD_SOFT: "o",
     schema.BUCKET_FIELD_TU: "u",
+    schema.BUCKET_FIELD_FI: "z",
 }
 
 # How far `set_parent` walks up the new parent's chain looking for the entity
@@ -514,6 +549,10 @@ class Repository:
         self._rejection_cache = RejectionCache(
             ttl_seconds=rejection_cache_ttl, max_entries=rejection_cache_size
         )
+        # The last item seen per shard storing fill instants, and how often a
+        # request finds each limit not full: what the fill-instant fast path
+        # chooses its writes from (ADR-154, #819). Shared with every scope.
+        self._fill_images = FillImageCache(max_entries=rejection_cache_size)
 
         # Cached on_unavailable from system config (issue #366)
         # Once loaded, used as fallback when DynamoDB is unreachable
@@ -880,6 +919,7 @@ class Repository:
         scoped._stamp_ttl_seconds = self._stamp_ttl_seconds
         scoped._owner_stamp_cache = self._owner_stamp_cache
         scoped._rejection_cache = self._rejection_cache
+        scoped._fill_images = self._fill_images
         scoped._namespace_cache = self._namespace_cache
         scoped._shard_cap_warned = self._shard_cap_warned
         # Scoped repos start with no on_unavailable cache (each namespace
@@ -2919,6 +2959,39 @@ class Repository:
             if bucket.limit_name != schema.WCU_LIMIT_NAME
         ]
 
+    async def sibling_shard_count(self, entity_id: str, resource: str) -> int | None:
+        """The shard count another shard of one (entity, resource) stores, or None.
+
+        Asked before the slow path creates shard 0 full (ADR-156): a missing
+        shard 0 starts full only when no shard of its bucket exists. A shard
+        swept by its TTL while a sibling lives would otherwise come back full,
+        at the count of a client that knows of no other shard, and claim a
+        whole capacity beside the sibling's share (1496 admitted against 1000).
+        GSI3 lists the bucket's shards; the highest one's stored count is read
+        strongly consistent, and a count that slot's id implies is the floor.
+
+        Cost: 1 GSI3 KEYS_ONLY Query (0.5 RCU), plus a projected strongly
+        consistent ``GetItem`` (1 RCU) when a sibling exists.
+        """
+        pks = await self._discover_entity_bucket_pks(entity_id, resource)
+        siblings = sorted({schema.parse_bucket_pk(pk)[3] for pk in pks} - {0})
+        if not siblings:
+            return None
+        highest = siblings[-1]
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, highest)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ProjectionExpression="shard_count",
+            ConsistentRead=True,
+        )
+        stored = int(response.get("Item", {}).get("shard_count", {}).get("N", "1"))
+        # Shard `i` exists only at a count above `i`, a power of two.
+        return max(stored, 1 << highest.bit_length())
+
     async def batch_get_buckets(
         self,
         keys: list[tuple[str, str, int]],
@@ -3404,8 +3477,15 @@ class Repository:
                 path twice.
         """
         tc = state.total_consumed_milli if state.total_consumed_milli is not None else 0
+        # A dripping limit holding a fill instant is stored as one, in place
+        # of `tk` (ADR-154, #818).
+        balance = (
+            (schema.BUCKET_FIELD_TK, state.tokens_milli)
+            if state.fill_instant is None
+            else (schema.BUCKET_FIELD_FI, state.fill_instant)
+        )
         attrs: dict[str, dict[str, Any]] = {
-            schema.BUCKET_FIELD_TK: {"N": str(state.tokens_milli)},
+            balance[0]: {"N": str(balance[1])},
             schema.BUCKET_FIELD_CP: {"N": str(state.capacity_milli)},
             schema.BUCKET_FIELD_RA: {"N": str(state.refill_amount_milli)},
             schema.BUCKET_FIELD_RP: {"N": str(state.refill_period_ms)},
@@ -3579,13 +3659,36 @@ class Repository:
         # `refill_amount` is 0 and which nothing ever refills.
         self._stamp_schedule(item, states)
 
-        # Auto-inject wcu infrastructure limit
+        # Every dripping limit a create writes is a fill instant (#821): a
+        # state still holding `tk` (built by a caller that skipped
+        # `express_created`) is converted exactly, at the count the item is
+        # created with, never written as `tk` beside the `xi` this item carries.
+        for state in states:
+            if state.fill_instant is None and state.is_dripping_state:
+                state.shard_count = shard_count
+                convert_to_fill_instant(state)
+
+        # Auto-inject wcu infrastructure limit, full, as a fill instant like
+        # every dripping limit (#818): undivided, so its parameters are the
+        # partition's whatever the shard count. Every shard starts with its
+        # partition's whole budget (ADR-156).
         wcu_cp_milli = schema.WCU_LIMIT_CAPACITY * 1000
         wcu_ra_milli = schema.WCU_LIMIT_REFILL_AMOUNT * 1000
         wcu_rp_ms = schema.WCU_LIMIT_REFILL_PERIOD_SECONDS * 1000
         wcu_name = schema.WCU_LIMIT_NAME
-        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_TK)] = {
-            "N": str(wcu_cp_milli),
+        expressed = [
+            st.expressed_ms
+            for st in states
+            if st.fill_instant is not None and st.expressed_ms is not None
+        ]
+        xi = max(expressed, default=now_ms)
+        item[schema.BUCKET_FIELD_XI] = {"N": str(xi)}
+        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_FI)] = {
+            "N": str(
+                fill_instant.created_full(
+                    xi, fill_instant.ShardParams(wcu_cp_milli, wcu_ra_milli, wcu_rp_ms, 1)
+                )
+            ),
         }
         item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_CP)] = {
             "N": str(wcu_cp_milli),
@@ -3645,10 +3748,27 @@ class Repository:
         cleared_top_ups: Sequence[str] = (),
         bypass_stamp: tuple[int | None, int | None] | None = None,
         soft_reads: dict[str, int | None] | None = None,
+        fill_instants: dict[str, FillInstantWrite] | None = None,
+        expressed: tuple[int, int | None] | None = None,
+        pin_shard_count_equal: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
         ADD tk:(refill - consumed), tc:consumed for each limit.
+
+        ``fill_instants`` (#818): each dripping limit stored, or converted, as
+        a fill instant is written exactly from what the pass read, never by an
+        ``ADD``: ``SET b_{name}_fi`` to the fill instant the pass computed,
+        ``ADD b_{name}_tc``, pinned on the ``fi`` read or, for a conversion, on
+        no ``fi`` and the ``tk`` read (which it REMOVEs), and on the stored
+        ``cp``/``ra``/``rp`` it is expressed against. A name here appears in
+        none of ``consumed`` / ``refill_amounts`` / ``read_tokens``.
+        ``expressed`` is ``(xi, read)``: the item's expression instant to
+        stamp, pinned on the one read (``attribute_not_exists`` for None).
+        ``pin_shard_count_equal`` pins ``shard_count`` on the count the fill
+        instants were computed at: a doubling in between changes every share.
+        A lost pin fails the write; the lease then re-plans from a fresh read
+        rather than take the consumption-only retry, which would write ``tk``.
 
         ``read_tokens`` (limit name -> ``tk`` as read, millitokens): each
         limit whose refill delta is positive — a drip, a reset, a roll, a
@@ -3907,7 +4027,11 @@ class Repository:
             set_parts.append(f"#wl{i} = :wl{i}")
             attr_values[f":wl{i}"] = {"N": str(rsa)}
 
-        condition_parts: list[str] = ["#rf = :expected_rf"]
+        # Never while a raise holds the item (ADR-156): its pins would break.
+        guard, guard_names, guard_values = schema.raise_guard(now_ms)
+        condition_parts: list[str] = ["#rf = :expected_rf", guard]
+        attr_names.update(guard_names)
+        attr_values.update(guard_values)
         soft_aliases: dict[str, str] = {}
         if pgen_pinned and owner_pinc is not None:
             # Same incarnation only: this pass read META eventually
@@ -3970,6 +4094,73 @@ class Repository:
                 attr_values[f":bk{i}"] = {"N": str(read_tokens[name])}
                 condition_parts.append(f"{tk_alias} <= :bk{i}")
 
+        # #818: fill instants, written exactly from the read. Positional
+        # tokens (`#zf{i}`, `#zc{i}`, ...), disjoint from the rest.
+        for i, (name, write) in enumerate(sorted((fill_instants or {}).items())):
+            attr_names[f"#zf{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_FI)
+            attr_names[f"#zc{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
+            attr_names[f"#zp{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
+            attr_names[f"#za{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RA)
+            attr_names[f"#zr{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RP)
+            attr_values[f":zc{i}"] = {"N": str(write.consumed_milli)}
+            attr_values[f":zp{i}"] = {"N": str(write.capacity_milli)}
+            attr_values[f":za{i}"] = {"N": str(write.refill_amount_milli)}
+            attr_values[f":zr{i}"] = {"N": str(write.refill_period_ms)}
+            add_parts.append(f"#zc{i} :zc{i}")
+            if write.pair is not None:
+                # ADR-154's pair, chosen from the read (#820): exact on the
+                # item it lands on, and an admission in between keeps it valid.
+                pair = write.pair
+                attr_values[f":zs{i}"] = {"N": str(pair.stamp)}
+                if pair.side is fill_instant.Side.FULL:
+                    attr_values[f":zv{i}"] = {"N": str(pair.stamp + pair.span)}
+                    set_parts.append(f"#zf{i} = :zv{i}")
+                    condition_parts.append(f"#zf{i} < :zs{i}")
+                else:
+                    attr_values[f":zd{i}"] = {"N": str(pair.span)}
+                    add_parts.append(f"#zf{i} :zd{i}")
+                    if pair.upper is None:
+                        condition_parts.append(f"#zf{i} >= :zs{i}")
+                    else:
+                        attr_values[f":zu{i}"] = {"N": str(pair.upper)}
+                        condition_parts.append(f"#zf{i} BETWEEN :zs{i} AND :zu{i}")
+                condition_parts.append(f"#zp{i} = :zp{i} AND #za{i} = :za{i} AND #zr{i} = :zr{i}")
+                continue
+            attr_values[f":zf{i}"] = {"N": str(write.fill_instant)}
+            set_parts.append(f"#zf{i} = :zf{i}")
+            if write.read_fill_instant is not None:
+                attr_values[f":zfr{i}"] = {"N": str(write.read_fill_instant)}
+                condition_parts.append(f"#zf{i} = :zfr{i}")
+            else:
+                # A conversion (#818): the `tk` it was computed from is still
+                # there, and no other writer converted it first.
+                if write.read_tokens_milli is None:
+                    raise ValueError(f"a conversion of {name!r} needs the tk it read")
+                attr_names[f"#zt{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+                attr_values[f":ztr{i}"] = {"N": str(write.read_tokens_milli)}
+                condition_parts.append(f"attribute_not_exists(#zf{i}) AND #zt{i} = :ztr{i}")
+                remove_parts.append(f"#zt{i}")
+            condition_parts.append(f"#zp{i} = :zp{i} AND #za{i} = :za{i} AND #zr{i} = :zr{i}")
+        if expressed is not None:
+            xi, read_xi = expressed
+            attr_names["#zxi"] = schema.BUCKET_FIELD_XI
+            attr_values[":zxi"] = {"N": str(xi)}
+            set_parts.append("#zxi = :zxi")
+            if read_xi is None:
+                condition_parts.append("attribute_not_exists(#zxi)")
+            else:
+                attr_values[":zxir"] = {"N": str(read_xi)}
+                condition_parts.append("#zxi = :zxir")
+        if pin_shard_count_equal is not None:
+            attr_names["#zsc"] = "shard_count"
+            attr_values[":zsc"] = {"N": str(pin_shard_count_equal)}
+            # A missing `shard_count` reads as 1, as the other count pins say.
+            condition_parts.append(
+                "(attribute_not_exists(#zsc) OR #zsc = :zsc)"
+                if pin_shard_count_equal == 1
+                else "#zsc = :zsc"
+            )
+
         # #467: re-stamp each limit's soft-ness from config read fresh on this
         # pass. Positional tokens (`#bs{k}`), disjoint from the rest.
         # One alias per attribute: a name the floor above already aliased
@@ -4024,9 +4215,18 @@ class Repository:
                 attr_names[alias] = schema.bucket_attr(name, field)
                 attr_values[placeholder] = value
                 set_parts.append(f"{alias} = {placeholder}")
-            condition_parts.append(
-                f"(attribute_not_exists(#sp{j}) OR attribute_not_exists(#st{j}))"
-            )
+            if state.fill_instant is None:
+                condition_parts.append(
+                    f"(attribute_not_exists(#sp{j}) OR attribute_not_exists(#st{j}))"
+                )
+            else:
+                # Seeded as a fill instant (#818): missing means neither form
+                # is there beside `cp`.
+                attr_names[f"#st{j}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+                condition_parts.append(
+                    f"(attribute_not_exists(#sp{j}) OR "
+                    f"(attribute_not_exists(#st{j}) AND attribute_not_exists(#sz{j})))"
+                )
         # ADR-145 I3: a reset or roll on this write re-grants its quota at the
         # item's count. Positional tokens (`#gc{i}`), disjoint from the rest.
         for i, (name, count) in enumerate(sorted((grant_counts or {}).items())):
@@ -4150,6 +4350,12 @@ class Repository:
         attr_values: dict[str, Any] = {}
         guards = period_guards or {}
         stamp_now = self._now_ms() if now_ms is None else now_ms
+        # Never while a raise holds the item (ADR-156): a `tk` it converts is
+        # pinned, and this write would break the pin.
+        guard, guard_names, guard_values = schema.raise_guard(stamp_now)
+        condition_parts.append(guard)
+        attr_names.update(guard_names)
+        attr_values.update(guard_values)
 
         # Index-derived tokens, never the limit name (#634); see
         # `build_composite_normal`.
@@ -4707,6 +4913,7 @@ class Repository:
         now_ms: int | None = None,
         avoid_shards: frozenset[int] = frozenset(),
         avoid_parent_shards: frozenset[int] = frozenset(),
+        write_budget: fill_instant.WriteBudget | None = None,
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -4733,6 +4940,10 @@ class Repository:
                 (ADR-147); the child shard is drawn among the others.
             avoid_parent_shards: The same for the parent's shards on the
                 parallel cascade write (ADR-147 phase 2, decision 4).
+            write_budget: The writes the whole acquire may still send on items
+                storing fill instants (ADR-154): a multi-resource acquire passes
+                one shared by every resource. None starts one for this call,
+                shared by a cascade's child and parent.
 
         Returns:
             SpeculativeResult with:
@@ -4742,11 +4953,49 @@ class Repository:
         """
         if now_ms is None:
             now_ms = self._now_ms()
+        # Every write of this call draws on one budget (ADR-154): a cascade's
+        # child and parent, and every resource of a multi-resource acquire
+        # when the limiter passes one. Carried in a context variable, which
+        # the concurrent child and parent writes inherit.
+        token = _WRITE_BUDGET.set(
+            write_budget if write_budget is not None else fill_instant.WriteBudget()
+        )
+        try:
+            return await self._speculative_consume_scoped(
+                entity_id,
+                resource,
+                consume,
+                ttl_seconds,
+                shard_id,
+                now_ms,
+                avoid_shards,
+                avoid_parent_shards,
+            )
+        finally:
+            _WRITE_BUDGET.reset(token)
+
+    async def _speculative_consume_scoped(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        ttl_seconds: int | None,
+        shard_id: int | None,
+        now_ms: int,
+        avoid_shards: frozenset[int],
+        avoid_parent_shards: frozenset[int],
+    ) -> SpeculativeResult:
+        """:meth:`speculative_consume`'s body, inside the acquire's write budget."""
 
         # Explicit shard_id: direct single-shard consume (shard retry path)
         if shard_id is not None:
             return await self._speculative_consume_single(
-                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+                entity_id,
+                resource,
+                consume,
+                ttl_seconds,
+                shard_id=shard_id,
+                now_ms=now_ms,
             )
 
         # Check entity cache for parallel cascade opportunity (issue #318)
@@ -4859,7 +5108,12 @@ class Repository:
 
         # Cache miss or non-cascade: single UpdateItem
         result = await self._speculative_consume_single(
-            entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id, now_ms=now_ms
+            entity_id,
+            resource,
+            consume,
+            ttl_seconds,
+            shard_id=effective_shard_id,
+            now_ms=now_ms,
         )
         if result.success:
             self._learn_shard_count(
@@ -4904,7 +5158,13 @@ class Repository:
         key = (self._namespace_id, entity_id, resource)
         if key in self._bypass_cache:
             result = await self._speculative_consume_once(
-                entity_id, resource, consume, ttl_seconds, shard_id, now_ms, bypass_shape=True
+                entity_id,
+                resource,
+                consume,
+                ttl_seconds,
+                shard_id,
+                now_ms,
+                bypass_shape=True,
             )
             # An expired stamp (SCHEDULE_BOUNDARY) goes straight to the slow
             # path, which renews or removes it (ADR-151 decision 8): an
@@ -4924,7 +5184,13 @@ class Repository:
             ):
                 return result
         result = await self._speculative_consume_once(
-            entity_id, resource, consume, ttl_seconds, shard_id, now_ms, bypass_shape=False
+            entity_id,
+            resource,
+            consume,
+            ttl_seconds,
+            shard_id,
+            now_ms,
+            bypass_shape=False,
         )
         if result.success and result.bypassed:
             await self._refund_bypassed_debit(entity_id, resource, consume, shard_id, result)
@@ -4948,9 +5214,18 @@ class Repository:
         period's refund in the new period's allowance (review D6). Its ceilings
         and pins come from the debit's ``ALL_NEW`` image. A failed refund is
         logged and leaves the debit (under-admission, never over).
+
+        Only a legacy item (no ``xi``) can owe one. On an item storing fill
+        instants today's write is refused (``attribute_not_exists(xi)``) and
+        the fill-instant write that follows is bypass-shaped once its image
+        shows the stamp, debiting nothing, quotas included; an enforce-shaped
+        one never lands on a stamped item. A credit there would mint a
+        quota's tokens, or create a ``tk`` beside a fill instant.
         """
         from .lease import credit_ceilings, credit_image, write_credit
 
+        if any(state.stored_expressed_ms is not None for state in result.buckets):
+            return
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
         image = credit_image(result.buckets)
         ceilings = credit_ceilings(
@@ -5013,6 +5288,29 @@ class Repository:
             SpeculativeResult with shard_id and shard_count populated, and
             ``bypassed`` when the image carries the stamp.
         """
+        # The acquire's write budget (ADR-154), set by `speculative_consume`.
+        budget = _WRITE_BUDGET.get() or fill_instant.WriteBudget()
+        # An item this process has seen storing fill instants is written by
+        # ADR-154's two writes, chosen from that image (#819).
+        fill_key = (self._namespace_id, entity_id, resource, shard_id)
+        cached = self._fill_images.get(fill_key)
+        if cached is not None:
+            decided = await self._speculative_consume_fill(
+                entity_id,
+                resource,
+                consume,
+                ttl_seconds,
+                shard_id,
+                now_ms,
+                cached.item,
+                fresh=False,
+                budget=budget,
+            )
+            if decided is not None:
+                return decided
+            # The cached image would have sent the request elsewhere unwritten;
+            # it may be stale (the slow pass that fixed the item stores none),
+            # so it was forgotten and today's write asks the item itself.
         client = await self._get_client()
         bypass_key = (self._namespace_id, entity_id, resource)
 
@@ -5130,6 +5428,21 @@ class Repository:
         attr_names["#disabled"] = schema.BUCKET_FIELD_DISABLED
         condition_parts.append("attribute_not_exists(#disabled)")
 
+        # Never on an item storing fill instants (ADR-154, #818): every write
+        # of one stamps `xi`, and this write debits `tk`, which such an item
+        # does not hold for its dripping limits. Without the term a stray `tk`
+        # beside a fill instant (an older writer's) would admit against it.
+        # Only the slow path writes a fill instant until #819.
+        attr_names["#xi"] = schema.BUCKET_FIELD_XI
+        condition_parts.append("attribute_not_exists(#xi)")
+
+        # Never while a raise holds the item (ADR-156): a `tk` it converts is
+        # pinned, and this write would break the pin.
+        guard, guard_names, guard_values = schema.raise_guard(now_ms)
+        condition_parts.append(guard)
+        attr_names.update(guard_names)
+        attr_values.update(guard_values)
+
         # Reject a bucket whose schedule window has closed (#222 §2.1). The
         # fast path cannot evaluate a schedule, so `vu` is a precomputed
         # instant: past it, `tk` was materialised under parameters that no
@@ -5245,6 +5558,22 @@ class Repository:
                             failure_reason=SpeculativeFailureReason.DISABLED,
                         )
 
+                    # A raise holds the shard (ADR-156): refused until it lands
+                    # or lapses. Neither a rejection nor a reason to probe or
+                    # double: the contended 429.
+                    if schema.raise_deadline(old_item, now_ms) is not None:
+                        return SpeculativeResult(
+                            success=False,
+                            old_buckets=old_buckets,
+                            cascade=old_cascade,
+                            parent_id=old_parent_id,
+                            shard_id=shard_id,
+                            shard_count=old_shard_count,
+                            pgen=old_pgen,
+                            pinc=old_pinc,
+                            failure_reason=SpeculativeFailureReason.UNDECIDED,
+                        )
+
                     # A `bypass` stamp, or a declared limit's soft stamp, at
                     # or past its deadline (ADR-151 decision 8): neither a
                     # rejection nor a cleared bypass,
@@ -5306,6 +5635,27 @@ class Repository:
                     # clears the stamp (pre-release review: every rejection
                     # cost +2 reads until something was admitted).
                     vu_raw = old_item.get(schema.BUCKET_FIELD_VU, {}).get("N")
+                    # An item storing fill instants (ADR-154) refused this
+                    # write on its `xi` guard: nothing was written, and the
+                    # image is the truth to choose the two writes from, with
+                    # the same `now_ms` (Theorem 3(b)). This write was the
+                    # request's first.
+                    if schema.BUCKET_FIELD_XI in old_item:
+                        self._fill_images.store(fill_key, old_item)
+                        budget.take()
+                        decided = await self._speculative_consume_fill(
+                            entity_id,
+                            resource,
+                            consume,
+                            ttl_seconds,
+                            shard_id,
+                            now_ms,
+                            old_item,
+                            fresh=True,
+                            budget=budget,
+                        )
+                        assert decided is not None  # a fresh image always decides
+                        return decided
                     if (
                         not old_bypassed
                         and vu_raw is not None
@@ -5362,6 +5712,914 @@ class Repository:
                         failure_reason=SpeculativeFailureReason.BUCKET_MISSING,
                     )
             raise
+
+    def _image_result(
+        self,
+        item: dict[str, Any],
+        states: list[BucketState],
+        shard_id: int,
+        *,
+        success: bool,
+        reason: SpeculativeFailureReason | None = None,
+        bypassed: bool = False,
+    ) -> SpeculativeResult:
+        """A speculative result carrying ``item``'s owner stamps and shard count."""
+        result = SpeculativeResult(
+            success=success,
+            cascade=item.get("cascade", {}).get("BOOL", False),
+            parent_id=item.get("parent_id", {}).get("S"),
+            shard_id=shard_id,
+            shard_count=int(item.get("shard_count", {}).get("N", "1")),
+            failure_reason=reason,
+            bypassed=bypassed,
+            pgen=_stamped_pgen(item),
+            pinc=_stamped_pinc(item),
+        )
+        if success:
+            result.buckets = states
+        else:
+            result.old_buckets = states
+        return result
+
+    def _learn_from_image(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        item: dict[str, Any],
+        states: list[BucketState],
+        *,
+        owner: bool,
+    ) -> None:
+        """What a speculative response teaches: the image and, from a failure, the owner.
+
+        A success leaves the owner and shard count to the caller, as today's
+        path does: a cascade parent's write is the child's acquire, and the
+        parent's own metadata is learned from its own acquires.
+        """
+        shard_count = int(item.get("shard_count", {}).get("N", "1"))
+        self._fill_images.store((self._namespace_id, entity_id, resource, shard_id), item)
+        self._remember_bucket_image(entity_id, resource, shard_id, item, states, shard_count)
+        if not owner:
+            return
+        self._learn_shard_count(
+            entity_id,
+            resource,
+            shard_count,
+            meta=(item.get("cascade", {}).get("BOOL", False), item.get("parent_id", {}).get("S")),
+            pgen=_stamped_pgen(item),
+            pinc=_stamped_pinc(item),
+        )
+
+    async def _speculative_consume_fill(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        ttl_seconds: int | None,
+        shard_id: int,
+        now_ms: int,
+        item: dict[str, Any] | None,
+        *,
+        fresh: bool,
+        budget: fill_instant.WriteBudget,
+    ) -> SpeculativeResult | None:
+        """The fast path on an item storing fill instants (ADR-154, #819).
+
+        Each hard limit on the write, the reserved ``wcu`` included, gets one of
+        ADR-154's two writes, chosen from ``item``: the not-full write
+        (``ADD fi c·S·rp`` under ``t·ra ≤ fi ≤ t·ra + slack``) or the full write
+        (``SET fi = t·ra + c·S·rp`` under ``fi < t·ra``), every one pinned on the
+        parameters, schedule, shard count and expression instant it was computed
+        against (ADR-155). ``fresh`` says ``item`` is a failed write's
+        ``ALL_OLD``, the truth at that instant (Theorem 4 chooses from it); an
+        image from the cache is a guess, which a utilisation estimate corrects
+        (proofs §6). A failed write is retried from its own ``ALL_OLD`` with the
+        same ``now_ms`` (Theorem 3(b)), until the request is admitted, past a
+        limit's slack (rejected), or out of ``budget`` (``UNDECIDED``, the
+        contended 429). A soft limit takes no part and is debited afterwards
+        (:meth:`_debit_soft_fill`). A quota on the item keeps today's ``tk``
+        terms. Anything the two writes cannot express goes to the slow path as
+        ``SCHEDULE_BOUNDARY``: a closed window, a schedule boundary since the
+        item's ``xi``, an expired stamp, a limit missing from the item.
+
+        Returns None, writing nothing, when an image from the cache (not
+        ``fresh``) would send the request anywhere but to a write (a route
+        above, ``DISABLED``, a live raise marker): it is forgotten, and the
+        caller sends today's write, whose failure returns the item as it is.
+        A cached image is refreshed only by a fast-path write, so trusted here
+        it could keep a shard off the fast path after the slow pass that fixed
+        it, or answer 403 after another process lifted a disable.
+        """
+        client = await self._get_client()
+        fill_key = (self._namespace_id, entity_id, resource, shard_id)
+        bypass_key = (self._namespace_id, entity_id, resource)
+        while True:
+            if item is None:
+                self._fill_images.forget(fill_key)
+                return SpeculativeResult(
+                    success=False,
+                    shard_id=shard_id,
+                    failure_reason=SpeculativeFailureReason.BUCKET_MISSING,
+                )
+            seen = item
+            states = self._deserialize_composite_bucket(seen)
+            by_name = {state.limit_name: state for state in states}
+            boundary = SpeculativeFailureReason.SCHEDULE_BOUNDARY
+
+            def _route(reason: SpeculativeFailureReason) -> SpeculativeResult | None:
+                if not fresh:
+                    # Decided from this process's cached image with no write:
+                    # it may predate the slow pass, enable or raise that has
+                    # changed the item since, and only a fast-path write
+                    # refreshes it. Forget it; the caller asks the item.
+                    self._fill_images.forget(fill_key)
+                    return None
+                return self._image_result(seen, states, shard_id, success=False, reason=reason)
+
+            if item.get(schema.BUCKET_FIELD_DISABLED, {}).get("BOOL", False):
+                return _route(SpeculativeFailureReason.DISABLED)
+            if schema.raise_deadline(item, now_ms) is not None:
+                # A raise holds the shard (ADR-156): every write it would send
+                # is refused until the raise lands. The contended 429.
+                return _route(SpeculativeFailureReason.UNDECIDED)
+            if schema.BUCKET_FIELD_XI not in item:
+                # No longer stored as fill instants: the slow path decides.
+                self._fill_images.forget(fill_key)
+                return _route(boundary)
+            bypass_until = schema.decode_stamp(item.get(schema.BUCKET_FIELD_BYPASS))
+            bypassed = bypass_until is not None and bypass_until > now_ms
+            if bypass_until is not None and not bypassed:
+                return _route(boundary)  # an expired stamp is renewed by the slow path
+            vu_raw = item.get(schema.BUCKET_FIELD_VU, {}).get("N")
+            vu_closed = (
+                not bypassed
+                and vu_raw is not None
+                and int(vu_raw) <= now_ms
+                and not vu_only_trims(int(vu_raw), states)
+            )
+            ttl_raw = item.get("ttl", {}).get("N")
+            if ttl_raw is not None and int(ttl_raw) <= now_ms // 1000:
+                return _route(boundary)
+            if any(name not in by_name for name in consume):
+                return _route(boundary)  # the slow path seeds it (#633)
+            if not bypassed and any(
+                (until := by_name[name].soft_until_ms) is not None and until <= now_ms
+                for name in consume
+            ):
+                return _route(boundary)
+            xi = int(item[schema.BUCKET_FIELD_XI]["N"])
+
+            hard: dict[str, int] = {}  # fill instants the admission write decides
+            soft: dict[str, int] = {}  # fill instants debited after admission
+            debited: dict[str, int] = {}  # limits still stored as `tk` (quotas)
+            counted: dict[str, int] = {}  # `tc` this write adds
+            for name, amount in consume.items():
+                state = by_name[name]
+                milli = amount * 1000
+                if bypassed:
+                    counted[name] = milli  # nothing is spent under bypass (#311)
+                elif state.fill_instant is None:
+                    debited[name] = milli
+                    counted[name] = milli
+                elif state.soft:
+                    soft[name] = milli
+                else:
+                    hard[name] = milli
+                    counted[name] = milli
+            wcu = by_name.get(schema.WCU_LIMIT_NAME)
+            if wcu is not None and wcu.fill_instant is not None:
+                hard[schema.WCU_LIMIT_NAME] = 1000  # 1 WCU per write
+                counted[schema.WCU_LIMIT_NAME] = 1000
+            elif wcu is not None:
+                debited[schema.WCU_LIMIT_NAME] = 1000
+                counted[schema.WCU_LIMIT_NAME] = 1000
+            if vu_closed and debited:
+                # A quota's window has closed: only the slow pass re-materialises
+                # it. A fill instant alone never waits on `vu` (ADR-155).
+                return _route(boundary)
+            for name in [*hard, *soft]:
+                state = by_name[name]
+                if state.sched:
+                    crossed = schedule.next_boundary(state.sched, now_ms=xi)
+                    if crossed is not None and crossed <= now_ms:
+                        return _route(boundary)  # re-expressed by the slow path
+            budget.add_limits((entity_id, resource, shard_id), len(hard))
+
+            image = self._fill_images.get(fill_key)
+            trusted = fresh or (
+                image is not None and self._fill_images.age(image) < self._config_cache_ttl
+            )
+            writes: dict[str, fill_instant.Write] = {}
+            short: set[str] = set()
+            for name, milli in hard.items():
+                state = by_name[name]
+                assert state.fill_instant is not None
+                # The parameters in force where the fill instant is expressed:
+                # a lagging clock reads it at `xi`, as every reader does
+                # (`bucket.fill_instant_at`). At its own clock, across a
+                # boundary between the two, the stored value is scaled by
+                # another window's refill amount and reads as full at that
+                # window's ceiling.
+                params = fill_params(state, max(now_ms, xi))
+                if fill_instant.exceeds_share(milli, params):
+                    if trusted:
+                        short.add(name)  # no write can admit it
+                        continue
+                    # An untrusted image: a write that must fail refreshes it.
+                    writes[name] = fill_instant.not_full_write(now_ms, milli, params)
+                    continue
+                planned = (
+                    fill_instant.plan_retry(now_ms, milli, params, state.fill_instant)
+                    if fresh
+                    else fill_instant.plan_first(
+                        now_ms,
+                        milli,
+                        params,
+                        image=state.fill_instant,
+                        utilisation_permille=self._fill_images.utilisation(fill_key, name),
+                    )
+                )
+                if planned is None:
+                    short.add(name)
+                else:
+                    writes[name] = planned
+            if fresh:
+                short |= {
+                    name
+                    for name, milli in debited.items()
+                    if by_name[name].fast_path_short(milli // 1000)
+                }
+            if short:
+                wcu_short = schema.WCU_LIMIT_NAME in short
+                user_short = bool(short - {schema.WCU_LIMIT_NAME})
+                reason = (
+                    SpeculativeFailureReason.BOTH_EXHAUSTED
+                    if wcu_short and user_short
+                    else SpeculativeFailureReason.WCU_EXHAUSTED
+                    if wcu_short
+                    else SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
+                )
+                return self._image_result(
+                    item, states, shard_id, success=False, reason=reason, bypassed=bypassed
+                )
+            if not budget.take():
+                return self._image_result(
+                    item,
+                    states,
+                    shard_id,
+                    success=False,
+                    reason=SpeculativeFailureReason.UNDECIDED,
+                    bypassed=bypassed,
+                )
+
+            request = self.build_fill_write(
+                entity_id,
+                resource,
+                shard_id,
+                {name: (write, by_name[name]) for name, write in writes.items()},
+                counted,
+                debited,
+                now_ms=now_ms,
+                ttl_seconds=ttl_seconds,
+                expressed_ms=xi,
+                shard_count=int(item.get("shard_count", {}).get("N", "1")),
+                item_sched=(
+                    item.get(schema.BUCKET_FIELD_SCHED, {}).get("S"),
+                    item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S"),
+                ),
+                bypassed=bypassed,
+                soft_pins={name: by_name[name].soft_until_ms for name in soft},
+            )
+            try:
+                response = await self._update_item_retrying_conflict(
+                    client,
+                    **request,
+                    ReturnValues="ALL_NEW",
+                    ReturnValuesOnConditionCheckFailure="ALL_OLD",
+                )
+            except ClientError as e:
+                if _is_item_transaction_conflict(e):
+                    return SpeculativeResult(
+                        success=False,
+                        shard_id=shard_id,
+                        failure_reason=SpeculativeFailureReason.CONTENTION,
+                    )
+                if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                old_item = cast(dict[str, Any] | None, e.response.get("Item"))
+                if old_item is not None:
+                    old_states = {
+                        s.limit_name: s for s in self._deserialize_composite_bucket(old_item)
+                    }
+                    self._learn_from_image(
+                        entity_id,
+                        resource,
+                        shard_id,
+                        old_item,
+                        list(old_states.values()),
+                        owner=True,
+                    )
+                    self._learn_bypass(bypass_key, old_item, now_ms)
+                    for name in writes:
+                        found = old_states.get(name)
+                        if found is not None and found.fill_instant is not None:
+                            self._fill_images.observe(
+                                fill_key,
+                                name,
+                                found.fill_instant
+                                >= fill_instant.stamp(
+                                    now_ms,
+                                    fill_params(found, max(now_ms, found.expressed_ms or now_ms)),
+                                ),
+                            )
+                item, fresh = old_item, True
+                continue
+
+            new_item = response["Attributes"]
+            new_states = self._deserialize_composite_bucket(new_item)
+            self._learn_from_image(entity_id, resource, shard_id, new_item, new_states, owner=False)
+            self._learn_bypass(bypass_key, new_item, now_ms)
+            for name, write in writes.items():
+                self._fill_images.observe(fill_key, name, write.side is fill_instant.Side.NOT_FULL)
+            if soft:
+                new_states = await self._debit_soft_fill(
+                    entity_id, resource, shard_id, soft, new_item, new_states
+                )
+            return self._image_result(
+                new_item, new_states, shard_id, success=True, bypassed=bypassed
+            )
+
+    async def _debit_soft_fill(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        soft: dict[str, int],
+        item: dict[str, Any],
+        states: list[BucketState],
+    ) -> list[BucketState]:
+        """Debit the soft limits of an admitted request (ADR-154, ADR-151).
+
+        By :meth:`debit_fill_instants`. It never rejects; given up after
+        :data:`_SOFT_DEBIT_ATTEMPTS` failed writes, it loses only the
+        reporting (``tc`` and the overdraw). Returns the states of the last
+        image.
+        """
+        try:
+            landed = await self.debit_fill_instants(
+                entity_id, resource, shard_id, soft, item=item, attempts=_SOFT_DEBIT_ATTEMPTS
+            )
+        except Exception:
+            # The entity id is routinely an API key; never log it.
+            logger.warning(
+                "soft debit failed for resource=%s shard=%d", resource, shard_id, exc_info=True
+            )
+            return states
+        if landed is None:
+            logger.warning(
+                "soft debit given up for resource=%s shard=%d: only its reporting is lost",
+                resource,
+                shard_id,
+            )
+            return states
+        return landed
+
+    async def debit_fill_instants(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        debits: dict[str, int],
+        *,
+        item: dict[str, Any] | None = None,
+        attempts: int | None = None,
+    ) -> list[BucketState] | None:
+        """Debit fill instants with no admission test (ADR-155): ADR-154's debit pair.
+
+        Each limit in ``debits`` (millitokens) gets the not-full write with no
+        upper bound or the full write, so it records ``max(z, t) + c / r`` and
+        may go into debt, retried from the failure image with a fresh stamp
+        each time (with no admission test it needs no fixed one). A positive
+        lease adjustment, or a soft limit's debit after admission. ``item`` is
+        the image to start from: this process's cached image when omitted, or
+        one read. A schedule boundary since the item's ``xi`` is first
+        re-expressed by one pinned write (:meth:`_reexpress_item`).
+
+        Returns the states of the image the debit landed on. With ``attempts``
+        it gives up after that many failed writes and returns None; without, it
+        is never given up — dropping it would forgive the debt — and raises
+        ``RateLimiterUnavailable`` after :data:`_DEBIT_ATTEMPTS`, as a
+        persistent backend error does (#682).
+        """
+        client = await self._get_client()
+        fill_key = (self._namespace_id, entity_id, resource, shard_id)
+        current = item
+        if current is None:
+            cached = self._fill_images.get(fill_key)
+            current = (
+                cached.item
+                if cached is not None
+                else await self._read_bucket_item(entity_id, resource, shard_id)
+            )
+        for _attempt in range(attempts or _DEBIT_ATTEMPTS):
+            if current is None or schema.BUCKET_FIELD_XI not in current:
+                break
+            if await self._wait_out_raise(current):
+                # A raise held the item (ADR-156): it has landed or lapsed by
+                # now, and the item it left is read again.
+                current = await self._read_bucket_item(entity_id, resource, shard_id)
+                continue
+            by_name = {s.limit_name: s for s in self._deserialize_composite_bucket(current)}
+            if any(
+                by_name.get(name) is None or by_name[name].fill_instant is None for name in debits
+            ):
+                break
+            t_ms = self._now_ms()
+            xi = int(current[schema.BUCKET_FIELD_XI]["N"])
+            if any(
+                state.sched
+                and (crossed := schedule.next_boundary(state.sched, now_ms=xi)) is not None
+                and crossed <= t_ms
+                for state in by_name.values()
+                if state.fill_instant is not None
+            ):
+                current = await self._reexpress_item(entity_id, resource, shard_id, current, t_ms)
+                continue
+            writes = {
+                name: (
+                    fill_instant.debit_write(
+                        t_ms,
+                        milli,
+                        fill_params(by_name[name], max(t_ms, xi)),  # read at `xi`, as above
+                        image=by_name[name].fill_instant,
+                    ),
+                    by_name[name],
+                )
+                for name, milli in debits.items()
+            }
+            request = self.build_fill_write(
+                entity_id,
+                resource,
+                shard_id,
+                writes,
+                dict(debits),
+                {},
+                now_ms=t_ms,
+                ttl_seconds=None,
+                expressed_ms=xi,
+                shard_count=int(current.get("shard_count", {}).get("N", "1")),
+                item_sched=(
+                    current.get(schema.BUCKET_FIELD_SCHED, {}).get("S"),
+                    current.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S"),
+                ),
+                guards=False,
+            )
+            try:
+                response = await self._update_item_retrying_conflict(
+                    client,
+                    **request,
+                    ReturnValues="ALL_NEW",
+                    ReturnValuesOnConditionCheckFailure="ALL_OLD",
+                )
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                current = cast(dict[str, Any] | None, e.response.get("Item"))
+                continue
+            new_item = response["Attributes"]
+            self._fill_images.store(fill_key, new_item)
+            self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
+            return self._deserialize_composite_bucket(new_item)
+        if attempts is not None:
+            return None
+        raise RateLimiterUnavailable(
+            "a fill-instant debit could not land: the bucket kept changing under it",
+            stack_name=self.stack_name,
+            resource=resource,
+        )
+
+    async def _wait_out_raise(self, item: dict[str, Any] | None) -> bool:
+        """Sleep until the live raise marker on ``item`` lapses; False when there is none.
+
+        A write that must land (a debit, a parameter sync, a reset) waits for a
+        raise rather than fail (ADR-156): the raise is one transaction, done in
+        far less than ``schema.RAISE_MARKER_MS``, the most this waits.
+        """
+        now_ms = self._now_ms()
+        deadline = schema.raise_deadline(item, now_ms)
+        if deadline is None:
+            return False
+        await asyncio.sleep(min(deadline - now_ms, schema.RAISE_MARKER_MS) / 1000)
+        return True
+
+    async def _read_bucket_item(
+        self, entity_id: str, resource: str, shard_id: int
+    ) -> dict[str, Any] | None:
+        """One shard's item, strongly consistent, or None when it does not exist."""
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ConsistentRead=True,
+        )
+        return cast(dict[str, Any] | None, response.get("Item"))
+
+    async def _reexpress_item(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        item: dict[str, Any],
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        """Re-express every fill instant on ``item`` at ``now_ms`` in one pinned write (ADR-155).
+
+        Across every schedule boundary since the item's ``xi``: each window
+        drips at its own rate and caps at its own ceiling. Form 3: computed
+        from ``item`` and pinned on each fill instant, the parameters and
+        ``xi`` as read, so a write landing in between fails it. Returns the
+        item as it now stands (``ALL_NEW``, or the failure's ``ALL_OLD``).
+        """
+        client = await self._get_client()
+        states = [s for s in self._deserialize_composite_bucket(item) if s.fill_instant is not None]
+        xi = int(item[schema.BUCKET_FIELD_XI]["N"])
+        names: dict[str, str] = {"#zxi": schema.BUCKET_FIELD_XI}
+        values: dict[str, Any] = {":zxi": {"N": str(now_ms)}, ":zxir": {"N": str(xi)}}
+        sets = ["#zxi = :zxi"]
+        guard, guard_names, guard_values = schema.raise_guard(now_ms)
+        conditions = ["attribute_exists(PK)", "#zxi = :zxir", guard]
+        names.update(guard_names)
+        values.update(guard_values)
+        for i, state in enumerate(states):
+            express_at(state, now_ms)
+            names[f"#zf{i}"] = schema.bucket_attr(state.limit_name, schema.BUCKET_FIELD_FI)
+            values[f":zf{i}"] = {"N": str(state.fill_instant)}
+            values[f":zfr{i}"] = {"N": str(state.stored_fill_instant)}
+            sets.append(f"#zf{i} = :zf{i}")
+            conditions.append(f"#zf{i} = :zfr{i}")
+            for token, field, value in (
+                ("zp", schema.BUCKET_FIELD_CP, state.capacity_milli),
+                ("za", schema.BUCKET_FIELD_RA, state.refill_amount_milli),
+                ("zr", schema.BUCKET_FIELD_RP, state.refill_period_ms),
+            ):
+                names[f"#{token}{i}"] = schema.bucket_attr(state.limit_name, field)
+                values[f":{token}{i}"] = {"N": str(value)}
+                conditions.append(f"#{token}{i} = :{token}{i}")
+        try:
+            response = await self._update_item_retrying_conflict(
+                client,
+                TableName=self.table_name,
+                Key={
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
+                },
+                UpdateExpression="SET " + ", ".join(sets),
+                ConditionExpression=" AND ".join(conditions),
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+                ReturnValues="ALL_NEW",
+                ReturnValuesOnConditionCheckFailure="ALL_OLD",
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            return cast(dict[str, Any] | None, e.response.get("Item"))
+        return cast(dict[str, Any], response["Attributes"])
+
+    def build_fill_write(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        writes: dict[str, tuple[fill_instant.Write, BucketState]],
+        counted: dict[str, int],
+        debited: dict[str, int],
+        *,
+        now_ms: int,
+        ttl_seconds: int | None,
+        expressed_ms: int,
+        shard_count: int,
+        item_sched: tuple[str | None, str | None],
+        bypassed: bool = False,
+        guards: bool = True,
+        soft_pins: dict[str, int | None] | None = None,
+    ) -> dict[str, Any]:
+        """Build one fill-instant write (ADR-154, ADR-155): the ``UpdateItem`` kwargs.
+
+        ``writes`` names each fill instant this write moves, with the state it
+        was computed from: the not-full write ``ADD fi :span`` under
+        ``:stamp ≤ fi ≤ :upper`` (no upper bound for a debit), or the full
+        write ``SET fi = :value`` under ``fi < :stamp``, each pinned on that
+        state's stored ``cp`` / ``ra`` / ``rp`` and its own ``sched`` override.
+        ``counted`` is the ``tc`` it adds per limit, ``debited`` the limits
+        still stored as ``tk`` (quotas) it debits under today's terms. The item
+        is pinned on its expression instant ``xi``, ``shard_count`` and the
+        hoisted ``sched`` / ``sched_tz``. With ``guards`` (an admission) it
+        carries today's guards: the item exists and is not expired, not
+        disabled, its ``vu`` window open, and either no ``bypass`` stamp
+        (enforce) or a live one (``bypassed``); a soft debit carries only the
+        pins. ``soft_pins`` pins each soft limit the admission leaves out on
+        the stamp it read, so one a fan-out removed since is decided as hard
+        on the retry. Every token is positional (#634).
+        """
+        set_parts: list[str] = []
+        add_parts: list[str] = []
+        conditions: list[str] = ["attribute_exists(PK)"]
+        names: dict[str, str] = {}
+        values: dict[str, Any] = {}
+
+        for i, (name, (write, state)) in enumerate(writes.items()):
+            names[f"#zf{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_FI)
+            values[f":zs{i}"] = {"N": str(write.stamp)}
+            if write.side is fill_instant.Side.FULL:
+                values[f":zv{i}"] = {"N": str(write.stamp + write.span)}
+                set_parts.append(f"#zf{i} = :zv{i}")
+                conditions.append(f"#zf{i} < :zs{i}")
+            else:
+                values[f":zd{i}"] = {"N": str(write.span)}
+                add_parts.append(f"#zf{i} :zd{i}")
+                if write.upper is None:
+                    conditions.append(f"#zf{i} >= :zs{i}")
+                else:
+                    values[f":zu{i}"] = {"N": str(write.upper)}
+                    conditions.append(f"#zf{i} BETWEEN :zs{i} AND :zu{i}")
+            for token, field, value in (
+                ("zp", schema.BUCKET_FIELD_CP, state.capacity_milli),
+                ("za", schema.BUCKET_FIELD_RA, state.refill_amount_milli),
+                ("zr", schema.BUCKET_FIELD_RP, state.refill_period_ms),
+            ):
+                names[f"#{token}{i}"] = schema.bucket_attr(name, field)
+                values[f":{token}{i}"] = {"N": str(value)}
+                conditions.append(f"#{token}{i} = :{token}{i}")
+            names[f"#zh{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED)
+            override = state.stored_sched_raw[0] if state.stored_sched_raw else None
+            if override is None:
+                conditions.append(f"attribute_not_exists(#zh{i})")
+            else:
+                values[f":zh{i}"] = {"S": override}
+                conditions.append(f"#zh{i} = :zh{i}")
+            if guards:
+                # An expired soft stamp fails the write, so the slow path
+                # renews or removes it (ADR-151 decision 8), as today's does.
+                names[f"#zg{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
+                values[":vu_now"] = {"N": str(now_ms)}
+                conditions.append(f"(attribute_not_exists(#zg{i}) OR #zg{i} > :vu_now)")
+
+        for j, (name, milli) in enumerate(counted.items()):
+            names[f"#zc{j}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
+            values[f":zc{j}"] = {"N": str(milli)}
+            add_parts.append(f"#zc{j} :zc{j}")
+
+        for k, (name, milli) in enumerate(debited.items()):
+            names[f"#t{k}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+            values[f":n{k}"] = {"N": str(-milli)}
+            values[f":h{k}"] = {"N": str(milli)}
+            add_parts.append(f"#t{k} :n{k}")
+            # A soft quota is admitted on its live stamp beside its `cp` and
+            # `tk`, as on today's fast path (#467, ADR-151 decision 8).
+            names[f"#o{k}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
+            names[f"#oc{k}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
+            values[":vu_now"] = {"N": str(now_ms)}
+            conditions.append(
+                f"((#o{k} > :vu_now AND attribute_exists(#oc{k}) AND attribute_exists(#t{k}))"
+                f" OR #t{k} >= :h{k})"
+            )
+            conditions.append(f"(attribute_not_exists(#o{k}) OR #o{k} > :vu_now)")
+
+        for m, (name, deadline) in enumerate((soft_pins or {}).items()):
+            names[f"#zo{m}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
+            if deadline is None:
+                conditions.append(f"attribute_not_exists(#zo{m})")
+            else:
+                values[f":zo{m}"] = schema.stamp_value(deadline)
+                conditions.append(f"#zo{m} = :zo{m}")
+
+        names["#zxi"] = schema.BUCKET_FIELD_XI
+        values[":zxi"] = {"N": str(expressed_ms)}
+        conditions.append("#zxi = :zxi")
+        names["#zsc"] = "shard_count"
+        values[":zsc"] = {"N": str(shard_count)}
+        conditions.append(
+            "(attribute_not_exists(#zsc) OR #zsc = :zsc)" if shard_count == 1 else "#zsc = :zsc"
+        )
+        # Never while a raise holds the item (ADR-156): its pins would break.
+        guard, guard_names, guard_values = schema.raise_guard(now_ms)
+        conditions.append(guard)
+        names.update(guard_names)
+        values.update(guard_values)
+        for token, field, raw in (
+            ("zis", schema.BUCKET_FIELD_SCHED, item_sched[0]),
+            ("zit", schema.BUCKET_FIELD_SCHED_TZ, item_sched[1]),
+        ):
+            names[f"#{token}"] = field
+            if raw is None:
+                conditions.append(f"attribute_not_exists(#{token})")
+            else:
+                values[f":{token}"] = {"S": raw}
+                conditions.append(f"#{token} = :{token}")
+
+        if guards:
+            names["#ttl"] = "ttl"
+            values[":now_epoch"] = {"N": str(now_ms // 1000)}
+            conditions.append("(attribute_not_exists(#ttl) OR #ttl > :now_epoch)")
+            if ttl_seconds is not None:
+                values[":ttl"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
+                set_parts.append("#ttl = :ttl")
+            names["#disabled"] = schema.BUCKET_FIELD_DISABLED
+            conditions.append("attribute_not_exists(#disabled)")
+            names["#byp"] = schema.BUCKET_FIELD_BYPASS
+            values[":vu_now"] = {"N": str(now_ms)}
+            if bypassed:
+                conditions.append("#byp > :vu_now")
+            else:
+                conditions.append("attribute_not_exists(#byp)")
+                if debited:
+                    # Only for a quota's `tk` terms (its reset edges ride on
+                    # `vu`): a fill instant is never pinned on `vu`, which quota
+                    # writers also stamp (ADR-155). Its boundaries are caught by
+                    # `xi` and the client's schedule evaluation instead.
+                    names["#vu"] = schema.BUCKET_FIELD_VU
+                    conditions.append("(attribute_not_exists(#vu) OR #vu > :vu_now)")
+
+        expression = []
+        if set_parts:
+            expression.append("SET " + ", ".join(set_parts))
+        if add_parts:
+            expression.append("ADD " + ", ".join(add_parts))
+        return {
+            "TableName": self.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            "UpdateExpression": " ".join(expression),
+            "ConditionExpression": " AND ".join(conditions),
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": values,
+        }
+
+    def build_fill_return(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        returns: dict[str, tuple[int, BucketState]],
+        *,
+        expressed_ms: int,
+        shard_count: int,
+        counter: bool = True,
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Build an exact return of fill-instant debits (ADR-155): ``UpdateItem`` kwargs.
+
+        ``returns`` maps a limit to the millitokens returned and the state the
+        debit was computed against. Each moves ``fi`` back by the debit's
+        span, which is exact on every item with no balance condition: every
+        fill instant before now reads as full, so the cap comes for free
+        (proofs Lemma 3). ``tc`` goes back too unless ``counter`` is False. The
+        write is pinned on the fill instant still existing, the state's stored
+        ``cp`` / ``ra`` / ``rp``, the item's ``shard_count`` and its ``xi``: a
+        span computed against other parameters would return the wrong amount,
+        so a return that fails its pins is dropped (an under-admission). So is
+        one that finds a live raise marker at ``now_ms`` (the clock when
+        omitted, ADR-156): a raise in progress is pinned on every fill instant.
+        """
+        add_parts: list[str] = []
+        conditions: list[str] = ["attribute_exists(PK)"]
+        names: dict[str, str] = {}
+        values: dict[str, Any] = {}
+        for i, (name, (milli, state)) in enumerate(returns.items()):
+            # The parameters in force at the item's `xi`: the debit's, since
+            # the write is pinned on that `xi` (a schedule may override `rp`).
+            params = fill_params(state, expressed_ms)
+            names[f"#zf{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_FI)
+            values[f":zd{i}"] = {"N": str(-fill_instant.span(milli, params))}
+            add_parts.append(f"#zf{i} :zd{i}")
+            conditions.append(f"attribute_exists(#zf{i})")
+            if counter:
+                names[f"#zc{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
+                values[f":zc{i}"] = {"N": str(-milli)}
+                add_parts.append(f"#zc{i} :zc{i}")
+            for token, field, value in (
+                ("zp", schema.BUCKET_FIELD_CP, state.capacity_milli),
+                ("za", schema.BUCKET_FIELD_RA, state.refill_amount_milli),
+                ("zr", schema.BUCKET_FIELD_RP, state.refill_period_ms),
+            ):
+                names[f"#{token}{i}"] = schema.bucket_attr(name, field)
+                values[f":{token}{i}"] = {"N": str(value)}
+                conditions.append(f"#{token}{i} = :{token}{i}")
+        names["#zxi"] = schema.BUCKET_FIELD_XI
+        values[":zxi"] = {"N": str(expressed_ms)}
+        conditions.append("#zxi = :zxi")
+        names["#zsc"] = "shard_count"
+        values[":zsc"] = {"N": str(shard_count)}
+        conditions.append(
+            "(attribute_not_exists(#zsc) OR #zsc = :zsc)" if shard_count == 1 else "#zsc = :zsc"
+        )
+        guard, guard_names, guard_values = schema.raise_guard(
+            self._now_ms() if now_ms is None else now_ms
+        )
+        conditions.append(guard)
+        names.update(guard_names)
+        values.update(guard_values)
+        return {
+            "TableName": self.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            "UpdateExpression": "ADD " + ", ".join(add_parts),
+            "ConditionExpression": " AND ".join(conditions),
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": values,
+        }
+
+    async def return_fill_instants(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        returns: dict[str, tuple[int, BucketState]],
+        *,
+        expressed_ms: int,
+        shard_count: int,
+        counter: bool = True,
+    ) -> bool:
+        """Return fill-instant debits exactly (:meth:`build_fill_return`).
+
+        A return that loses its pins (another writer re-expressed or
+        reparameterised the item since the debit) is rebuilt against the
+        failure's image, its ``xi``, parameters and shard count, and re-sent, up
+        to ``_RETURN_ATTEMPTS`` times (ADR-155). Only then, or when the item or
+        the limit is gone, is it dropped: an under-admission, logged at debug.
+        Returns whether it landed. Any other error is raised.
+        """
+        if not returns:
+            return True
+        client = await self._get_client()
+        for _attempt in range(_RETURN_ATTEMPTS):
+            request = self.build_fill_return(
+                entity_id,
+                resource,
+                shard_id,
+                returns,
+                expressed_ms=expressed_ms,
+                shard_count=shard_count,
+                counter=counter,
+            )
+            request["ReturnValuesOnConditionCheckFailure"] = "ALL_OLD"
+            try:
+                await self._update_item_retrying_conflict(client, **request)
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                image = cast(dict[str, Any] | None, e.response.get("Item"))
+                if await self._wait_out_raise(image):
+                    # A raise held the item (ADR-156): rebuilt from what it left.
+                    image = await self._read_bucket_item(entity_id, resource, shard_id)
+                rebuilt = self._returns_against(image, returns)
+                if rebuilt is None:
+                    logger.debug("Fill-instant return dropped: the item no longer carries it")
+                    return False
+                returns, expressed_ms, shard_count = rebuilt
+                continue
+            self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
+            return True
+        logger.debug("Fill-instant return dropped: its pins kept moving")
+        return False
+
+    def _returns_against(
+        self,
+        image: dict[str, Any] | None,
+        returns: dict[str, tuple[int, BucketState]],
+    ) -> tuple[dict[str, tuple[int, BucketState]], int, int] | None:
+        """``returns`` rebuilt against the item as a failed return found it.
+
+        Each limit the item still stores as a fill instant, with its parameters
+        and the item's ``xi`` and shard count as they now stand; None when the
+        item is gone or carries none of them.
+        """
+        if image is None or schema.BUCKET_FIELD_XI not in image:
+            return None
+        states = {state.limit_name: state for state in self._deserialize_composite_bucket(image)}
+        rebuilt = {
+            name: (milli, states[name])
+            for name, (milli, _state) in returns.items()
+            if name in states and states[name].fill_instant is not None
+        }
+        if not rebuilt:
+            return None
+        return (
+            rebuilt,
+            int(image[schema.BUCKET_FIELD_XI]["N"]),
+            int(image.get("shard_count", {"N": "1"})["N"]),
+        )
 
     def _learn_bypass(self, key: tuple[str, str, str], item: dict[str, Any], now_ms: int) -> bool:
         """Learn a pair's bypass mode from the item a write returned (#311).
@@ -5663,6 +6921,135 @@ class Repository:
 
         # Update entity cache with new shard_count (monotonic)
         return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
+
+    async def raise_shards(self, entity_id: str, resource: str, current_count: int) -> int:
+        """Raise a bucket holding a dripping limit from ``current_count`` to twice it (ADR-156).
+
+        Replaces :meth:`bump_shard_count` for such a bucket, whose doubling
+        let every shard keep its balance and created each new shard at a full
+        share: up to 1.5x the limit across a doubling. Three steps:
+
+        1. A raise marker with a deadline ``schema.RAISE_MARKER_MS`` out
+           is stamped on every shard below ``current_count``, concurrently.
+           Each write's ``ALL_NEW`` is this raise's strongly consistent read of
+           that shard; one that finds no item marks the slot missing.
+        2. :func:`shard_raise.plan_raise` builds one transaction from the
+           images: every shard re-expressed at the new count, its balance
+           above the new share moved into the shard it splits off, every new
+           shard created with a full ``wcu``, ADR-150's owner check.
+        3. The transaction is sent with a fresh ``ClientRequestToken``.
+
+        Gives up, removing its own markers, when another raise's marker is
+        live, a shard already stores a larger count, the plan is empty, or the
+        transaction is cancelled (a write the marker does not hold off landed,
+        or the owner moved): the caller keeps the shard it has, and the next
+        ``wcu`` exhaustion raises. Cost: ``current_count`` marker writes, then
+        one transaction of at most ``2 × current_count`` items plus the check.
+
+        Returns:
+            The shard count now cached: the new count when the raise landed,
+            the larger count a shard stores when another writer raised first,
+            otherwise ``current_count``.
+        """
+        cache_key = (self._namespace_id, entity_id)
+        meta = None if cache_key in self._entity_cache else (False, None)
+        if current_count >= schema.MAX_SHARD_COUNT:
+            if (entity_id, resource) not in self._shard_cap_warned:
+                self._shard_cap_warned.add((entity_id, resource))
+                # Never the entity id: it is routinely an API key.
+                logger.warning(
+                    "shard_count for resource=%s is at MAX_SHARD_COUNT=%d; "
+                    "refusing to raise further",
+                    resource,
+                    schema.MAX_SHARD_COUNT,
+                )
+            return self._learn_shard_count(entity_id, resource, current_count, meta=meta)
+
+        client = await self._get_client()
+        now_ms = self._now_ms()
+        deadline_ms = now_ms + schema.RAISE_MARKER_MS
+        marker = shard_raise.marker_write(deadline_ms, now_ms)
+
+        def key(shard: int) -> dict[str, Any]:
+            return {
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": schema.sk_state()},
+            }
+
+        async def stamp(shard: int) -> tuple[int, dict[str, Any] | None, int]:
+            """``(shard, image, count)``: count is -1 for a shard another raise holds."""
+            try:
+                response = await self._update_item_retrying_conflict(
+                    client,
+                    TableName=self.table_name,
+                    Key=key(shard),
+                    ReturnValues="ALL_NEW",
+                    ReturnValuesOnConditionCheckFailure="ALL_OLD",
+                    **marker,
+                )
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                    held = cast(dict[str, Any] | None, e.response.get("Item"))
+                    if not held:
+                        return shard, None, 0  # no item at this slot
+                    return shard, None, -1
+                if _is_item_transaction_conflict(e):
+                    return shard, None, -1
+                raise
+            image = cast(dict[str, Any], response.get("Attributes") or {})
+            return shard, image, shard_raise.stored_count(image)
+
+        async def release(stamped: list[int]) -> None:
+            undo = shard_raise.release_write(deadline_ms)
+
+            async def one(shard: int) -> None:
+                try:
+                    await client.update_item(TableName=self.table_name, Key=key(shard), **undo)
+                except ClientError:
+                    pass  # gone already, or lapses at its deadline
+
+            await asyncio.gather(*[one(shard) for shard in stamped])
+
+        # A comprehension, not a pre-built list: the sync transformer needs
+        # each call deferred into its own lambda (#666).
+        results = await asyncio.gather(*[stamp(shard) for shard in range(current_count)])
+        images = {shard: image for shard, image, _count in results}
+        stamped = [shard for shard, image, _count in results if image is not None]
+        seen = max([count for _shard, _image, count in results] + [current_count])
+        if any(count < 0 for _shard, _image, count in results) or seen > current_count:
+            await release(stamped)
+            return self._learn_shard_count(entity_id, resource, seen, meta=meta)
+        plan = shard_raise.plan_raise(
+            self.table_name,
+            self._namespace_id,
+            entity_id,
+            resource,
+            images,
+            current_count,
+            now_ms,
+            deadline_ms,
+        )
+        if plan is None:
+            await release(stamped)
+            return self._learn_shard_count(entity_id, resource, current_count, meta=meta)
+        try:
+            await client.transact_write_items(
+                TransactItems=plan.transact_items, ClientRequestToken=secrets.token_hex(16)
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") not in (
+                "TransactionCanceledException",
+                "TransactionConflictException",
+            ):
+                await release(stamped)
+                raise
+            await release(stamped)
+            # Never the entity id: it is routinely an API key.
+            logger.debug("shard raise for resource=%s cancelled; left at %d", resource, seen)
+            return self._learn_shard_count(entity_id, resource, current_count, meta=meta)
+        for shard in range(current_count):
+            self._fill_images.forget((self._namespace_id, entity_id, resource, shard))
+        return self._learn_shard_count(entity_id, resource, plan.new_count, meta=meta)
 
     async def _propagate_shard_count(
         self, entity_id: str, resource: str, old_count: int, new_count: int
@@ -6451,11 +7838,22 @@ class Repository:
                     schema.BUCKET_FIELD_RSCHED,
                     # And its soft stamp (#467), for the same reason.
                     schema.BUCKET_FIELD_SOFT,
+                    # And its fill instant (#818): left behind, a limit of that
+                    # name configured again would read it against new
+                    # parameters, and a smaller `ra` puts it decades ahead.
+                    schema.BUCKET_FIELD_FI,
                 )
             ):
                 alias = f"#stale{i}_{j}"
                 expr_names[alias] = schema.bucket_attr(stale_name, field)
                 remove_parts.append(alias)
+
+        # A limit that is now a quota keeps no fill instant (#818): a quota's
+        # balance is `tk`, and a fill instant left beside it would re-attach,
+        # against new parameters, if the name drips again. Positional tokens.
+        for i, limit in enumerate(limit for limit in limits if limit.is_quota):
+            expr_names[f"#zq{i}"] = schema.bucket_attr(limit.name, schema.BUCKET_FIELD_FI)
+            remove_parts.append(f"#zq{i}")
 
         # Build update expression
         update_expr = f"SET {', '.join(set_parts)}"
@@ -6492,6 +7890,8 @@ class Repository:
         update_expr: str,
         expr_names: dict[str, str],
         expr_values: dict[str, dict[str, Any]],
+        *,
+        image: dict[str, Any] | None = None,
     ) -> bool:
         """Apply one shard's static-param update, tolerating a vanished shard.
 
@@ -6500,29 +7900,69 @@ class Repository:
             update_expr: SET/REMOVE expression built by `_sync_bucket_params`
             expr_names: Expression attribute name aliases
             expr_values: Expression attribute values
+            image: The item as the caller just read it, strongly consistent:
+                the first write is built from it instead of from the image a
+                refused write returns (1 RCU instead of 1 WCU).
 
         Returns:
             True if the item was written, False if the shard had vanished.
         """
         client = await self._get_client()
-        try:
-            await client.update_item(
-                TableName=self.table_name,
-                Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
-                UpdateExpression=update_expr,
-                ConditionExpression="attribute_exists(PK)",
-                ExpressionAttributeNames=expr_names,
-                ExpressionAttributeValues=expr_values,
+        # A shard storing fill instants is re-expressed in the same write, from
+        # the parameters read to the ones written, pinned on that read (ADR-155,
+        # `fill_sync`): today's write refuses one (`xi`) and returns its image.
+        item = image
+        if item is not None and await self._wait_out_raise(item):
+            item = None  # a raise held the shard: its image is stale now
+        for _attempt in range(_SYNC_ATTEMPTS):
+            extended = (
+                fill_sync.reexpression(item, update_expr, expr_names, expr_values, self._now_ms())
+                if item is not None
+                else None
             )
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                # Bucket does not exist (yet, or any more: TTL can expire a
-                # shard between discovery and this write). Either way there is
-                # nothing to reconcile — a bucket created later is created with
-                # the current params.
-                return False
-            raise
-        return True
+            if extended is None:
+                request = {
+                    "UpdateExpression": update_expr,
+                    "ConditionExpression": "attribute_exists(PK) AND attribute_not_exists(#zsxi)",
+                    "ExpressionAttributeNames": {**expr_names, "#zsxi": schema.BUCKET_FIELD_XI},
+                    "ExpressionAttributeValues": expr_values,
+                }
+            else:
+                expression, names, values, condition = extended
+                request = {
+                    "UpdateExpression": expression,
+                    "ConditionExpression": condition,
+                    "ExpressionAttributeNames": names,
+                    "ExpressionAttributeValues": values,
+                }
+            try:
+                await client.update_item(
+                    TableName=self.table_name,
+                    Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+                    ReturnValuesOnConditionCheckFailure="ALL_OLD",
+                    **request,
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+                item = cast(dict[str, Any] | None, e.response.get("Item"))
+                if item is None:
+                    # Bucket does not exist (yet, or any more: TTL can expire a
+                    # shard between discovery and this write). Either way there
+                    # is nothing to reconcile — a bucket created later is
+                    # created with the current params.
+                    return False
+                if await self._wait_out_raise(item):
+                    # A raise held the shard (ADR-156); its image is stale now.
+                    # The plain write fails on the `xi` the raise left and
+                    # returns the item to re-express from.
+                    item = None
+                continue
+            return True
+        raise RateLimiterUnavailable(
+            "a bucket kept changing under its parameter sync",
+            stack_name=self.stack_name,
+        )
 
     async def reconcile_bucket_to_defaults(
         self,
@@ -6921,11 +8361,17 @@ class Repository:
                 An explicit value is gated on the stack's version and fans out
                 like `set_resource_cascade()`.
 
+        A change to the limits reaches the resource's active buckets
+        (ADR-153, #823): each bucket its defaults decide is read and written
+        once (`_fanout_params`). Re-setting the same limits writes no bucket.
+
         Raises:
             VersionMismatchError: ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638), or an explicit
                 ``cascade`` and they predate the cascade policy. Nothing is
                 written.
+            FanoutIncomplete: The config is written but a bucket write failed
+                part-way; carries how many landed. Re-running reconciles.
         """
         validate_resource(resource)
         client = await self._get_client()
@@ -6977,6 +8423,7 @@ class Repository:
             TableName=self.table_name, Item=item, ReturnValues="ALL_OLD"
         )
         soft_changed = self._soft_changed(replaced.get("Attributes"), limits)
+        limits_changed, dropped = self._limits_changed(replaced.get("Attributes"), limits)
 
         # Add resource to the registry using atomic ADD operation
         await client.update_item(
@@ -7014,6 +8461,10 @@ class Repository:
         # (ADR-151 §6.2). Change-only, so a routine set writes no buckets.
         if soft_changed:
             await self._fanout_soft(resource=resource, names=soft_changed)
+        # Any other change reaches active buckets too (ADR-153, #823): left to
+        # TTL it never reaches one used once per TTL period. Change-only.
+        if limits_changed:
+            await self._fanout_params(resource=resource, stale_limit_names=dropped)
 
         # Log audit event with special prefix
         await self._log_audit_event(
@@ -7113,6 +8564,7 @@ class Repository:
         had_disabled = schema.CONFIG_FIELD_DISABLED in (deleted.get("Attributes") or {})
         had_cascade = schema.CONFIG_FIELD_CASCADE in (deleted.get("Attributes") or {})
         soft_changed = self._soft_changed(deleted.get("Attributes"), [])
+        limits_changed, dropped = self._limits_changed(deleted.get("Attributes"), [])
 
         # Remove resource from the registry using atomic DELETE operation
         await client.update_item(
@@ -7149,6 +8601,9 @@ class Repository:
         # resolve elsewhere and must not keep a soft stamp nothing backs.
         if soft_changed:
             await self._fanout_soft(resource=resource, names=soft_changed)
+        # Its buckets now take the system defaults (ADR-153, #823).
+        if limits_changed:
+            await self._fanout_params(resource=resource, stale_limit_names=dropped)
 
         # Log audit event
         await self._log_audit_event(
@@ -7199,9 +8654,14 @@ class Repository:
             on_unavailable: Behavior when DynamoDB unavailable ("allow" or "block")
             principal: Caller identity for audit logging
 
+        A change to the limits reaches every active bucket in the namespace
+        that the system defaults decide (ADR-153, #823; `_fanout_params`).
+
         Raises:
             VersionMismatchError: ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638). Nothing is written.
+            FanoutIncomplete: The config is written but a bucket write failed
+                part-way; carries how many landed. Re-running reconciles.
         """
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
@@ -7233,6 +8693,9 @@ class Repository:
         soft_changed = self._soft_changed(replaced.get("Attributes"), limits)
         if soft_changed:
             await self._fanout_soft(resource=None, names=soft_changed)
+        limits_changed, dropped = self._limits_changed(replaced.get("Attributes"), limits)
+        if limits_changed:
+            await self._fanout_params(resource=None, stale_limit_names=dropped)
 
         # Log audit event (ADR-106: use $SYSTEM for all system-level events)
         await self._log_audit_event(
@@ -7314,6 +8777,9 @@ class Repository:
         soft_changed = self._soft_changed(deleted.get("Attributes"), [])
         if soft_changed:
             await self._fanout_soft(resource=None, names=soft_changed)
+        limits_changed, dropped = self._limits_changed(deleted.get("Attributes"), [])
+        if limits_changed:
+            await self._fanout_params(resource=None, stale_limit_names=dropped)
 
         # Log audit event (ADR-106: use $SYSTEM for all system-level events)
         await self._log_audit_event(
@@ -8245,6 +9711,23 @@ class Repository:
                 stack_name=self.stack_name,
             ) from exc
 
+    def _decode_stored_fill_int(self, attr_name: str, raw: str | None) -> int | None:
+        """Parse a `b_{name}_fi` / `xi` value, or declare the limiter unavailable (#818).
+
+        The same treatment `_decode_stored_window_int` gives a window: absent
+        is not corruption (every item stored as `tk`), a non-integral value is.
+        """
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise RateLimiterUnavailable(
+                f"stored fill instant in {attr_name} could not be decoded: {raw!r}: {exc}",
+                cause=exc,
+                stack_name=self.stack_name,
+            ) from exc
+
     def _deserialize_composite_bucket(self, item: dict[str, Any]) -> list[BucketState]:
         """Deserialize a composite DynamoDB item to a list of BucketStates.
 
@@ -8329,13 +9812,31 @@ class Repository:
         # parameters turned every later read into a division by zero. Skipped,
         # the limit reads as missing, the slow path seeds it, and the seed's
         # `attribute_not_exists(cp)` guard overwrites the stray balance.
+        #
+        # A dripping limit stored as a fill instant (ADR-154, #818) carries
+        # `b_{name}_fi` in place of `tk`, and is discovered by it the same way.
+        # A `tk` beside an `fi` is ignored: the fill instant is the balance.
         limit_names: list[str] = []
-        suffix = f"_{schema.BUCKET_FIELD_TK}"
+        suffixes = (f"_{schema.BUCKET_FIELD_TK}", f"_{schema.BUCKET_FIELD_FI}")
         for attr_name in item:
-            if attr_name.startswith(schema.BUCKET_ATTR_PREFIX) and attr_name.endswith(suffix):
+            if not attr_name.startswith(schema.BUCKET_ATTR_PREFIX):
+                continue
+            for suffix in suffixes:
+                if not attr_name.endswith(suffix):
+                    continue
                 name = attr_name[len(schema.BUCKET_ATTR_PREFIX) : -len(suffix)]
-                if name and schema.bucket_attr(name, schema.BUCKET_FIELD_CP) in item:
+                if (
+                    name
+                    and name not in limit_names
+                    and schema.bucket_attr(name, schema.BUCKET_FIELD_CP) in item
+                ):
                     limit_names.append(name)
+        stored_xi = self._decode_stored_fill_int(
+            schema.BUCKET_FIELD_XI, item.get(schema.BUCKET_FIELD_XI, {}).get("N")
+        )
+        raise_until = self._decode_stored_fill_int(
+            schema.BUCKET_FIELD_RAISE, item.get(schema.BUCKET_FIELD_RAISE, {}).get("N")
+        )
 
         buckets: list[BucketState] = []
         for name in limit_names:
@@ -8416,43 +9917,61 @@ class Repository:
                 )
             )
 
-            buckets.append(
-                BucketState(
-                    entity_id=entity_id,
-                    resource=resource,
-                    limit_name=name,
-                    tokens_milli=_get(schema.BUCKET_FIELD_TK),
-                    last_refill_ms=rf,
-                    capacity_milli=_get(schema.BUCKET_FIELD_CP),
-                    refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
-                    refill_period_ms=_get(schema.BUCKET_FIELD_RP),
-                    total_consumed_milli=total_consumed,
-                    shard_count=1 if is_wcu else shard_count,
-                    sched=sched,
-                    reset_sched=reset_sched,
-                    window_start_ms=window_start_ms,
-                    reset_after_seconds=reset_after_seconds,
-                    window_applied_ms=window_applied_ms,
-                    window_consumed_mark_milli=window_consumed_mark,
-                    grant_count=grant_count,
-                    topped_up_milli=topped_up,
-                    reset_number=reset_number,
-                    stored_vu_ms=stored_vu,
-                    stored_vu_read=True,
-                    # `wcu` still gates under bypass: it protects the partition.
-                    bypass=bypassed and not is_wcu,
-                    bypass_until_ms=None if is_wcu else bypass_until,
-                    # #467: `wcu` is never soft, whatever an item says. Present,
-                    # live or not; the deadline rides beside it (decision 8).
-                    soft=soft_until is not None,
-                    soft_until_ms=soft_until,
-                    stored_item_sched_raw=(item_sched, item_rsched, raw_sched_tz),
-                    stored_sched_raw=(
-                        item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED), {}).get("S"),
-                        item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED), {}).get("S"),
-                    ),
-                )
+            fi_name = schema.bucket_attr(name, schema.BUCKET_FIELD_FI)
+            stored_fi = self._decode_stored_fill_int(fi_name, item.get(fi_name, {}).get("N"))
+
+            state = BucketState(
+                entity_id=entity_id,
+                resource=resource,
+                limit_name=name,
+                tokens_milli=_get(schema.BUCKET_FIELD_TK),
+                last_refill_ms=rf,
+                capacity_milli=_get(schema.BUCKET_FIELD_CP),
+                refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
+                refill_period_ms=_get(schema.BUCKET_FIELD_RP),
+                total_consumed_milli=total_consumed,
+                shard_count=1 if is_wcu else shard_count,
+                sched=sched,
+                reset_sched=reset_sched,
+                window_start_ms=window_start_ms,
+                reset_after_seconds=reset_after_seconds,
+                window_applied_ms=window_applied_ms,
+                window_consumed_mark_milli=window_consumed_mark,
+                grant_count=grant_count,
+                topped_up_milli=topped_up,
+                reset_number=reset_number,
+                stored_vu_ms=stored_vu,
+                stored_vu_read=True,
+                # `wcu` still gates under bypass: it protects the partition.
+                bypass=bypassed and not is_wcu,
+                bypass_until_ms=None if is_wcu else bypass_until,
+                # #467: `wcu` is never soft, whatever an item says. Present,
+                # live or not; the deadline rides beside it (decision 8).
+                soft=soft_until is not None,
+                soft_until_ms=soft_until,
+                stored_item_sched_raw=(item_sched, item_rsched, raw_sched_tz),
+                stored_sched_raw=(
+                    item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED), {}).get("S"),
+                    item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED), {}).get("S"),
+                ),
+                fill_instant=stored_fi,
+                expressed_ms=stored_xi if stored_fi is not None else None,
+                stored_fill_instant=stored_fi,
+                stored_expressed_ms=stored_xi,
+                raise_until_ms=raise_until,
             )
+            if stored_fi is not None and not state.is_dripping_state:
+                # Only a dripping limit has a fill instant: a quota's balance
+                # is its `tk` (absent reads as 0, which can only under-admit
+                # until its next reset). The param sync removes a fill instant
+                # from a limit that became a quota; one left behind is ignored
+                # rather than failing every read of the item.
+                state.fill_instant = state.expressed_ms = state.stored_fill_instant = None
+            elif stored_fi is not None:
+                # The snapshot every raw reader sees: the balance at `rf`, as a
+                # `tk` would hold it. Projections read the fill instant.
+                state.tokens_milli = balance_milli_at(state, rf)
+            buckets.append(state)
 
         return buckets
 
@@ -9476,62 +10995,10 @@ class Repository:
     ) -> list[tuple[str, int]]:
         """``(name, grant_count)`` for every legacy quota ``item`` carries outside ``skip``.
 
-        A quota is read off the stored shape, the same key the aggregator's
-        ``_is_quota_limit`` uses: a zero refill rate beside a reset — the
-        limit's own ``b_{name}_rsa`` or ``b_{name}_rsched``, or the item-level
-        ``rsched`` unless the #541 ``BUCKET_SCHED_NONE`` marker blocks it. Only
-        one with no ``gc`` (design §9) is returned, sized by the R7 rule of
-        :meth:`_quota_sibling` against its schedule-effective capacity; an
-        undecodable schedule sizes against the base capacity.
+        :func:`shard_raise.legacy_quota_sizes`, shared with the dripping-bucket
+        raise (ADR-156), which freezes the same grant sizes.
         """
-        tz = item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S", "UTC")
-        sizes: list[tuple[str, int]] = []
-        prefix, suffix = schema.BUCKET_ATTR_PREFIX, f"_{schema.BUCKET_FIELD_TK}"
-        for attr in item:
-            if not (attr.startswith(prefix) and attr.endswith(suffix)):
-                continue
-            name = attr[len(prefix) : -len(suffix)]
-            if (
-                not name
-                or name == schema.WCU_LIMIT_NAME
-                or name in skip
-                or schema.bucket_attr(name, schema.BUCKET_FIELD_GC) in item
-            ):
-                continue
-            if int(cls._limit_field(item, name, schema.BUCKET_FIELD_RA, "N") or "0") != 0:
-                continue
-            own_reset = cls._limit_field(item, name, schema.BUCKET_FIELD_RSCHED, "S")
-            is_quota = cls._limit_field(item, name, schema.BUCKET_FIELD_RSA, "N") is not None or (
-                own_reset != schema.BUCKET_SCHED_NONE
-                and bool(own_reset or item.get(schema.BUCKET_FIELD_RSCHED, {}).get("S"))
-            )
-            cp = cls._limit_field(item, name, schema.BUCKET_FIELD_CP, "N")
-            if not is_quota or cp is None:
-                continue
-            own_sched = cls._limit_field(item, name, schema.BUCKET_FIELD_SCHED, "S")
-            compact = (
-                None
-                if own_sched == schema.BUCKET_SCHED_NONE
-                else own_sched or item.get(schema.BUCKET_FIELD_SCHED, {}).get("S")
-            )
-            try:
-                sched = schedule.decode(compact, tz) if compact else ()
-            except ValueError:
-                sched = ()
-            rp = int(cls._limit_field(item, name, schema.BUCKET_FIELD_RP, "N") or "1000")
-            capacity = schedule.effective_params(int(cp), 0, rp, sched, now_ms)[0]
-            grant_count = cls._stored_shard_count(item)
-            tokens = int(item[attr]["N"])
-            while grant_count > 1 and tokens > capacity // grant_count:
-                grant_count //= 2
-            sizes.append((name, grant_count))
-        return sizes
-
-    @staticmethod
-    def _limit_field(item: dict[str, Any], name: str, key: str, kind: str) -> str | None:
-        """One per-limit bucket attribute's raw ``kind`` value, or ``None``."""
-        value = item.get(schema.bucket_attr(name, key), {}).get(kind)
-        return None if value is None else str(value)
+        return shard_raise.legacy_quota_sizes(item, skip, now_ms)
 
     @staticmethod
     def _stored_shard_count(item: dict[str, Any]) -> int:
@@ -9986,6 +11453,30 @@ class Repository:
             old = set(schema.config_limit_names(old_item))
         return old ^ new
 
+    def _limits_changed(
+        self, old_item: dict[str, Any] | None, limits: list[Limit]
+    ) -> tuple[bool, set[str]]:
+        """Whether a config replace or delete changed any limit but its soft-ness (#823).
+
+        ``old_item`` is the write's ``ALL_OLD`` image (None when the level did
+        not exist). Returns whether a limit was added, removed or changed in
+        anything other than soft-ness (``_soft_changed`` covers that), and the
+        names the write dropped. An old image that will not deserialize counts
+        as changed, dropping every limit it names, so the fan-out errs toward
+        writing.
+        """
+        new = {limit.name: replace(limit, soft=False) for limit in limits}
+        if not old_item:
+            return bool(new), set()
+        try:
+            old = {
+                limit.name: replace(limit, soft=False)
+                for limit in self._deserialize_composite_limits(old_item)
+            }
+        except Exception:
+            return True, set(schema.config_limit_names(old_item)) - set(new)
+        return old != new, set(old) - set(new)
+
     async def _resolve_soft_levels(
         self, entity_id: str, resource: str, *, consistent_read: bool = False
     ) -> tuple[str | None, dict[str, bool]]:
@@ -9993,6 +11484,19 @@ class Repository:
 
         One uncached ``BatchGetItem`` of the four config levels (#467). Returns
         ``(None, {})`` when no level defines a limit.
+        """
+        level, limits = await self._resolve_level_limits(
+            entity_id, resource, consistent_read=consistent_read
+        )
+        return level, {limit.name: limit.soft for limit in limits}
+
+    async def _resolve_level_limits(
+        self, entity_id: str, resource: str, *, consistent_read: bool = False
+    ) -> tuple[str | None, list[Limit]]:
+        """The level that decides this bucket's limits, and those limits.
+
+        One uncached ``BatchGetItem`` of the four config levels. Returns
+        ``(None, [])`` when no level defines a limit.
         """
         ns = self._namespace_id
         levels = [
@@ -10013,8 +11517,8 @@ class Repository:
                 continue
             limits = self._deserialize_composite_limits(item)
             if limits:
-                return level, {limit.name: limit.soft for limit in limits}
-        return None, {}
+                return level, limits
+        return None, []
 
     async def _discover_namespace_bucket_pks(self) -> list[str]:
         """Every bucket PK in this namespace (GSI4, ``GSI4SK begins_with BUCKET#``)."""
@@ -10042,6 +11546,137 @@ class Repository:
             if not start_key:
                 break
         return pks
+
+    async def _fanout_params(
+        self, *, resource: str | None, stale_limit_names: set[str] | None = None
+    ) -> int:
+        """Bring active buckets to a resource- or system-level change (ADR-153, #823).
+
+        Such a change used to reach a bucket only when its TTL expired, which
+        an active bucket never does: every acquire re-stamps the TTL, so
+        lowering a resource-level limit left every busy entity on the old one
+        for good. Discovers every bucket the changed level can decide — GSI2
+        for one resource, the namespace's GSI4 partition when ``resource`` is
+        None (a system-level change) — and writes each from the limits
+        resolved, read strongly consistent, for **its own** entity and
+        resource, exactly as the entity-level param sync writes (#468, #487):
+        ``cp`` / ``ra`` / ``rp``, schedules, soft stamps and TTL, each fill
+        instant re-expressed from the parameters read to the ones written in a
+        pinned write (ADR-155). Each bucket is read first (strongly consistent,
+        1 RCU) and written once. Only the limits the item carries are written:
+        one it does not carry yet is seeded by its next slow pass (#633), and
+        writing its parameters beside a stray ``tk`` an older client left
+        would make it read as spent. A bucket whose limits come from an entity
+        level is left alone, its own sync owns it; so, under a system change,
+        is one a resource level decides. Two discovery passes, as every
+        fan-out (ADR-125).
+
+        Args:
+            resource: The resource whose defaults changed, or None for the
+                system defaults.
+            stale_limit_names: Limits the change dropped: removed from a bucket
+                whose resolution no longer names them.
+
+        Raises:
+            FanoutIncomplete: A write failed part-way; carries how many landed.
+                Every write is idempotent, so re-running reconciles the rest.
+
+        Returns:
+            Number of bucket items written.
+        """
+        await self.invalidate_config_cache()
+        synced: set[str] = set()
+        written = 0
+        targets: dict[tuple[str, str], tuple[list[Limit], int] | None] = {}
+        for _pass in range(2):
+            if resource is not None:
+                pks = [pk for pk, _eid in await self._discover_resource_bucket_pks(resource)]
+            else:
+                pks = await self._discover_namespace_bucket_pks()
+            for pk in pks:
+                if pk in synced:
+                    continue
+                _ns, eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
+                key = (eid, bucket_resource)
+                if key not in targets:
+                    targets[key] = await self._default_limits(
+                        eid, bucket_resource, changed_resource=resource
+                    )
+                target = targets[key]
+                if target is not None:
+                    limits, soft_until = target
+                    try:
+                        if await self._sync_default_bucket(
+                            pk, limits, soft_until, stale_limit_names
+                        ):
+                            written += 1
+                    except Exception as e:
+                        raise FanoutIncomplete(
+                            written, e, resource=resource, action="syncing"
+                        ) from e
+                synced.add(pk)
+        return written
+
+    async def _default_limits(
+        self, entity_id: str, bucket_resource: str, *, changed_resource: str | None
+    ) -> tuple[list[Limit], int] | None:
+        """The limits a default-level change gives one bucket, and its soft deadline.
+
+        None when an entity level decides the bucket's limits (its own sync
+        owns it), when a resource level does under a system change, or when no
+        level defines a limit any more (there is no correct value to write).
+        """
+        # Taken before the resolution the soft stamps come from (decision 8).
+        soft_until = self._stamp_deadline(self._now_ms())
+        level, resolved = await self._resolve_level_limits(
+            entity_id, bucket_resource, consistent_read=True
+        )
+        if level in ("entity", "entity_default") or (
+            changed_resource is None and level == "resource"
+        ):
+            return None
+        if not resolved:
+            return None
+        return resolved, soft_until
+
+    async def _sync_default_bucket(
+        self, pk: str, limits: list[Limit], soft_until: int, stale: set[str] | None
+    ) -> bool:
+        """Read one bucket and write it the limits it carries (#823).
+
+        Returns:
+            True if the item was written; False if it had vanished or carries
+            none of the limits and none of the dropped ones.
+        """
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+            ConsistentRead=True,
+        )
+        item = cast(dict[str, Any] | None, response.get("Item"))
+        if item is None:
+            return False
+
+        def carries(name: str) -> bool:
+            return schema.bucket_attr(name, schema.BUCKET_FIELD_CP) in item and (
+                schema.bucket_attr(name, schema.BUCKET_FIELD_FI) in item
+                or schema.bucket_attr(name, schema.BUCKET_FIELD_TK) in item
+            )
+
+        carried = [limit for limit in limits if carries(limit.name)]
+        configured = {limit.name for limit in limits}
+        dropped = {
+            name
+            for name in (stale or ())
+            if name not in configured and schema.bucket_attr(name, schema.BUCKET_FIELD_CP) in item
+        }
+        if not carried and not dropped:
+            return False
+        update = self._build_bucket_param_update(
+            carried, self._bucket_ttl_refill_multiplier, dropped or None, soft_until
+        )
+        return await self._sync_one_bucket_shard(pk, *update, image=item)
 
     async def _fanout_soft(self, *, resource: str | None, names: set[str]) -> int:
         """Restamp ``b_{name}_soft`` after a resource- or system-level change (#467).
@@ -10981,6 +12616,15 @@ class Repository:
                 await asyncio.sleep(random.uniform(0, _OPERATION_RETRY_BASE_DELAY * 2**attempt))
             now_ms = self._now_ms()
             shards, raw = await self._read_operation_shards(entity_id, resource, now_ms)
+            held = next(
+                (item for item in raw.values() if schema.raise_deadline(item, now_ms)), None
+            )
+            if held is not None:
+                # A raise holds the bucket (ADR-156) and refuses this write:
+                # wait for it to land or lapse, then read every shard again.
+                await self._wait_out_raise(held)
+                now_ms = self._now_ms()
+                shards, raw = await self._read_operation_shards(entity_id, resource, now_ms)
             if not shards:
                 if operation == bucket_ops.RESET:
                     result = BucketOperationResult(
@@ -11076,7 +12720,13 @@ class Repository:
                         for write in plan.writes
                     ),
                     self.build_operation_record(
-                        operation, operation_id, result, now_ms, token, incarnation
+                        operation,
+                        operation_id,
+                        result,
+                        now_ms,
+                        token,
+                        incarnation,
+                        splits=plan.splits,
                     ),
                 ]
             # Every write carries its audit event, a keyed no-op's included
@@ -11158,8 +12808,12 @@ class Repository:
         now_ms: int,
         writer: str,
         incarnation: str,
+        splits: dict[str, dict[int, int]] | None = None,
     ) -> dict[str, Any]:
         """Build the ``Put`` of a reset or top-up's operation record (ADR-149).
+
+        ``splits`` (#820): how each named limit's amount went to each shard,
+        stored as ``splits`` (limit -> shard id -> tokens) when given.
 
         One item per call, in the shard-0 bucket's partition, conditioned on
         ``attribute_not_exists(PK)`` and written in the same transaction as the
@@ -11187,6 +12841,23 @@ class Repository:
                     "ent": {"S": incarnation},
                     "shards": {"N": str(result.shards)},
                     "amounts": {"M": {name: {"N": str(n)} for name, n in result.amounts.items()}},
+                    **(
+                        {
+                            "splits": {
+                                "M": {
+                                    name: {
+                                        "M": {
+                                            str(shard): {"N": str(n)}
+                                            for shard, n in by_shard.items()
+                                        }
+                                    }
+                                    for name, by_shard in splits.items()
+                                }
+                            }
+                        }
+                        if splits
+                        else {}
+                    ),
                     "ttl": {
                         "N": str(schema.calculate_ttl(now_ms, schema.OPERATION_RECORD_TTL_SECONDS))
                     },
@@ -11393,6 +13064,10 @@ class Repository:
             limit.name: BucketState.from_limit(entity_id, resource, limit, now_ms)
             for limit in resolved
         }
+        for state in states.values():
+            # Created full like any other bucket's first shard (ADR-156): no
+            # shard of it exists.
+            express_created(state, now_ms)
         by_name = {limit.name: limit for limit in resolved}
         amounts = {
             name: amount if by_name[name].is_quota else 0 for name, amount in requested.items()
@@ -11556,6 +13231,11 @@ class Repository:
         set_parts = ["#rf = :rf", "#vu = :vu"]
         add_parts: list[str] = []
         remove_parts: list[str] = []
+        # Never while a raise holds the item (ADR-156): its pins would break.
+        guard, guard_names, guard_values = schema.raise_guard(write.written_rf)
+        conditions: list[str] = [guard]
+        names.update(guard_names)
+        values.update(guard_values)
 
         def attr(name: str, field: str) -> str:
             return schema.bucket_attr(name, field)
@@ -11601,6 +13281,35 @@ class Repository:
             names["#ottl"] = "ttl"
             remove_parts.append("#ottl")
 
+        # Fill instants (ADR-155, #820): each SET to the value planned from the
+        # read, pinned on that read and the parameters it is expressed against,
+        # with `xi` stamped and pinned. Exact, so nothing landing in between can
+        # be kept or lost: a write that moved one fails the transaction.
+        for k, (name, (value, state)) in enumerate(sorted(write.fill_sets.items())):
+            names[f"#of{k}"] = attr(name, schema.BUCKET_FIELD_FI)
+            values[f":of{k}"] = {"N": str(value)}
+            values[f":ob{k}"] = {"N": str(state.stored_fill_instant)}
+            set_parts.append(f"#of{k} = :of{k}")
+            conditions.append(f"#of{k} = :ob{k}")
+            for token, field, pinned in (
+                ("oc", schema.BUCKET_FIELD_CP, state.capacity_milli),
+                ("oe", schema.BUCKET_FIELD_RA, state.refill_amount_milli),
+                ("oh", schema.BUCKET_FIELD_RP, state.refill_period_ms),
+            ):
+                names[f"#{token}{k}"] = attr(name, field)
+                values[f":{token}{k}"] = {"N": str(pinned)}
+                conditions.append(f"#{token}{k} = :{token}{k}")
+        if write.expressed is not None:
+            xi, read_xi = write.expressed
+            names["#oxi"] = schema.BUCKET_FIELD_XI
+            values[":oxi"] = {"N": str(xi)}
+            set_parts.append("#oxi = :oxi")
+            if read_xi is None:
+                conditions.append("attribute_not_exists(#oxi)")
+            else:
+                values[":oxir"] = {"N": str(read_xi)}
+                conditions.append("#oxi = :oxir")
+
         names["#osc"] = "shard_count"
         if write.shard_count_stored:
             values[":osc"] = {"N": str(write.shard_count)}
@@ -11625,7 +13334,7 @@ class Repository:
                     "SK": {"S": schema.sk_state()},
                 },
                 "UpdateExpression": expression,
-                "ConditionExpression": f"#rf = :erf AND {count_condition}",
+                "ConditionExpression": " AND ".join(["#rf = :erf", count_condition, *conditions]),
                 "ExpressionAttributeNames": names,
                 "ExpressionAttributeValues": values,
             }

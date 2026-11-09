@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
 
+from zae_limiter import fill_instant
 from zae_limiter.schedule import ScheduleEntry, decode, decode_reset
 from zae_limiter.schema import BUCKET_SCHED_NONE, MAX_SHARD_COUNT
 from zae_limiter_aggregator.processor import (
@@ -608,6 +609,44 @@ class TestProcessStreamRecords:
         assert result.errors == []
         assert mock_table.update_item.call_count == 2
 
+    def test_a_dripping_fill_instant_is_counted_and_never_refilled(self) -> None:
+        """#821: a fill instant's usage still reaches the snapshot from `tc`; the
+        aggregator writes nothing to the bucket, however spent it is."""
+        p = fill_instant.ShardParams(100_000_000, 100_000_000, 60_000, 1)
+        now = 1704067200000
+
+        def image(tc: int, spent: int) -> dict:
+            return {
+                "PK": {"S": "default/BUCKET#e1#gpt-4#0"},
+                "SK": {"S": "#STATE"},
+                "entity_id": {"S": "e1"},
+                "resource": {"S": "gpt-4"},
+                "rf": {"N": str(now - 60_000)},
+                "xi": {"N": str(now - 60_000)},
+                "shard_count": {"N": "1"},
+                "b_tpm_cp": {"N": "100000000"},
+                "b_tpm_ra": {"N": "100000000"},
+                "b_tpm_rp": {"N": "60000"},
+                "b_tpm_fi": {"N": str(fill_instant.stamp(now, p) + fill_instant.span(spent, p))},
+                "b_tpm_tc": {"N": str(tc)},
+            }
+
+        record = {
+            "eventName": "MODIFY",
+            "dynamodb": {"OldImage": image(0, 0), "NewImage": image(95_000_000, 95_000_000)},
+        }
+        with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
+            mock_table = MagicMock()
+            mock_boto.resource.return_value.Table.return_value = mock_table
+            result = process_stream_records([record], "test_table", ["hourly"])
+
+        assert result.errors == []
+        assert result.snapshots_updated == 1
+        assert result.refills_written == 0
+        (call,) = mock_table.update_item.call_args_list  # the snapshot only
+        assert "#STATE" not in str(call.kwargs["Key"])
+        mock_table.meta.client.transact_write_items.assert_not_called()
+
     def test_multiple_windows(self) -> None:
         """Updates multiple window types."""
         records = [self._make_record()]
@@ -1088,7 +1127,12 @@ class TestAggregateBucketStates:
 
 
 class TestTryRefillBucket:
-    """Tests for try_refill_bucket function."""
+    """Tests for try_refill_bucket function.
+
+    Since ADR-156 (#821) a dripping limit is never refilled, trimmed or written
+    here, so every write below comes from a quota's reset (`_quota_state`,
+    with the calendar-reset tests further down).
+    """
 
     def _make_state(
         self,
@@ -1117,8 +1161,13 @@ class TestTryRefillBucket:
             limits=limits,
         )
 
-    def test_refill_written_when_projected_tokens_insufficient(self) -> None:
-        """Writes refill when projected tokens < consumption estimate."""
+    def test_a_dripping_limit_short_of_its_consumption_is_not_refilled(self) -> None:
+        """ADR-156 (#821): no write, however far the projection falls short.
+
+        This used to be the refill's whole job. Every write of a dripping limit
+        is now exact (ADR-155), and the client reads a fill instant's balance at
+        any instant, so there is nothing for the aggregator to top up.
+        """
         mock_table = MagicMock()
         # Low tokens, high consumption, 5 seconds elapsed for refill
         state = self._make_state(
@@ -1133,60 +1182,42 @@ class TestTryRefillBucket:
                 ),
             },
         )
-        now_ms = 1704067200000
 
-        result = try_refill_bucket(mock_table, state, now_ms)
-
-        assert result is True
-        mock_table.update_item.assert_called_once()
-        call_kwargs = mock_table.update_item.call_args[1]
-        assert "rf = :expected_rf" in call_kwargs["ConditionExpression"]
-        assert "ADD" in call_kwargs["UpdateExpression"]
-        assert "SET rf = :new_rf" in call_kwargs["UpdateExpression"]
+        assert try_refill_bucket(mock_table, state, 1704067200000) is False
+        mock_table.update_item.assert_not_called()
 
     @staticmethod
     def _wcu(tk_milli: int) -> LimitRefillInfo:
-        # `tc_delta=0` isolates the refill credit: a batch's real wcu
-        # `tc_delta` (at most 100 writes) never beats its projection either.
         return LimitRefillInfo(
             tc_delta=0, tk_milli=tk_milli, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=1000
         )
 
-    def test_a_refill_that_moves_rf_credits_wcu(self) -> None:
-        """`wcu` rides along on a write that moves `rf`, or it forfeits its accrual.
+    def test_a_reset_that_moves_rf_writes_no_dripping_limit(self) -> None:
+        """A quota's reset moves `rf`, and no dripping limit rides on it, `wcu` included.
 
-        Left out, its stored balance drained one token per write for good and
-        read as a hot partition after ~800 writes, at any rate.
+        ADR-156 (#821) removed the drip top-up and the deferred `wcu` credit
+        that rode beside it: neither limit is refilled here any more.
         """
         mock_table = MagicMock()
-        state = self._make_state(
-            rf_ms=1704067195000,  # 5s ago
-            limits={
-                "tpm": LimitRefillInfo(
-                    tc_delta=20000000,
-                    tk_milli=5000000,
-                    cp_milli=100000000,
-                    ra_milli=100000000,
-                    rp_ms=60000,
-                ),
-                "wcu": self._wcu(150_000),
-            },
+        state = _quota_state(reset_sched=DAILY_RESET)
+        state.limits["tpm"] = LimitRefillInfo(
+            tc_delta=20_000_000,
+            tk_milli=5_000_000,
+            cp_milli=100_000_000,
+            ra_milli=100_000_000,
+            rp_ms=60_000,
         )
+        state.limits["wcu"] = self._wcu(150_000)
 
-        assert try_refill_bucket(mock_table, state, 1704067200000) is True
+        assert try_refill_bucket(mock_table, state, WED_0030) is True
 
-        kwargs = mock_table.update_item.call_args[1]
-        names, values = kwargs["ExpressionAttributeNames"], kwargs["ExpressionAttributeValues"]
-        alias = next(a for a, attr in names.items() if attr == "b_wcu_tk")
-        idx = alias.removeprefix("#rt")
-        assert f"{alias} :rd{idx}" in kwargs["UpdateExpression"]
-        assert values[f":rd{idx}"] == 1_000_000 - 150_000  # refilled to capacity
-        # Pinned on the balance read, like every raise (#730).
-        assert f"{alias} <= :rk{idx}" in kwargs["ConditionExpression"]
-        assert values[f":rk{idx}"] == 150_000
+        kwargs = mock_table.update_item.call_args.kwargs
+        assert set(_refill_deltas(kwargs)) == {"rpd"}
+        written = set(kwargs["ExpressionAttributeNames"].values())
+        assert not written & {"b_tpm_tk", "b_tpm_fi", "b_wcu_tk", "b_wcu_fi"}
 
     def test_wcu_alone_never_causes_a_write(self) -> None:
-        """A `wcu`-only refill is skipped: `rf` does not move, so nothing is forfeited."""
+        """Neither `wcu` nor a full dripping limit is refilled (ADR-156), so no write."""
         mock_table = MagicMock()
         state = self._make_state(
             rf_ms=1704067195000,
@@ -1206,7 +1237,7 @@ class TestTryRefillBucket:
         mock_table.update_item.assert_not_called()
 
     def test_refill_skipped_when_tokens_sufficient(self) -> None:
-        """Skips refill when projected tokens >= consumption."""
+        """No write when projected tokens >= consumption (nor, since ADR-156, when not)."""
         mock_table = MagicMock()
         # High tokens, low consumption
         state = self._make_state(
@@ -1246,21 +1277,9 @@ class TestTryRefillBucket:
             {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
             "UpdateItem",
         )
-        state = self._make_state(
-            rf_ms=1704067195000,
-            limits={
-                "tpm": LimitRefillInfo(
-                    tc_delta=20000000,
-                    tk_milli=5000000,
-                    cp_milli=100000000,
-                    ra_milli=100000000,
-                    rp_ms=60000,
-                ),
-            },
-        )
-        now_ms = 1704067200000
+        state = _quota_state(reset_sched=DAILY_RESET)
 
-        result = try_refill_bucket(mock_table, state, now_ms)
+        result = try_refill_bucket(mock_table, state, WED_0030)
 
         assert result is False
         mock_table.update_item.assert_called_once()
@@ -1272,22 +1291,10 @@ class TestTryRefillBucket:
             {"Error": {"Code": "ValidationException", "Message": "bad"}},
             "UpdateItem",
         )
-        state = self._make_state(
-            rf_ms=1704067195000,
-            limits={
-                "tpm": LimitRefillInfo(
-                    tc_delta=20000000,
-                    tk_milli=5000000,
-                    cp_milli=100000000,
-                    ra_milli=100000000,
-                    rp_ms=60000,
-                ),
-            },
-        )
-        now_ms = 1704067200000
+        state = _quota_state(reset_sched=DAILY_RESET)
 
         with pytest.raises(ClientError):
-            try_refill_bucket(mock_table, state, now_ms)
+            try_refill_bucket(mock_table, state, WED_0030)
 
     def test_empty_limits_returns_false(self) -> None:
         """Bucket with no limits returns False."""
@@ -1300,30 +1307,21 @@ class TestTryRefillBucket:
         mock_table.update_item.assert_not_called()
 
     def test_multiple_limits_single_update(self) -> None:
-        """Multiple limits needing refill produce a single UpdateItem."""
+        """Multiple quotas due a reset produce a single UpdateItem."""
         mock_table = MagicMock()
-        state = self._make_state(
-            rf_ms=1704067195000,  # 5s ago
+        state = _quota_state(
+            reset_sched=DAILY_RESET,
             limits={
-                "tpm": LimitRefillInfo(
-                    tc_delta=20000000,
-                    tk_milli=5000000,
-                    cp_milli=100000000,
-                    ra_milli=100000000,
-                    rp_ms=60000,
+                "rpd": LimitRefillInfo(
+                    tc_delta=0, tk_milli=2_000_000, cp_milli=10_000_000, ra_milli=0, rp_ms=1_000
                 ),
-                "rpm": LimitRefillInfo(
-                    tc_delta=200,
-                    tk_milli=10,
-                    cp_milli=1000,
-                    ra_milli=1000,
-                    rp_ms=60000,
+                "tpd": LimitRefillInfo(
+                    tc_delta=0, tk_milli=10, cp_milli=1_000, ra_milli=0, rp_ms=1_000
                 ),
             },
         )
-        now_ms = 1704067200000
 
-        result = try_refill_bucket(mock_table, state, now_ms)
+        result = try_refill_bucket(mock_table, state, WED_0030)
 
         assert result is True
         # Single UpdateItem call for both limits
@@ -1333,36 +1331,24 @@ class TestTryRefillBucket:
         # Both limits should have ADD clauses, through positional aliases
         assert "#rt0 :rd0" in update_expr
         assert "#rt1 :rd1" in update_expr
-        assert set(_refill_deltas(call_kwargs)) == {"tpm", "rpm"}
+        assert set(_refill_deltas(call_kwargs)) == {"rpd", "tpd"}
 
     def test_uses_add_not_set_for_tokens(self) -> None:
         """Verifies ADD is used for token deltas (commutative with speculative writes)."""
         mock_table = MagicMock()
-        state = self._make_state(
-            rf_ms=1704067195000,
-            limits={
-                "tpm": LimitRefillInfo(
-                    tc_delta=20000000,
-                    tk_milli=5000000,
-                    cp_milli=100000000,
-                    ra_milli=100000000,
-                    rp_ms=60000,
-                ),
-            },
-        )
-        now_ms = 1704067200000
+        state = _quota_state(reset_sched=DAILY_RESET)
 
-        try_refill_bucket(mock_table, state, now_ms)
+        try_refill_bucket(mock_table, state, WED_0030)
 
         call_kwargs = mock_table.update_item.call_args[1]
         update_expr = call_kwargs["UpdateExpression"]
         # Token update must use ADD (not SET) for commutativity
         assert "ADD #rt0 :rd0" in update_expr
-        assert call_kwargs["ExpressionAttributeNames"]["#rt0"] == "b_tpm_tk"
+        assert call_kwargs["ExpressionAttributeNames"]["#rt0"] == "b_rpd_tk"
         # rf uses SET (optimistic lock)
         assert "SET rf = :new_rf" in update_expr
-        # Refill delta should be positive
-        refill_delta = _refill_deltas(call_kwargs)["tpm"]
+        # The reset delta should be positive
+        refill_delta = _refill_deltas(call_kwargs)["rpd"]
         assert refill_delta > 0
 
     def test_negative_tc_delta_skips_refill(self) -> None:
@@ -1387,12 +1373,48 @@ class TestTryRefillBucket:
         assert result is False
         mock_table.update_item.assert_not_called()
 
+    def test_every_write_carries_the_raise_guard(self) -> None:
+        """ADR-156: a raise pins every shard on what it read, so the refill write
+        must not land while the raise's marker (`rx`, a deadline) is live."""
+        mock_table = MagicMock()
+        assert try_refill_bucket(mock_table, _quota_state(reset_sched=DAILY_RESET), WED_0030)
+
+        kwargs = mock_table.update_item.call_args.kwargs
+        assert " AND (attribute_not_exists(#rx) OR #rx <= :rxt)" in kwargs["ConditionExpression"]
+        assert kwargs["ExpressionAttributeNames"]["#rx"] == "rx"
+        assert kwargs["ExpressionAttributeValues"][":rxt"] == WED_0030
+
+    def test_a_live_raise_marker_refuses_the_write_on_a_real_table(self, mock_dynamodb) -> None:
+        """The marker holds the write off until its deadline, then is ignored."""
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=200_000, shard_count=1, rf=TUE_2300, rx=WED_0030 + 1)
+        state = _quota_state(
+            reset_sched=DAILY_RESET,
+            namespace_id=MOVE_NS,
+            entity_id=MOVE_ENTITY,
+            resource=MOVE_RESOURCE,
+        )
+        state.limits["rpd"].tk_milli = 200_000
+        state.limits["rpd"].cp_milli = 1_000_000
+
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is False
+        assert _must(table, 0)["b_rpd_tk"] == 200_000
+        # At the deadline the marker has lapsed.
+        assert try_refill_bucket(table, state, now_ms=WED_0030 + 1) is True
+        assert _must(table, 0)["b_rpd_tk"] == 1_000_000
+
 
 class TestNegativeRefillDelta:
-    """A bucket over its effective cap must be trimmed, not skipped (#222 §3.3, #469)."""
+    """A dripping limit over its effective cap is left to the client (ADR-156, #821).
 
-    def test_writes_a_negative_delta_to_trim_a_surplus(self) -> None:
-        """A bucket holding more than its cap must be trimmed, not skipped."""
+    The aggregator used to trim it with a negative delta (#222 §3.3, #469).
+    Every write of a dripping limit is exact now (ADR-155) and the client's
+    slow pass clamps it; a quota's reset still trims
+    (`TestAggregatorAppliesResets`).
+    """
+
+    def test_a_dripping_surplus_is_not_trimmed(self) -> None:
+        """A bucket holding more than its cap gets no write from the aggregator."""
         table = MagicMock()
         state = BucketRefillState(
             namespace_id="ns123",
@@ -1402,7 +1424,7 @@ class TestNegativeRefillDelta:
             rf_ms=1000,
             limits={
                 "rpm": LimitRefillInfo(
-                    tc_delta=0,
+                    tc_delta=10_000_000,  # busy bucket
                     tk_milli=900_000,
                     cp_milli=500_000,
                     ra_milli=500_000,
@@ -1410,9 +1432,8 @@ class TestNegativeRefillDelta:
                 )
             },
         )
-        assert try_refill_bucket(table, state, now_ms=1000) is True
-        deltas = _refill_deltas(table.update_item.call_args.kwargs)
-        assert deltas["rpm"] == -400_000
+        assert try_refill_bucket(table, state, now_ms=1000) is False
+        table.update_item.assert_not_called()
 
     def test_still_skips_when_nothing_to_do(self) -> None:
         table = MagicMock()
@@ -1435,124 +1456,26 @@ class TestNegativeRefillDelta:
         assert try_refill_bucket(table, state, now_ms=1000) is False
         table.update_item.assert_not_called()
 
-    def test_trims_against_the_per_shard_share(self) -> None:
-        """Effective cap is capacity // shard_count; trimming to the undivided
-        capacity would leave every shard holding the whole limit."""
-        table = MagicMock()
-        state = BucketRefillState(
-            namespace_id="ns123",
-            entity_id="user-1",
-            resource="gpt-4",
-            shard_count=4,
-            rf_ms=1000,
-            limits={
-                "rpm": LimitRefillInfo(
-                    tc_delta=0,
-                    tk_milli=400_000,
-                    cp_milli=800_000,
-                    ra_milli=800_000,
-                    rp_ms=60_000,
-                )
-            },
-        )
-        assert try_refill_bucket(table, state, now_ms=1000) is True
-        deltas = _refill_deltas(table.update_item.call_args.kwargs)
-        assert deltas["rpm"] == -200_000  # 400_000 -> 800_000 // 4 == 200_000
-
-    def test_trim_is_not_gated_by_the_consumption_threshold(self) -> None:
-        """The positive-delta threshold (projected >= consumption estimate) must
-        not suppress a trim: a hot bucket has a large tc_delta, and that is
-        exactly where a shrink most needs to land."""
-        table = MagicMock()
-        state = BucketRefillState(
-            namespace_id="ns123",
-            entity_id="user-1",
-            resource="gpt-4",
-            shard_count=1,
-            rf_ms=1000,
-            limits={
-                "rpm": LimitRefillInfo(
-                    tc_delta=10_000_000,  # busy bucket
-                    tk_milli=900_000,
-                    cp_milli=500_000,
-                    ra_milli=500_000,
-                    rp_ms=60_000,
-                )
-            },
-        )
-        assert try_refill_bucket(table, state, now_ms=1000) is True
-        deltas = _refill_deltas(table.update_item.call_args.kwargs)
-        assert deltas["rpm"] == -400_000
-
 
 class TestProcessStreamRecordsRefill:
-    """Tests for refill integration in process_stream_records."""
+    """Tests for refill integration in process_stream_records.
 
-    def _make_bucket_record(
-        self,
-        entity_id: str = "entity-1",
-        resource: str = "gpt-4",
-        rf: int = 1704067200000,
-        limits: dict[str, dict[str, int]] | None = None,
-    ) -> dict:
-        """Helper to create a composite bucket stream record with full config."""
-        if limits is None:
-            limits = {
-                "tpm": {
-                    "old_tc": 0,
-                    "new_tc": 5000000,
-                    "tk": 95000000,
-                    "cp": 100000000,
-                    "ra": 100000000,
-                    "rp": 60000,
-                },
-            }
+    The write comes from a daily quota's reset: since ADR-156 (#821) a
+    dripping limit is never refilled.
+    """
 
-        new_image: dict = {
-            "PK": {"S": f"default/ENTITY#{entity_id}"},
-            "SK": {"S": f"#BUCKET#{resource}"},
-            "entity_id": {"S": entity_id},
-            "rf": {"N": str(rf)},
-        }
-        old_image: dict = {
-            "PK": {"S": f"default/ENTITY#{entity_id}"},
-            "SK": {"S": f"#BUCKET#{resource}"},
-            "entity_id": {"S": entity_id},
-            "rf": {"N": str(rf - 1000)},
-        }
-
-        for name, fields in limits.items():
-            if "new_tc" in fields:
-                new_image[f"b_{name}_tc"] = {"N": str(fields["new_tc"])}
-            if "old_tc" in fields:
-                old_image[f"b_{name}_tc"] = {"N": str(fields["old_tc"])}
-            for attr in ("tk", "cp", "ra", "rp"):
-                if attr in fields:
-                    new_image[f"b_{name}_{attr}"] = {"N": str(fields[attr])}
-
-        return {
-            "eventName": "MODIFY",
-            "dynamodb": {"NewImage": new_image, "OldImage": old_image},
-        }
+    @staticmethod
+    def _quota_record() -> dict:
+        """A daily quota whose midnight edge falls between `rf` and the clock below."""
+        return _sched_record(
+            limits={"rpd": {"tk": 2_000_000, "cp": 10_000_000, "ra": 0, "rp": 1_000, "tc": 0}},
+            rf_ms=TUE_2300,
+            rsched=DAILY_RESET_COMPACT,
+        )
 
     def test_refills_written_in_result(self) -> None:
         """ProcessResult includes refills_written count."""
-        # Low tokens + high consumption => refill should trigger
-        records = [
-            self._make_bucket_record(
-                rf=1704067195000,
-                limits={
-                    "tpm": {
-                        "old_tc": 0,
-                        "new_tc": 20000000,
-                        "tk": 5000000,
-                        "cp": 100000000,
-                        "ra": 100000000,
-                        "rp": 60000,
-                    },
-                },
-            ),
-        ]
+        records = [self._quota_record()]
 
         with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
             mock_table = MagicMock()
@@ -1560,7 +1483,7 @@ class TestProcessStreamRecordsRefill:
 
             with patch("zae_limiter_aggregator.processor.time_module") as mock_time:
                 mock_time.perf_counter.return_value = 0.0
-                mock_time.time.return_value = 1704067200.0
+                mock_time.time.return_value = WED_0030 / 1000
 
                 result = process_stream_records(records, "test_table", ["hourly"])
 
@@ -1568,21 +1491,7 @@ class TestProcessStreamRecordsRefill:
 
     def test_refill_error_captured_in_errors(self) -> None:
         """Errors during refill are logged but don't fail the batch."""
-        records = [
-            self._make_bucket_record(
-                rf=1704067195000,
-                limits={
-                    "tpm": {
-                        "old_tc": 0,
-                        "new_tc": 20000000,
-                        "tk": 5000000,
-                        "cp": 100000000,
-                        "ra": 100000000,
-                        "rp": 60000,
-                    },
-                },
-            ),
-        ]
+        records = [self._quota_record()]
 
         with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
             mock_table = MagicMock()
@@ -1600,7 +1509,7 @@ class TestProcessStreamRecordsRefill:
 
             with patch("zae_limiter_aggregator.processor.time_module") as mock_time:
                 mock_time.perf_counter.return_value = 0.0
-                mock_time.time.return_value = 1704067200.0
+                mock_time.time.return_value = WED_0030 / 1000
 
                 result = process_stream_records(records, "test_table", ["hourly"])
 
@@ -1728,26 +1637,11 @@ class TestNamespaceExtraction:
         assert call_kwargs["ExpressionAttributeValues"][":gsi2pk"] == "a7x3kq/RESOURCE#gpt-4"
 
     def test_try_refill_bucket_uses_namespaced_key(self) -> None:
-        """try_refill_bucket uses new bucket PK format."""
+        """try_refill_bucket uses new bucket PK format (a quota's reset, ADR-156)."""
         mock_table = MagicMock()
-        state = BucketRefillState(
-            namespace_id="a7x3kq",
-            entity_id="entity-1",
-            resource="gpt-4",
-            rf_ms=1704067195000,
-            limits={
-                "tpm": LimitRefillInfo(
-                    tc_delta=20000000,
-                    tk_milli=5000000,
-                    cp_milli=100000000,
-                    ra_milli=100000000,
-                    rp_ms=60000,
-                ),
-            },
-        )
-        now_ms = 1704067200000
+        state = _quota_state(namespace_id="a7x3kq", entity_id="entity-1", reset_sched=DAILY_RESET)
 
-        try_refill_bucket(mock_table, state, now_ms)
+        try_refill_bucket(mock_table, state, WED_0030)
 
         call_kwargs = mock_table.update_item.call_args[1]
         assert call_kwargs["Key"]["PK"] == "a7x3kq/BUCKET#entity-1#gpt-4#0"
@@ -1895,34 +1789,21 @@ class TestNewBucketPKParsing:
         assert states[("ns1", "user-1", "gpt-4", 0)].shard_count == 2
 
     def test_try_refill_bucket_new_pk_and_effective_limits(self) -> None:
-        """Refill uses new PK and divides capacity/refill_amount by shard_count."""
-        mock_table = MagicMock()
-        state = BucketRefillState(
-            namespace_id="ns1",
-            entity_id="user-1",
-            resource="gpt-4",
-            shard_id=0,
-            shard_count=2,
-            rf_ms=1704067195000,  # 5s ago
-            limits={
-                "rpm": LimitRefillInfo(
-                    tc_delta=5000_000,
-                    tk_milli=0,  # empty bucket
-                    cp_milli=10000_000,  # original capacity 10000
-                    ra_milli=10000_000,  # original refill_amount 10000
-                    rp_ms=60_000,
-                ),
-            },
-        )
-        now_ms = 1704067200000
+        """Refill uses new PK and resets a quota to capacity // shard_count.
 
-        result = try_refill_bucket(mock_table, state, now_ms)
+        A quota's reset: since ADR-156 (#821) a dripping limit is never refilled.
+        """
+        mock_table = MagicMock()
+        state = _quota_state(namespace_id="ns1", shard_count=2, reset_sched=DAILY_RESET)
+
+        result = try_refill_bucket(mock_table, state, WED_0030)
 
         assert result is True
         call_kwargs = mock_table.update_item.call_args[1]
         # Verify new PK format
         assert call_kwargs["Key"]["PK"] == "ns1/BUCKET#user-1#gpt-4#0"
         assert call_kwargs["Key"]["SK"] == "#STATE"
+        assert _refill_deltas(call_kwargs)["rpd"] == 10_000_000 // 2 - 2_000_000
 
     def test_extract_deltas_filters_wcu(self) -> None:
         """wcu limit deltas are excluded from usage snapshots."""
@@ -1937,26 +1818,9 @@ class TestNewBucketPKParsing:
     def test_try_refill_bucket_old_pk_shard_0(self) -> None:
         """Refill for shard_count=1 (old format) uses new PK format."""
         mock_table = MagicMock()
-        state = BucketRefillState(
-            namespace_id="ns1",
-            entity_id="user-1",
-            resource="gpt-4",
-            shard_id=0,
-            shard_count=1,
-            rf_ms=1704067195000,
-            limits={
-                "rpm": LimitRefillInfo(
-                    tc_delta=5000_000,
-                    tk_milli=0,
-                    cp_milli=10000_000,
-                    ra_milli=10000_000,
-                    rp_ms=60_000,
-                ),
-            },
-        )
-        now_ms = 1704067200000
+        state = _quota_state(namespace_id="ns1", reset_sched=DAILY_RESET)
 
-        result = try_refill_bucket(mock_table, state, now_ms)
+        result = try_refill_bucket(mock_table, state, WED_0030)
 
         assert result is True
         call_kwargs = mock_table.update_item.call_args[1]
@@ -2185,6 +2049,87 @@ class TestTryProactiveShard:
 
         assert result is True  # 10% remaining < 20% threshold
 
+    @staticmethod
+    def _dripping(state: BucketRefillState) -> BucketRefillState:
+        state.limits["rpm"] = LimitRefillInfo(
+            tc_delta=0, tk_milli=0, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=60_000
+        )
+        return state
+
+    def test_a_bucket_holding_a_dripping_limit_is_raised_not_doubled(self) -> None:
+        """ADR-156 (#821): a dripping balance must move into the shards a raise
+        creates, so the bucket goes through `raise_bucket_shards`, on a
+        low-level client for the table's region and endpoint, and shard 0's
+        count is never doubled in place."""
+        table = MagicMock()
+        table.name = "rate-limits"
+        state = self._dripping(self._make_state(shard_count=2))
+        with (
+            patch("zae_limiter_aggregator.processor.boto3") as boto,
+            patch("zae_limiter_aggregator.processor.raise_bucket_shards", return_value=4) as raise_,
+        ):
+            assert try_proactive_shard(table, state, 100_000, 1_000_000, now_ms=state.rf_ms)
+
+        table.update_item.assert_not_called()
+        meta = table.meta.client.meta
+        boto.client.assert_called_once_with(
+            "dynamodb", region_name=meta.region_name, endpoint_url=meta.endpoint_url
+        )
+        raise_.assert_called_once_with(
+            boto.client.return_value, "rate-limits", "ns1", "user-1", "gpt-4", 2, state.rf_ms
+        )
+
+    def test_a_raise_that_does_not_land_reports_no_shard(self) -> None:
+        """Another raise held a shard, or the transaction was cancelled: the
+        count returned is no higher, and the client raises on its next `wcu`
+        exhaustion."""
+        table = MagicMock()
+        state = self._dripping(self._make_state(shard_count=2))
+        with (
+            patch("zae_limiter_aggregator.processor.boto3"),
+            patch("zae_limiter_aggregator.processor.raise_bucket_shards", return_value=2),
+        ):
+            assert not try_proactive_shard(table, state, 100_000, 1_000_000, now_ms=state.rf_ms)
+        table.update_item.assert_not_called()
+
+    def test_a_quota_only_bucket_still_doubles_shard_0(self) -> None:
+        """Discriminates the tests above: a bucket with no dripping limit keeps
+        ADR-133's doubling and ADR-145's lazy creation."""
+        table = MagicMock()
+        state = self._make_state(shard_count=2)
+        state.limits["rpd"] = LimitRefillInfo(
+            tc_delta=0,
+            tk_milli=0,
+            cp_milli=1_000_000,
+            ra_milli=0,
+            rp_ms=1_000,
+            reset_sched=DAILY_RESET,
+        )
+        with patch("zae_limiter_aggregator.processor.raise_bucket_shards") as raise_:
+            assert try_proactive_shard(table, state, 100_000, 1_000_000) is True
+        raise_.assert_not_called()
+        assert table.update_item.call_args.kwargs["ExpressionAttributeValues"][":new"] == 4
+
+    def test_wcu_stored_as_a_fill_instant_is_read_exactly(self) -> None:
+        """`wcu_fill_instant` is the balance read, and a `tk` beside it is
+        ignored: 100 of 1000 tokens left at `now` doubles; a second later
+        (`wcu` refills 1000/s) the same fill instant is full and does not."""
+        table = MagicMock()
+        state = self._make_state()
+        now = state.rf_ms
+        refill = {"wcu_refill_amount_milli": 1_000_000, "wcu_refill_period_ms": 1000}
+        # Fill instants are scaled by the refill amount: 900 ms of refill owed.
+        z = (now + 900) * 1_000_000
+
+        assert try_proactive_shard(
+            table, state, 1_000_000, 1_000_000, now_ms=now, wcu_fill_instant=z, **refill
+        )
+        table.reset_mock()
+        assert not try_proactive_shard(
+            table, state, 0, 1_000_000, now_ms=now + 1_000, wcu_fill_instant=z, **refill
+        )
+        table.update_item.assert_not_called()
+
 
 def _clone_items(table: MagicMock) -> list[dict]:
     """The items Path 2 cloned: each clone is its own transaction (ADR-150)."""
@@ -2208,12 +2153,15 @@ def _cancelled(*codes: str) -> ClientError:
 
 
 class TestProactiveShardingFeedback:
-    """The aggregator's own doubling write must not drive the next doubling.
+    """The aggregator's own raise must not drive the next one without bound.
 
     `SET shard_count` on shard 0 is a MODIFY that still carries the low stored
     wcu balance, so each invocation used to read its own write and double
-    again — 2048 and far beyond in production. Real bucket items on moto, the
-    aggregator fed the stream records its own writes produce.
+    again — 2048 and far beyond in production. Since ADR-156 (#821) a bucket
+    holding a dripping limit is raised (`raise_bucket_shards`) rather than
+    doubled, and the raise keeps shard 0's `wcu`, so its record carries the
+    same low balance and must stop at the same cap. Real bucket items on moto,
+    the aggregator fed the stream records its own writes produce.
     """
 
     TABLE = "test-rate-limits"
@@ -2233,12 +2181,12 @@ class TestProactiveShardingFeedback:
         key["PK"] = next(
             i["PK"] for i in table.scan()["Items"] if i["PK"].endswith("BUCKET#user-1#api#0")
         )
-        # 850 fast-path writes since the last materialising pass: each ADDs -1
-        # to wcu and nothing refills it, however long they took.
+        # 850 fast-path writes since `xi`: each moves `wcu`'s fill instant one
+        # token (`1000 milli × rp 1000 ms`) further out.
         table.update_item(
             Key=key,
-            UpdateExpression="ADD b_wcu_tk :d",
-            ExpressionAttributeValues={":d": -850_000},
+            UpdateExpression="ADD b_wcu_fi :d",
+            ExpressionAttributeValues={":d": 850_000 * 1000},
         )
         return table, key
 
@@ -2273,16 +2221,25 @@ class TestProactiveShardingFeedback:
 
     def test_self_fed_doubling_stops_at_max_shard_count(self, sync_repository) -> None:
         table, key = self._shard0_after_traffic(sync_repository)
-        rf_s = int(table.get_item(Key=key)["Item"]["rf"]) / 1000
-
-        # Clock frozen at `rf`: the projection restores nothing, so only the
-        # cap can stop it.
-        counts = self._run(table, key, now_s=rf_s, invocations=8)
+        # Clock frozen at `xi`, the instant `wcu`'s fill instant is expressed
+        # at: the projection restores nothing, so only the cap can stop it.
+        # Not `rf`, which a create stamps at commit, a moment after: under
+        # load that gap alone refilled `wcu` past the threshold (#821).
+        shard0 = table.get_item(Key=key)["Item"]
+        xi_s, rf_ms = int(shard0["xi"]) / 1000, int(shard0["rf"])
+        counts = self._run(table, key, now_s=xi_s, invocations=8)
 
         assert counts == [2, 4, 8, 16, 32, 32, 32, 32]
         items = [i for i in table.scan()["Items"] if "BUCKET#user-1#api#" in i["PK"]]
         assert len(items) == MAX_SHARD_COUNT
         assert all(int(i["shard_count"]) == MAX_SHARD_COUNT for i in items)
+        # Each raise moved `rpm`'s balance into the shards it created, minting
+        # none: read at `rf`, the instant every split was made at (never before
+        # the item's own expression instant).
+        params = fill_instant.ShardParams(1_000_000_000, 1_000_000_000, 60_000, MAX_SHARD_COUNT)
+        now_ms = rf_ms
+        units = sum(fill_instant.balance_units(int(i["b_rpm_fi"]), now_ms, params) for i in items)
+        assert 1_000_000_000 - 1_000 <= units // params.units_per_milli <= 1_000_000_000
 
     def test_a_stale_low_balance_does_not_double_at_all(self, sync_repository) -> None:
         table, key = self._shard0_after_traffic(sync_repository)
@@ -2295,13 +2252,18 @@ class TestProactiveShardingFeedback:
 
 
 class TestRefillAtTheBatchsLatestShardCount:
-    """A batch carrying a doubling refills shard 0 toward its new share.
+    """A batch carrying a doubling resets shard 0 toward its new share.
 
     `aggregate_bucket_states` kept the first record's `shard_count` for a
     bucket and ignored a later record in the same batch that doubled it, so the
     refill topped shard 0 up to the whole capacity while shard 1 was created
     holding its own share: 765 + 500 = 1265 against a limit of 1000 until the
     next pass trimmed it. Real items on moto, the batch built from them.
+
+    Since ADR-156 (#821) a dripping limit is neither refilled nor cloned, so the
+    batch carries a daily quota whose reset is due. Read at the stale count,
+    the reset is sized at the whole allowance and refused by its ADR-145 count
+    pin, so shard 0 keeps last period's balance.
     """
 
     TABLE = "test-rate-limits"
@@ -2326,8 +2288,8 @@ class TestRefillAtTheBatchsLatestShardCount:
 
         limiter = SyncRateLimiter(repository=sync_repository)
         limiter.create_entity("user-1")
-        limiter.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="api")
-        with limiter.acquire("user-1", "api", {"rpm": 1}):
+        limiter.set_limits("user-1", [Limit.quota("rpd", 1000, cron="0 0 * * *")], resource="api")
+        with limiter.acquire("user-1", "api", {"rpd": 1}):
             pass
         table = boto3.resource("dynamodb", region_name="us-east-1").Table(self.TABLE)
         pk = next(i["PK"] for i in table.scan()["Items"] if i["PK"].endswith("BUCKET#user-1#api#0"))
@@ -2337,7 +2299,7 @@ class TestRefillAtTheBatchsLatestShardCount:
         # Record 1: 899 more tokens spent on shard 0 (tk 100, 900 consumed).
         table.update_item(
             Key=key,
-            UpdateExpression="ADD b_rpm_tk :d, b_rpm_tc :c",
+            UpdateExpression="ADD b_rpd_tk :d, b_rpd_tc :c",
             ExpressionAttributeValues={":d": -899_000, ":c": 899_000},
         )
         item1 = table.get_item(Key=key)["Item"]
@@ -2349,10 +2311,10 @@ class TestRefillAtTheBatchsLatestShardCount:
         )
         item2 = table.get_item(Key=key)["Item"]
 
-        # 40 s after `rf`: 666 tokens of refill, short of the 900 consumed, so
-        # the refill is written.
+        # 40 s past the next UTC midnight: the reset is due.
+        midnight_ms = (int(item2["rf"]) // 86_400_000 + 1) * 86_400_000
         clock = MagicMock()
-        clock.time.return_value = int(item2["rf"]) / 1000 + 40
+        clock.time.return_value = midnight_ms / 1000 + 40
         clock.perf_counter.return_value = 0.0
         with patch("zae_limiter_aggregator.processor.time_module", clock):
             result = process_stream_records(
@@ -2362,9 +2324,12 @@ class TestRefillAtTheBatchsLatestShardCount:
             )
         assert result.errors == []
 
+        shard0 = table.get_item(Key=key)["Item"]
+        # Reset at the batch's latest count, and granted there (ADR-145 I3).
+        assert (shard0["b_rpd_tk"], shard0["b_rpd_gc"]) == (500_000, 2)
         shards = [i for i in table.scan()["Items"] if "BUCKET#user-1#api#" in i["PK"]]
         assert len(shards) == 2  # shard 1 created by the propagation
-        total_milli = sum(int(i["b_rpm_tk"]) for i in shards)
+        total_milli = sum(int(i["b_rpd_tk"]) for i in shards)
         assert total_milli <= 1000 * 1000, total_milli
 
 
@@ -2502,6 +2467,30 @@ class TestPropagateShardsCount:
         assert propagated == 0
         mock_table.update_item.assert_not_called()
 
+    @staticmethod
+    def _rpd(tc: int = 0) -> dict:
+        """A daily quota on shard 0's image, in wire format.
+
+        The clone tests below carry a quota: since ADR-156 (#821) a bucket
+        holding a dripping limit is raised, never propagated or cloned.
+        """
+        return {
+            "rsched": {"S": DAILY_RESET_COMPACT},
+            "sched_tz": {"S": "America/New_York"},
+            "b_rpd_tk": {"N": "50000000"},
+            "b_rpd_cp": {"N": "100000000"},
+            "b_rpd_ra": {"N": "0"},
+            "b_rpd_rp": {"N": "1000"},
+            "b_rpd_tc": {"N": str(tc)},
+        }
+
+    @staticmethod
+    def _no_parents() -> MagicMock:
+        """A table storing no old shard: every quota slot is granted fresh."""
+        table = MagicMock()
+        table.get_item.return_value = {}
+        return table
+
     def test_creates_full_items_for_new_shards(self) -> None:
         """New shards get full items cloned from shard 0's NewImage."""
         record = {
@@ -2518,11 +2507,7 @@ class TestPropagateShardsCount:
                     "GSI3SK": {"S": "BUCKET#gpt-4#0"},
                     "GSI4PK": {"S": "ns1"},
                     "GSI4SK": {"S": "BUCKET#user-1#gpt-4#0"},
-                    "b_rpm_tk": {"N": "50000000"},
-                    "b_rpm_cp": {"N": "100000000"},
-                    "b_rpm_ra": {"N": "100000000"},
-                    "b_rpm_rp": {"N": "60000"},
-                    "b_rpm_tc": {"N": "0"},
+                    **self._rpd(),
                     "b_wcu_tk": {"N": "1000000"},
                     "b_wcu_cp": {"N": "1000000"},
                     "b_wcu_ra": {"N": "1000000"},
@@ -2538,7 +2523,7 @@ class TestPropagateShardsCount:
                 },
             },
         }
-        mock_table = MagicMock()
+        mock_table = self._no_parents()
         propagated = propagate_shard_count(mock_table, record)
 
         # Shard 1 is EXISTING (update only), shards 2 and 3 are NEW (put)
@@ -2552,7 +2537,7 @@ class TestPropagateShardsCount:
         for item in clones:
             assert "GSI3PK" in item
             assert "GSI2PK" in item
-            assert "b_rpm_tk" in item
+            assert "b_rpd_tk" in item
             assert "b_wcu_tk" in item
 
         new_pks = {item["PK"] for item in clones}
@@ -2571,11 +2556,7 @@ class TestPropagateShardsCount:
                     "SK": {"S": "#STATE"},
                     "shard_count": {"N": "4"},
                     "entity_id": {"S": "user-1"},
-                    "b_rpm_tk": {"N": "50000000"},
-                    "b_rpm_cp": {"N": "100000000"},
-                    "b_rpm_ra": {"N": "100000000"},
-                    "b_rpm_rp": {"N": "60000"},
-                    "b_rpm_tc": {"N": "0"},
+                    **self._rpd(),
                     "cascade": {"BOOL": False},
                     "rf": {"N": "1000"},
                 },
@@ -2586,7 +2567,7 @@ class TestPropagateShardsCount:
                 },
             },
         }
-        mock_table = MagicMock()
+        mock_table = self._no_parents()
         propagate_shard_count(mock_table, record)
 
         # Shard 1 is existing — UpdateItem, not PutItem
@@ -2598,7 +2579,7 @@ class TestPropagateShardsCount:
 
     def test_new_shard_skips_if_client_created(self) -> None:
         """The Put's attribute_not_exists(PK) skips client-created shards."""
-        mock_table = MagicMock()
+        mock_table = self._no_parents()
         mock_table.meta.client.transact_write_items.side_effect = _cancelled(
             "ConditionalCheckFailed", "None"
         )
@@ -2610,11 +2591,7 @@ class TestPropagateShardsCount:
                     "SK": {"S": "#STATE"},
                     "shard_count": {"N": "2"},
                     "entity_id": {"S": "user-1"},
-                    "b_rpm_tk": {"N": "50000000"},
-                    "b_rpm_cp": {"N": "100000000"},
-                    "b_rpm_ra": {"N": "100000000"},
-                    "b_rpm_rp": {"N": "60000"},
-                    "b_rpm_tc": {"N": "0"},
+                    **self._rpd(),
                     "cascade": {"BOOL": False},
                     "rf": {"N": "1000"},
                 },
@@ -2628,9 +2605,10 @@ class TestPropagateShardsCount:
 
         propagated = propagate_shard_count(mock_table, record)
         assert propagated == 0  # Client already created it
+        mock_table.meta.client.transact_write_items.assert_called_once()
 
     def test_new_shard_tokens_set_to_effective_capacity(self) -> None:
-        """New shard tokens are set to effective per-shard capacity."""
+        """A quota clone no sibling's grant covers is granted the per-shard share."""
         record = {
             "eventName": "MODIFY",
             "dynamodb": {
@@ -2639,11 +2617,7 @@ class TestPropagateShardsCount:
                     "SK": {"S": "#STATE"},
                     "shard_count": {"N": "2"},
                     "entity_id": {"S": "user-1"},
-                    "b_rpm_tk": {"N": "50000000"},
-                    "b_rpm_cp": {"N": "100000000"},
-                    "b_rpm_ra": {"N": "100000000"},
-                    "b_rpm_rp": {"N": "60000"},
-                    "b_rpm_tc": {"N": "5000"},
+                    **self._rpd(tc=5000),
                     "b_wcu_tk": {"N": "500000"},
                     "b_wcu_cp": {"N": "1000000"},
                     "b_wcu_ra": {"N": "1000000"},
@@ -2659,21 +2633,46 @@ class TestPropagateShardsCount:
                 },
             },
         }
-        mock_table = MagicMock()
+        mock_table = self._no_parents()
         propagate_shard_count(mock_table, record)
 
         clones = _clone_items(mock_table)
         assert len(clones) == 1  # shard 1 is new
         item = clones[0]
 
-        # rpm tokens = effective capacity = 100000000 // 2 = 50000000
-        assert item["b_rpm_tk"] == 50000000
-        # rpm tc reset to 0
-        assert item["b_rpm_tc"] == 0
+        # rpd tokens = effective capacity = 100000000 // 2 = 50000000, granted at 2
+        assert item["b_rpd_tk"] == 50000000
+        assert item["b_rpd_gc"] == 2
+        # rpd tc reset to 0
+        assert item["b_rpd_tc"] == 0
         # wcu tokens = full capacity (not divided) = 1000000
         assert item["b_wcu_tk"] == 1000000
         # wcu tc reset to 0
         assert item["b_wcu_tc"] == 0
+
+    def test_a_bucket_holding_a_dripping_limit_is_left_to_the_raise(self) -> None:
+        """ADR-156 (#821): neither Path 1 nor Path 2 touches such a bucket.
+
+        A dripping balance must move into the shards a raise creates, and the
+        raise writes every shard, existing and new, in one transaction: a
+        count raised here, or a clone at a full share, would mint tokens.
+        """
+        record = self._make_shard_change_record(old_shard_count=2, new_shard_count=4)
+        record["dynamodb"]["NewImage"].update(
+            {
+                "b_rpm_fi": {"N": "1000000000000000"},
+                "b_rpm_cp": {"N": "1000000"},
+                "b_rpm_ra": {"N": "1000000"},
+                "b_rpm_rp": {"N": "60000"},
+                "xi": {"N": "1000"},
+            }
+        )
+        mock_table = MagicMock()
+
+        assert propagate_shard_count(mock_table, record) == 0
+        mock_table.update_item.assert_not_called()
+        mock_table.get_item.assert_not_called()
+        mock_table.meta.client.transact_write_items.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2698,20 +2697,29 @@ BUSINESS_DECODED = decode(BUSINESS_COMPACT, "America/New_York")
 HOUR_14_DECODED = decode(HOUR_14_COMPACT, "America/New_York")
 
 
+# A daily reset at 14:00 New York time, so its edge falls inside the minute
+# `_sched_state` leaves stale. Since ADR-156 (#821) a quota's reset or roll is
+# the only thing the refill writes — a dripping limit is never refilled — so
+# the schedule and `vu` tests below reach the write through one.
+DAILY_1400_RESET = (ScheduleEntry.reset(cron="0 14 * * *", tz="America/New_York"),)
+DAILY_1400_RESET_COMPACT = "1m0h14"
+
+
 def _sched_state(**kwargs) -> BucketRefillState:
-    """A one-limit bucket, one minute stale, that has consumed 600 tokens."""
+    """A one-limit bucket, one minute stale: an empty daily quota due its 14:00 reset."""
     base = dict(
         namespace_id="ns123",
         entity_id="user-1",
         resource="gpt-4",
         rf_ms=TUE_1400 - 60_000,
+        reset_sched=DAILY_1400_RESET,
         limits={
-            "rpm": LimitRefillInfo(
+            "rpd": LimitRefillInfo(
                 tc_delta=600_000,
                 tk_milli=0,
                 cp_milli=1_000_000,
-                ra_milli=1_000_000,
-                rp_ms=60_000,
+                ra_milli=0,
+                rp_ms=1_000,
             )
         },
     )
@@ -2778,30 +2786,33 @@ def _sched_record(
 
 
 class TestAggregatorRespectsSchedules:
-    """Refill targets the scheduled ceiling at the scheduled rate."""
+    """A reset targets the scheduled ceiling: scale first, then divide.
 
-    def test_refills_at_the_scheduled_rate_not_the_base(self) -> None:
-        """During a 0.5x window one minute yields 500_000 millitokens, which
-        does not cover the 600_000 consumption estimate, so the top-up runs."""
+    Since ADR-156 (#821) the aggregator refills no dripping limit, so a
+    schedule reaches its write through a quota's reset target only.
+    """
+
+    def test_resets_to_the_scheduled_ceiling_not_the_base(self) -> None:
+        """During a 0.5x window the reset restores 500_000, not the base 1_000_000."""
         table = MagicMock()
         assert try_refill_bucket(table, _sched_state(sched=BUSINESS), now_ms=TUE_1400) is True
         deltas = _refill_deltas(table.update_item.call_args.kwargs)
-        assert deltas["rpm"] == 500_000
+        assert deltas["rpd"] == 500_000
 
-    def test_unscheduled_same_bucket_is_skipped_entirely(self) -> None:
-        """Discriminates the test above: at the base rate the same minute
-        yields 1_000_000, which already covers 600_000, so nothing is written."""
+    def test_unscheduled_same_bucket_resets_to_the_base(self) -> None:
+        """Discriminates the test above."""
         table = MagicMock()
-        assert try_refill_bucket(table, _sched_state(), now_ms=TUE_1400) is False
-        table.update_item.assert_not_called()
+        assert try_refill_bucket(table, _sched_state(), now_ms=TUE_1400) is True
+        assert _refill_deltas(table.update_item.call_args.kwargs)["rpd"] == 1_000_000
 
-    def test_outside_the_window_the_base_rate_applies(self) -> None:
+    def test_outside_the_window_the_base_applies(self) -> None:
         """The schedule is a window, not a permanent scale: an instant no entry
-        matches falls back to the base, and is then skipped like the control."""
+        matches falls back to the base, exactly like the control."""
         table = MagicMock()
         sunday = int(datetime(2026, 9, 13, 14, 0, tzinfo=NY).timestamp() * 1000)
         state = _sched_state(sched=BUSINESS, rf_ms=sunday - 60_000)
-        assert try_refill_bucket(table, state, now_ms=sunday) is False
+        assert try_refill_bucket(table, state, now_ms=sunday) is True
+        assert _refill_deltas(table.update_item.call_args.kwargs)["rpd"] == 1_000_000
 
     def test_scheduled_ceiling_is_per_shard(self) -> None:
         """Scale first, then divide by shard_count."""
@@ -2809,62 +2820,59 @@ class TestAggregatorRespectsSchedules:
         state = _sched_state(sched=BUSINESS, shard_count=2)
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
         deltas = _refill_deltas(table.update_item.call_args.kwargs)
-        assert deltas["rpm"] == 250_000  # (1_000_000 * 0.5) // 2
+        assert deltas["rpd"] == 250_000  # (1_000_000 * 0.5) // 2
 
     def test_a_scale_down_trims_a_surplus(self) -> None:
-        """Entering a 0.5x window with a full bucket must clamp, not sit on
-        twice the scheduled ceiling (§3.3 — this is what replaces #469)."""
+        """A reset inside a 0.5x window over a full bucket must clamp, not sit
+        on twice the scheduled ceiling (§3.3). A quota's reset: since ADR-156
+        the aggregator trims no dripping limit."""
         table = MagicMock()
-        state = _sched_state(sched=BUSINESS, rf_ms=TUE_1400)
-        state.limits["rpm"].tk_milli = 1_000_000
+        state = _sched_state(sched=BUSINESS)
+        state.limits["rpd"].tk_milli = 1_000_000
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
         deltas = _refill_deltas(table.update_item.call_args.kwargs)
-        assert deltas["rpm"] == -500_000
+        assert deltas["rpd"] == -500_000
 
-    def test_absolute_entries_override_capacity_and_rate(self) -> None:
-        """A `capacity`/`refill_amount` entry replaces the base outright."""
+    def test_absolute_entries_override_capacity(self) -> None:
+        """A `capacity` entry replaces the base outright."""
         table = MagicMock()
-        sched = (
-            ScheduleEntry(
-                cron="* 9-17 * * MON-FRI",
-                tz="America/New_York",
-                capacity=200,
-                refill_amount=200,
-            ),
-        )
+        sched = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", capacity=200),)
         assert try_refill_bucket(table, _sched_state(sched=sched), now_ms=TUE_1400) is True
         deltas = _refill_deltas(table.update_item.call_args.kwargs)
-        assert deltas["rpm"] == 200_000
+        assert deltas["rpd"] == 200_000
 
 
 class TestPerLimitScheduleOverride:
     """`b_{name}_sched` overrides the item-level default for that limit only."""
 
+    # Two daily quotas due their 14:00 reset: since ADR-156 (#821) only a
+    # quota's reset writes, so each limit's schedule shows in its reset target.
     LIMITS = {
-        "rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 600_000},
-        "tpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 600_000},
+        "rpd": {"tk": 0, "cp": 1_000_000, "ra": 0, "rp": 1_000, "tc": 600_000},
+        "tpd": {"tk": 0, "cp": 1_000_000, "ra": 0, "rp": 1_000, "tc": 600_000},
     }
 
     def _state(self) -> BucketRefillState:
         record = _sched_record(
             limits=self.LIMITS,
             sched=BUSINESS_COMPACT,
-            limit_sched={"rpm": HOUR_14_COMPACT},
+            limit_sched={"rpd": HOUR_14_COMPACT},
+            rsched=DAILY_1400_RESET_COMPACT,
         )
         states = aggregate_bucket_states([record])
         return next(iter(states.values()))
 
     def test_overridden_limit_uses_its_own_schedule(self) -> None:
-        """rpm is on the 0.25x override, tpm on the 0.5x item default.
+        """rpd is on the 0.25x override, tpd on the 0.5x item default.
 
-        Refilling rpm at the item default would hand it twice the tokens its
-        own schedule allows — over-refill is the unsafe direction.
+        Resetting rpd at the item default would grant it twice the tokens its
+        own schedule allows — over-grant is the unsafe direction.
         """
         table = MagicMock()
         assert try_refill_bucket(table, self._state(), now_ms=TUE_1400) is True
         deltas = _refill_deltas(table.update_item.call_args.kwargs)
-        assert deltas["rpm"] == 250_000
-        assert deltas["tpm"] == 500_000
+        assert deltas["rpd"] == 250_000
+        assert deltas["tpd"] == 500_000
 
     def test_vu_is_the_earliest_boundary_on_the_item(self) -> None:
         """`vu` is one item-level attribute, so the earliest change anywhere on
@@ -2877,57 +2885,6 @@ class TestPerLimitScheduleOverride:
         values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
         expected = int(datetime(2026, 9, 15, 15, 0, tzinfo=NY).timestamp() * 1000)
         assert values[":new_vu"] == expected
-
-
-class TestWcuIsNeverScheduledOrSharded:
-    """`wcu` is the per-partition write ceiling, not a user limit."""
-
-    def _wcu_state(self, **kwargs) -> BucketRefillState:
-        return BucketRefillState(
-            namespace_id="ns123",
-            entity_id="user-1",
-            resource="gpt-4",
-            rf_ms=TUE_1400 - 60_000,
-            limits={
-                "wcu": LimitRefillInfo(
-                    tc_delta=2_000_000,
-                    tk_milli=0,
-                    cp_milli=1_000_000,
-                    ra_milli=1_000_000,
-                    rp_ms=1_000,
-                )
-            },
-            **kwargs,
-        )
-
-    def test_wcu_is_refilled_undivided_and_unscaled(self) -> None:
-        """A user's 0.5x schedule must not halve the partition write ceiling,
-        and every shard is its own partition so the ceiling is not divided."""
-        table = MagicMock()
-        state = self._wcu_state(shard_count=4, sched=BUSINESS)
-        state.limits["wcu"].sched = BUSINESS
-        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
-        deltas = _refill_deltas(table.update_item.call_args.kwargs)
-        assert deltas["wcu"] == 1_000_000
-
-    def test_user_limits_on_the_same_item_are_still_divided(self) -> None:
-        """Discriminates the test above: the exemption is `wcu`-specific, not
-        a blanket "stop dividing"."""
-        table = MagicMock()
-        state = self._wcu_state(shard_count=4, sched=BUSINESS)
-        state.limits["wcu"].sched = BUSINESS
-        state.limits["rpm"] = LimitRefillInfo(
-            tc_delta=600_000,
-            tk_milli=0,
-            cp_milli=1_000_000,
-            ra_milli=1_000_000,
-            rp_ms=60_000,
-            sched=BUSINESS,
-        )
-        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
-        deltas = _refill_deltas(table.update_item.call_args.kwargs)
-        assert deltas["wcu"] == 1_000_000
-        assert deltas["rpm"] == 125_000  # (1_000_000 * 0.5) // 4
 
 
 class TestAggregatorRestampsVu:
@@ -2950,16 +2907,6 @@ class TestAggregatorRestampsVu:
         try_refill_bucket(table, state, now_ms=TUE_1400)
         assert ":new_vu" not in table.update_item.call_args.kwargs["ExpressionAttributeValues"]
 
-    def test_unscheduled_bucket_never_stamps_vu(self) -> None:
-        """`vu = 0` on an unscheduled bucket (the #468 fan-out writes one on
-        every call) has no boundary to advance to, so this pass must not
-        invent one. Task 13 removes it instead."""
-        table = MagicMock()
-        state = _sched_state(vu_ms=0)
-        state.limits["rpm"].tc_delta = 10_000_000  # force a write
-        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
-        assert ":new_vu" not in table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-
     def test_restamp_is_conditioned_on_the_schedule_it_read(self) -> None:
         """The stream image can predate a fan-out that rewrote `sched` and set
         `vu = 0` *without touching rf*, so the rf lock alone does not catch it.
@@ -2970,14 +2917,17 @@ class TestAggregatorRestampsVu:
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
         kwargs = table.update_item.call_args.kwargs
         assert kwargs["ConditionExpression"] == (
-            "rf = :expected_rf AND #vu = :expected_vu AND #rt0 <= :rk0 AND #sched = :expected_sched"
+            "rf = :expected_rf AND (attribute_not_exists(#rx) OR #rx <= :rxt)"
+            " AND #vu = :expected_vu AND #rt0 <= :rk0"
+            " AND (attribute_not_exists(#gqsc) OR #gqsc <= :gqpin)"
+            " AND #sched = :expected_sched"
         )
         assert kwargs["ExpressionAttributeValues"][":expected_sched"] == BUSINESS_COMPACT
         assert kwargs["ExpressionAttributeNames"]["#sched"] == "sched"
 
-    def test_a_plain_refill_keeps_only_the_rf_and_vu_guards(self) -> None:
+    def test_a_write_without_a_restamp_carries_no_sched_guard(self) -> None:
         """Discriminates the test above: the `#sched` guard rides with the `vu`
-        re-stamp only, so it cannot cost skipped refills on every other write.
+        re-stamp only, so it cannot cost skipped writes on every other write.
 
         The `#vu` pin does ride on every write — that is #508, and it is the
         one thing that makes a pre-fan-out image detectable at all, since the
@@ -2986,9 +2936,12 @@ class TestAggregatorRestampsVu:
         state = _sched_state(sched=BUSINESS)
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
         kwargs = table.update_item.call_args.kwargs
-        # Plus the refill's own pin on the balance it read (#730 R5).
+        # Plus the raise marker (ADR-156) and the reset's own pins: on the
+        # balance it read (#730 R5) and on the count it granted at (ADR-145 I4).
         assert kwargs["ConditionExpression"] == (
-            "rf = :expected_rf AND attribute_not_exists(#vu) AND #rt0 <= :rk0"
+            "rf = :expected_rf AND (attribute_not_exists(#rx) OR #rx <= :rxt)"
+            " AND attribute_not_exists(#vu) AND #rt0 <= :rk0"
+            " AND (attribute_not_exists(#gqsc) OR #gqsc <= :gqpin)"
         )
         assert "#sched" not in kwargs["ExpressionAttributeNames"]
 
@@ -3002,6 +2955,57 @@ class TestAggregatorRestampsVu:
         kwargs = table.update_item.call_args.kwargs
         assert "#vu = :expected_vu" in kwargs["ConditionExpression"]
         assert kwargs["ExpressionAttributeValues"][":expected_vu"] == TUE_1400 + 3_600_000
+
+    @staticmethod
+    def _with_fill_instant(xi_ms: int) -> BucketRefillState:
+        """The quota above, due its reset, beside a 0.5x-scheduled dripping
+        limit stored as a fill instant last expressed at ``xi_ms``."""
+        state = _sched_state(sched=BUSINESS, vu_ms=TUE_1400 - 1, xi_ms=xi_ms)
+        state.limits["rpm"] = LimitRefillInfo(
+            tc_delta=0,
+            tk_milli=0,
+            cp_milli=1_000_000,
+            ra_milli=1_000_000,
+            rp_ms=60_000,
+            sched=BUSINESS,
+            fill_instant=xi_ms * 1_000_000 + 30_000_000_000,
+        )
+        return state
+
+    def test_a_restamp_past_a_boundary_re_expresses_scheduled_fill_instants(self) -> None:
+        """ADR-155 on the aggregator's write (#821): a fill instant is scaled by
+        the refill amount its schedule put in force, so re-opening the fast path
+        past a boundary crossed since `xi` re-expresses it at `now` in the same
+        write, pinned on everything it was computed from."""
+        xi = int(datetime(2026, 9, 15, 8, 59, tzinfo=NY).timestamp() * 1000)  # before 09:00
+        table = MagicMock()
+        state = self._with_fill_instant(xi)
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+
+        kwargs = table.update_item.call_args.kwargs
+        names, values = kwargs["ExpressionAttributeNames"], kwargs["ExpressionAttributeValues"]
+        stored = state.limits["rpm"].fill_instant
+        assert stored is not None
+        expected, _last = fill_instant.re_express_across(
+            stored, xi, TUE_1400, 1_000_000, 1_000_000, 60_000, BUSINESS, 1
+        )
+        assert (names["#xf0"], values[":xf0"]) == ("b_rpm_fi", expected)
+        assert (names["#xxi"], values[":xxi"]) == ("xi", TUE_1400)
+        assert "#xf0 = :xf0" in kwargs["UpdateExpression"]
+        assert "#xxi = :xxi" in kwargs["UpdateExpression"]
+        for pin in ("#xf0 = :xb0", "#xc0 = :xc0", "#xa0 = :xa0", "#xr0 = :xr0", "#xxi = :xxir"):
+            assert f" AND {pin}" in kwargs["ConditionExpression"]
+        assert (values[":xb0"], values[":xxir"]) == (stored, xi)
+
+    def test_no_boundary_since_xi_re_expresses_nothing(self) -> None:
+        """Discriminates the test above: `xi` is already inside the window."""
+        table = MagicMock()
+        state = self._with_fill_instant(TUE_1400 - 30_000)
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert "#vu = :new_vu" in kwargs["UpdateExpression"]
+        assert "#xf0" not in kwargs["ExpressionAttributeNames"]
+        assert "#xxi" not in kwargs["ExpressionAttributeNames"]
 
 
 class TestScheduleIsCarriedFromTheStreamImage:
@@ -3058,32 +3062,37 @@ class TestScheduleIsCarriedFromTheStreamImage:
 class TestUndecodableSchedule:
     """§6 — an unreadable schedule must not be silently treated as "no schedule"."""
 
-    # A hot bucket: at the *base* rate one minute yields 1_000_000, far short of
-    # the 10_000_000 consumption estimate, so an aggregator that ignored the
-    # unreadable schedule would definitely write. That is what makes the skip
-    # below observable rather than indistinguishable from the usual threshold.
-    LIMITS = {"rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 10_000_000}}
+    # A hot bucket beside an empty daily quota whose 14:00 reset is due, so an
+    # aggregator that ignored the unreadable schedule would definitely write.
+    # That is what makes the skip below observable rather than
+    # indistinguishable from a bucket with nothing to do. The quota is what
+    # writes: since ADR-156 (#821) the dripping `rpm` is never refilled.
+    LIMITS = {
+        "rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 10_000_000},
+        "rpd": {"tk": 0, "cp": 1_000_000, "ra": 0, "rp": 1_000, "tc": 0},
+    }
+
+    def _record(self, **kwargs) -> dict:
+        return _sched_record(
+            limits=self.LIMITS, limit_rsched={"rpd": DAILY_1400_RESET_COMPACT}, **kwargs
+        )
 
     def test_parse_reports_rather_than_raises(self) -> None:
         """Raising here would abort the whole stream batch, snapshots included,
         and the record would retry until the stream stalled."""
-        parsed = _parse_bucket_record(
-            _sched_record(limits=self.LIMITS, sched="this-is-not-a-schedule")
-        )
+        parsed = _parse_bucket_record(self._record(sched="this-is-not-a-schedule"))
         assert parsed is not None
         assert parsed.sched_error is not None
         assert parsed.limits["rpm"].tc_delta == 10_000_000  # usage data still usable
 
     def test_usage_deltas_are_still_extracted(self) -> None:
-        deltas = extract_deltas(_sched_record(limits=self.LIMITS, sched="1h99-nope"))
+        deltas = extract_deltas(self._record(sched="1h99-nope"))
         assert [d.tokens_delta for d in deltas] == [10_000_000]
 
     def test_refill_is_skipped_entirely(self) -> None:
         """Refilling at the *base* rate would silently undo a scale-down."""
         table = MagicMock()
-        states = aggregate_bucket_states(
-            [_sched_record(limits=self.LIMITS, sched="this-is-not-a-schedule")]
-        )
+        states = aggregate_bucket_states([self._record(sched="this-is-not-a-schedule")])
         state = next(iter(states.values()))
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is False
         table.update_item.assert_not_called()
@@ -3093,13 +3102,7 @@ class TestUndecodableSchedule:
         its own way of being unreadable — and the same consequence."""
         table = MagicMock()
         states = aggregate_bucket_states(
-            [
-                _sched_record(
-                    limits=self.LIMITS,
-                    sched=BUSINESS_COMPACT,
-                    limit_sched={"rpm": "not-a-schedule"},
-                )
-            ]
+            [self._record(sched=BUSINESS_COMPACT, limit_sched={"rpm": "not-a-schedule"})]
         )
         state = next(iter(states.values()))
         assert state.sched_error is not None
@@ -3110,54 +3113,63 @@ class TestUndecodableSchedule:
     def test_a_readable_schedule_on_the_same_shape_does_refill(self) -> None:
         """Discriminates the test above."""
         table = MagicMock()
-        states = aggregate_bucket_states(
-            [_sched_record(limits=self.LIMITS, sched=BUSINESS_COMPACT)]
-        )
+        states = aggregate_bucket_states([self._record(sched=BUSINESS_COMPACT)])
         assert try_refill_bucket(table, next(iter(states.values())), now_ms=TUE_1400) is True
 
 
 class TestShardCloneRespectsSchedule:
-    """Path 2 creates a shard *full*, so it must fill to the scheduled ceiling."""
+    """Path 2 grants a new shard its share now, so it must be the scheduled one.
+
+    A quota granted fresh (no stored sibling covers the slot): since ADR-156
+    (#821) a bucket holding a dripping limit is raised, never cloned.
+    """
 
     def _record(self, *, sched: str | None, limit_sched: dict | None = None) -> dict:
         record = _sched_record(
             limits={
-                "rpm": {"tk": 500_000, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0},
+                "rpd": {"tk": 500_000, "cp": 1_000_000, "ra": 0, "rp": 1_000, "tc": 0},
                 "wcu": {"tk": 900_000, "cp": 1_000_000, "ra": 1_000_000, "rp": 1_000, "tc": 0},
             },
             sched=sched,
             limit_sched=limit_sched,
+            limit_rsched={"rpd": DAILY_RESET_COMPACT},
             shard_count=2,
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         return record
 
+    @staticmethod
+    def _table() -> MagicMock:
+        table = MagicMock()
+        table.get_item.return_value = {}  # no stored parent: the slot is granted fresh
+        return table
+
     def test_new_shard_starts_at_the_scheduled_share(self) -> None:
-        """Cloning the base capacity during a 0.5x window would hand the new
+        """Granting the base share during a 0.5x window would hand the new
         shard twice what the schedule allows — and the clone carries shard 0's
         `vu`, which is in the future, so the fast path would spend it."""
-        table = MagicMock()
+        table = self._table()
         assert propagate_shard_count(table, self._record(sched=BUSINESS_COMPACT), TUE_1400) == 1
         item = _clone_items(table)[-1]
-        assert item["b_rpm_tk"] == 250_000  # (1_000_000 * 0.5) // 2
+        assert item["b_rpd_tk"] == 250_000  # (1_000_000 * 0.5) // 2
         assert item["b_wcu_tk"] == 1_000_000  # per-partition, never divided or scaled
 
     def test_unscheduled_clone_starts_at_the_base_share(self) -> None:
         """Discriminates the test above."""
-        table = MagicMock()
+        table = self._table()
         assert propagate_shard_count(table, self._record(sched=None), TUE_1400) == 1
-        assert _clone_items(table)[-1]["b_rpm_tk"] == 500_000
+        assert _clone_items(table)[-1]["b_rpd_tk"] == 500_000
 
     def test_per_limit_override_is_honoured(self) -> None:
-        table = MagicMock()
-        record = self._record(sched=BUSINESS_COMPACT, limit_sched={"rpm": HOUR_14_COMPACT})
+        table = self._table()
+        record = self._record(sched=BUSINESS_COMPACT, limit_sched={"rpd": HOUR_14_COMPACT})
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        assert _clone_items(table)[-1]["b_rpm_tk"] == 125_000
+        assert _clone_items(table)[-1]["b_rpd_tk"] == 125_000
 
     def test_undecodable_schedule_creates_no_shard(self) -> None:
         """A shard created at the wrong ceiling is worse than no shard: the
         client creates it on its slow path, where §6 applies."""
-        table = MagicMock()
+        table = self._table()
         assert propagate_shard_count(table, self._record(sched="not-a-schedule"), TUE_1400) == 0
         table.meta.client.transact_write_items.assert_not_called()
 
@@ -3169,6 +3181,8 @@ class TestShardCloneRespectsSchedule:
 
 DAILY_RESET = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
 DAILY_RESET_COMPACT = "1m0h0"
+# A reset with no edge between TUE_2300 and WED_0030: a quota between its edges.
+SUNDAY_RESET = (ScheduleEntry.reset(cron="0 0 * * SUN", tz="America/New_York"),)
 
 WED_0030 = int(datetime(2026, 9, 16, 0, 30, tzinfo=NY).timestamp() * 1000)
 TUE_2300 = int(datetime(2026, 9, 15, 23, 0, tzinfo=NY).timestamp() * 1000)
@@ -3230,12 +3244,12 @@ class TestAggregatorAppliesResets:
         table.update_item.assert_not_called()
 
     def test_the_reset_bypasses_the_consumption_threshold(self) -> None:
-        """Explicitly pinned, because the threshold is a `continue` on the
-        positive branch and a reset is usually positive. A hot bucket has the
-        largest tc_delta and is exactly where the aggregator, not the client,
-        is the refiller — gating the reset behind the threshold would turn it
-        off on the buckets it matters most for, the same defect §3.3 records
-        for the negative clamp."""
+        """Explicitly pinned, because the drip threshold was a `continue` on
+        the positive branch (gone with the drip refill, ADR-156) and a reset is
+        usually positive. A hot bucket has the largest tc_delta and is exactly
+        where the aggregator, not the client, is the refiller — gating the
+        reset behind the threshold would turn it off on the buckets it matters
+        most for, the same defect §3.3 records for the negative clamp."""
         table = MagicMock()
         state = _quota_state(reset_sched=DAILY_RESET)
         state.limits["rpd"].tc_delta = 9_000_000  # far above anything refill yields
@@ -3294,7 +3308,7 @@ class TestAggregatorAppliesResets:
     def test_a_reset_trims_a_balance_above_the_effective_capacity(self) -> None:
         """A reset *sets* the balance, so a surplus left by a shrink is removed
         by the same expression that tops a deficit up — the negative-ADD shape
-        the unconditional clamp already uses."""
+        the dripping clamp used before ADR-156."""
         table = MagicMock()
         state = _quota_state(reset_sched=DAILY_RESET, shard_count=4)
         state.limits["rpd"].tk_milli = 10_000_000
@@ -3307,9 +3321,9 @@ class TestAggregatorAppliesResets:
         `wcu` is the per-partition write ceiling, not a user limit — the same
         exemption `effective_params` already has.
 
-        Discriminating: at the base rate this bucket's positive delta is
-        suppressed by the threshold, so anything written here came from the
-        reset.
+        Discriminating: `wcu` carries the item's reset here, so only its
+        exemption keeps it from being reset; it drips, and since ADR-156 a
+        dripping limit is never refilled either.
         """
         table = MagicMock()
         state = _quota_state(
@@ -3349,8 +3363,9 @@ class TestAggregatorAppliesResets:
     def test_only_the_limit_carrying_the_reset_is_restored(self) -> None:
         """One item, one `rf`, two limits — the reset is decided per limit.
 
-        `rpm` drips, carries no reset of its own and the item has no default,
-        so it must recover only what the elapsed time earns it.
+        `rph` drips, carries no reset of its own and the item has no default,
+        so the write leaves it alone: since ADR-156 (#821) a dripping limit is
+        never refilled here.
         """
         table = MagicMock()
         state = _quota_state(
@@ -3359,8 +3374,8 @@ class TestAggregatorAppliesResets:
                 "rpd": LimitRefillInfo(
                     tc_delta=0, tk_milli=0, cp_milli=10_000_000, ra_milli=0, rp_ms=1_000
                 ),
-                # Same ceiling, but a slow drip: 1,000,000 milli an hour, so
-                # the 90 minutes since `rf` earn 1,500,000 and not the ceiling.
+                # Same ceiling, but a slow drip: the 90 minutes since `rf`
+                # earned it 1,500,000, which is the client's to read.
                 "rph": LimitRefillInfo(
                     tc_delta=5_000_000,
                     tk_milli=0,
@@ -3373,7 +3388,7 @@ class TestAggregatorAppliesResets:
         assert try_refill_bucket(table, state, now_ms=WED_0030) is True
         deltas = _refill_deltas(table.update_item.call_args.kwargs)
         assert deltas["rpd"] == 10_000_000
-        assert deltas["rph"] == 1_500_000  # 90 minutes of drip, not a reset
+        assert "rph" not in deltas  # neither a reset nor a drip
 
     def test_an_undecodable_schedule_still_skips_the_whole_bucket(self) -> None:
         """`sched_error` short-circuits before any reset logic runs. Refilling
@@ -3395,7 +3410,7 @@ class TestAggregatorAppliesResets:
 
 class TestAggregatorStampsTheGrantCount:
     """ADR-145 I3/I4/I7 on the refill write: a reset or roll re-grants at the
-    item's count and records it; a quota is clamped at ``C // gc``."""
+    item's count and records it; a quota's ceiling is ``C // gc``."""
 
     def test_calendar_reset_writes_gc_and_pins_the_count(self) -> None:
         table = MagicMock()
@@ -3410,25 +3425,43 @@ class TestAggregatorStampsTheGrantCount:
         assert values[":gqpin"] == 4
         assert "(attribute_not_exists(#gqsc) OR #gqsc <= :gqpin)" in kwargs["ConditionExpression"]
 
-    def test_no_reset_writes_no_gc(self) -> None:
-        """A drip top-up is not a re-grant: nothing about the grant changes."""
+    def test_a_quota_the_write_does_not_reset_gets_no_gc(self) -> None:
+        """A quota whose period this write does not end is not re-granted.
+
+        Was "a drip top-up is not a re-grant": since ADR-156 (#821) every write
+        comes from some quota's reset or roll, so the quota beside it is the
+        one whose grant must stay untouched.
+        """
         table = MagicMock()
-        state = _sched_state()
-        state.limits["rpm"].tc_delta = 5_000_000  # outruns a minute's refill
-        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
-        kwargs = table.update_item.call_args.kwargs
-        assert "#gq" not in kwargs["UpdateExpression"]
-        assert "#gqsc" not in kwargs["ConditionExpression"]
+        state = _quota_state(
+            limits={
+                "rpd": LimitRefillInfo(
+                    tc_delta=0, tk_milli=0, cp_milli=10_000_000, ra_milli=0, rp_ms=1_000
+                ),
+                "rpw": LimitRefillInfo(
+                    tc_delta=0, tk_milli=0, cp_milli=10_000_000, ra_milli=0, rp_ms=1_000
+                ),
+            },
+            limit_reset={"rpd": DAILY_RESET, "rpw": SUNDAY_RESET},
+        )
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        names = table.update_item.call_args.kwargs["ExpressionAttributeNames"]
+        assert [attr for attr in names.values() if attr.endswith("_gc")] == ["b_rpd_gc"]
 
     def test_a_reset_already_at_its_share_still_records_the_grant(self) -> None:
-        """Another limit forces the write, which moves ``rf`` past the edge and
-        so applies the quota's reset too — at a zero delta. The grant it
-        records is still the item's count."""
+        """Another quota's reset forces the write, which moves ``rf`` past the
+        edge and so applies this quota's reset too — at a zero delta. The grant
+        it records is still the item's count."""
         table = MagicMock()
         state = _quota_state(reset_sched=DAILY_RESET, shard_count=2)
         state.limits["rpd"].tk_milli = 5_000_000  # already exactly its share
-        state.limits["rpm"] = LimitRefillInfo(
-            tc_delta=5_000_000, tk_milli=0, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=60_000
+        state.limits["tpd"] = LimitRefillInfo(
+            tc_delta=0,
+            tk_milli=0,
+            cp_milli=1_000_000,
+            ra_milli=0,
+            rp_ms=1_000,
+            reset_sched=DAILY_RESET,
         )
         assert try_refill_bucket(table, state, now_ms=WED_0030) is True
         kwargs = table.update_item.call_args.kwargs
@@ -3491,28 +3524,40 @@ class TestAggregatorStampsTheGrantCount:
         item = _must(table, 0)
         assert (item["b_rpd_tk"], item["b_rpd_gc"]) == (500_000, 2)
 
-    def test_quota_clamp_uses_the_grant_count(self) -> None:
+    def test_quota_ceiling_uses_the_grant_count(self) -> None:
         """A quota shard at count 4 holding 500 (of 1000) with ``gc = 2`` holds
-        exactly the grant it was given for two slots. No negative delta is
-        written: its ceiling is ``C // gc``, never ``C // shard_count`` (#637).
+        exactly the grant it was given for two slots: its ceiling is
+        ``C // gc``, never ``C // shard_count`` (#637), so it is not over it.
 
-        A defensive guard: a quota's stored rate is 0 (ADR-137), so the
-        accrual guard skips the drip/clamp branch before the ceiling is used
-        and this passes with either divisor today. It pins the ceiling the
-        client uses (``BucketState.ceiling_milli``) should that branch ever
-        reach a quota."""
+        Observed through the ``vu`` re-stamp (#679), the one place a quota
+        between its edges meets its ceiling here: read at ``C // 4`` it would
+        sit above it and keep the fast path shut. Another quota's reset forces
+        the write (since ADR-156 no dripping limit does)."""
         table = MagicMock()
-        state = _quota_state(reset_sched=DAILY_RESET, shard_count=4, rf_ms=WED_0030 - 60_000)
-        state.limits["rpd"].cp_milli = 1_000_000
-        state.limits["rpd"].tk_milli = 500_000
-        state.limits["rpd"].grant_count = 2
-        state.limits["rpm"] = LimitRefillInfo(
-            tc_delta=5_000_000, tk_milli=0, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=60_000
+        state = _quota_state(
+            shard_count=4,
+            vu_ms=WED_0030 - 1,
+            limits={
+                "rpd": LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=500_000,
+                    cp_milli=1_000_000,
+                    ra_milli=0,
+                    rp_ms=1_000,
+                    grant_count=2,
+                ),
+                "tpd": LimitRefillInfo(
+                    tc_delta=0, tk_milli=0, cp_milli=1_000_000, ra_milli=0, rp_ms=1_000
+                ),
+            },
+            limit_reset={"rpd": SUNDAY_RESET, "tpd": DAILY_RESET},
         )
         assert try_refill_bucket(table, state, now_ms=WED_0030) is True
-        deltas = _refill_deltas(table.update_item.call_args.kwargs)
-        assert "rpd" not in deltas
-        assert deltas["rpm"] > 0
+        kwargs = table.update_item.call_args.kwargs
+        values = kwargs["ExpressionAttributeValues"]
+        assert set(_refill_deltas(kwargs)) == {"tpd"}
+        assert ":new_vu" in values
+        assert (kwargs["ExpressionAttributeNames"]["#vq0"], values[":vq0"]) == ("b_rpd_tk", 500_000)
 
 
 class TestQuotaSiblingFromImage:
@@ -3560,10 +3605,10 @@ class TestAggregatorNeverDoubleResetsACalendarQuota:
         """A correct-clock writer already applied the midnight edge and
         stamped `rf` at WED_0030. A pass whose own clock reads TUE_2300 --
         before the edge itself -- must not stamp that `now` onto `rf`, or it
-        erases the record that the edge was applied. The companion `rph`
-        limit forces a write via the unconditional negative clamp, so the
-        clamp is observable even though the quota itself (`ra_milli=0`,
-        ADR-137) yields no drip delta on its own."""
+        erases the record that the edge was applied. A session window whose
+        roll is pending forces the write (since ADR-156, #821, no dripping
+        limit's clamp does), so the `rf` stamp is observable even though the
+        quota itself yields no delta on its own."""
         table = MagicMock()
         state = _quota_state(
             rf_ms=WED_0030,
@@ -3571,12 +3616,16 @@ class TestAggregatorNeverDoubleResetsACalendarQuota:
                 "rpd": LimitRefillInfo(
                     tc_delta=0, tk_milli=3_000_000, cp_milli=10_000_000, ra_milli=0, rp_ms=1_000
                 ),
-                "rph": LimitRefillInfo(
+                # A fan-out moved this window on (`ws > wa`) without `rf`.
+                "session": LimitRefillInfo(
                     tc_delta=0,
-                    tk_milli=11_000_000,
+                    tk_milli=0,
                     cp_milli=10_000_000,
-                    ra_milli=1_000_000,
-                    rp_ms=3_600_000,
+                    ra_milli=0,
+                    rp_ms=1_000,
+                    window_start_ms=TUE_2300 - 60_000,
+                    reset_after_seconds=18_000,
+                    window_applied_ms=TUE_2300 - 120_000,
                 ),
             },
         )
@@ -3676,20 +3725,21 @@ class TestAnUnscheduledLimitOnAScheduledItem:
     never declared.
     """
 
-    # 1_000_000 milli capacity refilling in one minute. One stale minute at the
-    # base rate yields 1_000_000, which covers the 600_000 consumption estimate
-    # and is therefore skipped; at 0.5x it yields 500_000 and is written. The
-    # two are distinguishable by whether `update_item` is called at all.
+    # Two empty daily quotas due their 14:00 reset, one inheriting the item's
+    # 0.5x schedule and one marked as having none: the scheduled one resets to
+    # 500_000, the marked one to its whole 1_000_000. Quotas because since
+    # ADR-156 (#821) only a quota's reset writes.
     MIXED = {
-        "rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 600_000},
-        "tpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 600_000},
+        "rpd": {"tk": 0, "cp": 1_000_000, "ra": 0, "rp": 1_000, "tc": 600_000},
+        "tpd": {"tk": 0, "cp": 1_000_000, "ra": 0, "rp": 1_000, "tc": 600_000},
     }
 
     def _record(self, **kwargs):
         return _sched_record(
             limits=self.MIXED,
             sched=BUSINESS_COMPACT,
-            limit_sched={"tpm": BUCKET_SCHED_NONE},
+            limit_sched={"tpd": BUCKET_SCHED_NONE},
+            rsched=DAILY_1400_RESET_COMPACT,
             **kwargs,
         )
 
@@ -3697,19 +3747,18 @@ class TestAnUnscheduledLimitOnAScheduledItem:
         parsed = _parse_bucket_record(self._record())
         assert parsed is not None
         assert parsed.sched == BUSINESS_DECODED  # the item default is unchanged
-        assert parsed.limits["rpm"].sched == BUSINESS_DECODED  # inherits, as before
-        assert parsed.limits["tpm"].sched == ()
+        assert parsed.limits["rpd"].sched == BUSINESS_DECODED  # inherits, as before
+        assert parsed.limits["tpd"].sched == ()
         assert parsed.sched_error is None  # the marker is not a decode failure
 
-    def test_the_marked_limit_refills_at_its_base_rate(self) -> None:
-        """The scheduled sibling is written and the marked one is not: at the
-        base rate a stale minute already covers the consumption estimate."""
+    def test_the_marked_limit_resets_to_its_base(self) -> None:
+        """The scheduled sibling resets to its 0.5x ceiling, the marked one to its base."""
         table = MagicMock()
         state = next(iter(aggregate_bucket_states([self._record()]).values()))
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
         deltas = _refill_deltas(table.update_item.call_args.kwargs)
-        assert deltas["rpm"] == 500_000
-        assert "tpm" not in deltas
+        assert deltas["rpd"] == 500_000
+        assert deltas["tpd"] == 1_000_000
 
     def test_the_marked_limit_takes_no_reset_edge(self) -> None:
         """The direction the issue understates. `rsched` is one item-level
@@ -3730,26 +3779,30 @@ class TestAnUnscheduledLimitOnAScheduledItem:
         assert try_refill_bucket(table, state, now_ms=WED_0030) is True
         deltas = _refill_deltas(table.update_item.call_args.kwargs)
         assert deltas["rpd"] == 10_000_000 - 2_000_000  # the quota does reset
-        assert "rpm" not in deltas  # ...and the rate limit is already full
+        # ...and the empty rate limit is not set to its ceiling: it drips, and
+        # a dripping limit is never written here (ADR-156).
+        assert "rpm" not in deltas
 
     def test_a_cloned_shard_seeds_the_marked_limit_unscaled(self) -> None:
-        """Path 2 creates a shard full, so an inherited 0.5x would halve an
-        unscheduled limit's share for the life of the window."""
+        """Path 2 grants a quota clone its share now, so an inherited 0.5x would
+        halve an unscheduled limit's share for the life of the window."""
         table = MagicMock()
+        table.get_item.return_value = {}  # no stored parent: each slot granted fresh
         record = _sched_record(
             limits={
-                "rpm": {"tk": 500_000, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0},
-                "tpm": {"tk": 500_000, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0},
+                "rpd": {"tk": 500_000, "cp": 1_000_000, "ra": 0, "rp": 1_000, "tc": 0},
+                "tpd": {"tk": 500_000, "cp": 1_000_000, "ra": 0, "rp": 1_000, "tc": 0},
             },
             sched=BUSINESS_COMPACT,
-            limit_sched={"tpm": BUCKET_SCHED_NONE},
+            limit_sched={"tpd": BUCKET_SCHED_NONE},
+            rsched=DAILY_RESET_COMPACT,
             shard_count=2,
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
         item = _clone_items(table)[-1]
-        assert item["b_rpm_tk"] == 250_000  # (1_000_000 * 0.5) // 2
-        assert item["b_tpm_tk"] == 500_000  # 1_000_000 // 2, unscaled
+        assert item["b_rpd_tk"] == 250_000  # (1_000_000 * 0.5) // 2
+        assert item["b_tpd_tk"] == 500_000  # 1_000_000 // 2, unscaled
 
     def test_the_marker_still_yields_the_items_vu(self) -> None:
         """`vu` is one item-level attribute, so the earliest boundary anywhere
@@ -3763,7 +3816,7 @@ class TestAnUnscheduledLimitOnAScheduledItem:
 
 
 class TestABatchWithNoConsumptionStillReachesTheBucket:
-    """A batch carrying no `tc` delta must still refill, clamp and re-stamp `vu`.
+    """A batch carrying no `tc` delta must still reset, clamp and re-stamp `vu`.
 
     `process_stream_records` used to return the moment `extract_deltas` came
     back empty. Usage aggregation was its only job when that short-circuit was
@@ -3780,17 +3833,27 @@ class TestABatchWithNoConsumptionStillReachesTheBucket:
     """
 
     # Unchanged counter: `old_tc == new_tc`, exactly as a fan-out leaves it.
-    # `tk` sits an order of magnitude above the freshly lowered `cp`.
+    # `tk` sits an order of magnitude above the freshly lowered `cp`. A daily
+    # quota due its 14:00 reset, which is what writes since ADR-156 (#821): the
+    # aggregator no longer clamps a dripping limit.
     SHRUNK = {
-        "rpm": {
+        "rpd": {
             "old_tc": 600_000,
             "tc": 600_000,
             "tk": 1_000_000,
             "cp": 100_000,
-            "ra": 100_000,
-            "rp": 60_000,
+            "ra": 0,
+            "rp": 1_000,
         }
     }
+
+    def _record(self, **kwargs) -> dict:
+        return _sched_record(
+            limits=self.SHRUNK,
+            rf_ms=TUE_1400 - 60_000,
+            rsched=DAILY_1400_RESET_COMPACT,
+            **kwargs,
+        )
 
     @staticmethod
     def _run(records, now_ms):
@@ -3803,22 +3866,16 @@ class TestABatchWithNoConsumptionStillReachesTheBucket:
                 result = process_stream_records(records, "test_table", ["hourly"])
         return result, mock_table
 
-    def test_the_clamp_still_lands(self) -> None:
-        record = _sched_record(limits=self.SHRUNK, rf_ms=TUE_1400 - 60_000)
-        result, table = self._run([record], TUE_1400)
+    def test_the_reset_still_lands(self) -> None:
+        result, table = self._run([self._record()], TUE_1400)
 
         assert result.refills_written == 1
         (call,) = table.update_item.call_args_list
-        assert _refill_deltas(call.kwargs)["rpm"] == 100_000 - 1_000_000
+        assert _refill_deltas(call.kwargs)["rpd"] == 100_000 - 1_000_000
 
     def test_vu_is_still_restamped(self) -> None:
         """The half that pins the bucket to the slow path when it is skipped."""
-        record = _sched_record(
-            limits=self.SHRUNK,
-            rf_ms=TUE_1400 - 60_000,
-            sched=BUSINESS_COMPACT,
-            vu_ms=0,
-        )
+        record = self._record(sched=BUSINESS_COMPACT, vu_ms=0)
         result, table = self._run([record], TUE_1400)
 
         assert result.refills_written == 1
@@ -3842,9 +3899,9 @@ class TestABatchWithNoConsumptionStillReachesTheBucket:
         fail the invocation and the event source would redrive the same batch
         until it aged out.
         """
-        good = _sched_record(limits=self.SHRUNK, rf_ms=TUE_1400 - 60_000)
-        bad = _sched_record(limits=self.SHRUNK, rf_ms=TUE_1400 - 60_000, entity_id="user-2")
-        bad["dynamodb"]["NewImage"]["b_rpm_tc"] = {"N": "not-a-number"}
+        good = self._record()
+        bad = self._record(entity_id="user-2")
+        bad["dynamodb"]["NewImage"]["b_rpd_tc"] = {"N": "not-a-number"}
 
         result, table = self._run([bad, good], TUE_1400)
 
@@ -3942,7 +3999,10 @@ class TestQuotaShardCloneIsAMove:
         period exactly the configured 1000 is admitted. The repro was closed
         by the client's seed rule (Task 7) — shard 0's image carries no quota,
         so Path 2 clones none — and this pins that the new Path 2 keeps it
-        closed end to end."""
+        closed end to end.
+
+        Shard 0 carries an hourly quota rather than a dripping limit: one would
+        hand the doubling to ADR-156's raise (#821), never to Path 2."""
         import copy
 
         import boto3
@@ -3952,15 +4012,15 @@ class TestQuotaShardCloneIsAMove:
         from zae_limiter import Limit, RateLimiter, RateLimitExceeded
         from zae_limiter.models import BucketState
 
-        rpm = Limit.per_minute("rpm", 100_000)
+        rph = Limit.quota("rph", 100_000, cron="0 * * * *")
         rpd = Limit.quota("rpd", 1_000, cron="0 0 * * *")
         repo = limiter._repository
         ns = repo._namespace_id
         eid = "clone"
         repo._now_ms = lambda: T0
-        await repo.set_resource_defaults("gpt-4", [rpm])
+        await repo.set_resource_defaults("gpt-4", [rph])
         for shard in (0, 1):
-            state = BucketState.from_limit(eid, "gpt-4", rpm, T0, shard_count=2)
+            state = BucketState.from_limit(eid, "gpt-4", rph, T0, shard_count=2)
             await repo.transact_write(
                 [
                     repo.build_composite_create(
@@ -3968,7 +4028,7 @@ class TestQuotaShardCloneIsAMove:
                     )
                 ]
             )
-        await repo.set_resource_defaults("gpt-4", [rpm, rpd])
+        await repo.set_resource_defaults("gpt-4", [rph, rpd])
         await repo.invalidate_config_cache()
         repo._entity_cache[(ns, eid)] = (False, None, {"gpt-4": 2})
         slow = RateLimiter(repository=repo, speculative_writes=False)
@@ -4094,19 +4154,6 @@ class TestQuotaShardCloneIsAMove:
         assert (skip["record_count"], skip["stored_count"]) == (2, 4)
         assert "entity_id" not in skip
 
-    def test_an_overtaken_record_still_clones_a_dripping_only_item(self) -> None:
-        """The guard is for quotas only: an item carrying no quota reads no
-        sibling at all, so a dripping limit's clone is sized at the record's
-        count exactly as before."""
-        table = MagicMock()
-        record = _sched_record(
-            limits={"rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0}},
-            shard_count=2,
-        )
-        record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
-        assert propagate_shard_count(table, record, TUE_1400) == 1
-        table.get_item.assert_not_called()
-
     def test_a_spent_parent_funds_nothing(self, mock_dynamodb) -> None:
         """#587 itself, under ADR-145: the parent's grant covers the clone's
         slot, so the clone gets what the parent holds, never a fresh share —
@@ -4204,13 +4251,14 @@ class TestQuotaShardCloneIsAMove:
                 propagate_shard_count(table, _doubling_record(table, 1), TUE_1400)
 
     def test_a_non_conditional_path_1_failure_propagates(self) -> None:
-        table = MagicMock()
+        table = self._mock_table()
         table.update_item.side_effect = ClientError(
             {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "no"}},
             "UpdateItem",
         )
         record = _sched_record(
-            limits={"rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0}},
+            limits={"rpd": {"tk": 2_000, "cp": 10_000_000, "ra": 0, "rp": 1_000, "tc": 0}},
+            limit_rsched={"rpd": DAILY_RESET_COMPACT},
             shard_count=4,
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "2"}
@@ -4224,8 +4272,10 @@ class TestQuotaShardCloneIsAMove:
         table.get_item.return_value = {}
         return table
 
-    def test_a_dripping_limit_on_the_same_item_still_gets_a_full_share(self) -> None:
-        """The regression pin: only the quota changes shape."""
+    def test_a_quota_beside_a_dripping_limit_is_left_to_the_raise(self) -> None:
+        """A dripping limit on the item makes it ADR-156's to raise (#821), the
+        quota with it: the raise plans the quota's new shards as ADR-145 does,
+        so Path 1 / Path 2 read, write and clone nothing here."""
         table = self._mock_table()
         record = _sched_record(
             limits={
@@ -4237,10 +4287,10 @@ class TestQuotaShardCloneIsAMove:
             shard_count=2,
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
-        assert propagate_shard_count(table, record, TUE_1400) == 1
-        item = _clone_items(table)[-1]
-        assert item["b_rpm_tk"] == 500_000
-        assert "b_rpm_gc" not in item, "a rate limit never carries a grant count"
+        assert propagate_shard_count(table, record, TUE_1400) == 0
+        table.get_item.assert_not_called()
+        table.update_item.assert_not_called()
+        table.meta.client.transact_write_items.assert_not_called()
 
     def test_a_zero_rate_without_a_reset_is_not_treated_as_a_quota(self) -> None:
         """A corrupt item (ADR-137 pairs the two), and starving it would be
@@ -4328,6 +4378,24 @@ def _rpm_limit(**overrides: int) -> dict[str, int]:
     fields = {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 2_000_000}
     fields.update(overrides)
     return fields
+
+
+def _day_quota(**overrides: int) -> dict[str, int]:
+    """An empty daily quota; with a `limit_rsched` reset that is due, it forces the write.
+
+    Since ADR-156 (#821) a quota's reset or roll is the only thing the refill
+    writes, so a test whose subject is another part of that write needs one.
+    """
+    fields = {"tk": 0, "cp": 1_000_000, "ra": 0, "rp": 1_000, "tc": 0}
+    fields.update(overrides)
+    return fields
+
+
+# Daily resets, stored form, in the item's zone (UTC unless it stamps one):
+# 08:01 is a minute into the window that opens at WS (08:00 UTC); 14:01 a
+# minute after TUE_1400.
+RESET_0801_COMPACT = "1m1h8"
+RESET_1401_COMPACT = "1m1h14"
 
 
 def _window_state(record: dict) -> BucketRefillState:
@@ -4651,10 +4719,15 @@ class TestTheRollIsPinnedToTheWindowItRestores:
         assert "s.q-1" not in write["ConditionExpression"]
 
     def test_no_roll_carries_no_pin(self) -> None:
-        """An applied window beside a drip top-up: nothing restored, nothing pinned."""
+        """An applied window beside a calendar reset: nothing restored, nothing pinned.
+
+        The reset forces the write; a drip top-up did before ADR-156 (#821).
+        """
         table = MagicMock()
         record = _session_record(
-            rf_ms=WS + 1_000, limits={"session": _session_limit(), "rpm": _rpm_limit()}
+            rf_ms=WS + 1_000,
+            limits={"session": _session_limit(), "rpd": _day_quota()},
+            limit_rsched={"rpd": RESET_0801_COMPACT},
         )
         assert try_refill_bucket(table, _window_state(record), now_ms=WS + 60_000) is True
         write = table.update_item.call_args.kwargs
@@ -4674,26 +4747,28 @@ class TestTheRollIsPinnedToTheWindowItRestores:
 class TestAggregatorRfNeverUnappliesAWindow:
     """`rf` is stamped as the client stamps it (`lease._monotonic_rf`)."""
 
-    def test_a_drip_limit_beside_an_unapplied_window_applies_the_roll_too(self) -> None:
+    def test_a_reset_beside_an_unapplied_window_applies_the_roll_too(self) -> None:
         """The Task 7 carry: the client's `_propagate_window_start` wrote
-        `SET ws, rsa, vu = 0` on this sibling, and a drip limit on the same
-        item needs a top-up. The one write that advances `rf` past `ws` must
+        `SET ws, rsa, vu = 0` on this sibling, and a calendar quota on the same
+        item is due its reset. The one write that advances `rf` past `ws` must
         be the write that applies the roll, or the window is recorded as
         applied without its reset — the entity held to the dead window's
-        leftovers for a whole window."""
+        leftovers for a whole window. (A drip top-up was that write before
+        ADR-156, #821.)"""
         table = MagicMock()
         record = _session_record(
             rf_ms=WS - 60_000,
-            limits={"session": _session_limit(), "rpm": _rpm_limit()},
+            limits={"session": _session_limit(), "rpd": _day_quota()},
+            limit_rsched={"rpd": RESET_0801_COMPACT},
             vu_ms=0,
         )
-        now = WS + 30_000
+        now = WS + 60_000
         assert try_refill_bucket(table, _window_state(record), now_ms=now) is True
         write = table.update_item.call_args.kwargs
         values = write["ExpressionAttributeValues"]
         deltas = _refill_deltas(write)
         assert values[":wd0"] == SESSION_CP
-        assert deltas["rpm"] == 1_000_000
+        assert deltas["rpd"] == 1_000_000
         assert values[":new_rf"] >= WS
         # The #508 pin still matches the fan-out's `vu = 0` ...
         assert values[":expected_vu"] == 0
@@ -4714,24 +4789,23 @@ class TestAggregatorRfNeverUnappliesAWindow:
 
     def test_an_aggregator_clock_behind_rf_never_moves_it_backward(self) -> None:
         """An applied window (`ws <= rf`): moving `rf` below `ws` would un-apply
-        it. The drip limit's surplus is still trimmed."""
+        it. A second window, which a fan-out moved on without touching `rf`,
+        rolls and so forces the write (a dripping limit's trim did before
+        ADR-156, #821)."""
         table = MagicMock()
         record = _session_record(
             rf_ms=WS + 60_000,
-            limits={"session": _session_limit(tk=5), "rpm": _rpm_limit(tk=2_000_000, tc=0)},
+            limits={
+                "session": _session_limit(tk=5),
+                "s2": _session_limit(ws=WS + 30_000, wa=WS),
+            },
         )
         assert try_refill_bucket(table, _window_state(record), now_ms=WS - 1_000) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        deltas = _refill_deltas(table.update_item.call_args.kwargs)
-        assert values[":new_rf"] == WS + 60_000
-        assert deltas["rpm"] == -1_000_000
-        assert ":wd0" not in values
-
-    def test_an_unwindowed_item_is_never_moved_backward_either(self) -> None:
-        table = MagicMock()
-        record = _session_record(rf_ms=WS, limits={"rpm": _rpm_limit(tk=2_000_000, tc=0)})
-        assert try_refill_bucket(table, _window_state(record), now_ms=WS - 1_000) is True
-        assert table.update_item.call_args.kwargs["ExpressionAttributeValues"][":new_rf"] == WS
+        write = table.update_item.call_args.kwargs
+        assert write["ExpressionAttributeValues"][":new_rf"] == WS + 60_000
+        # Only the moved-on window rolled; the applied one was left alone.
+        assert write["ExpressionAttributeNames"]["#wtk0"] == "b_s2_tk"
+        assert "#wtk1" not in write["ExpressionAttributeNames"]
 
 
 class TestAnEndedUnappliedWindowIsLeftToTheClient:
@@ -4769,7 +4843,8 @@ class TestVuHonoursTheWindowEnd:
         table = MagicMock()
         record = _session_record(
             rf_ms=WS + 1_000,
-            limits={"session": _session_limit(), "rpm": _rpm_limit()},
+            limits={"session": _session_limit(), "rpd": _day_quota()},
+            limit_rsched={"rpd": RESET_0801_COMPACT},
             vu_ms=WS,
         )
         assert try_refill_bucket(table, _window_state(record), now_ms=WS + 60_000) is True
@@ -4779,13 +4854,16 @@ class TestVuHonoursTheWindowEnd:
 
     def test_a_param_boundary_before_the_window_end_wins(self) -> None:
         """The `min` rule: HOUR_14's window closes at 15:00, well inside a
-        window opened at 14:00 that runs five hours."""
+        window opened at 14:00 that runs five hours. The dripping `rpm` is not
+        written (ADR-156), but its schedule still votes; a quota's 14:01 reset
+        makes the write."""
         table = MagicMock()
         ws = TUE_1400
         record = _session_record(
             rf_ms=ws + 1_000,
-            limits={"session": _session_limit(ws=ws), "rpm": _rpm_limit()},
+            limits={"session": _session_limit(ws=ws), "rpm": _rpm_limit(), "rpd": _day_quota()},
             limit_sched={"rpm": HOUR_14_COMPACT},
+            limit_rsched={"rpd": RESET_1401_COMPACT},
             vu_ms=ws,
         )
         # `_sched_record` stamps the zone only beside an item-level schedule.
@@ -4796,17 +4874,18 @@ class TestVuHonoursTheWindowEnd:
 
     def test_an_ended_applied_window_keeps_the_fast_path_closed(self) -> None:
         """The window is in the balance but over: the next use must take the
-        slow path and anchor. The drip limit is still topped up, but `vu` is
-        left where it was — a re-stamp past the end would let the fast path
-        spend the dead window's balance."""
+        slow path and anchor. A quota's reset still lands, but `vu` is left
+        where it was — a re-stamp past the end would let the fast path spend
+        the dead window's balance."""
         table = MagicMock()
         ws = TUE_1400 - RSA * 1000 - 60_000  # the window closed at 13:59
         record = _session_record(
             rf_ms=ws + 1_000,
-            limits={"session": _session_limit(ws=ws), "rpm": _rpm_limit()},
+            limits={"session": _session_limit(ws=ws), "rpm": _rpm_limit(), "rpd": _day_quota()},
             # A scheduled neighbour whose own boundary (15:00) is in the
             # future: without the window's vote, that is what `vu` would get.
             limit_sched={"rpm": HOUR_14_COMPACT},
+            limit_rsched={"rpd": DAILY_1400_RESET_COMPACT},
             vu_ms=ws + RSA * 1000,
         )
         record["dynamodb"]["NewImage"]["sched_tz"] = {"S": "America/New_York"}
@@ -4824,8 +4903,9 @@ class TestVuHonoursTheWindowEnd:
         table = MagicMock()
         record = _session_record(
             rf_ms=TUE_1400 - 60_000,
-            limits={"session": limit, "rpm": _rpm_limit()},
+            limits={"session": limit, "rpm": _rpm_limit(), "rpd": _day_quota()},
             limit_sched={"rpm": HOUR_14_COMPACT},
+            limit_rsched={"rpd": DAILY_1400_RESET_COMPACT},
             vu_ms=0,
         )
         record["dynamodb"]["NewImage"]["sched_tz"] = {"S": "America/New_York"}
@@ -4857,20 +4937,13 @@ class TestRefillWithDotsAndHyphensInLimitNames:
         )
         record = _sched_record(
             limits={
-                # Drained and consumed hard: the drip refill tops it up.
-                "rpm.v2": {
-                    "tk": 0,
-                    "cp": 1_000_000,
-                    "ra": 1_000_000,
-                    "rp": 60_000,
-                    "tc": 5_000_000,
-                },
-                # A daily quota whose midnight edge falls inside the gap: reset.
+                # Two daily quotas whose midnight edge falls inside the gap:
+                # both reset (since ADR-156, #821, nothing else writes here).
+                "rpm.v2": {"tk": 0, "cp": 1_000_000, "ra": 0, "rp": 1_000, "tc": 5_000_000},
                 "req-min": {"tk": 2_000_000, "cp": 10_000_000, "ra": 0, "rp": 1_000, "tc": 0},
             },
             rf_ms=TUE_2300,
             rsched=DAILY_RESET_COMPACT,
-            limit_rsched={"rpm.v2": BUCKET_SCHED_NONE},
         )
         client.put_item(TableName="t634", Item=record["dynamodb"]["NewImage"])
         state = next(iter(aggregate_bucket_states([record]).values()))
@@ -5180,31 +5253,31 @@ class TestNoReopeningAboveTheCeiling:
     """#679: the aggregator must not re-open the fast path over a balance above its ceiling.
 
     A credit above the ceiling stamps ``vu = 0`` so the next acquire takes the
-    client slow path, which clamps. The aggregator trims a dripping limit itself
-    (``refill_bucket`` clamps), but skips a quota (no accrual rate, ADR-137); if it
-    then re-stamped ``vu`` to the next boundary while writing another limit's
-    refill, the fast path would spend the quota's excess.
+    client slow path, which clamps. The aggregator skips a quota between its
+    edges (no accrual rate, ADR-137); if it re-stamped ``vu`` to the next
+    boundary while resetting another quota on the item, the fast path would
+    spend the first one's excess. The other quota forces the write: since
+    ADR-156 (#821) a dripping limit's refill no longer does.
     """
-
-    # Drained and consumed past one minute's refill, so this pass writes it.
-    RPM = {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 1_500_000}
 
     def _calendar(self, quota_tk: int) -> dict:
         return _sched_record(
             limits={
-                "rpm": dict(self.RPM),
+                # Due its 14:00 reset, so this pass writes it.
+                "f": _day_quota(),
                 "q": {"tk": quota_tk, "cp": 100_000, "ra": 0, "rp": 1_000, "tc": 10_000},
             },
             rf_ms=TUE_1400 - 60_000,
             rsched=DAILY_RESET_COMPACT,
-            limit_rsched={"rpm": BUCKET_SCHED_NONE},
+            limit_rsched={"f": DAILY_1400_RESET_COMPACT},
             vu_ms=0,
         )
 
     def _session(self, session_tk: int) -> dict:
         return _session_record(
-            rf_ms=WS + 60_000,
-            limits={"rpm": dict(self.RPM), "session": _session_limit(tk=session_tk, wa=WS)},
+            rf_ms=WS + 30_000,
+            limits={"f": _day_quota(), "session": _session_limit(tk=session_tk, wa=WS)},
+            limit_rsched={"f": RESET_0801_COMPACT},
             vu_ms=0,
         )
 
@@ -5212,7 +5285,7 @@ class TestNoReopeningAboveTheCeiling:
     def _restamped(record: dict, now_ms: int) -> bool:
         table = MagicMock()
         state = next(iter(aggregate_bucket_states([record]).values()))
-        assert try_refill_bucket(table, state, now_ms=now_ms) is True  # rpm is refilled
+        assert try_refill_bucket(table, state, now_ms=now_ms) is True  # `f` is reset
         return ":new_vu" in table.update_item.call_args.kwargs["ExpressionAttributeValues"]
 
     def test_a_calendar_quota_above_its_ceiling_keeps_the_gate_shut(self) -> None:
@@ -5305,13 +5378,19 @@ class TestAggregatorKeepsTopUps:
 
     def test_a_purchase_above_the_grant_is_not_held_over_the_ceiling(self) -> None:
         """An expired `vu` is re-stamped only while every quota sits within its
-        ceiling (#679); a purchase lifts that ceiling by `tu`."""
+        ceiling (#679); a purchase lifts that ceiling by `tu`. Another quota's
+        00:30 reset forces the write (a drip top-up did before ADR-156, #821)."""
         table = MagicMock()
         state = _quota_state(reset_sched=DAILY_RESET, rf_ms=WED_0030 - 60_000)
         state.vu_ms = WED_0030 - 1
         state.limits["rpd"].tk_milli = 12_000_000  # 2,000 above C // 1
-        state.limits["rpm"] = LimitRefillInfo(
-            tc_delta=5_000_000, tk_milli=0, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=60_000
+        state.limits["tpd"] = LimitRefillInfo(
+            tc_delta=0,
+            tk_milli=0,
+            cp_milli=1_000_000,
+            ra_milli=0,
+            rp_ms=1_000,
+            reset_sched=(ScheduleEntry.reset(cron="30 0 * * *", tz="America/New_York"),),
         )
         assert try_refill_bucket(table, state, now_ms=WED_0030) is True
         assert ":new_vu" not in table.update_item.call_args.kwargs["ExpressionAttributeValues"]

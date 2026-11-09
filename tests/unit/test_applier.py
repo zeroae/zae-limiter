@@ -936,7 +936,7 @@ class TestChangedFanouts:
         entity = Change("update", "entity", "u1/gpt-4", _rpm(10))
         assert fanouts_needed("ns", entity, None) == {"disabled", "cascade", "sync"}
         delete = Change("delete", "resource", "gpt-4")
-        assert fanouts_needed("ns", delete, None) == {"disabled", "cascade", "soft"}
+        assert fanouts_needed("ns", delete, None) == {"disabled", "cascade", "soft", "sync"}
         # A read delete needs what removing its stored item changes.
         assert fanouts_needed("ns", delete, {}) == set()
         assert fanouts_needed("ns", delete, {"disabled": {"BOOL": True}}) == {"disabled"}
@@ -944,8 +944,10 @@ class TestChangedFanouts:
             "sync"
         }
         system = Change("update", "system", None, _rpm(10))
-        assert fanouts_needed("ns", system, {}) == set()
-        assert fanouts_needed("ns", system, None) == {"soft"}
+        # A default level's limits reach active buckets (#823).
+        assert fanouts_needed("ns", system, {}) == {"sync"}
+        assert fanouts_needed("ns", system, self._stored(10)) == set()
+        assert fanouts_needed("ns", system, None) == {"soft", "sync"}
         # A system or resource level whose soft-ness changes needs the soft
         # restamp (re-review #5); entity levels carry it in their sync.
         soft = Change(
@@ -954,10 +956,11 @@ class TestChangedFanouts:
             None,
             {"limits": {"rpm": {**_rpm(10)["limits"]["rpm"], "soft": True}}},
         )
-        assert fanouts_needed("ns", soft, {}) == {"soft"}
+        assert fanouts_needed("ns", soft, {}) == {"soft", "sync"}
+        assert fanouts_needed("ns", soft, self._stored(10)) == {"soft"}  # soft-ness alone
         assert fanouts_needed(
             "ns", delete, {"l_rpm_cp": {"N": "1"}, "l_rpm_soft": {"BOOL": True}}
-        ) == {"soft"}
+        ) == {"soft", "sync"}
         # An item that cannot be built (two timezones) is written anyway and reported.
         two_zones = Change(
             "update",
@@ -1032,11 +1035,15 @@ class TestChangedFanouts:
         result = apply_changes([change], "t", "ns", client=self._client(old))
         assert result.disabled_changed == [change]
 
-    def test_resource_limits_never_need_a_sync(self):
-        """Buckets on defaults carry a TTL and are recreated (#271, #296)."""
+    def test_a_resource_limit_change_needs_a_sync(self):
+        """A default level's change reaches active buckets (ADR-153, #823).
+
+        Left to their TTL (#271, #296), buckets used once per TTL period never
+        took it.
+        """
         change = Change("update", "resource", "gpt-4", _rpm(20))
         result = apply_changes([change], "t", "ns", client=self._client(self._stored(10)))
-        assert result.limits_changed == []
+        assert result.limits_changed == [change]
         assert result.disabled_changed == []
 
     def test_deleting_an_entity_with_limits_needs_a_sync(self):

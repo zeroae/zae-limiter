@@ -20,7 +20,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from zae_limiter import Limit, RateLimiter, Repository
-from zae_limiter.models import CreditCeiling, QuotaDonorDebit
+from zae_limiter.models import BucketState, CreditCeiling, QuotaDonorDebit
+from zae_limiter.repository_protocol import FillInstantWrite
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
     BUCKET_FIELD_GC,
@@ -307,6 +308,215 @@ class TestCompositeBuilders:
         for name in (DOTTED, HYPHENATED, "sess.v1"):
             assert name not in update["UpdateExpression"]
 
+    def test_normal_with_fill_instants(self) -> None:
+        """#818: a read fill instant and a conversion share one expression with
+        the ADD branch, the expression instant and the shard-count pin."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={"tpm": 1000},
+            refill_amounts={"tpm": 0},
+            now_ms=2_000,
+            expected_rf=1_000,
+            fill_instants={
+                DOTTED: FillInstantWrite(
+                    fill_instant=9_000,
+                    consumed_milli=1000,
+                    read_fill_instant=8_000,
+                    read_tokens_milli=None,
+                    capacity_milli=100_000,
+                    refill_amount_milli=100_000,
+                    refill_period_ms=60_000,
+                ),
+                HYPHENATED: FillInstantWrite(
+                    fill_instant=7_000,
+                    consumed_milli=0,
+                    read_fill_instant=None,
+                    read_tokens_milli=50_000,
+                    capacity_milli=10_000,
+                    refill_amount_milli=10_000,
+                    refill_period_ms=1_000,
+                ),
+            },
+            expressed=(2_000, 1_500),
+            pin_shard_count_equal=4,
+        )["Update"]
+        assert_expression_safe(update)
+        assert "REMOVE" in update["UpdateExpression"]
+
+    @pytest.mark.parametrize("read_xi", [None, 1_500])
+    def test_normal_with_only_a_conversion(self, read_xi: int | None) -> None:
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            fill_instants={
+                HYPHENATED: FillInstantWrite(
+                    fill_instant=7_000,
+                    consumed_milli=0,
+                    read_fill_instant=None,
+                    read_tokens_milli=-3_000,
+                    capacity_milli=10_000,
+                    refill_amount_milli=10_000,
+                    refill_period_ms=1_000,
+                )
+            },
+            expressed=(2_000, read_xi),
+        )["Update"]
+        assert_expression_safe(update)
+
+    def test_normal_with_a_fill_instant_seed(self) -> None:
+        """#818: a dripping seed stored as a fill instant guards on neither form."""
+        state = BucketState.from_limit("user-1", "api", Limit.per_minute(DOTTED, 100), 2_000)
+        state.fill_instant, state.expressed_ms = 5_000, 2_000
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            seeds={DOTTED: state},
+        )["Update"]
+        assert_expression_safe(update)
+        assert "attribute_not_exists(#sz0)" in update["ConditionExpression"]
+
+    def _fill_state(self, name: str, *, sched: str | None = None) -> BucketState:
+        state = BucketState.from_limit("user-1", "api", Limit.per_minute(name, 100), 2_000)
+        state.fill_instant, state.expressed_ms = 5_000, 2_000
+        state.stored_sched_raw = (sched, None)
+        return state
+
+    @pytest.mark.parametrize("bypassed", [False, True])
+    @pytest.mark.parametrize("guards", [True, False])
+    def test_fill_write(self, bypassed: bool, guards: bool) -> None:
+        """#819: ADR-154's two writes, every side, beside a quota's `tk` terms."""
+        from zae_limiter import fill_instant
+
+        params = fill_instant.ShardParams(100_000, 100_000, 60_000, 1)
+        request = _repo().build_fill_write(
+            "user-1",
+            "api",
+            0,
+            {
+                DOTTED: (
+                    fill_instant.not_full_write(2_000, 1_000, params),
+                    self._fill_state(DOTTED),
+                ),
+                HYPHENATED: (
+                    fill_instant.full_write(2_000, 1_000, params),
+                    self._fill_state(HYPHENATED, sched="1h9-17s500"),
+                ),
+                "tok.sec": (
+                    fill_instant.not_full_write(2_000, 1_000, params, bounded=False),
+                    self._fill_state("tok.sec"),
+                ),
+            },
+            {DOTTED: 1_000, HYPHENATED: 1_000, "tok.sec": 1_000, "q.v1": 1_000},
+            {"q.v1": 1_000},
+            now_ms=2_000,
+            ttl_seconds=60,
+            expressed_ms=2_000,
+            shard_count=4,
+            item_sched=("1h9-17s500", "UTC"),
+            bypassed=bypassed,
+            guards=guards,
+            soft_pins={"soft.a": None, "soft-b": 9_000},
+        )
+        assert_expression_safe(request)
+        assert " BETWEEN " in request["ConditionExpression"]
+
+    def test_param_sync_re_expression(self) -> None:
+        """#820: the parameter sync's re-expression of a fill instant (`fill_sync`)."""
+        from zae_limiter import fill_sync
+
+        item = {
+            "PK": {"S": "x"},
+            "xi": {"N": "2000"},
+            "shard_count": {"N": "1"},
+            **{
+                f"b_{name}_{field}": {"N": value}
+                for name in (DOTTED, HYPHENATED)
+                for field, value in (
+                    ("fi", "200000000"),
+                    ("cp", "100000"),
+                    ("ra", "100000"),
+                    ("rp", "60000"),
+                )
+            },
+        }
+        plan = (
+            "SET #c0 = :c0, #c1 = :c1 REMOVE #s0",
+            {"#c0": f"b_{DOTTED}_cp", "#c1": f"b_{HYPHENATED}_cp", "#s0": "b_old.x_tk"},
+            {":c0": {"N": "50000"}, ":c1": {"N": "50000"}},
+        )
+        extended = fill_sync.reexpression(item, *plan, 3_000)
+        assert extended is not None
+        expression, names, values, condition = extended
+        assert_expression_safe(
+            {
+                "UpdateExpression": expression,
+                "ConditionExpression": condition,
+                "ExpressionAttributeNames": names,
+                "ExpressionAttributeValues": values,
+            }
+        )
+
+    def test_reexpress_item(self) -> None:
+        """#820: re-expressing every fill instant on an item, pinned (form 3)."""
+        captured: dict[str, Any] = {}
+
+        class Client:
+            pass
+
+        repo = _repo()
+
+        async def fake_update(client, **kwargs):
+            captured.update(kwargs)
+            return {"Attributes": {}}
+
+        async def fake_client():
+            return Client()
+
+        repo._update_item_retrying_conflict = fake_update
+        repo._get_client = fake_client
+        state_item = {
+            "PK": {"S": "x"},
+            "entity_id": {"S": "user-1"},
+            "resource": {"S": "api"},
+            "rf": {"N": "1000"},
+            "xi": {"N": "1000"},
+            f"b_{DOTTED}_fi": {"N": "200000000"},
+            f"b_{DOTTED}_cp": {"N": "100000"},
+            f"b_{DOTTED}_ra": {"N": "100000"},
+            f"b_{DOTTED}_rp": {"N": "60000"},
+            f"b_{DOTTED}_tc": {"N": "0"},
+        }
+        import asyncio
+
+        asyncio.run(repo._reexpress_item("user-1", "api", 0, state_item, 3_000))
+        assert_expression_safe(captured)
+
+    def test_fill_return(self) -> None:
+        """#819: the exact return of a fill instant (ADR-155)."""
+        for counter in (True, False):
+            request = _repo().build_fill_return(
+                "user-1",
+                "api",
+                0,
+                {
+                    DOTTED: (1_000, self._fill_state(DOTTED)),
+                    HYPHENATED: (5, self._fill_state(HYPHENATED)),
+                },
+                expressed_ms=2_000,
+                shard_count=1,
+                counter=counter,
+            )
+            assert_expression_safe(request)
+
     def test_normal_with_only_seeds(self) -> None:
         """No ADD clause at all when every limit written is a seed."""
         update = _repo().build_composite_normal(
@@ -395,6 +605,28 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert update["UpdateExpression"].endswith("#ottl")
 
+    @pytest.mark.parametrize("read_xi", [1_500, None])
+    def test_bucket_operation_with_fill_instants(self, read_xi: int | None) -> None:
+        """#820: a reset or top-up that SETs fill instants and stamps `xi` (ADR-155)."""
+        from zae_limiter.bucket_ops import ShardWrite
+
+        write = ShardWrite(
+            shard_id=0,
+            shard_count=1,
+            shard_count_stored=True,
+            expected_rf=1,
+            written_rf=2,
+            deltas={HYPHENATED: 5},
+            fill_sets={
+                DOTTED: (7_000, self._fill_state(DOTTED)),
+                HYPHENATED: (9_000, self._fill_state(HYPHENATED)),
+            },
+            expressed=(2_000, read_xi),
+        )
+        update = _repo().build_bucket_operation("e", "r", write)["Update"]
+        assert_expression_safe(update)
+        assert "#oxi = :oxi" in update["UpdateExpression"]
+
     def test_bucket_operation_with_nothing_but_the_lock(self) -> None:
         from zae_limiter.bucket_ops import ShardWrite
 
@@ -429,12 +661,13 @@ class TestCompositeBuilders:
         assert "#prf >= :pe0" in condition and "#pw1 = :pw1" in condition
 
     def test_retry_with_only_unconsumed_seeds(self) -> None:
-        """A seed nothing consumes needs no condition at all."""
+        """A seed nothing consumes needs no balance condition: only the raise
+        marker's (ADR-156)."""
         update = _repo().build_composite_retry(
             "user-1", "api", consumed={}, seeds={HYPHENATED: self._seed_states()[HYPHENATED]}
         )["Update"]
         assert_expression_safe(update)
-        assert "ConditionExpression" not in update
+        assert update["ConditionExpression"] == "(attribute_not_exists(#rx) OR #rx <= :rxt)"
 
     def test_normal_with_soft_stamps_and_floors(self) -> None:
         """#467: soft floors OR the item's live stamp, a trusted soft limit has
@@ -534,7 +767,9 @@ class TestCompositeBuilders:
         # The stamp waives the balance only beside `cp` and `tk`, and a
         # trusted soft limit is debited only where the item carries it (#771).
         assert condition == (
-            "(#bt0 >= :bf0 OR (#bo0 > :bnow AND attribute_exists(#be0) AND attribute_exists(#bt0)))"
+            "(attribute_not_exists(#rx) OR #rx <= :rxt)"
+            " AND (#bt0 >= :bf0 OR (#bo0 > :bnow"
+            " AND attribute_exists(#be0) AND attribute_exists(#bt0)))"
             " AND (attribute_exists(#be1) AND attribute_exists(#bt1))"
         )
 
@@ -786,15 +1021,16 @@ class TestAggregatorWrites:
             resource="api",
             rf_ms=self.NOW - 60_000,
             limits={
-                # A drip limit consumed faster than it refills: topped up.
+                # Two quotas whose midnight edge falls inside the gap: both
+                # reset. A dripping limit is never refilled here (ADR-156).
                 DOTTED: LimitRefillInfo(
                     tc_delta=5_000_000,
                     tk_milli=0,
                     cp_milli=1_000_000,
-                    ra_milli=1_000_000,
-                    rp_ms=60_000,
+                    ra_milli=0,
+                    rp_ms=1_000,
+                    reset_sched=daily,
                 ),
-                # A quota whose midnight edge falls inside the gap: reset.
                 HYPHENATED: LimitRefillInfo(
                     tc_delta=0,
                     tk_milli=0,
@@ -813,13 +1049,24 @@ class TestAggregatorWrites:
         state = self._state()
         state.rf_ms = now - 60_000
         state.vu_ms = 0  # expired: this pass may re-stamp it
+        # An hourly quota whose 01:00 edge is in the gap makes the write.
+        state.limits["q.h"] = LimitRefillInfo(
+            tc_delta=0,
+            tk_milli=0,
+            cp_milli=5_000,
+            ra_milli=0,
+            rp_ms=1_000,
+            reset_sched=(ScheduleEntry.reset(cron="0 * * * *"),),
+        )
         table = MagicMock()
         assert try_refill_bucket(table, state, now) is True
         kwargs = table.update_item.call_args.kwargs
         assert_expression_safe(kwargs)
-        assert kwargs["ExpressionAttributeNames"]["#vq0"] == bucket_attr(
-            HYPHENATED, BUCKET_FIELD_TK
-        )
+        names = kwargs["ExpressionAttributeNames"]
+        assert {names["#vq0"], names["#vq1"]} == {
+            bucket_attr(DOTTED, BUCKET_FIELD_TK),
+            bucket_attr(HYPHENATED, BUCKET_FIELD_TK),
+        }
         assert "#vq0 <= :vq0" in kwargs["ConditionExpression"]
 
     def test_refill_and_reset(self) -> None:
@@ -891,8 +1138,11 @@ class TestAggregatorWrites:
         kwargs = table.update_item.call_args.kwargs
         assert_expression_safe(kwargs)
         names, values = kwargs["ExpressionAttributeNames"], kwargs["ExpressionAttributeValues"]
-        assert names["#gq0"] == bucket_attr(HYPHENATED, BUCKET_FIELD_GC)
-        assert values[":gq0"] == 4
+        assert {names["#gq0"], names["#gq1"]} == {
+            bucket_attr(DOTTED, BUCKET_FIELD_GC),
+            bucket_attr(HYPHENATED, BUCKET_FIELD_GC),
+        }
+        assert values[":gq0"] == values[":gq1"] == 4
         assert names["#gqsc"] == "shard_count"
         assert values[":gqpin"] == 4
 
@@ -940,6 +1190,143 @@ class TestAggregatorWrites:
     def test_path_1_freeze(self) -> None:
         kwargs = _quota_count_freeze({"PK": "p", "SK": "s"}, 4, [(DOTTED, 2), (HYPHENATED, 1)])
         assert_expression_safe(kwargs)
+
+
+class TestRaiseWrites:
+    """ADR-156 (#821): the raise marker, its release and the raise transaction."""
+
+    NOW = 1_800_000_000_000
+
+    def _image(self, *, legacy: bool, shard_count: int = 1) -> dict[str, Any]:
+        """A shard as the marker write returns it: a dripping limit and a quota."""
+        from zae_limiter import fill_instant as fi
+
+        rpm = fi.ShardParams(1_000_000, 1_000_000, 60_000, shard_count)
+        image: dict[str, Any] = {
+            "PK": {"S": "ns/BUCKET#user-1#api#0"},
+            "SK": {"S": "#STATE"},
+            "shard_count": {"N": str(shard_count)},
+            "rf": {"N": str(self.NOW - 1_000)},
+            "rx": {"N": str(self.NOW + 2_000)},
+            "pinc": {"S": "inc"},
+            "pgen": {"N": "3"},
+            bucket_attr(DOTTED, "cp"): {"N": "1000000"},
+            bucket_attr(DOTTED, "ra"): {"N": "1000000"},
+            bucket_attr(DOTTED, "rp"): {"N": "60000"},
+            bucket_attr(DOTTED, "tc"): {"N": "5000"},
+            bucket_attr(HYPHENATED, "tk"): {"N": "20000"},
+            bucket_attr(HYPHENATED, "cp"): {"N": "50000"},
+            bucket_attr(HYPHENATED, "ra"): {"N": "0"},
+            bucket_attr(HYPHENATED, "rp"): {"N": "1000"},
+            bucket_attr(HYPHENATED, "rsched"): {"S": "1m0h0"},
+            "b_wcu_cp": {"N": "1000000"},
+            "b_wcu_ra": {"N": "1000000"},
+            "b_wcu_rp": {"N": "1000"},
+        }
+        if legacy:  # `tk` for both dripping limits, no `xi`, no `gc` on the quota
+            image[bucket_attr(DOTTED, "tk")] = {"N": "400000"}
+            image["b_wcu_tk"] = {"N": "999000"}
+        else:
+            image["xi"] = {"N": str(self.NOW - 1_000)}
+            image[bucket_attr(DOTTED, "fi")] = {
+                "N": str(fi.stamp(self.NOW - 1_000, rpm) + fi.span(600_000, rpm))
+            }
+            image["b_wcu_fi"] = {"N": str(self.NOW * 1_000_000)}
+            image[bucket_attr(HYPHENATED, "gc")] = {"N": str(shard_count)}
+        return image
+
+    def test_the_marker_and_its_release(self) -> None:
+        from zae_limiter import shard_raise
+
+        assert_expression_safe(shard_raise.marker_write(self.NOW + 2_000, self.NOW))
+        assert_expression_safe(shard_raise.release_write(self.NOW + 2_000))
+
+    @pytest.mark.parametrize("legacy", [False, True], ids=["fill-instants", "legacy-tk"])
+    def test_every_item_of_the_raise(self, legacy: bool) -> None:
+        from zae_limiter import shard_raise
+
+        plan = shard_raise.plan_raise(
+            "t",
+            "ns",
+            "user-1",
+            "api",
+            {0: self._image(legacy=legacy)},
+            1,
+            self.NOW,
+            self.NOW + 2_000,
+        )
+        assert plan is not None and plan.new_count == 2
+        kinds = [next(iter(item)) for item in plan.transact_items]
+        assert kinds == ["Update", "Put", "ConditionCheck"]
+        for item in plan.transact_items:
+            body = next(iter(item.values()))
+            assert_expression_safe(body)
+        update = plan.transact_items[0]["Update"]
+        names = update["ExpressionAttributeNames"]
+        if legacy:
+            # The conversion is pinned on `tk` and REMOVEs it; the legacy
+            # quota's grant size is frozen (ADR-145 R5).
+            assert any(v == bucket_attr(DOTTED, "tk") for v in names.values())
+            assert any(v == bucket_attr(HYPHENATED, "gc") for v in names.values())
+        assert "#rx = :rxd" in update["ConditionExpression"]
+
+    def test_a_missing_slot_and_its_split_are_puts(self) -> None:
+        from zae_limiter import shard_raise
+
+        plan = shard_raise.plan_raise(
+            "t",
+            "ns",
+            "user-1",
+            "api",
+            {0: self._image(legacy=False, shard_count=2), 1: None},
+            2,
+            self.NOW,
+            self.NOW + 2_000,
+        )
+        assert plan is not None
+        kinds = [next(iter(item)) for item in plan.transact_items]
+        assert kinds == ["Update", "Put", "Put", "Put", "ConditionCheck"]
+        for item in plan.transact_items:
+            assert_expression_safe(next(iter(item.values())))
+
+    def test_the_aggregator_re_expression(self) -> None:
+        """A `vu` re-stamp past a dripping boundary re-expresses with `#xf*` / `#xxi`."""
+        half = (ScheduleEntry(cron="* 0-6 * * *", tz="UTC", scale=0.5),)
+        daily = (ScheduleEntry.reset(cron="0 0 * * *"),)
+        now = 1_704_067_200_000 + 7 * 3_600_000 + 5_000  # 07:00:05, the window closed at 07:00
+        state = BucketRefillState(
+            namespace_id="ns",
+            entity_id="user-1",
+            resource="api",
+            rf_ms=now - 86_400_000,
+            vu_ms=0,
+            xi_ms=now - 60_000,
+            limits={
+                DOTTED: LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=0,
+                    cp_milli=1_000_000,
+                    ra_milli=1_000_000,
+                    rp_ms=60_000,
+                    sched=half,
+                    fill_instant=(now - 60_000) * 500_000,
+                ),
+                HYPHENATED: LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=0,
+                    cp_milli=5_000_000,
+                    ra_milli=0,
+                    rp_ms=1_000,
+                    reset_sched=daily,
+                ),
+            },
+        )
+        table = MagicMock()
+        assert try_refill_bucket(table, state, now) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert_expression_safe(kwargs)
+        assert kwargs["ExpressionAttributeNames"]["#xf0"] == bucket_attr(DOTTED, "fi")
+        assert "#xxi = :xxir" in kwargs["ConditionExpression"]
 
 
 class TestClientWritesThroughMoto:

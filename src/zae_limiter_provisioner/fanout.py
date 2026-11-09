@@ -28,10 +28,13 @@ from typing import Any
 
 from zae_limiter.schema import (
     BUCKET_FIELD_BYPASS,
+    BUCKET_FIELD_CP,
     BUCKET_FIELD_DISABLED,
+    BUCKET_FIELD_FI,
     BUCKET_FIELD_PGEN,
     BUCKET_FIELD_PINC,
     BUCKET_FIELD_SOFT,
+    BUCKET_FIELD_TK,
     BUCKET_PREFIX,
     DEFAULT_RESOURCE,
     DISABLED_BYPASS,
@@ -39,6 +42,7 @@ from zae_limiter.schema import (
     GSI2_NAME,
     GSI3_NAME,
     GSI4_NAME,
+    bucket_attr,
     decode_cascade,
     decode_disabled,
     entity_incarnation,
@@ -53,7 +57,14 @@ from zae_limiter.schema import (
     stamp_deadline,
 )
 
-from .bucket_sync import STAMP_TTL_SECONDS, resolve_bucket_limits
+from .bucket_sync import (
+    DEFAULT_TTL_MULTIPLIER,
+    STAMP_TTL_SECONDS,
+    _update_one_shard,
+    build_bucket_param_update,
+    read_clock_ms,
+    resolve_bucket_limits,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -636,3 +647,89 @@ def fanout_soft(
             stamp_bucket_soft(client, table_name, pk, targets, deadlines[key])
             stamped.add(pk)
     return len(stamped)
+
+
+def fanout_params(
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    resource: str | None,
+    stale_limit_names: set[str] | None = None,
+) -> int:
+    """Bring active buckets to a resource- or system-level change (ADR-153, #823).
+
+    Mirrors ``Repository._fanout_params``: GSI2 for one resource, GSI4 for the
+    whole namespace when ``resource`` is None; two discovery passes; each
+    bucket read strongly consistent and written once from the limits resolved,
+    strongly consistent, for its own entity and resource, its fill instants
+    re-expressed in a pinned write (ADR-155). Only the limits the item carries
+    are written, so one it lacks is seeded by its next slow pass (#633); a
+    dropped limit it carries is removed. Left alone when either entity level
+    decides the bucket, or a resource level under a system change.
+
+    Returns the number of buckets written.
+    """
+    if resource is not None:
+        query = (GSI2_NAME, "GSI2PK", "GSI2SK", gsi2_pk_resource(namespace_id, resource))
+    else:
+        query = (GSI4_NAME, "GSI4PK", "GSI4SK", namespace_id)
+    resolved: dict[tuple[str, str], tuple[dict[str, dict[str, Any]], str | None, int]] = {}
+    synced: set[str] = set()
+    written = 0
+    for _pass in range(2):
+        for pk in _query_bucket_pks(client, table_name, *query, BUCKET_PREFIX):
+            if pk in synced:
+                continue
+            _ns, eid, bucket_resource, _shard = parse_bucket_pk(pk)
+            key = (eid, bucket_resource)
+            if key not in resolved:
+                # Before the resolution its soft stamps come from (decision 8).
+                read_ms = read_clock_ms()
+                limits, level = resolve_bucket_limits(
+                    client, table_name, namespace_id, eid, bucket_resource, consistent_read=True
+                )
+                resolved[key] = (limits, level, read_ms)
+            limits, level, read_ms = resolved[key]
+            synced.add(pk)
+            if level in ("entity", "entity_default") or (resource is None and level == "resource"):
+                continue
+            if not limits:
+                continue  # nothing applies any more: no correct value to write
+            if _sync_default_bucket(client, table_name, pk, limits, stale_limit_names, read_ms):
+                written += 1
+    return written
+
+
+def _sync_default_bucket(
+    client: Any,
+    table_name: str,
+    pk: str,
+    limits: dict[str, dict[str, Any]],
+    stale_limit_names: set[str] | None,
+    read_ms: int,
+) -> bool:
+    """Read one bucket and write it the limits it carries (#823)."""
+    response = client.get_item(
+        TableName=table_name,
+        Key={"PK": {"S": pk}, "SK": {"S": sk_state()}},
+        ConsistentRead=True,
+    )
+    item = response.get("Item")
+    if not isinstance(item, dict):
+        return False
+
+    def carries(name: str) -> bool:
+        return bucket_attr(name, BUCKET_FIELD_CP) in item and (
+            bucket_attr(name, BUCKET_FIELD_FI) in item or bucket_attr(name, BUCKET_FIELD_TK) in item
+        )
+
+    carried = {name: decl for name, decl in limits.items() if carries(name)}
+    dropped = {
+        name
+        for name in (stale_limit_names or ())
+        if name not in limits and bucket_attr(name, BUCKET_FIELD_CP) in item
+    }
+    if not carried and not dropped:
+        return False
+    plan = build_bucket_param_update(carried, DEFAULT_TTL_MULTIPLIER, dropped or None, read_ms)
+    return _update_one_shard(client, table_name, pk, *plan, image=item)

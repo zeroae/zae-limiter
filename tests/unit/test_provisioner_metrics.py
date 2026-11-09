@@ -179,8 +179,10 @@ class TestDebugApply:
         result = _apply(_manifest(10, entity_prefix="classified"), debug=True)
         report = result["debug"]
         assert report["counts"]["changes"] == {"create:entity": 10, "create:resource": 1}
-        assert report["counts"]["owed_fanouts"] == 10
+        # Each entity level's sync, and the new resource level's (#823).
+        assert report["counts"]["owed_fanouts"] == 11
         assert report["fanouts"]["sync:entity"]["count"] == 10
+        assert report["fanouts"]["sync:resource"]["count"] == 1
         assert report["clients_created"] == 1
         # The resource level and the record are PutItems; each entity create is a
         # transaction with its #ENTITY_CONFIG_RESOURCES count (#797).

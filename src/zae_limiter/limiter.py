@@ -17,9 +17,14 @@ if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol, SpeculativeResult
 
 from .bucket import (
+    adopt_fill_instant,
+    adopt_schedule,
+    apply_consume,
     calculate_available,
+    credit_back,
     declared_statuses,
-    force_consume,
+    express_created,
+    settle,
     try_consume,
     window_end_in_force,
     would_refill_satisfy,
@@ -34,9 +39,11 @@ from .exceptions import (
     ValidationError,
     VersionMismatchError,
 )
+from .fill_instant import FillInstantOverflowError, WriteBudget
 from .lease import (
     _CONTENTION_RETRY_AFTER_S,
     BypassLostError,
+    FillInstantLostError,
     Lease,
     LeaseEntry,
     OwnerStampLostError,
@@ -46,6 +53,7 @@ from .lease import (
     _contention_rejection,
     _is_transaction_conflict,
     _stamp_deadline,
+    check_amounts,
     credit_ceilings,
     credit_image,
     write_credit,
@@ -118,6 +126,15 @@ _ParentHint = tuple[str, int]
 _SlowPart = tuple[str, dict[str, int], int | None, int | None, _ParentHint | None]
 
 
+def _commits_when_rejected(entries: list[LeaseEntry]) -> bool:
+    """Whether a rejected pass still writes, with nothing consumed (``_commit_rejected_moves``).
+
+    An ADR-145 quota move, which must not be lost, or a shard created empty
+    (ADR-156), which must exist to refill.
+    """
+    return any(entry._donor_debit is not None or entry._created_empty for entry in entries)
+
+
 def _is_custom_config(config_source: str | None) -> bool:
     """Whether limits from ``config_source`` are the entity's own (ADR-136).
 
@@ -132,6 +149,18 @@ def _is_custom_config(config_source: str | None) -> bool:
 
 #: The DynamoDB error code for a call IAM refused (#751).
 _ACCESS_DENIED = "AccessDeniedException"
+
+
+def _overflow_in(error: BaseException) -> FillInstantOverflowError | None:
+    """The fill-instant overflow in ``error``'s cause chain, if there is one (#824)."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        if isinstance(current, FillInstantOverflowError):
+            return current
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def _access_denied_in(exc: BaseException) -> ClientError | None:
@@ -289,6 +318,22 @@ class OnUnavailable(Enum):
 
     ALLOW = "allow"  # Allow requests
     BLOCK = "block"  # Block requests
+
+
+def _undecided_rejection(
+    buckets: "list[BucketState] | None", consume: dict[str, int], now_ms: int
+) -> RateLimitExceeded:
+    """The contended 429 for a request the fill-instant writes left undecided (ADR-154).
+
+    One status per declared limit on the images it holds, none exceeded, each
+    waiting ``_CONTENTION_RETRY_AFTER_S`` (#724): the request was overtaken,
+    not short. Nothing it asked for is debited.
+    """
+    statuses = [
+        replace(status, exceeded=False, retry_after_seconds=_CONTENTION_RETRY_AFTER_S)
+        for status in declared_statuses(buckets or [], consume, now_ms)
+    ]
+    return RateLimitExceeded(statuses, contended=True)
 
 
 class RateLimiter:
@@ -930,11 +975,14 @@ class RateLimiter:
                 the decision evaluated, each tagged with its resource.
             ResourceDisabled: If the resource — or, with ``also``, any of the
                 resources — is disabled. Outranks ``RateLimitExceeded``.
-            RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
+            RateLimiterUnavailable: If DynamoDB unavailable and BLOCK; and,
+                under every mode, if a computed fill instant would leave
+                DynamoDB's exact integer range (#824), as for an IAM denial.
             ValidationError: If no limits configured at any level, an amount
-                in ``consume`` or ``also`` is negative, or ``also`` is invalid
-                (a bad or repeated resource name, too many resources, or
-                combined with ``limits``)
+                in ``consume`` or ``also`` is negative or above
+                ``MAX_TOKENS`` (10**15, before any I/O, #824), or ``also`` is
+                invalid (a bad or repeated resource name, too many resources,
+                or combined with ``limits``)
             VersionMismatchError: If ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638). Never subject to
                 ``on_unavailable``.
@@ -972,60 +1020,12 @@ class RateLimiter:
             ):
                 await self._repository.require_reset_after_readers(limits)
 
-            lease: Lease | None = None
-            # Shard the fast path selected, and the shard_count it observed on
-            # the failure image; the slow path must read and create that same
-            # shard, sized by that count, rather than draw again from a cache
-            # a failed speculative write never updates (issue #439).
-            slow_path_shard: int | None = None
-            slow_path_shard_count: int | None = None
-            slow_path_parent_shard: _ParentHint | None = None
-
             # Several resources, all or none (ADR-148): arrives committed, and
             # refunded whole if anything failed.
             if len(parts) > 1:
                 lease = await self._acquire_resources(entity_id, parts)
-
-            # Try speculative fast path first (issue #315). Not when a `limits=`
-            # override declares a soft limit this request consumes (#467,
-            # review D11): an override is not config, so no bucket carries its
-            # stamp, and the fast path — child and cascade parent — would read
-            # that limit hard and reject on it. The slow path trusts the
-            # override for every entity it plans.
-            elif self._speculative_writes and not any(
-                limit.soft and limit.name in consume for limit in limits or ()
-            ):
-                (
-                    lease,
-                    slow_path_shard,
-                    slow_path_shard_count,
-                    slow_path_parent_shard,
-                ) = await self._try_speculative_acquire(
-                    entity_id=entity_id,
-                    resource=resource,
-                    consume=consume,
-                    use_rejection_cache=limits is None,
-                )
-                if lease is not None and _waived_against_override(lease, limits):
-                    # The other half of D11 (review F1): the write was admitted
-                    # on a config soft stamp for a limit this override declares
-                    # hard. Refund it and let the slow path, which trusts the
-                    # override, decide.
-                    await lease._rollback()
-                    lease, slow_path_shard, slow_path_shard_count = None, None, None
-                    slow_path_parent_shard = None
-
-            # Fall back to slow path if speculative didn't succeed
-            if lease is None:
-                lease = await self._slow_acquire(
-                    entity_id=entity_id,
-                    resource=resource,
-                    limits_override=limits,
-                    consume=consume,
-                    shard_id=slow_path_shard,
-                    shard_count=slow_path_shard_count,
-                    parent_hint=slow_path_parent_shard,
-                )
+            else:
+                lease = await self._admit_one(entity_id, resource, consume, limits)
 
             # Write initial consumption to DynamoDB before yielding (Issue
             # #309). No-op for speculative leases (already committed by
@@ -1054,43 +1054,143 @@ class RateLimiter:
             # RateLimiterUnavailable or swallowed by a degraded lease.
             raise
         except Exception as e:
-            # A missing IAM permission is not an outage (#751): it never heals,
-            # and the denied write is the one that would create the bucket, so
-            # ALLOW would admit every later call with no limit, silently. It is
-            # raised under every mode, before ALLOW can degrade.
-            denied = _access_denied_in(e)
-            if denied is not None:
-                message = denied.response.get("Error", {}).get("Message") or str(denied)
-                raise PermissionDenied(
-                    f"{message} -- acquire() needs the IAM actions listed at {IAM_DOCS_URL}",
-                    cause=e,
-                    stack_name=self._repository.stack_name,
-                    entity_id=entity_id,
-                    resource=resource,
-                ) from e
-            if mode == OnUnavailable.ALLOW:
-                # Return a no-op lease. `degraded` exempts it from declared-
-                # scope validation (Issue #455): it has no entries by design.
-                yield Lease(repository=self._repository, degraded=True)
-                return
-            else:
-                raise RateLimiterUnavailable(
-                    str(e),
-                    cause=e,
-                    stack_name=self._repository.stack_name,
-                    entity_id=entity_id,
-                    resource=resource,
-                ) from e
+            self._raise_unless_allowed(e, mode, entity_id, resource)
+            # Return a no-op lease. `degraded` exempts it from declared-
+            # scope validation (Issue #455): it has no entries by design.
+            yield Lease(repository=self._repository, degraded=True)
+            return
 
         # Lease committed - manage the context. The lease-level methods act on
         # the primary resource; the others through `lease.resource()`.
         lease._bind_resources(tuple(name for name, _amounts in parts))
+
+        async def admit(target: str, amounts: dict[str, int]) -> Lease | None:
+            """A `consume()` call (ADR-153, #822): admitted as `acquire()` admits."""
+            override = limits if target == resource else None
+            try:
+                inner = await self._admit_one(entity_id, target, amounts, override)
+                await inner._commit_initial()
+                return inner
+            except (
+                RateLimitExceeded,
+                ValidationError,
+                ResourceDisabled,
+                VersionMismatchError,
+                Warning,
+            ):
+                raise
+            except Exception as e:
+                self._raise_unless_allowed(e, mode, entity_id, target)
+                return None
+
+        lease._admit = admit
         try:
             yield lease
             await lease._commit_adjustments()
         except Exception:
             await lease._rollback()
             raise
+
+    async def _admit_one(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        limits: list[Limit] | None,
+    ) -> Lease:
+        """One resource's request admitted: the speculative write, else the slow path.
+
+        Shared by ``acquire()`` and a lease's ``consume()`` (#822). The lease
+        it returns is committed (a speculative write) or ready to commit.
+        """
+        lease: Lease | None = None
+        # Shard the fast path selected, and the shard_count it observed on
+        # the failure image; the slow path must read and create that same
+        # shard, sized by that count, rather than draw again from a cache
+        # a failed speculative write never updates (issue #439).
+        slow_path_shard: int | None = None
+        slow_path_shard_count: int | None = None
+        slow_path_parent_shard: _ParentHint | None = None
+
+        # Try speculative fast path first (issue #315). Not when a `limits=`
+        # override declares a soft limit this request consumes (#467,
+        # review D11): an override is not config, so no bucket carries its
+        # stamp, and the fast path — child and cascade parent — would read
+        # that limit hard and reject on it. The slow path trusts the
+        # override for every entity it plans.
+        if self._speculative_writes and not any(
+            limit.soft and limit.name in consume for limit in limits or ()
+        ):
+            (
+                lease,
+                slow_path_shard,
+                slow_path_shard_count,
+                slow_path_parent_shard,
+            ) = await self._try_speculative_acquire(
+                entity_id=entity_id,
+                resource=resource,
+                consume=consume,
+                use_rejection_cache=limits is None,
+            )
+            if lease is not None and _waived_against_override(lease, limits):
+                # The other half of D11 (review F1): the write was admitted
+                # on a config soft stamp for a limit this override declares
+                # hard. Refund it and let the slow path, which trusts the
+                # override, decide.
+                await lease._rollback()
+                lease, slow_path_shard, slow_path_shard_count = None, None, None
+                slow_path_parent_shard = None
+
+        # Fall back to slow path if speculative didn't succeed
+        if lease is None:
+            lease = await self._slow_acquire(
+                entity_id=entity_id,
+                resource=resource,
+                limits_override=limits,
+                consume=consume,
+                shard_id=slow_path_shard,
+                shard_count=slow_path_shard_count,
+                parent_hint=slow_path_parent_shard,
+            )
+        return lease
+
+    def _raise_unless_allowed(
+        self, error: Exception, mode: OnUnavailable, entity_id: str, resource: str
+    ) -> None:
+        """Map a backend error: raise it as the caller sees it, or return under ALLOW."""
+        # A missing IAM permission is not an outage (#751): it never heals,
+        # and the denied write is the one that would create the bucket, so
+        # ALLOW would admit every later call with no limit, silently. It is
+        # raised under every mode, before ALLOW can degrade.
+        # A value past DynamoDB's exact integer range (ADR-154, #824) is not
+        # an outage either: it never heals, and ALLOW would admit unlimited.
+        overflow = _overflow_in(error)
+        if overflow is not None:
+            raise RateLimiterUnavailable(
+                f"{overflow} -- refused under every on_unavailable mode",
+                cause=error,
+                stack_name=self._repository.stack_name,
+                entity_id=entity_id,
+                resource=resource,
+            ) from error
+        denied = _access_denied_in(error)
+        if denied is not None:
+            message = denied.response.get("Error", {}).get("Message") or str(denied)
+            raise PermissionDenied(
+                f"{message} -- acquire() needs the IAM actions listed at {IAM_DOCS_URL}",
+                cause=error,
+                stack_name=self._repository.stack_name,
+                entity_id=entity_id,
+                resource=resource,
+            ) from error
+        if mode != OnUnavailable.ALLOW:
+            raise RateLimiterUnavailable(
+                str(error),
+                cause=error,
+                stack_name=self._repository.stack_name,
+                entity_id=entity_id,
+                resource=resource,
+            ) from error
 
     async def _try_speculative_acquire(
         self,
@@ -1099,6 +1199,7 @@ class RateLimiter:
         consume: dict[str, int],
         use_rejection_cache: bool = True,
         prechecked: tuple[frozenset[int], frozenset[int]] | None = None,
+        write_budget: WriteBudget | None = None,
     ) -> tuple[Lease | None, int, int | None, _ParentHint | None]:
         """Try the speculative fast path for acquire (issue #315).
 
@@ -1128,6 +1229,8 @@ class RateLimiter:
         the cached states describe the stored parameters, not an override.
         ``prechecked`` is the ``(avoid, avoid_parent)`` answer of
         :meth:`_rejection_precheck` taken by the caller, which then skips it.
+        ``write_budget`` is a multi-resource acquire's shared budget for the
+        fill-instant writes (ADR-154), passed on only when given.
 
         Raises:
             RateLimitExceeded: If the bucket is truly exhausted (refill
@@ -1155,30 +1258,21 @@ class RateLimiter:
         # them, so a backend without a rejection cache never receives them.
         # Each set is passed only when non-empty, so a repository that predates
         # one of them (a subclass, a test double) keeps working.
+        steering: dict[str, Any] = {}
+        if avoid:
+            steering["avoid_shards"] = avoid
         if avoid_parent:
-            result = await self._repository.speculative_consume(
-                entity_id=entity_id,
-                resource=resource,
-                consume=consume,
-                now_ms=now_ms,
-                avoid_shards=avoid,
-                avoid_parent_shards=avoid_parent,
-            )
-        elif avoid:
-            result = await self._repository.speculative_consume(
-                entity_id=entity_id,
-                resource=resource,
-                consume=consume,
-                now_ms=now_ms,
-                avoid_shards=avoid,
-            )
-        else:
-            result = await self._repository.speculative_consume(
-                entity_id=entity_id,
-                resource=resource,
-                consume=consume,
-                now_ms=now_ms,
-            )
+            steering["avoid_shards"] = avoid
+            steering["avoid_parent_shards"] = avoid_parent
+        if write_budget is not None:
+            steering["write_budget"] = write_budget
+        result = await self._repository.speculative_consume(
+            entity_id=entity_id,
+            resource=resource,
+            consume=consume,
+            now_ms=now_ms,
+            **steering,
+        )
 
         if not result.success:
             # A parent shard the fast path found MISSING pins the slow path, so
@@ -1239,6 +1333,14 @@ class RateLimiter:
                 raise ResourceDisabled(
                     entity_id=result.parent_id, resource=resource, level="bucket"
                 )
+
+            # The fill-instant writes kept being overtaken until the request's
+            # write budget ran out (ADR-154, Theorem 3(c)): answered as
+            # contended (#724), never by the slow path, which would only meet
+            # the same contention under a lock. Nothing was debited here; a
+            # parent the parallel write debited was compensated above.
+            if result.failure_reason == SpeculativeFailureReason.UNDECIDED:
+                raise _undecided_rejection(result.old_buckets, consume, now_ms)
 
             # Shard doubling: if wcu exhausted, double shard_count and update
             # cache — but only once the acquire is going to proceed, exactly as
@@ -1563,6 +1665,22 @@ class RateLimiter:
             )
             raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
 
+        # A parent still undecided when the budget ran out (ADR-154) refunds
+        # the child, as any failed parent write does (ADR-146), and the
+        # request is answered as contended (#724).
+        if parent_result.failure_reason == SpeculativeFailureReason.UNDECIDED:
+            await self._compensate_child(
+                entity_id,
+                resource,
+                consume,
+                result.shard_id,
+                result.buckets,
+                bypassed=result.bypassed,
+            )
+            raise _undecided_rejection(
+                [*result.buckets, *(parent_result.old_buckets or [])], consume, now_ms
+            )
+
         # A closed schedule window on the parent is not a rejection either
         # (#222 §2.1), and unlike the child path there is no shared helper to
         # short-circuit: the `would_refill_satisfy` gate below would judge the
@@ -1739,12 +1857,23 @@ class RateLimiter:
         )
         if wcu_state is not None and try_consume(wcu_state, 1, now_ms).success:
             return result.shard_id, result.shard_count
-        new_count = await self._repository.bump_shard_count(entity_id, resource, result.shard_count)
+        # A bucket holding a dripping limit is raised whole, its balance moved
+        # into the shards it creates (ADR-156); any other keeps ADR-133's lazy
+        # doubling. A backend without the raise doubles.
+        raise_shards = getattr(self._repository, "raise_shards", None)
+        if raise_shards is not None and any(
+            b.limit_name != WCU_LIMIT_NAME and b.is_dripping_state for b in result.old_buckets or []
+        ):
+            new_count = await raise_shards(entity_id, resource, result.shard_count)
+        else:
+            new_count = await self._repository.bump_shard_count(
+                entity_id, resource, result.shard_count
+            )
         # Send the slow path to a shard that is not the hot one: one of the
-        # shards the doubling just added, which it will create (issue #439).
-        # bump_shard_count returns the winner's count when another client
-        # doubled first, so this range is new either way; only a vanished
-        # shard 0 leaves nothing to add.
+        # shards the doubling just added — created by the raise, or by the
+        # slow path itself (issue #439). Both return the winner's count when
+        # another writer raised first, so this range is new either way; only a
+        # raise that gave up or a vanished shard 0 leaves nothing to add.
         if new_count > result.shard_count:
             return random.randrange(result.shard_count, new_count), new_count
         return result.shard_id, new_count
@@ -1946,6 +2075,38 @@ class RateLimiter:
         must never turn a rejection into an admission; a lost one costs the
         entity the tokens of one request.
         """
+        consume_all = consume
+        # A fill instant the debit moved goes back by its exact return
+        # (ADR-155): no balance condition, pinned on what it was computed
+        # against. A soft one is left: it was debited after admission, by a
+        # write that may have given up, and only its reporting is at stake.
+        fill = {
+            b.limit_name: b
+            for b in buckets or ()
+            if b.fill_instant is not None and not b.soft and b.limit_name in consume
+        }
+        if fill and not bypassed:
+            consume = {name: amount for name, amount in consume.items() if name not in fill}
+            first = next(iter(fill.values()))
+            try:
+                await self._repository.return_fill_instants(
+                    entity_id,
+                    resource,
+                    shard_id,
+                    {name: (consume_all[name] * 1000, state) for name, state in fill.items()},
+                    expressed_ms=first.stored_expressed_ms or 0,
+                    shard_count=first.shard_count,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Fill-instant compensation failed for resource=%s shard=%d; "
+                    "the debit stands (%s)",
+                    resource,
+                    shard_id,
+                    type(exc).__name__,
+                )
+            if not consume:
+                return
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
         # The debit's image is the item as of that write: a speculative debit
         # moves none of what is pinned, so a later writer that did fails the
@@ -2086,6 +2247,10 @@ class RateLimiter:
                     self._build_lease_from_speculative(entity_id, resource, consume, retry),
                     None,
                 )
+            if retry.failure_reason == SpeculativeFailureReason.UNDECIDED:
+                # Overtaken until its budget ran out (ADR-154): contended,
+                # like an undecided first shard.
+                raise _undecided_rejection(retry.old_buckets, consume, now_ms)
             if retry.failure_reason in (
                 SpeculativeFailureReason.BUCKET_MISSING,
                 SpeculativeFailureReason.SCHEDULE_BOUNDARY,
@@ -2205,8 +2370,7 @@ class RateLimiter:
         Args:
             stacklevel: Frames from this helper to the ``acquire()`` caller;
                 the ``with``/``async with`` context-manager machinery adds one.
-                The single call site is ``_do_acquire`` (helper -> _do_acquire
-                -> acquire -> __aenter__ -> caller), so it is always 5.
+                The single call site is ``_do_acquire``, which counts them.
         """
         configured = sorted(limit.name for limit in limits)
         unknown = sorted(set(consume) - set(configured))
@@ -2488,7 +2652,7 @@ class RateLimiter:
         in ``RateLimitExceeded``. Returns ``(None, 0)``.
         """
         if limit.name not in consume:
-            state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
+            settle(state, 0, now_ms)
             return None, 0
 
         amount = consume[limit.name]
@@ -2513,8 +2677,7 @@ class RateLimiter:
         if not result.success:
             return status, 0
 
-        state.tokens_milli = result.new_tokens_milli
-        state.last_refill_ms = result.new_last_refill_ms
+        apply_consume(state, result)
         # Update consumption counter if initialized (issue #179)
         if state.total_consumed_milli is not None and amount > 0:
             state.total_consumed_milli += amount * 1000
@@ -2541,8 +2704,9 @@ class RateLimiter:
         state = buckets.get((entity_id, resource, WCU_LIMIT_NAME))
         if state is None:
             return None
+        adopt_fill_instant(state)
         original_tk, original_rf = state.tokens_milli, state.last_refill_ms
-        state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
+        settle(state, 0, now_ms)
         return LeaseEntry(
             entity_id=entity_id,
             resource=resource,
@@ -2615,10 +2779,11 @@ class RateLimiter:
             # config cache: nothing is consumed, so nothing is restamped.
             limit = replace(config[state.limit_name], soft=state.soft)
             # What `_do_acquire` attaches to an existing state from config.
-            state.sched = limit.schedule
+            adopt_schedule(state, limit.schedule, now_ms)
             state.reset_sched = limit.reset_schedule
             stored_rsa = state.reset_after_seconds
             state.reset_after_seconds = limit.reset_after_seconds
+            adopt_fill_instant(state)
             original_tk, original_rf = state.tokens_milli, state.last_refill_ms
             stored_top_up = state.topped_up_milli is not None
             window_end = state.window_end_ms
@@ -2631,7 +2796,7 @@ class RateLimiter:
             new_ws = cls._open_window_if_elapsed(limit, state, now_ms) if anchor else None
             reset_applied = cls._apply_reset_edge(limit, state, now_ms)
             roll_applied = cls._apply_window_roll(limit, state, now_ms, opened=new_ws is not None)
-            state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
+            settle(state, 0, now_ms)
             boundary_ms, reset_edge_ms = cls._materialisation_stamps(limit, state, now_ms)
             if left_unopened:
                 # The window this pass declined to open still has to be opened
@@ -2741,7 +2906,7 @@ class RateLimiter:
 
             # See `_do_acquire`: the resolved config, not the item, is what
             # makes the parent's refill and ceiling schedule-aware here.
-            existing.sched = limit.schedule
+            adopt_schedule(existing, limit.schedule, now_ms)
             # And the reset schedule alongside it, for the same reason and from
             # the same source: `try_consume` reads it to decide whether a reset
             # edge beats the drip in a rejection's `retry_after_seconds`
@@ -2759,6 +2924,7 @@ class RateLimiter:
                 existing.soft = limit.soft
             limit = replace(limit, soft=existing.soft)
 
+            adopt_fill_instant(existing)
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
             # A top-up (ADR-149) a reset or roll below ends; see `_do_acquire`.
@@ -2907,6 +3073,7 @@ class RateLimiter:
         async def plan_and_commit(disable_moves: bool, moves_contended: bool = False) -> Lease:
             period_redone = False
             owner_reread = False
+            fill_reread = False
             disable_bypass = False
             while True:
                 lease = await self._do_acquire(
@@ -2919,7 +3086,7 @@ class RateLimiter:
                     parent_hint=parent_hint,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
-                    consistent_owner=owner_reread,
+                    consistent_owner=owner_reread or fill_reread,
                     disable_bypass=disable_bypass,
                 )
                 try:
@@ -2931,17 +3098,33 @@ class RateLimiter:
                     if disable_bypass:  # pragma: no cover
                         raise AssertionError("an enforced plan carries no bypass write") from None
                     disable_bypass = True
-                except (PeriodNotAppliedError, SeedNotAppliedError):
+                except (PeriodNotAppliedError, SeedNotAppliedError, FillInstantLostError) as lost:
                     # The retry found a quota period nobody has applied (#743),
                     # or a limit the item does not carry yet and the retry
-                    # cannot seed (#771): redo the pass once from a fresh read,
+                    # cannot seed (#771), or a write of fill instants lost its
+                    # pins (#818): redo the pass once from a fresh read,
                     # which applies or seeds it. A second loss stands as the
-                    # rejection it was raised as — for a seed the contended
-                    # 429. Never a period for a soft quota: its guard is waived
-                    # (review D7).
+                    # rejection it was raised as — for a seed or a fill instant
+                    # the contended 429. Never a period for a soft quota: its
+                    # guard is waived (review D7).
                     if period_redone:
                         raise
                     period_redone = True
+                    # A fill instant has no consumption-only retry, which
+                    # stamps no owner (ADR-150). Its pins may have been lost to
+                    # an owner stamp a stale META replica disagreed with, so
+                    # the redo reads META strongly consistently. Its own flag:
+                    # a lost META check still gets its redo.
+                    fill_reread = isinstance(lost, FillInstantLostError)
+                    if fill_reread:
+                        # Concurrent passes lose to each other; the write pair
+                        # does not. Only when it cannot decide is the pass
+                        # planned again.
+                        redo = await self._redo_lost_fill_instants(
+                            entity_id, [(resource, consume)], limits_override
+                        )
+                        if redo is not None:
+                            return redo[0]
                 except OwnerStampLostError:
                     # A bucket this pass created lost its META check: the
                     # owner moved since the read (ADR-150). Nothing was
@@ -2985,9 +3168,10 @@ class RateLimiter:
 
         Raises:
             ValidationError: For a negative amount in ``consume`` or any
-                ``also`` entry, a bad resource name, the primary resource
-                named in ``also``, more than ``MAX_ACQUIRE_RESOURCES``
-                resources, or ``also`` combined with ``limits``.
+                ``also`` entry, or one above ``MAX_TOKENS``, a bad resource
+                name, the primary resource named in ``also``, more than
+                ``MAX_ACQUIRE_RESOURCES`` resources, or ``also`` combined with
+                ``limits``.
         """
         # A negative amount is an `ADD +x` whose `tk >= -x` condition always
         # holds: it mints tokens (review M1: one `{"rpm": -50}` acquire, then
@@ -3001,6 +3185,8 @@ class RateLimiter:
                     f"amounts must be >= 0 (resource {part!r}); use lease.release() to "
                     "return capacity",
                 )
+            # Past MAX_TOKENS a fill instant leaves DynamoDB's exact range (#824).
+            check_amounts(amounts, "consume")
         if not also:
             return [(resource, consume)]
         # A list of limits names no resource, so it cannot say which of the
@@ -3067,6 +3253,11 @@ class RateLimiter:
                     )
                 )
 
+            # One write budget for every resource (ADR-154): its cap counts
+            # every resource's limits, so one resource overtaken longer than
+            # the rest can use what they did not need.
+            budget = WriteBudget()
+
             async def _attempt(
                 resource: str,
                 consume: dict[str, int],
@@ -3074,7 +3265,11 @@ class RateLimiter:
             ) -> tuple[Lease | None, int, int | None, _ParentHint | None] | Exception:
                 try:
                     outcome = await self._try_speculative_acquire(
-                        entity_id=entity_id, resource=resource, consume=consume, prechecked=avoid
+                        entity_id=entity_id,
+                        resource=resource,
+                        consume=consume,
+                        prechecked=avoid,
+                        write_budget=budget,
                     )
                 except Exception as exc:
                     return exc
@@ -3176,6 +3371,7 @@ class RateLimiter:
             moves_contended: bool,
             reread: bool,
             enforced: frozenset[str],
+            fill_reread: bool,
         ) -> Lease | Exception:
             resource, consume, shard, shard_count, parent_hint = part
             try:
@@ -3189,7 +3385,7 @@ class RateLimiter:
                     parent_hint=parent_hint,
                     disable_moves=disable_moves,
                     moves_contended=moves_contended,
-                    consistent_owner=reread,
+                    consistent_owner=reread or fill_reread,
                     disable_bypass=resource in enforced,
                 )
             except Exception as exc:
@@ -3201,11 +3397,12 @@ class RateLimiter:
             redone: bool = False,
             reread: bool = False,
             enforced: frozenset[str] = frozenset(),
+            fill_reread: bool = False,
         ) -> tuple[Lease, dict[str, frozenset[str]]]:
             # One name per part keeps the sync twin's lambda on one line (#513).
             outcomes = await asyncio.gather(
                 *[
-                    _plan(part, disable_moves, moves_contended, reread, enforced)
+                    _plan(part, disable_moves, moves_contended, reread, enforced, fill_reread)
                     for part in slow_parts
                 ]
             )
@@ -3218,7 +3415,7 @@ class RateLimiter:
                 # A rejected part committed its own moves already; the parts
                 # that planned fine must not lose theirs either (ADR-145).
                 for plan in planned:
-                    if any(entry._donor_debit is not None for entry in plan.entries):
+                    if _commits_when_rejected(plan.entries):
                         await self._commit_rejected_moves(plan.entries, plan._carriers)
                     else:
                         # Never committed: its stamps are corrected alone, as
@@ -3229,7 +3426,9 @@ class RateLimiter:
             # at most 2 META checks (the entity and its parent, ADR-150), so
             # MAX_ACQUIRE_RESOURCES keeps the re-plan under the limit.
             if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
-                return await plan_and_commit(True, moves_contended, redone, reread, enforced)
+                return await plan_and_commit(
+                    True, moves_contended, redone, reread, enforced, fill_reread
+                )
             marks = [plan._cache_mark for plan in planned]
             lease = Lease(
                 repository=self._repository,
@@ -3252,16 +3451,43 @@ class RateLimiter:
                 grown = enforced | (lost.resources or frozenset(part[0] for part in slow_parts))
                 if grown == enforced:  # pragma: no cover
                     raise AssertionError("an enforced part carries no bypass write") from None
-                return await plan_and_commit(disable_moves, moves_contended, redone, reread, grown)
-            except (PeriodNotAppliedError, SeedNotAppliedError):
+                return await plan_and_commit(
+                    disable_moves, moves_contended, redone, reread, grown, fill_reread
+                )
+            except (PeriodNotAppliedError, SeedNotAppliedError, FillInstantLostError) as lost:
                 # The retry found a quota period nobody has applied (#743),
                 # or a limit no part's item carries yet that the retry cannot
-                # seed (#771): redo the pass once from a fresh read, which
-                # applies or seeds it. A second loss stands as the rejection
-                # it was raised as.
+                # seed (#771), or a write of fill instants lost its pins
+                # (#818): redo the pass once from a fresh read, which applies
+                # or seeds it. A second loss stands as the rejection it was
+                # raised as. A lost fill instant redoes it with META read
+                # strongly consistently, as `_slow_acquire` does (ADR-150).
                 if redone:
                     raise
-                return await plan_and_commit(disable_moves, moves_contended, True, reread, enforced)
+                if isinstance(lost, FillInstantLostError):
+                    # Through the write pair first, as `_slow_acquire` does.
+                    redo = await self._redo_lost_fill_instants(
+                        entity_id, [(part[0], part[1]) for part in slow_parts], None
+                    )
+                    if redo is not None:
+                        merged = Lease(
+                            repository=self._repository,
+                            entries=[entry for part_lease in redo for entry in part_lease.entries],
+                            compute_images=False,
+                        )
+                        merged._initial_committed = True
+                        return merged, {
+                            part[0]: plan._unknown_keys
+                            for part, plan in zip(slow_parts, planned, strict=True)
+                        }
+                return await plan_and_commit(
+                    disable_moves,
+                    moves_contended,
+                    True,
+                    reread,
+                    enforced,
+                    isinstance(lost, FillInstantLostError),
+                )
             except OwnerStampLostError:
                 # A bucket this commit created lost its META check: an owner
                 # moved since the read (ADR-150). Nothing was written; re-plan
@@ -3269,7 +3495,9 @@ class RateLimiter:
                 # loss stands as the contended 429 it was raised as.
                 if reread:
                     raise
-                return await plan_and_commit(disable_moves, moves_contended, redone, True, enforced)
+                return await plan_and_commit(
+                    disable_moves, moves_contended, redone, True, enforced, fill_reread
+                )
             unknown = {
                 part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
             }
@@ -3350,6 +3578,72 @@ class RateLimiter:
         except Exception:
             return None
         return None
+
+    async def _redo_lost_fill_instants(
+        self,
+        entity_id: str,
+        parts: list[tuple[str, dict[str, int]]],
+        limits: list[Limit] | None,
+    ) -> list[Lease] | None:
+        """Retry a slow pass whose fill-instant write lost, through ADR-154's pair.
+
+        The slow pass's write is pinned on what it read (``rf``, ``xi``, each
+        fill instant), so concurrent passes on one bucket serialise and a
+        loser's re-plan loses again; with no consumption-only retry for a fill
+        instant (#818) a burst that all missed the fast path — a new bucket, a
+        schedule boundary, a ``vu = 0`` stamp — got mostly contended 429s.
+        ADR-154's two writes commute with concurrent debits, so the loser asks
+        them first, from a fresh image and with its own write budget. A genuine
+        exhaustion raises as a fast rejection would. Not with
+        ``speculative_writes=False``: those writes trust the item's own owner
+        stamps, which that caller asked the slow path to check.
+
+        Returns:
+            One committed lease per part, or None when any part needs the slow
+            path again (a boundary, a missing shard, a part the override
+            forbids). Whatever landed is then refunded and the caller re-plans.
+        """
+        if not self._speculative_writes or (
+            limits is not None
+            and any(
+                limit.soft and limit.name in consume for _, consume in parts for limit in limits
+            )
+        ):
+            # The fast path would read an override's soft limit hard (review D11).
+            return None
+        budget = WriteBudget()
+        landed: list[Lease] = []
+
+        async def _attempt(resource: str, consume: dict[str, int]) -> Lease | None | Exception:
+            try:
+                outcome = await self._try_speculative_acquire(
+                    entity_id=entity_id,
+                    resource=resource,
+                    consume=consume,
+                    use_rejection_cache=False,
+                    write_budget=budget,
+                )
+            except Exception as exc:
+                return exc
+            # Recorded the moment it lands, as `_acquire_resources` does.
+            if outcome[0] is not None:
+                landed.append(outcome[0])
+            return outcome[0]
+
+        try:
+            outcomes = await asyncio.gather(*[_attempt(name, amounts) for name, amounts in parts])
+        except BaseException:
+            await self._refund(landed)
+            raise
+        errors = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
+        if errors:
+            await self._refund(landed)
+            raise self._combined_error(errors, [])
+        leases = [outcome for outcome in outcomes if isinstance(outcome, Lease)]
+        if len(leases) < len(parts) or any(_waived_against_override(x, limits) for x in leases):
+            await self._refund(landed)
+            return None
+        return leases
 
     async def _refund(self, leases: list[Lease]) -> None:
         """Refund every debit these committed leases wrote, concurrently (ADR-148).
@@ -3628,14 +3922,14 @@ class RateLimiter:
         # parent on [rpm, tpm] still has tpm gated and consumed on the parent
         # — a key known to either side of the cascade is not unknown.
         known_limits = [limit for eid in entity_ids for limit in entity_limits[eid]]
-        # helper -> here -> plan_and_commit -> _slow_acquire -> acquire ->
-        # __aenter__ -> caller
+        # helper -> here -> plan_and_commit -> _slow_acquire -> _admit_one ->
+        # acquire -> __aenter__ -> caller
         unknown_keys = self._warn_unknown_limits(
             consume,
             known_limits,
             resource,
             config_source=child_config_source,
-            stacklevel=7,
+            stacklevel=8,
         )
 
         # Process buckets and build lease entries
@@ -3660,6 +3954,20 @@ class RateLimiter:
                 state for (b_eid, _res, _name), state in existing_buckets.items() if b_eid == eid
             ]
             any_existing = bool(item_states)
+            if (
+                not any_existing
+                and eid_shard == 0
+                and eid_shard_count <= 1
+                and any(not limit.is_quota for limit in entity_limits[eid])
+            ):
+                # A missing shard 0 is created full only when no shard of its
+                # bucket exists (ADR-156). This client knows of no other shard,
+                # but one may live while shard 0 was swept by its TTL: ask.
+                siblings = getattr(self._repository, "sibling_shard_count", None)
+                found = await siblings(eid, resource) if siblings is not None else None
+                if found is not None:
+                    eid_shard_count = found
+                    entity_shards[eid] = (eid_shard, found)
             # Bypass (#311) needs both the uncached config and, for an existing
             # item, its stamp: a stamp alone may be stale (a clear whose fan-out
             # has not reached it yet, or missed it), and config alone may be
@@ -3952,7 +4260,7 @@ class RateLimiter:
                     # apply on the slow path at all; without it the refill and
                     # the ceiling below come out at the base rate while `vu`
                     # claims the window was honoured.
-                    state.sched = limit.schedule
+                    adopt_schedule(state, limit.schedule, now_ms)
                     # The reset schedule travels with it. `try_consume` reads
                     # it for the rejection estimate (#222 §7), so a bucket that
                     # carried `sched` alone would report a quota's wait as the
@@ -3993,6 +4301,21 @@ class RateLimiter:
                         else None
                     )
 
+                # A dripping limit is converted to a fill instant here (#818),
+                # or created as one, before anything
+                # moves it: the write converts the item, pinned on the `tk` and
+                # `rf` read. A shard created while others of its bucket exist
+                # (a slot a TTL swept, or one no raise created) starts empty
+                # (ADR-156): a raise creates every shard it adds, funded from
+                # its parent, and a full one here would add a share nothing
+                # paid for. A limit seeded on an existing item starts full.
+                created_empty = existing is None and (
+                    not any_existing and (eid_shard != 0 or eid_shard_count > 1)
+                )
+                if existing is None:
+                    express_created(state, now_ms, empty=created_empty)
+                else:
+                    adopt_fill_instant(state)
                 # Capture original values before try_consume modifies them (ADR-115)
                 original_tk = state.tokens_milli
                 # Whether the item carries a top-up (ADR-149) the reset or roll
@@ -4106,6 +4429,7 @@ class RateLimiter:
                         # it carries `gc` at the count it was sized at.
                         _granted=granted or (is_new and limit.is_quota),
                         _donor_debit=donor,
+                        _created_empty=created_empty and state.fill_instant is not None,
                         _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM or restamp_soft,
                         _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG or restamp_soft,
                         _stamp_deadline_ms=stamp_deadline,
@@ -4150,7 +4474,7 @@ class RateLimiter:
         # Check for any violations
         violations = [s for s in statuses if s.exceeded]
         # A rejected pass writes an rf-locked item only to commit a quota move.
-        writes = not violations or any(entry._donor_debit is not None for entry in entries)
+        writes = not violations or _commits_when_rejected(entries)
         for eid, item_states, override_names, shard, count, custom in to_carry if writes else ():
             # Carried as configured, so the config is read — through the
             # config cache, as any pass without the override reads it.
@@ -4170,7 +4494,7 @@ class RateLimiter:
                 anchor=not violations,
             )
         if violations:
-            if any(entry._donor_debit is not None for entry in entries):
+            if _commits_when_rejected(entries):
                 # The move's rf-locked write carries this pass's stamps too.
                 await self._commit_rejected_moves(entries, carriers)
             else:
@@ -4302,7 +4626,7 @@ class RateLimiter:
     async def _commit_rejected_moves(
         self, entries: list[LeaseEntry], carriers: list[LeaseEntry]
     ) -> None:
-        """Commit a rejected pass's quota moves with nothing consumed (ADR-145 I5).
+        """Commit a rejected pass's quota moves and empty creates with nothing consumed.
 
         A pass that planned a move is rejected on some limit: the move is
         still written, in the same transaction as the created or seeded shard
@@ -4311,7 +4635,9 @@ class RateLimiter:
         request asked for is ever debited (write-on-enter invariant 1). The
         rf-locked write also applies any reset the pass saw pending and
         advances `rf`, which is what the #633 standalone persist could not do
-        (the 1300 case).
+        (the 1300 case). A shard created empty (ADR-156) is written the same
+        way: left unwritten, it would never exist to refill, and every request
+        drawn to it would be rejected again.
 
         Best effort, and never a reason to fail differently: the move is one
         atomic transaction, so if it does not land — a lost condition, a
@@ -4326,7 +4652,7 @@ class RateLimiter:
                 # balance was never debited, so crediting it back mints tokens
                 # beside the move (ADR-145 I1, review D2).
                 if not entry._bypass:
-                    entry.state.tokens_milli += entry.consumed * 1000
+                    credit_back(entry.state, entry.consumed)
                 if entry.state.total_consumed_milli is not None:
                     entry.state.total_consumed_milli -= entry.consumed * 1000
                 entry.consumed = 0

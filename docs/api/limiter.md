@@ -37,6 +37,16 @@ A lease from `acquire(..., also={...})` covers several resources: its own
 methods act on the primary resource and `resource(name)` reaches the others; see
 [Several Resources in One Acquire](../guide/multi-resource.md).
 
+!!! note "Amounts are bounded"
+    `acquire()` (every `consume` and `also` amount), `consume()`, `adjust()` and `release()`,
+    on the lease and on a `resource(name)` handle, raise `ValidationError` for an amount above
+    `MAX_TOKENS` (10<sup>15</sup>) in magnitude, before any request is sent. So do `adjust()`
+    and `release()` when the lease's net adjustment of a limit would pass it, since the exit
+    writes that net as one debit or return. Past it a stored value would leave DynamoDB's
+    exact integer range. A computed value that would still leave
+    it raises `RateLimiterUnavailable` under every `on_unavailable` mode, never a degraded
+    lease.
+
 ::: zae_limiter.lease.Lease
     options:
       show_root_heading: true

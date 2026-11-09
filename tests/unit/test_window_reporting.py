@@ -4,15 +4,16 @@
 quota are constants read off the bucket — ``ws + reset_after`` — rather than
 scans, and they are wired at every ``LimitStatus`` construction site: the fast
 path (``bucket.declared_statuses``), slow-path admission
-(``RateLimiter._admit_limit``), the lease (``consume()`` and
-``_build_retry_failure_statuses``) and ``RateLimiter.check_availability``.
+(``RateLimiter._admit_limit``), the lease (``_build_retry_failure_statuses``;
+``consume()`` is admitted through the first two, #822) and
+``RateLimiter.check_availability``.
 
 Not a sync-generation source: these drive the async limiter and lease, and the
 sync twins are generated from the same ``limiter.py`` / ``lease.py``.
 """
 
 from datetime import timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -26,7 +27,7 @@ from zae_limiter.bucket import (
     window_end_in_force,
     would_refill_satisfy,
 )
-from zae_limiter.lease import Lease, LeaseEntry, _build_retry_failure_statuses
+from zae_limiter.lease import LeaseEntry, _build_retry_failure_statuses
 from zae_limiter.models import BucketState
 from zae_limiter.schema import BUCKET_FIELD_RSA, bucket_attr, pk_bucket, sk_state
 
@@ -245,34 +246,29 @@ class TestLeaseReportsTheWindow:
         assert status.resets_at_ms == T0 + FIVE_HOURS_MS
         assert status.retry_after_seconds == pytest.approx(4 * 3600.0)
 
-    async def test_consume_reports_the_window_on_both_statuses(self):
-        """The exceeded status and the passed one (declared, not consumed now)
-        both carry their window's end."""
+    @pytest.mark.parametrize("speculative", [True, False], ids=["fast", "slow"])
+    async def test_consume_reports_the_window_on_both_statuses(self, limiter, speculative):
+        """A ``consume()`` call is admitted as ``acquire()`` admits (#822): the
+        exceeded status and the passed one both carry their window's end."""
         turns = Limit.quota("turns", 10, reset_after=timedelta(hours=1))
-        repo = MagicMock()
-        repo._now_ms = MagicMock(return_value=T0 + ONE_HOUR_MS)
-        lease = Lease(
-            repository=repo,
-            entries=[
-                _entry(SESSION_10, _window_shard()),
-                _entry(
-                    turns,
-                    _window_shard(
-                        limit_name="turns",
-                        tokens_milli=5_000,
-                        window_start_ms=T0 + 30 * 60_000,
-                        reset_after_seconds=3600,
-                    ),
-                ),
-            ],
-        )
-        with pytest.raises(RateLimitExceeded) as exc:
-            await lease.consume(session=1)
+        repo = limiter._repository
+        target = limiter if speculative else RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("user-1", [SESSION_10, turns], resource=RESOURCE)
+        repo._now_ms = lambda: T0
+        async with target.acquire("user-1", RESOURCE, consume={"session": 10}):
+            pass
+
+        repo._now_ms = lambda: T0 + 30 * 60_000
+        async with target.acquire("user-1", RESOURCE, consume={"session": 0, "turns": 5}) as lease:
+            with pytest.raises(RateLimitExceeded) as exc:
+                await lease.consume(session=1, turns=1)
+            assert lease.consumed == {"session": 0, "turns": 5}  # nothing debited
+
         by_name = {s.limit_name: s for s in exc.value.statuses}
         assert by_name["session"].resets_at_ms == T0 + FIVE_HOURS_MS
-        assert by_name["session"].retry_after_seconds == pytest.approx(4 * 3600.0)
+        assert by_name["session"].retry_after_seconds == pytest.approx(4.5 * 3600.0, abs=1.0)
         assert not by_name["turns"].exceeded
-        assert by_name["turns"].resets_at_ms == T0 + 90 * 60_000
+        assert by_name["turns"].resets_at_ms == T0 + ONE_HOUR_MS  # opened with the bucket
 
 
 async def _spend_the_session(limiter, now_ms=T0):

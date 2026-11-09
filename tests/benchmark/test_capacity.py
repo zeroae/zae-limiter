@@ -9,15 +9,20 @@ Run with:
 Note: These tests use moto (mocked DynamoDB) to enable API call counting.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
+from botocore.exceptions import ClientError
 
+from tests.fixtures.balances import stored_fill_instant
 from tests.fixtures.sharding import pinned_shard
-from zae_limiter import Limit, RateLimitExceeded, schema
+from zae_limiter import Limit, RateLimitExceeded, SyncRateLimiter, fill_instant, schema
 from zae_limiter.models import BucketState
 from zae_limiter.schedule import ScheduleEntry
+from zae_limiter.sync_repository import SyncRepository
 
 pytestmark = pytest.mark.benchmark
 
@@ -796,11 +801,13 @@ class TestSpeculativeCapacity:
     def test_soft_limit_in_debt_is_still_one_write_and_no_reads(
         self, sync_limiter, capacity_counter
     ):
-        """#467: an exhausted soft limit is admitted by the same single write.
+        """#467: an exhausted soft limit is admitted without a read.
 
         The server decides soft-ness from the item's own stamp, so the client
-        reads nothing to know it: 0 RCU + 1 WCU, exactly the hard success path.
-        The limit is stored config: only config stamps the bucket (ADR-151).
+        reads nothing to know it. A dripping soft limit is stored as a fill
+        instant (#821) and takes no part in the admission write: it is debited
+        by the unbounded pair after it (ADR-154), so 0 RCU + 2 WCU. The limit
+        is stored config: only config stamps the bucket (ADR-151).
         """
         limits = [Limit.per_minute("rpm", 1_000_000), Limit.per_minute("tpm", 100, soft=True)]
         sync_limiter._repository.set_resource_defaults("api", limits)
@@ -819,7 +826,7 @@ class TestSpeculativeCapacity:
 
         assert lease.overdrawn == ["tpm"]
         assert len(capacity_counter.batch_get_item) == 0
-        assert capacity_counter.update_item == 1
+        assert capacity_counter.update_item == 2  # the admission, then the soft debit
         assert capacity_counter.put_item == 0
         assert len(capacity_counter.transact_write_items) == 0
 
@@ -926,9 +933,14 @@ class TestScheduledFastPathCapacity:
     def test_the_fan_outs_forced_pass_costs_one_slow_acquire_not_every_one(
         self, sync_limiter, capacity_counter
     ):
-        """`vu = 0` buys the clamp for exactly one demoted acquire. Before
-        `clear_vu` the stamp was unremovable on an unscheduled bucket and every
-        subsequent acquire paid the slow path's 1 RCU + 2 WCU, forever."""
+        """A limit change forces no slow pass on a dripping bucket (#820, #821).
+
+        The param sync re-expresses each fill instant to the new parameters
+        exactly, and a fill instant is pinned on `xi`, never on `vu`, so the
+        `vu = 0` the sync stamps demotes nothing: every later acquire stays on
+        the fast path. The change cleared this process's image, so the first
+        one sends the write an item storing fill instants refuses to learn it
+        (+1 WCU); the next is one write."""
         sync_limiter.create_entity("vu-cap-fanout")
         sync_limiter.set_limits("vu-cap-fanout", [Limit.per_minute("rpm", 1_000_000)])
         with sync_limiter.acquire("vu-cap-fanout", "api", consume={"rpm": 1}):
@@ -939,7 +951,8 @@ class TestScheduledFastPathCapacity:
         with capacity_counter.counting():
             with sync_limiter.acquire("vu-cap-fanout", "api", consume={"rpm": 1}):
                 pass
-        assert capacity_counter.batch_get_item, "the forced pass IS a slow path"
+        assert capacity_counter.batch_get_item == [], "no forced slow pass"
+        assert capacity_counter.update_item == 2
 
         capacity_counter.reset()
         with capacity_counter.counting():
@@ -1254,10 +1267,11 @@ class TestLimitAddedToExistingBucketCapacity:
         assert counts["query"] == 1 and counts["batch_get_item"] == [3, 2, 2], (
             "the sibling read a quota seed takes on a sharded entity"
         )
-        # The failed speculative write, one failed probe of the other shard
-        # (the missing limit reads as an exhausted one, #633 notes), the seed,
-        # and the fan-out of the window it opened to shard 0.
-        assert counts["update_item"] == 4
+        # The failed speculative write (refused on `xi`: its image lacks the
+        # limit, which sends the request to the slow path at once rather than
+        # to a probe of the other shard, ADR-154), the seed, and the fan-out of
+        # the window it opened to shard 0.
+        assert counts["update_item"] == 3
 
 
 class TestQuotaGrantCapacity:
@@ -1413,3 +1427,312 @@ class TestMultiResourceCapacity:
 
         assert capacity_counter.total_rcus == 0
         assert capacity_counter.total_wcus == 0
+
+
+class TestFillInstantCapacity:
+    """What each write of a dripping limit costs once it is a fill instant (#825).
+
+    ADR-154's two fast-path writes, ADR-155's exact debits and operations,
+    ADR-156's raise and #823's resource-level fan-out, counted on one bucket
+    holding a 1,000,000/min limit on resource defaults. The clock is frozen,
+    so every count below is exact and none depends on how fast the run is.
+    Every number in a docstring was measured on this branch, then pinned.
+    """
+
+    T0 = 1_757_000_000_000
+    RPM = Limit.per_minute("rpm", 1_000_000)
+    ZERO = {
+        "get_item": 0,
+        "batch_get_item": [],
+        "batch_get_consistent": [],
+        "query": 0,
+        "put_item": 0,
+        "update_item": 0,
+        "delete_item": 0,
+        "transact_write_items": [],
+        "batch_write_item": [],
+    }
+
+    @staticmethod
+    def _counts(counter) -> dict:
+        return {
+            "get_item": counter.get_item,
+            "batch_get_item": list(counter.batch_get_item),
+            "batch_get_consistent": list(counter.batch_get_consistent),
+            "query": counter.query,
+            "put_item": counter.put_item,
+            "update_item": counter.update_item,
+            "delete_item": counter.delete_item,
+            "transact_write_items": list(counter.transact_write_items),
+            "batch_write_item": list(counter.batch_write_item),
+        }
+
+    def _bucket(self, sync_limiter, entity_id, limits=None, consume=None) -> None:
+        """Create ``entity_id``'s bucket at ``T0`` on resource defaults.
+
+        The slow path's commit keeps the item it wrote as this process's
+        image (#821), so the next request on the shard is planned from the
+        truth: one acquire is all the warming a prediction needs.
+        """
+        repo = sync_limiter._repository
+        repo._now_ms = lambda: self.T0
+        repo.set_resource_defaults("api", limits or [self.RPM])
+        with sync_limiter.acquire(entity_id, "api", consume=consume or {"rpm": 1}):
+            pass
+
+    @staticmethod
+    @contextmanager
+    def _update_outcomes(repo) -> Iterator[list[str | None]]:
+        """Each UpdateItem's outcome, in order: None when it landed, else its error code."""
+        client = repo._get_client()
+        original = client.update_item
+        outcomes: list[str | None] = []
+
+        def recording(*args, **kwargs):
+            try:
+                response = original(*args, **kwargs)
+            except ClientError as e:
+                outcomes.append(e.response["Error"]["Code"])
+                raise
+            outcomes.append(None)
+            return response
+
+        client.update_item = recording
+        try:
+            yield outcomes
+        finally:
+            client.update_item = original
+
+    @staticmethod
+    def _item(repo, entity_id: str, shard: int = 0) -> dict:
+        return repo._get_client().get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "api", shard)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ConsistentRead=True,
+        )["Item"]
+
+    def test_a_predicted_admission_is_one_write_and_no_read(self, sync_limiter, capacity_counter):
+        """Measured: 0 reads, 1 UpdateItem (landed) = 0 RCU + 1 WCU.
+
+        The image is the truth (this process is the only writer), so the side
+        ``plan_first`` picks for ``rpm`` and ``wcu`` is the side the item is on.
+        """
+        repo = sync_limiter._repository
+        self._bucket(sync_limiter, "fi-predicted")
+
+        capacity_counter.reset()
+        with capacity_counter.counting(), self._update_outcomes(repo) as outcomes:
+            with sync_limiter.acquire("fi-predicted", "api", consume={"rpm": 1}):
+                pass
+
+        assert outcomes == [None]
+        assert self._counts(capacity_counter) == {**self.ZERO, "update_item": 1}
+
+    def test_a_misprediction_is_one_more_write_and_no_read(self, sync_limiter, capacity_counter):
+        """Measured: 0 reads, 2 UpdateItems (the first refused) = 0 RCU + 2 WCU.
+
+        This process's image is the create at ``T0``, so at ``T1 = T0 + 60 s``
+        it shows ``rpm`` and ``wcu`` full and plans the full write
+        (``fi < stamp``). Another process admitted a request at ``T1`` first,
+        so neither is full: the full write is refused, its ``ALL_OLD`` plans
+        the not-full write with the same stamp, and that one lands. Both
+        debits are on the item exactly.
+        """
+        repo = sync_limiter._repository
+        self._bucket(sync_limiter, "fi-miss")
+        t1 = self.T0 + 60_000
+        repo._now_ms = lambda: t1
+        other_repo = SyncRepository.open(stack="test-rate-limits", parallel_mode="serial")
+        other_repo._now_ms = lambda: t1
+        with SyncRateLimiter(repository=other_repo) as other:
+            with other.acquire("fi-miss", "api", consume={"rpm": 1}):
+                pass
+
+            capacity_counter.reset()
+            with capacity_counter.counting(), self._update_outcomes(repo) as outcomes:
+                with sync_limiter.acquire("fi-miss", "api", consume={"rpm": 1}):
+                    pass
+
+        assert outcomes == ["ConditionalCheckFailedException", None]
+        assert self._counts(capacity_counter) == {**self.ZERO, "update_item": 2}
+        params = fill_instant.ShardParams(1_000_000_000, 1_000_000_000, 60_000, 1)
+        item = self._item(repo, "fi-miss")
+        assert stored_fill_instant(item, "rpm") == (
+            fill_instant.stamp(t1, params) + 2 * fill_instant.span(1000, params)
+        )
+        assert int(item[schema.bucket_attr("rpm", schema.BUCKET_FIELD_TC)]["N"]) == 3000
+
+    def test_a_soft_dripping_limit_is_one_more_write(self, sync_limiter, capacity_counter):
+        """Measured: 0 reads, 2 UpdateItems (both landed) = 0 RCU + 2 WCU.
+
+        A soft fill instant takes no part in the admission write; the
+        unbounded debit pair debits it afterwards, planned from the
+        admission's ``ALL_NEW`` (ADR-154, ADR-151).
+        """
+        repo = sync_limiter._repository
+        limits = [self.RPM, Limit.per_minute("tpm", 1_000_000, soft=True)]
+        self._bucket(sync_limiter, "fi-soft", limits, {"rpm": 1, "tpm": 1})
+
+        capacity_counter.reset()
+        with capacity_counter.counting(), self._update_outcomes(repo) as outcomes:
+            with sync_limiter.acquire("fi-soft", "api", consume={"rpm": 1, "tpm": 1}):
+                pass
+
+        assert outcomes == [None, None]  # the admission, then the soft debit
+        assert self._counts(capacity_counter) == {**self.ZERO, "update_item": 2}
+
+    def test_lease_consume_is_one_write_when_called(self, sync_limiter, capacity_counter):
+        """Measured: 1 UpdateItem to enter, +1 at ``consume()``, +0 at exit.
+
+        Since #822 ``consume()`` is admitted when called, the same predicted
+        fast-path write as the acquire, and never written again at exit.
+        """
+        self._bucket(sync_limiter, "fi-consume")
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            with sync_limiter.acquire("fi-consume", "api", consume={"rpm": 1}) as lease:
+                entered = capacity_counter.update_item
+                lease.consume(rpm=1)
+                called = capacity_counter.update_item
+
+        assert (entered, called) == (1, 2)
+        assert lease.consumed == {"rpm": 2}
+        assert self._counts(capacity_counter) == {**self.ZERO, "update_item": 2}
+
+    def test_a_positive_adjustment_is_one_write_at_exit(self, sync_limiter, capacity_counter):
+        """Measured: 1 UpdateItem to enter, +0 at ``adjust()``, +1 at exit.
+
+        A positive adjustment of a fill instant is ADR-155's debit pair,
+        unbounded, planned from the cached image: one write, no read.
+        """
+        self._bucket(sync_limiter, "fi-adjust")
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            with sync_limiter.acquire("fi-adjust", "api", consume={"rpm": 1}) as lease:
+                lease.adjust(rpm=5)
+                adjusted = capacity_counter.update_item
+
+        assert adjusted == 1
+        assert self._counts(capacity_counter) == {**self.ZERO, "update_item": 2}
+
+    @pytest.mark.parametrize("shards", [1, 2], ids=["S=1", "S=2"])
+    def test_reset_and_top_up_are_one_transaction_of_s_plus_two(
+        self, sync_limiter, capacity_counter, shards
+    ):
+        """Measured, identical for ``reset_bucket`` and ``top_up`` (ADR-149, #820):
+
+        - 1 GetItem: the owner's META, strongly consistent;
+        - 1 BatchGetItem of 4 config keys (entity, entity ``_default_``,
+          resource, system), uncached and eventually consistent;
+        - 1 GSI3 Query, then 1 strongly consistent BatchGetItem of the S shards;
+        - 1 TransactWriteItems of S + 2 items: each shard's ``Update``, the
+          operation record and the audit event.
+
+        S = 1: BatchGetItem ``[4, 1]``, transaction ``[3]``; S = 2: ``[4, 2]``
+        and ``[4]``. No UpdateItem, PutItem or retry.
+        """
+        repo = sync_limiter._repository
+        self._bucket(sync_limiter, "fi-ops")
+        if shards == 2:
+            assert repo.raise_shards("fi-ops", "api", 1) == 2
+        expected = {
+            **self.ZERO,
+            "get_item": 1,
+            "batch_get_item": [4, shards],
+            "batch_get_consistent": [False, True],
+            "query": 1,
+            "transact_write_items": [shards + 2],
+        }
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            assert repo.reset_bucket("fi-ops", "api").shards == shards
+        assert self._counts(capacity_counter) == expected
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            assert repo.top_up("fi-ops", "api", {"rpm": 10}).shards == shards
+        assert self._counts(capacity_counter) == expected
+
+    @pytest.mark.parametrize("start", [1, 16], ids=["1->2", "16->32"])
+    def test_a_raise_is_s_markers_and_one_transaction(self, sync_limiter, capacity_counter, start):
+        """Measured (ADR-156), from S to 2S shards: S marker UpdateItems, whose
+        ``ALL_NEW`` is the raise's read (no read call), then one
+        TransactWriteItems of 2S + 1 items (S ``Update``s, S ``Put``s, one owner
+        ``ConditionCheck``).
+
+        1 -> 2: 1 UpdateItem + ``[3]`` = 7 WCU. 16 -> 32: 16 UpdateItems +
+        ``[33]`` = 82 WCU. (The walk 1 -> 32 is 7 + 12 + 22 + 42 + 82 = 165 WCU.)
+        """
+        repo = sync_limiter._repository
+        self._bucket(sync_limiter, "fi-raise")
+        count = 1
+        while count < start:
+            count = repo.raise_shards("fi-raise", "api", count)
+        assert count == start
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            assert repo.raise_shards("fi-raise", "api", start) == 2 * start
+
+        assert self._counts(capacity_counter) == {
+            **self.ZERO,
+            "update_item": start,
+            "transact_write_items": [2 * start + 1],
+        }
+
+    @pytest.mark.parametrize(
+        ("entities", "shards"), [(1, 1), (3, 1), (1, 2)], ids=["E=1,S=1", "E=3,S=1", "E=1,S=2"]
+    )
+    def test_a_resource_level_change_fans_out_per_bucket(
+        self, sync_limiter, capacity_counter, entities, shards
+    ):
+        """Measured (#823), ``set_resource_defaults`` over E entities x S shards.
+
+        Re-setting the same limits writes no bucket: 1 GetItem (the stored
+        flags), 2 PutItems (the config and its audit event), 1 UpdateItem (the
+        ``#RESOURCES`` registry). A change adds, on top of that:
+
+        - 2 GSI2 Queries, the two discovery passes;
+        - 1 strongly consistent BatchGetItem of 4 config keys per (entity,
+          resource), however many shards it has;
+        - per bucket, 1 strongly consistent GetItem and 1 UpdateItem (its fill
+          instant re-expressed in the pinned write, ADR-155), no retry.
+
+        E=1,S=1: 2 GetItem, ``[4]``, 2 UpdateItem. E=3,S=1: 4, ``[4, 4, 4]``,
+        4. E=1,S=2: 3, ``[4]``, 3.
+        """
+        repo = sync_limiter._repository
+        for i in range(entities):
+            self._bucket(sync_limiter, f"fi-fan-{i}")
+            if shards == 2:
+                assert repo.raise_shards(f"fi-fan-{i}", "api", 1) == 2
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            repo.set_resource_defaults("api", [self.RPM])
+        baseline = self._counts(capacity_counter)
+        assert baseline == {**self.ZERO, "get_item": 1, "put_item": 2, "update_item": 1}
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            repo.set_resource_defaults("api", [Limit.per_minute("rpm", 500_000)])
+        buckets = entities * shards
+        assert self._counts(capacity_counter) == {
+            **baseline,
+            "get_item": baseline["get_item"] + buckets,
+            "batch_get_item": [4] * entities,
+            "batch_get_consistent": [True] * entities,
+            "query": 2,
+            "update_item": baseline["update_item"] + buckets,
+        }
+        cp = schema.bucket_attr("rpm", schema.BUCKET_FIELD_CP)
+        for i in range(entities):
+            for shard in range(shards):
+                item = self._item(repo, f"fi-fan-{i}", shard)
+                assert int(item[cp]["N"]) == 500_000_000

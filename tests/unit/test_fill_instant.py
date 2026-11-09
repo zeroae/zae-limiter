@@ -34,7 +34,6 @@ from zae_limiter.schedule import (
 )
 
 MODULE = Path(fi.__file__)
-SRC = MODULE.parent.parent
 T0 = int(datetime(2026, 11, 7, 12, 0, tzinfo=UTC).timestamp() * 1000)
 
 
@@ -156,13 +155,23 @@ class TestModuleBoundary:
             if isinstance(node, ast.Name):
                 assert node.id not in {"float", "Fraction", "Decimal"}, node.id
 
-    def test_nothing_else_in_src_imports_it(self) -> None:
-        users = [
-            path
-            for path in SRC.rglob("*.py")
-            if path != MODULE and "fill_instant" in path.read_text()
-        ]
-        assert users == []
+    def test_the_provisioner_stub_does_not_import_it(self) -> None:
+        # Both zips vendor this module (#818, #820), but these four stay free of
+        # it, so neither stub's import closure depends on which of them it
+        # carries.
+        for name in ("schema.py", "models.py", "exceptions.py", "schedule.py"):
+            tree = ast.parse((MODULE.parent / name).read_text())
+            imported = {
+                alias.name.rsplit(".", 1)[-1]
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Import | ast.ImportFrom)
+                for alias in node.names
+            } | {
+                (node.module or "").rsplit(".", 1)[-1]
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom)
+            }
+            assert "fill_instant" not in imported, name
 
 
 # ---------------------------------------------------------------------------

@@ -24,12 +24,14 @@ carries its own TTL (ADR-136), and a bucket created before v0.18 may never have 
 ## Decision
 
 A raise of a bucket holding a dripping limit must stamp a short-lived marker with a deadline on
-every shard, which every write to those shards refuses while it is live, then read every shard
-strongly consistently and, in one transaction pinned on what it read, re-express each existing
-shard at the new count and create each new shard as a copy of its parent holding the parent's
-dripping balance above the parent's new share; an expired marker is ignored. A shard is created
-full only when no shard of its bucket exists, any other missing shard is created empty, and
-every new shard's `wcu` starts full, because that budget belongs to the partition.
+every shard, which every write that moves a fill instant, the expression instant or the shard
+count refuses while it is live, then read every shard strongly consistently and, in one
+transaction pinned on what it read (the stamps a write it does not hold off can change
+included), re-express each existing shard at the new count and create each new shard as a copy
+of its parent holding the parent's dripping balance above the parent's new share; an expired
+marker is ignored. A shard is created full only when no shard of its bucket exists, any other
+missing shard is created empty, and every new shard's `wcu` starts full, because that budget
+belongs to the partition.
 
 ## Consequences
 
@@ -41,17 +43,23 @@ every new shard's `wcu` starts full, because that budget belongs to the partitio
 - Write sharding keeps working: every new shard has its partition's full write budget.
 
 **Negative:**
-- Every write to a dripping bucket gains one condition term, and a write arriving during a raise
-  waits until the marker's deadline or is answered as contended (#724).
+- Every write that moves a dripping balance gains one condition term. One arriving during a
+  raise waits until the marker's deadline (a debit, a parameter sync, a reset) or is answered as
+  contended (an acquire, #724); a return is dropped, an under-admission. A `disabled`, owner or
+  soft stamp fan-out is not held off: the raise is pinned on what it copies, and cancels.
 - A raise costs a marker write and a strongly consistent read per shard, then one transaction
   as large as the new count (at most 32 items, plus ADR-150's owner check). It happens at most
   five times per bucket.
 - A new shard copies its parent's item: owner, cascade and `disabled` stamps, schedules, `ttl`
   and ADR-151's deadlines. Its session windows join shard 0's as ADR-140 requires, and its quotas
   are planned as ADR-145 plans them, including the grant-size freeze for legacy quotas.
-- A missing shard created empty under-admits until it refills: up to one share, once.
+- A missing shard created empty under-admits until it refills: up to one share, once. The client
+  creates one empty whenever the count it knows is above one, so a bucket whose every shard was
+  swept starts empty too.
 - The aggregator neither refills nor clones a dripping limit, and raises a bucket holding one
   only this way. A bucket with no dripping limit keeps ADR-133's and ADR-145's lazy creation.
+  A quota reset on an item not yet converted moves `rf` past refill its dripping `tk` never
+  received: an under-admission until its next slow pass converts it.
 
 ## Alternatives Considered
 

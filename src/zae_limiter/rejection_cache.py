@@ -45,23 +45,36 @@ def clears_rejection_cache(method: _F) -> _F:
 
         @functools.wraps(method)
         async def async_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-            self._rejection_cache.clear()
+            _clear_caches(self)
             try:
                 return await method(self, *args, **kwargs)
             finally:
-                self._rejection_cache.clear()
+                _clear_caches(self)
 
         return cast(_F, async_wrapper)
 
     @functools.wraps(method)
     def sync_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        self._rejection_cache.clear()
+        _clear_caches(self)
         try:
             return method(self, *args, **kwargs)
         finally:
-            self._rejection_cache.clear()
+            _clear_caches(self)
 
     return cast(_F, sync_wrapper)
+
+
+def _clear_caches(owner: Any) -> None:
+    """Clear the rejection cache, and the fill images where the owner keeps them (#819).
+
+    A fill image is only ever a guess its write's pins check, but an admin
+    write in this process should not leave one behind for the one decision an
+    image takes without a write: a request larger than a shard's share.
+    """
+    owner._rejection_cache.clear()
+    fill_images = getattr(owner, "_fill_images", None)
+    if fill_images is not None:
+        fill_images.clear()
 
 
 def vu_only_trims(

@@ -34,6 +34,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
+from tests.fixtures.balances import balance_milli, stored_fill_instant
 from tests.fixtures.names import IAM_NAME_FORMAT, PERMISSION_BOUNDARY, iam_name
 from zae_limiter import Limit, RateLimiter, Repository, StackOptions
 from zae_limiter.models import BucketState
@@ -961,13 +962,15 @@ class TestE2EAWSSpeculativeConsume:
         await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
-    async def test_speculative_success_single_limit(self, aws_repo):
+    async def test_speculative_success_single_limit(self, aws_repo, monkeypatch):
         """Speculative consume succeeds when bucket has enough tokens."""
         repo = aws_repo
         await repo.create_entity("spec-entity-1")
 
         limit = Limit.per_minute("rpm", 100)
         now_ms = int(time.time() * 1000)
+        # Hold the clock: a fill instant's balance moves with it (#821).
+        monkeypatch.setattr(repo, "_now_ms", lambda: now_ms)
         state = BucketState.from_limit("spec-entity-1", "api", limit, now_ms)
         put_item = repo.build_composite_create("spec-entity-1", "api", [state], now_ms)
         await repo.transact_write([put_item])
@@ -986,7 +989,7 @@ class TestE2EAWSSpeculativeConsume:
         assert user_buckets[0].tokens_milli == 99_000
 
     @pytest.mark.asyncio(loop_scope="class")
-    async def test_speculative_success_multi_limit(self, aws_repo):
+    async def test_speculative_success_multi_limit(self, aws_repo, monkeypatch):
         """Speculative consume succeeds with multiple limits (AND condition)."""
         repo = aws_repo
         await repo.create_entity("spec-entity-2")
@@ -994,6 +997,8 @@ class TestE2EAWSSpeculativeConsume:
         rpm_limit = Limit.per_minute("rpm", 100)
         tpm_limit = Limit.per_minute("tpm", 10_000)
         now_ms = int(time.time() * 1000)
+        # Hold the clock: a fill instant's balance moves with it (#821).
+        monkeypatch.setattr(repo, "_now_ms", lambda: now_ms)
         rpm_state = BucketState.from_limit("spec-entity-2", "api", rpm_limit, now_ms)
         tpm_state = BucketState.from_limit("spec-entity-2", "api", tpm_limit, now_ms)
         put_item = repo.build_composite_create(
@@ -1168,13 +1173,15 @@ class TestE2EAWSSpeculativeConsume:
         assert result.parent_id is None
 
     @pytest.mark.asyncio(loop_scope="class")
-    async def test_speculative_preserves_bucket_fields(self, aws_repo):
+    async def test_speculative_preserves_bucket_fields(self, aws_repo, monkeypatch):
         """ALL_NEW returns all fields needed for BucketState reconstruction."""
         repo = aws_repo
         await repo.create_entity("spec-fields")
 
         limit = Limit.per_minute("rpm", 150)
         now_ms = int(time.time() * 1000)
+        # Hold the clock: a fill instant's balance moves with it (#821).
+        monkeypatch.setattr(repo, "_now_ms", lambda: now_ms)
         state = BucketState.from_limit("spec-fields", "api", limit, now_ms)
         put_item = repo.build_composite_create("spec-fields", "api", [state], now_ms)
         await repo.transact_write([put_item])
@@ -1196,13 +1203,15 @@ class TestE2EAWSSpeculativeConsume:
         assert bucket.tokens_milli == 150_000 - 5_000  # capacity - consumed
 
     @pytest.mark.asyncio(loop_scope="class")
-    async def test_speculative_drain_then_fail(self, aws_repo):
+    async def test_speculative_drain_then_fail(self, aws_repo, monkeypatch):
         """Sequential draining until condition fails."""
         repo = aws_repo
         await repo.create_entity("spec-drain")
 
         limit = Limit.per_minute("rpm", 10)
         now_ms = int(time.time() * 1000)
+        # Hold the clock: a fill instant's balance moves with it (#821).
+        monkeypatch.setattr(repo, "_now_ms", lambda: now_ms)
         state = BucketState.from_limit("spec-drain", "api", limit, now_ms)
         put_item = repo.build_composite_create("spec-drain", "api", [state], now_ms)
         await repo.transact_write([put_item])
@@ -1222,6 +1231,182 @@ class TestE2EAWSSpeculativeConsume:
         assert result.old_buckets is not None
         rpm_old_bucket = next(b for b in result.old_buckets if b.limit_name == "rpm")
         assert rpm_old_bucket.tokens_milli == 1_000
+
+
+class TestE2EAWSFillInstants:
+    """Fill instants on real DynamoDB: a mispredicted write and a shard raise (#825).
+
+    moto and LocalStack emulate condition expressions and
+    ``ReturnValuesOnConditionCheckFailure``; only real DynamoDB shows that the
+    fast path's refused first write returns the item it was refused on, that
+    the write planned from it lands (ADR-154), and that a raise's marker
+    writes and its one transaction with the owner check commit together and
+    move no token (ADR-156). Each test freezes the repositories' clocks, so
+    nothing refills between the reads and every balance is exact.
+    """
+
+    RESOURCE = "api"
+    RPM = Limit.per_minute("rpm", 1_000)
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def fill_repo(self, unique_name_class):
+        """A minimal stack: no aggregator, so nothing else writes the buckets."""
+        repo = await (
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .enable_aggregator(False)
+            .enable_provisioner(False)
+            .enable_alarms(False)
+            .usage_retention_days(1)
+            .permission_boundary(PERMISSION_BOUNDARY)
+            .role_name_format(IAM_NAME_FORMAT)
+            .policy_name_format(IAM_NAME_FORMAT)
+            .build()
+        )
+        yield repo
+
+        try:
+            await repo.delete_stack()
+        except Exception as e:
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.close()
+
+    @classmethod
+    async def _item(cls, repo: Repository, entity_id: str, shard: int = 0) -> dict[str, Any]:
+        """The raw bucket item, read strongly consistently."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, cls.RESOURCE, shard)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ConsistentRead=True,
+        )
+        return dict(response["Item"])
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _recording(client: Any, calls: list[tuple[str, str | None]]) -> Iterator[None]:
+        """Record every data call on ``client``: its name, and its error code or None."""
+        from botocore.exceptions import ClientError
+
+        names = (
+            "get_item",
+            "batch_get_item",
+            "query",
+            "put_item",
+            "update_item",
+            "transact_write_items",
+        )
+        originals = {name: getattr(client, name) for name in names}
+
+        def wrap(name: str) -> Any:
+            original = originals[name]
+
+            async def call(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    response = await original(*args, **kwargs)
+                except ClientError as e:
+                    calls.append((name, e.response["Error"]["Code"]))
+                    raise
+                calls.append((name, None))
+                return response
+
+            return call
+
+        for name in names:
+            setattr(client, name, wrap(name))
+        try:
+            yield
+        finally:
+            for name, original in originals.items():
+                setattr(client, name, original)
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_a_misprediction_lands_on_the_second_write(
+        self, fill_repo, unique_name_class, monkeypatch
+    ):
+        """The cached image says full, another process made it not full: two
+        writes, the first refused, the second admitted, both debits exact."""
+        from tests.fixtures.balances import balance_milli, stored_fill_instant
+        from zae_limiter import fill_instant, schema
+
+        repo = fill_repo
+        entity_id = "fi-miss"
+        t0 = int(time.time() * 1000)
+        t1 = t0 + 60_000
+        monkeypatch.setattr(repo, "_now_ms", lambda: t0)
+        await repo.set_limits(entity_id, [self.RPM], resource=self.RESOURCE)
+        limiter = RateLimiter(repository=repo)
+        # The create: this process keeps the item it wrote as its image (#821).
+        async with limiter.acquire(entity_id, self.RESOURCE, consume={"rpm": 1}):
+            pass
+
+        # Another process admits one request at T1, after which the bucket is
+        # not full; this process's image, from T0, says it is.
+        other = await Repository.connect("default", stack=unique_name_class, region="us-east-1")
+        try:
+            monkeypatch.setattr(other, "_now_ms", lambda: t1)
+            async with RateLimiter(repository=other).acquire(
+                entity_id, self.RESOURCE, consume={"rpm": 1}
+            ):
+                pass
+        finally:
+            await other.close()
+
+        monkeypatch.setattr(repo, "_now_ms", lambda: t1)
+        calls: list[tuple[str, str | None]] = []
+        with self._recording(await repo._get_client(), calls):
+            async with limiter.acquire(entity_id, self.RESOURCE, consume={"rpm": 1}) as lease:
+                pass
+
+        # The full write refused, the not-full write planned from its ALL_OLD
+        # admitted; no read (ADR-154).
+        assert calls == [
+            ("update_item", "ConditionalCheckFailedException"),
+            ("update_item", None),
+        ]
+        assert lease.consumed == {"rpm": 1}
+        item = await self._item(repo, entity_id)
+        params = fill_instant.ShardParams(1_000_000, 1_000_000, 60_000, 1)
+        # The other process's full write at T1, then this process's not-full one.
+        assert stored_fill_instant(item, "rpm") == (
+            fill_instant.stamp(t1, params) + 2 * fill_instant.span(1000, params)
+        )
+        assert int(item[schema.bucket_attr("rpm", schema.BUCKET_FIELD_TC)]["N"]) == 3_000
+        assert balance_milli(repo, item, "rpm", t1) == 998_000
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_a_raise_from_one_to_two_conserves_the_balance(self, fill_repo, monkeypatch):
+        """Shard 0 keeps its new share, shard 1 holds the rest: not a milli
+        token minted or lost (ADR-156)."""
+        from tests.fixtures.balances import balance_milli
+        from zae_limiter import schema
+
+        repo = fill_repo
+        entity_id = "fi-raise"
+        t0 = int(time.time() * 1000)
+        monkeypatch.setattr(repo, "_now_ms", lambda: t0)  # nothing refills
+        await repo.set_limits(entity_id, [self.RPM], resource=self.RESOURCE)
+        async with RateLimiter(repository=repo).acquire(
+            entity_id, self.RESOURCE, consume={"rpm": 300}
+        ):
+            pass
+        before = balance_milli(repo, await self._item(repo, entity_id), "rpm", t0)
+        assert before == 700_000
+
+        assert await repo.raise_shards(entity_id, self.RESOURCE, 1) == 2
+
+        items = [await self._item(repo, entity_id, shard) for shard in (0, 1)]
+        balances = [balance_milli(repo, item, "rpm", t0) for item in items]
+        assert sum(balances) == before
+        assert balances == [500_000, 200_000]  # min(b, C/2) stays, the rest moves
+        assert all(int(item["shard_count"]["N"]) == 2 for item in items)
+        assert all(schema.BUCKET_FIELD_RAISE not in item for item in items)
 
 
 class TestE2EAWSProvisioner:
@@ -2879,12 +3064,14 @@ class TestE2EAWSMultiResourceAndMove:
             # Bypass: a limit of 2 per day, one spent before the bypass.
             await full.set_resource_defaults("api", [Limit.per_day("rpm", 2)])
             await acquire("api", {"rpm": 1})
+            spent = stored_fill_instant(await self._item(raw, "u", "api"), "rpm")
             assert await full.bypass_resource("api") == 1
             for _ in range(5):
                 assert (await acquire("api", {"rpm": 1})).bypassed is True
             item = await self._item(raw, "u", "api")
             assert self._n(item, "b_rpm_tc") == 6_000  # every request counted
-            assert self._n(item, "b_rpm_tk") == 1_000  # the balance untouched
+            # The balance untouched: a dripping limit is a fill instant (#821).
+            assert stored_fill_instant(item, "rpm") == spent
             assert self._n(item, "bypass") > raw._now_ms()  # a live deadline
 
             # Clearing it removes the stamp, so the limit is enforced at once.
@@ -2895,7 +3082,7 @@ class TestE2EAWSMultiResourceAndMove:
                 await acquire("api", {"rpm": 1})
             item = await self._item(raw, "u", "api")
             assert self._n(item, "b_rpm_tc") == 7_000
-            assert self._n(item, "b_rpm_tk") < 1_000
+            assert balance_milli(raw, item, "rpm", raw._now_ms()) < 1_000
 
             # Soft: tpm is debited into debt; a hard rpm rejection lists it as passed.
             await full.set_resource_defaults(
@@ -2906,7 +3093,7 @@ class TestE2EAWSMultiResourceAndMove:
             assert lease.overdrawn == ["tpm"]
             item = await self._item(raw, "u", "meter")
             assert self._n(item, "b_tpm_tc") == 24_000
-            assert self._n(item, "b_tpm_tk") < -10_000
+            assert balance_milli(raw, item, "tpm", raw._now_ms()) < -10_000
             assert self._n(item, "b_tpm_soft") > raw._now_ms()
 
             with pytest.raises(RateLimitExceeded) as rejected:

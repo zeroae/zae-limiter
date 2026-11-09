@@ -107,26 +107,35 @@ See [ADR-111](../adr/111-flatten-all-records.md).
 **Bucket records** (composite, one item per entity+resource+shard, v0.9.0+):
 
 ```python
-# Bucket record (FLAT structure, ADR-114/115, GHSA-76rv):
+# Bucket record (FLAT structure, ADR-114, GHSA-76rv, ADR-154), v0.18.0+:
 {
     "PK": "{ns}/BUCKET#user-1#gpt-4#0",  # per-(entity, resource, shard) PK
     "SK": "#STATE",
     "entity_id": "user-1",
     "resource": "gpt-4",
     "shard_count": 1,  # total shards for this entity+resource
-    "b_tpm_tk": 9500000,  # tokens_milli for tpm limit
-    "b_tpm_cp": 10000000,  # capacity_milli for tpm limit
+    # tpm: 10,000/min, a dripping limit stored as a fill instant (ADR-154)
+    "b_tpm_fi": 17040672030000000000,  # z_ms × ra: full again 3 s after 1704067200000
+    "b_tpm_cp": 10000000,  # capacity_milli (undivided)
+    "b_tpm_ra": 10000000,  # refill_amount_milli (undivided)
+    "b_tpm_rp": 60000,  # refill_period_ms
     "b_tpm_tc": 500000,  # total_consumed_milli for tpm
-    "b_rpm_tk": 95000,  # tokens_milli for rpm limit
-    "b_rpm_cp": 100000,  # capacity_milli for rpm limit
-    "b_rpm_tc": 5000,  # total_consumed_milli for rpm
-    "b_wcu_tk": 999000,  # wcu infrastructure limit tokens
-    "b_wcu_cp": 1000000,  # wcu capacity (1000 WCU/sec)
-    "b_wcu_tc": 1000,  # wcu total consumed
-    "rf": 1704067200000,  # last_refill_ms (shared across limits)
-    "sched": "1h9-17w1-5s500",  # item-level schedule, compact encoding (#222, #515)
+    "b_tpm_rsched": "-",  # tpm has no reset: it must not inherit the item's (#541)
+    # rpd: 1,000/day, a quota, which keeps tk (ADR-137, ADR-145)
+    "b_rpd_tk": 999000,  # tokens_milli for the quota
+    "b_rpd_cp": 1000000,
+    "b_rpd_ra": 0,  # a quota does not drip
+    "b_rpd_tc": 1000,
+    "b_rpd_gc": 1,  # shard count its current grant was sized at
+    "rsched": "1m0h0",  # item-level reset schedule ("0 0 * * *"), here rpd's
+    # wcu: the reserved per-partition write budget, also a fill instant
+    "b_wcu_fi": 1704067200001000000,  # z_ms × ra, undivided at any shard count
+    "b_wcu_cp": 1000000,  # wcu capacity (1000 writes/sec)
+    "b_wcu_tc": 1000,
+    "xi": 1704067200000,  # instant the fill instants were last expressed
+    "rf": 1704067200000,  # last refill / reset of the quota (not a fill-instant baseline)
     "sched_tz": "America/New_York",  # IANA zone shared by every schedule here
-    "vu": 1704088800000,  # valid_until_ms: next boundary on this item
+    "vu": 1704085200000,  # valid_until_ms: next boundary on this item (midnight local)
     "cascade": False,
     "GSI2PK": "{ns}/RESOURCE#gpt-4",
     "GSI2SK": "BUCKET#user-1#0",
@@ -143,11 +152,37 @@ a limit with **no** schedule is stamped with the reserved marker `-`
 (`schema.BUCKET_SCHED_NONE`), because a missing override already means "inherit the default" and
 cannot also mean "unscheduled" — that is what keeps a quota and a rate limit sharing one item
 from acquiring each other's windows. `cp` / `ra` / `rp` stay the
-**base** parameters: every refiller applies the schedule on top of them at read time and
-materialises only `tk`. `vu` is the earliest instant at which any limit here changes effective
-parameters — the fast path's condition compares against it and nothing else.
+**base** parameters: every reader applies the schedule on top of them at read time, and the
+only materialised state is a quota's `tk` and a dripping limit's fill instant. `vu` is the
+earliest instant at which any limit here changes effective parameters.
 
-The `wcu` (write capacity unit) limit is a reserved infrastructure limit auto-injected on every bucket. It tracks per-partition write pressure and is hidden from user-facing output (get_buckets, RateLimitExceeded, usage snapshots). When exhausted, the client doubles `shard_count` to spread writes across more DynamoDB partitions.
+<a id="fill-instants"></a>**Fill instants (schema 0.11.0, ADR-154).** A dripping limit,
+`wcu` included, stores `b_{name}_fi` in place of `b_{name}_tk`: its fill instant `z`, the
+instant its share is back at capacity, scaled by its undivided refill amount in force
+(`b_{name}_fi = z_ms × ra`) so every quantity is an exact integer. The balance at any instant
+`t` is `C − r × max(0, z − t)`, exactly, where `C` and `r` are the shard's share of the
+capacity and rate; every `z` before `t` reads as full, which is how a full bucket forgets idle
+time (#808). The item gains one `xi` attribute, the instant its fill instants were last
+expressed against their parameters and schedule. A quota keeps `tk`, `rf` and `gc`, so one item
+can carry both forms, and `rf` is not a fill instant's baseline. An item written before v0.18.0
+(dripping limits in `tk`) is converted on its next slow pass, in a write pinned on the `tk` and
+`rf` it read; every bucket created stores the new form.
+
+The decisions are four ADRs: [ADR-153](../adr/153-admission-contract-for-dripping-limits.md)
+(the admission bound), [ADR-154](../adr/154-fill-instant-fast-path.md) (storage and the fast
+path's two writes), [ADR-155](../adr/155-fill-instant-writers.md) (every other writer is exact
+and pinned on the parameters, shard count and `xi` it read) and
+[ADR-156](../adr/156-dripping-shard-raises.md) (shard raises). The arithmetic and its proofs are
+in [Fill-instant proofs](fill-instant-proofs.md); the pure functions are in
+[`fill_instant.py`](https://github.com/zeroae/zae-limiter/blob/main/src/zae_limiter/fill_instant.py).
+
+The `wcu` (write capacity unit) limit is a reserved infrastructure limit auto-injected on every bucket. It tracks per-partition write pressure and is hidden from user-facing output (get_buckets, RateLimitExceeded, usage snapshots). It is never divided by the shard count: each partition has its own budget. When it is exhausted on a bucket with no dripping limit (quotas only), the client doubles `shard_count` to spread writes across more DynamoDB partitions. A bucket holding a dripping limit is **raised** instead (ADR-156, `shard_raise.py`):
+
+1. A **raise marker** `rx` (a deadline 2 s out, `schema.RAISE_MARKER_MS`) is set on every shard below the count. Every write that moves a fill instant, `xi` or the shard count refuses an item with a live marker (`schema.raise_guard`): an acquire answers contended, a debit, parameter sync, reset or top-up waits it out, and a return is dropped. A marker past its deadline is ignored. Each marker write's `ALL_NEW` is the raise's strongly consistent read.
+2. One `TransactWriteItems` raises the count from `S` to `2S`, pinned on the markers and on everything it read, plus ADR-150's owner check. With `C` the undivided capacity and `b_i` shard `i`'s balance, it re-expresses each shard `i` at the new count keeping `min(b_i, C / 2S)`, creates shard `i + S` as a copy of its parent holding `max(0, b_i − C / 2S)` and a full `wcu`, and removes the markers. The total balance is conserved exactly ([proofs §8](fill-instant-proofs.md#8-other-writers-adr-155)).
+3. A raise that finds another raise's live marker, a larger stored count, or a cancelled transaction removes its own markers and gives up.
+
+A dripping shard the slow path creates while others of its bucket exist (a TTL swept it, or no raise created it) starts **empty**: creating it full would mint a share.
 
 The `total_consumed_milli` counter tracks net consumption (increases on consume,
 decreases on release) and is used by the aggregator Lambda to accurately calculate
@@ -240,7 +275,40 @@ The algorithm is implemented in [`bucket.py`](https://github.com/zeroae/zae-limi
 | `build_limit_status()` | Build a LimitStatus for a bucket check |
 | `would_refill_satisfy()` | Check if refilling would allow a request to succeed (speculative writes) |
 
+`bucket.py` reads a state stored either way: a quota's `tk` (and a dripping limit's on an item
+written before v0.18.0) through `refill_bucket()`, a fill instant through the exact arithmetic
+in [`fill_instant.py`](https://github.com/zeroae/zae-limiter/blob/main/src/zae_limiter/fill_instant.py)
+below.
+
+### Fill-Instant Arithmetic (ADR-154)
+
+For one shard with share `C`, rate `r` and fill instant `z`, a request of `c ≤ C` tokens at
+clock reading `t` (`d = c / r`):
+
+| Operation | Condition | Records |
+|-----------|-----------|---------|
+| Admit, bucket not full (`plan_first` / `plan_retry` pick the side) | `t ≤ z ≤ t + (C − c) / r` | `z + d` |
+| Admit, bucket full | `z < t` | `t + d` |
+| Debit after the fact (positive adjustment, soft limit) | either side, no upper bound | as above |
+| Return / negative adjustment | none | `z − d` |
+| Reset | none | `t` |
+
+The two admission writes together record `max(z, t) + d`, the strict token bucket's step; no
+single DynamoDB write can (proofs §4), so the fast path predicts the side, retries from each
+failed write's `ALL_OLD` with the same `t`, and answers a request still undecided after its
+write budget as contended (#724). Stored values are scaled by the undivided refill
+amount: `d` is `c × S × rp` and the slack `(C_b − c × S) × rp` (capacities in millitokens,
+`rp` in milliseconds, `S` shards, `C_b` the undivided capacity), so nothing is divided and no
+rounding enters. Every write is pinned on the `cp` / `ra` / `rp`, schedule, `shard_count` and
+`xi` it was computed against (ADR-155), and a write that changes any of them re-expresses the
+fill instant in the same write (`re_express`: the balance is kept, or trimmed to the new
+ceiling, never raised).
+
 ### Mathematical Formulas
+
+The refill and drift formulas below apply to a dripping limit still stored as `tk` (an item
+written before v0.18.0, until its next slow pass converts it). A quota does not drip, and a
+fill instant needs neither.
 
 **Refill calculation** (lazy, on-demand):
 
@@ -340,7 +408,7 @@ The `force_consume()` function handles this:
 new_tokens_milli = refill.new_tokens_milli - (amount * 1000)
 ```
 
-The debt is repaid as tokens refill over time. A bucket at -1500 millitokens needs 1.5 minutes to reach 0 (at 1000 tokens/minute).
+The debt is repaid as tokens refill over time. A bucket at -1,500 tokens needs 1.5 minutes to reach 0 (at 1,000 tokens/minute). In a fill instant, debt is a `z` more than one fill (`C / r`) past now; a positive adjustment is a debit write, never rejected and never dropped (ADR-155).
 
 ### Design Decisions
 
@@ -363,7 +431,8 @@ atomicity and cost characteristics:
 | Initial consumption | `_commit_initial()` | `transact_write()` | 2 WCU (transaction) or 1 WCU (single item) | Cross-item atomic |
 | Post-enter adjustments | `_commit_adjustments()` | `write_each()` | 1 WCU per item | Independent per item |
 | Rollback (on exception) | `_rollback()` | `write_each()` | 1 WCU per item | Independent per item |
-| Aggregator refill | `try_refill_bucket()` | `UpdateItem` | 1 WCU | Single item |
+| Aggregator quota reset or roll | `try_refill_bucket()` | `UpdateItem` | 1 WCU | Single item |
+| Shard raise (ADR-156) | `Repository.raise_shards()`, `processor.raise_bucket_shards()` | `S` marker `UpdateItem`s, then one `TransactWriteItems` of `2S + 1` items | 1 WCU per marker, 2 per transaction item | Cross-item atomic |
 
 ### TransactWriteItems (Initial Consumption)
 
@@ -388,7 +457,10 @@ Adjustments (`_commit_adjustments()`) and rollbacks (`_rollback()`) use `write_e
 which dispatches each item independently as a single PutItem, UpdateItem, or DeleteItem
 call (1 WCU each). This is safe because:
 
-- These operations produce **unconditional ADD** expressions (no condition checks)
+- Each write is exact on the item it lands on, so it needs no lock: a fill instant's return
+  moves it earlier (capped at capacity by construction) and a debit is ADR-154's pair, retried
+  with a fresh clock reading until it lands (ADR-155); a quota's credit is an `ADD` conditioned
+  on staying within its ceiling and its period (#721)
 - Partial success is acceptable -- each item's delta is self-contained
 - No cross-item invariant needs to hold between adjustment writes
 
@@ -415,6 +487,19 @@ When `speculative_writes=True`, `acquire()` adds a fast path before the normal r
 The speculative path uses `ReturnValuesOnConditionCheckFailure=ALL_OLD` to inspect bucket state
 on failure without a separate read. On success, `ReturnValues=ALL_NEW` provides the post-write
 state including denormalized `cascade` and `parent_id` fields.
+
+**On an item storing fill instants** (every bucket created since v0.18.0) the flow below
+changes ([ADR-154](../adr/154-fill-instant-fast-path.md)). The `tk` write in
+step 2 is refused (`attribute_not_exists(xi)`), and its `ALL_OLD` becomes the image the
+fill-instant write starts from; later requests on that shard start from this process's cached
+image (`fill_images.FillImageCache`), so they skip it. Each hard limit, `wcu` included, then
+gets the not-full or full write of [Fill-Instant Arithmetic](#fill-instant-arithmetic-adr-154),
+chosen from the image and a per-shard utilisation estimate. A failed write is retried from its
+own `ALL_OLD` with the same clock reading rather than falling back to the slow path, until the
+request is admitted, rejected (a limit past its slack), or undecided after its write budget
+(the contended 429, #724). Only what the two writes cannot express (a schedule boundary since
+`xi`, a closed `vu` window, an expired stamp, a missing limit or bucket) takes the slow path.
+`wcu` exhaustion raises the bucket (ADR-156) instead of doubling `shard_count`.
 
 ```
 Speculative flow (first acquire — sequential, populates entity cache):
@@ -475,8 +560,9 @@ only compensated when the parent-only path also fails.
 
 **Entity metadata cache (issue #318, GHSA-76rv):** `Repository._entity_cache` stores
 `{(namespace_id, entity_id): (cascade, parent_id, shard_counts)}` where `shard_counts` is
-`dict[str, int]` mapping resource to shard count. `cascade` and `parent_id` are immutable
-(no TTL); `shard_counts` is updated when shard doubling occurs. After the first acquire
+`dict[str, int]` mapping resource to shard count. The cache has no TTL: `parent_id` changes
+only through `set_parent()` (ADR-150), which the next returned bucket item reveals, and
+`shard_counts` is updated when the shard count grows. After the first acquire
 populates the cache, `speculative_consume()` issues child and parent speculative writes
 concurrently via `asyncio.gather`. This reduces cascade latency
 from 2 sequential round trips to 1 parallel round trip. In the sync codepath,
@@ -489,81 +575,66 @@ The shard_count from the cache determines which shard to target. With multiple s
 `speculative_consume()` picks a random shard via `random.randrange(shard_count)`. When the
 speculative write succeeds, the returned `shard_count` from ALL_NEW updates the cache.
 
-### Aggregator Refill Path (Issue #317)
+### Aggregator Write Paths (Issue #317, ADR-156)
 
-The Lambda aggregator proactively refills token buckets for active entities, keeping
-speculative writes on the fast path (1 RT) instead of falling back to the slow path (3 RT).
+The Lambda aggregator counts usage from each bucket's `tc` counter and writes buckets for three
+reasons. Since v0.18.0 it never refills, trims or clones a **dripping** limit, `wcu` included
+(`processor._drips`, #821): every write of a fill instant is exact (ADR-155), and the fast path
+reads a fill instant's balance at any instant with nothing to refill.
 
 | Write Path | Method | API Used | WCU Cost | Atomicity |
 |------------|--------|----------|----------|-----------|
-| Aggregator refill | `try_refill_bucket()` | Conditional `UpdateItem` | 1 WCU either way (a failed condition is still charged) | Single item |
+| Quota reset or roll | `try_refill_bucket()` | Conditional `UpdateItem` | 1 WCU either way (a failed condition is still charged) | Single item |
+| Shard raise (a bucket holding a dripping limit) | `raise_bucket_shards()` | marker `UpdateItem`s + one `TransactWriteItems` | as the client's raise | Cross-item atomic |
+| Shard doubling and propagation (quota-only buckets) | `try_proactive_shard()`, `propagate_shard_count()` | Conditional `UpdateItem` per existing shard; one `TransactWriteItems` per pre-created shard | 1 WCU per restamp, 2 per transaction item | Single item / per clone |
 
 The aggregator processes DynamoDB Stream records in each batch to:
 
 1. **Aggregate bucket states** -- `aggregate_bucket_states()` accumulates `tc` deltas and keeps
    the last NewImage per (entity_id, resource, shard_id) across all stream records in the batch
-2. **Compute refill** -- For each bucket, `try_refill_bucket()` calls `refill_bucket()` with
-   effective capacity (`cp // shard_count`) and effective refill amount (`ra // shard_count`),
-   then checks if projected tokens are insufficient to cover the observed consumption rate
-3. **Write refill** -- Issues a single `UpdateItem` with `ADD #rt{i} :rd{i}` (the alias
-   `#rt{i}` names `b_{limit}_tk`; tokens are positional because a limit name may contain `.`
-   or `-`) and `SET rf = :new_rf`, conditioned on `rf = :expected_rf` (optimistic lock)
-4. **Proactive sharding** -- `try_proactive_shard()` projects shard 0's stored wcu balance from
-   `rf` to now and, if it is below 20% of capacity, conditionally doubles `shard_count`, never
-   past `MAX_SHARD_COUNT` (32)
-5. **Shard propagation** -- `propagate_shard_count()` detects shard_count changes in stream records
-   from shard 0 and propagates to all other shards via conditional writes (`shard_count < :new`)
+2. **Apply quota resets** -- `try_refill_bucket()` writes only when a quota crossed a reset edge
+   or a session window rolled: `ADD #rt{i} :rd{i}` (the alias `#rt{i}` names `b_{limit}_tk`;
+   tokens are positional because a limit name may contain `.` or `-`) and `SET rf = :new_rf`,
+   conditioned on `rf = :expected_rf AND vu = :expected_vu` (optimistic lock, #508). When that
+   write moves `vu` past a schedule boundary of a fill instant on the item, it re-expresses the
+   item's fill instants in the same write, pinned on each and on `xi` as read
+3. **Proactive sharding** -- `try_proactive_shard()` projects shard 0's `wcu` balance to now and,
+   if it is below 20% of capacity, raises a bucket holding a dripping limit through ADR-156's
+   raise (the same planner the client uses, `shard_raise.py`) or doubles `shard_count` on a
+   quota-only bucket, never past `MAX_SHARD_COUNT` (32)
+4. **Shard propagation** -- for a quota-only bucket, `propagate_shard_count()` propagates a
+   `shard_count` change on shard 0 to the other shards (`shard_count < :new`) and pre-creates the
+   new shards, each funded by an ADR-145 quota move. A raise already wrote every shard, so it
+   propagates nothing for a bucket holding a dripping limit
 
 ```
-Aggregator refill flow (per composite bucket shard):
+Quota reset flow (per composite bucket shard):
 1. Aggregate tc deltas + last NewImage across stream batch per (entity, resource, shard)
-2. For each limit: refill_bucket(tk, rf, now, cp/shard_count, ra/shard_count, rp)
-   +- refill_delta = new_tk - current_tk
-   +- projected = new_tk after refill
-   +- consumption_estimate = max(0, accumulated tc_delta)
-   +- projected >= consumption_estimate -> SKIP (sufficient tokens)
-3. Any limit needs refill?
-   +- NO -> SKIP
-   +- YES -> UpdateItem (ADD tk +delta, SET rf = :now, condition rf = :expected_rf)
-      +- SUCCESS -> refill written (1 WCU)
-      +- ConditionalCheckFailedException -> silently skip (another writer updated rf)
+2. Any quota past a reset edge, or a session window rolled?
+   +- NO -> SKIP (a dripping limit is never refilled)
+   +- YES -> UpdateItem (ADD tk +reset, SET rf = :new_rf,
+             condition rf = :expected_rf AND vu = :expected_vu)
+      +- SUCCESS -> reset written (1 WCU)
+      +- ConditionalCheckFailedException -> silently skip (another writer moved the item)
 
-Proactive sharding flow (per bucket):
-1. Check wcu limit info in aggregated state
-2. shard_count >= MAX_SHARD_COUNT (32) -> SKIP
-3. projected = refill_bucket(wcu_tk, rf, now, wcu_cp, wcu_ra, wcu_rp)
-   token_ratio = projected / wcu_capacity_milli
-   +- ratio >= 0.2 -> SKIP
-4. Is this shard 0?
-   +- NO -> SKIP (only shard 0 is source of truth)
-   +- YES -> UpdateItem (SET shard_count = :new, condition shard_count = :old),
-             :new = min(shard_count * 2, MAX_SHARD_COUNT)
-      +- SUCCESS -> shard_count doubled
-      +- ConditionalCheckFailedException -> concurrent bump, skip
-
-Shard propagation flow (per stream record):
-1. Detect shard_count increase (new > old) in stream record
-2. Is this shard 0?
-   +- NO -> SKIP
-   +- new > MAX_SHARD_COUNT -> SKIP (a runaway count, never propagated)
-   +- YES -> For each target shard 1..new_count:
-      UpdateItem (SET shard_count = :new, condition shard_count < :new OR not exists)
+Proactive sharding flow (shard 0 only):
+1. shard_count >= MAX_SHARD_COUNT (32) -> SKIP
+2. wcu balance projected to now >= 20% of capacity -> SKIP
+3. Holds a dripping limit?
+   +- YES -> raise_bucket_shards(): markers, read, one transaction (ADR-156)
+   +- NO  -> UpdateItem (SET shard_count = :new, condition shard_count = :old)
 ```
 
 **Key design properties:**
 
-- **ADD is commutative** with concurrent speculative writes -- the aggregator uses `ADD`
-  for token deltas, so a concurrent `speculative_consume()` (also `ADD`) does not conflict
-- **Optimistic lock on `rf`** prevents double-refill with the client slow path or another
-  aggregator invocation
-- **No read required** -- all state is derived from stream record NewImage fields
-- **Shard-aware capacity** -- effective capacity and refill amount are divided by `shard_count`
-  so each shard gets its proportional share of tokens
-- **Proactive sharding** -- the aggregator doubles shard_count when its stored wcu balance,
-  projected to now, is below 20% of capacity, never past `MAX_SHARD_COUNT`. A backstop: the client's own doubling on wcu exhaustion is what protects a
-  hot shard, and the aggregator rarely doubles before the client has
-- **Shard propagation** -- shard_count changes on shard 0 are propagated to other shards
-  via conditional writes that only update if the target has a lower value
+- **No dripping refill** -- nothing refills a fill instant, so the aggregator cannot race the
+  fast path on one, and `--no-aggregator` loses no refill
+- **Optimistic lock on `rf` and `vu`** prevents a double reset with the client slow path or
+  another aggregator invocation, and keeps a stale image from undoing a parameter change
+- **No read for a reset** -- its state comes from the stream record's NewImage; a raise reads
+  every shard strongly consistently, through its marker writes
+- **A backstop** -- the client's own raise or doubling on `wcu` exhaustion is what protects a hot
+  shard, and the aggregator rarely acts before the client has
 
 ### Optimistic Locking
 
@@ -584,6 +655,10 @@ src/zae_limiter/
 ├── exceptions.py          # RateLimitExceeded, RateLimiterUnavailable, etc.
 ├── naming.py              # Resource name validation
 ├── bucket.py              # Token bucket math (integer arithmetic)
+├── fill_instant.py        # Fill-instant arithmetic for dripping limits (ADR-154)
+├── fill_images.py         # Cached shard images for the fill-instant fast path
+├── fill_sync.py           # Re-expressing fill instants on a parameter change (ADR-155)
+├── shard_raise.py         # Shard raise planner, shared with the aggregator (ADR-156)
 ├── schema.py              # DynamoDB key builders (namespace-prefixed)
 ├── repository_protocol.py # RepositoryProtocol for backend abstraction
 ├── repository.py          # DynamoDB operations
@@ -604,7 +679,7 @@ src/zae_limiter/
 src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 ├── __init__.py               # Re-exports handler, processor types
 ├── handler.py                # Lambda entry point (returns refills_written count)
-├── processor.py              # Stream processing: usage snapshots + bucket refill
+├── processor.py              # Stream processing: usage snapshots, quota resets, shard raises
 └── archiver.py               # S3 audit archival (gzip JSONL)
 ```
 
@@ -615,11 +690,12 @@ src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 3. **Cascade is per-entity config**: Set `cascade=True` on `create_entity()` to auto-cascade to parent on every `acquire()`
 4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override
 5. **Initial writes are atomic**: Multi-entity initial consumption uses `transact_write()` for cross-item atomicity
-6. **Adjustments and rollbacks use independent writes**: `write_each()` dispatches each item as a single-item API call (1 WCU each), avoiding transaction overhead for unconditional ADD operations
+6. **Adjustments and rollbacks use independent writes**: `write_each()` dispatches each item as a single-item API call (1 WCU each), avoiding transaction overhead; each write is exact on the item it lands on, so none needs cross-item atomicity
 7. **Speculative writes skip reads**: With `speculative_writes=True`, `acquire()` tries a conditional UpdateItem first, saving 1 round trip and 1 RCU when the bucket has sufficient tokens
-8. **Entity metadata cache enables parallel cascade**: `Repository._entity_cache` stores `(cascade, parent_id, shard_counts)` per entity. `cascade` and `parent_id` are immutable; `shard_counts` (`dict[str, int]`) is updated on shard doubling. After first acquire, cascade speculative writes run concurrently via `asyncio.gather`
-9. **Aggregator-assisted refill**: The Lambda aggregator proactively refills buckets for active entities, keeping speculative writes on the fast path by ensuring buckets have sufficient tokens between client requests. Effective capacity and refill amount are divided by `shard_count` so each shard receives its proportional share
-10. **Pre-shard buckets (GHSA-76rv)**: Each bucket item lives on its own DynamoDB partition (`PK={ns}/BUCKET#{id}#{resource}#{shard}`). An auto-injected `wcu:1000` infrastructure limit tracks per-partition write pressure. When wcu is exhausted, the client doubles shard_count (conditional write on shard 0); that is what protects a hot shard. As a backstop, the aggregator also doubles shards when the projected wcu balance is below 20% of capacity (never past `MAX_SHARD_COUNT`) and propagates shard_count changes from shard 0 to all other shards
+8. **Entity metadata cache enables parallel cascade**: `Repository._entity_cache` stores `(cascade, parent_id, shard_counts)` per entity. The cache has no TTL: a bucket item the fast path returns overrules it (`parent_id` moves only through `set_parent()`, ADR-150), and `shard_counts` (`dict[str, int]`) is updated when the shard count grows. After first acquire, cascade speculative writes run concurrently via `asyncio.gather`
+9. **Nothing refills a dripping limit**: a dripping limit stores its fill instant (ADR-154), whose balance is exact at any instant, so the aggregator only counts usage, applies quota resets, and backs up the client's sharding
+10. **Pre-shard buckets (GHSA-76rv)**: Each bucket item lives on its own DynamoDB partition (`PK={ns}/BUCKET#{id}#{resource}#{shard}`). An auto-injected `wcu:1000` infrastructure limit tracks per-partition write pressure. When wcu is exhausted, the client raises a bucket holding a dripping limit (ADR-156: balances moved, never minted) and doubles shard_count on a quota-only one; that is what protects a hot shard. As a backstop, the aggregator does the same when the projected wcu balance is below 20% of capacity (never past `MAX_SHARD_COUNT`)
+11. **Strict admission bound (ADR-153)**: over any window, a dripping limit admits at most its capacity plus the refill across the window plus `2·r·s` for clock skew and time in flight, summed over shards (plus, with several shards, the debt a positive adjustment leaves on a shard other than the one admitting: each shard is its own bucket); the fast path (ADR-154), every other writer (ADR-155) and shard raises (ADR-156) each hold it ([proofs](fill-instant-proofs.md))
 
 ## Next Steps
 

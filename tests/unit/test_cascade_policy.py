@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.fixtures.balances import empty_fill_instant
 from zae_limiter import RateLimiter, schema
 from zae_limiter.exceptions import VersionMismatchError
 from zae_limiter.models import ConfigAccess, Entity, Limit, effective_cascade
@@ -385,22 +386,22 @@ class TestWarmPathFollowsTheItem:
         ns = repo._namespace_id
         await self._warm_cascading_user(cascade_limiter)
         client = await repo._get_client()
+        child = await _bucket(repo, "user", "llm")
+        assert child is not None
         await client.update_item(  # the child: policy off, and exhausted
             TableName=repo.table_name,
             Key={
                 "PK": {"S": schema.pk_bucket(ns, "user", "llm", 0)},
                 "SK": {"S": schema.sk_state()},
             },
-            UpdateExpression="SET #c = :false, #tk = :zero, #rf = :now",
+            UpdateExpression="SET #c = :false, #fi = :empty",
             ExpressionAttributeNames={
                 "#c": "cascade",
-                "#tk": schema.bucket_attr("rpm", "tk"),
-                "#rf": "rf",
+                "#fi": schema.bucket_attr("rpm", schema.BUCKET_FIELD_FI),
             },
             ExpressionAttributeValues={
                 ":false": {"BOOL": False},
-                ":zero": {"N": "0"},
-                ":now": {"N": str(int(time.time() * 1000))},
+                ":empty": {"N": str(empty_fill_instant(child, "rpm", int(time.time() * 1000)))},
             },
         )
         await client.update_item(  # the parent it no longer cascades to: disabled
@@ -500,23 +501,23 @@ class TestShardsThatDisagree:
         )
         # Shard 0: drained and still stamped as not cascading.
         client = await repo._get_client()
+        shard0 = await _bucket(repo, "user", "llm")
+        assert shard0 is not None
         await client.update_item(
             TableName=repo.table_name,
             Key={
                 "PK": {"S": schema.pk_bucket(ns, "user", "llm", 0)},
                 "SK": {"S": schema.sk_state()},
             },
-            UpdateExpression="SET #tk = :zero, #sc = :two, #rf = :now, #c = :false",
+            UpdateExpression="SET #fi = :empty, #sc = :two, #c = :false",
             ExpressionAttributeNames={
-                "#tk": schema.bucket_attr("rpm", "tk"),
+                "#fi": schema.bucket_attr("rpm", schema.BUCKET_FIELD_FI),
                 "#sc": "shard_count",
-                "#rf": "rf",
                 "#c": "cascade",
             },
             ExpressionAttributeValues={
-                ":zero": {"N": "0"},
+                ":empty": {"N": str(empty_fill_instant(shard0, "rpm", now_ms, shard_count=2))},
                 ":two": {"N": "2"},
-                ":now": {"N": str(now_ms)},
                 ":false": {"BOOL": False},
             },
         )

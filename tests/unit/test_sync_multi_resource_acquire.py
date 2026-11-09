@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 from botocore.exceptions import ClientError
 
+from tests.fixtures.balances import balance_milli
 from zae_limiter import (
     LeaseExpiredError,
     OnUnavailable,
@@ -27,7 +28,14 @@ from zae_limiter import (
     schema,
 )
 from zae_limiter.models import BucketState, Limit, LimitStatus, QuotaDonorDebit
-from zae_limiter.schema import BUCKET_FIELD_TK, bucket_attr, pk_bucket, sk_state
+from zae_limiter.schema import (
+    BUCKET_FIELD_FI,
+    BUCKET_FIELD_TK,
+    WCU_LIMIT_NAME,
+    bucket_attr,
+    pk_bucket,
+    sk_state,
+)
 from zae_limiter.sync_lease import LeaseEntry, PeriodNotAppliedError, QuotaMoveLostError, SyncLease
 from zae_limiter.version import get_schema_version
 
@@ -69,6 +77,36 @@ def _ledger(repo):
         _consumed(repo, "org", "search"),
         _consumed(repo, "user", "budget"),
         _consumed(repo, "org", "budget"),
+    )
+
+
+def _budget_waits_on_a_slow_pass(repo, capacity=1000):
+    """Leave ``user``'s budget bucket needing a slow pass before the fast path may spend it.
+
+    An entity-level change fans out with ``vu = 0`` (#222), which holds off
+    today's write; a fill instant is never pinned on ``vu`` (ADR-155, #821),
+    so the bucket is also rewritten into the legacy ``tk`` shape it gated.
+    """
+    repo.set_limits("user", [Limit.custom("weekly", capacity, **SLOW)], "budget")
+    client = repo._get_client()
+    key = {"PK": {"S": pk_bucket(repo._namespace_id, "user", "budget", 0)}, "SK": {"S": sk_state()}}
+    item = client.get_item(TableName=repo.table_name, Key=key)["Item"]
+    now = repo._now_ms()
+    client.update_item(
+        TableName=repo.table_name,
+        Key=key,
+        UpdateExpression="SET #tk = :tk, #wtk = :wtk, rf = :now REMOVE #fi, #wfi, xi",
+        ExpressionAttributeNames={
+            "#tk": bucket_attr("weekly", BUCKET_FIELD_TK),
+            "#wtk": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK),
+            "#fi": bucket_attr("weekly", BUCKET_FIELD_FI),
+            "#wfi": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_FI),
+        },
+        ExpressionAttributeValues={
+            ":tk": {"N": str(balance_milli(repo, item, "weekly", now))},
+            ":wtk": {"N": str(balance_milli(repo, item, WCU_LIMIT_NAME, now))},
+            ":now": {"N": str(now)},
+        },
     )
 
 
@@ -238,7 +276,7 @@ class TestFastAndSlowTogether:
 
     @staticmethod
     def _budget_needs_the_slow_path(repo, capacity):
-        repo.set_limits("user", [Limit.custom("weekly", capacity, **SLOW)], "budget")
+        _budget_waits_on_a_slow_pass(repo, capacity)
 
     def test_the_fast_win_is_kept_and_the_rest_committed(self, repo):
         limiter = SyncRateLimiter(repository=repo)
@@ -761,7 +799,7 @@ class TestContentionAcrossResources:
     ):
         limiter = SyncRateLimiter(repository=repo)
         _admit(limiter)
-        repo.set_limits("user", [Limit.custom("weekly", 1000, **SLOW)], "budget")
+        _budget_waits_on_a_slow_pass(repo)
         before = _ledger(repo)
 
         def transact_write(items):

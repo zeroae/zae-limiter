@@ -15,6 +15,7 @@ from .config_cache import CacheStats as CacheStats
 from .limiter import OnUnavailable as OnUnavailable
 
 if TYPE_CHECKING:
+    from .fill_instant import Write, WriteBudget
     from .models import (
         AuditEvent,
         BackendCapabilities,
@@ -64,6 +65,28 @@ class SpeculativeFailureReason(Enum):
     DISABLED = "disabled"
     SCHEDULE_BOUNDARY = "schedule_boundary"
     CONTENTION = "contention"
+    UNDECIDED = "undecided"
+
+
+@dataclass(frozen=True)
+class FillInstantWrite:
+    """One dripping limit's fill instant on the slow path's rf-locked write (#818).
+
+    The write SETs ``b_{name}_fi`` to ``fill_instant`` and ADDs
+    ``consumed_milli`` to ``b_{name}_tc``. It is pinned on what the pass read:
+    the stored fill instant, or, for a limit still stored as ``tk``, that
+    ``tk`` (and no fill instant), which the write then REMOVEs; and the
+    stored base ``cp``/``ra``/``rp`` the fill instant is expressed against.
+    """
+
+    fill_instant: int
+    consumed_milli: int
+    read_fill_instant: int | None
+    read_tokens_milli: int | None
+    capacity_milli: int
+    refill_amount_milli: int
+    refill_period_ms: int
+    pair: "Write | None" = None
 
 
 @dataclass
@@ -708,8 +731,19 @@ class SyncRepositoryProtocol(Protocol):
         cleared_top_ups: Sequence[str] = (),
         bypass_stamp: tuple[int | None, int | None] | None = None,
         soft_reads: dict[str, int | None] | None = None,
+        fill_instants: "dict[str, FillInstantWrite] | None" = None,
+        expressed: tuple[int, int | None] | None = None,
+        pin_shard_count_equal: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
+
+        ``fill_instants`` (#818): limits stored, or converted, as fill
+        instants, written as :class:`FillInstantWrite` describes instead of by
+        ``ADD tk``; a name here is in none of ``consumed``, ``refill_amounts``
+        or ``read_tokens``. ``expressed`` is ``(xi, read)``: the expression
+        instant the write stamps, pinned on the one read (absent when None).
+        ``pin_shard_count_equal`` pins ``shard_count`` on the count the fill
+        instants were computed at.
 
         ``read_tokens`` (limit name -> ``tk`` as read) pins every limit whose
         refill delta is positive on ``tk <= :read``, so a credit landing
@@ -898,6 +932,48 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def debit_fill_instants(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        debits: dict[str, int],
+        *,
+        item: dict[str, Any] | None = None,
+        attempts: int | None = None,
+    ) -> "list[BucketState] | None":
+        """Debit fill instants with no admission test: ADR-154's debit pair (ADR-155).
+
+        Each limit in ``debits`` (millitokens) records ``max(z, t) + c / r``,
+        retried with a fresh stamp until one lands. With ``attempts`` it is
+        given up after that many failed writes (returns None); without, it
+        raises ``RateLimiterUnavailable`` rather than drop the debt.
+        """
+        ...
+
+    def return_fill_instants(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        returns: "dict[str, tuple[int, BucketState]]",
+        *,
+        expressed_ms: int,
+        shard_count: int,
+        counter: bool = True,
+    ) -> bool:
+        """Return fill-instant debits exactly (ADR-155, #819).
+
+        ``returns`` maps a limit to the millitokens returned and the state the
+        debit was computed against. Each fill instant moves back by the debit's
+        span (``ADD b_{name}_fi -c·S·rp``, and ``tc`` back unless ``counter`` is
+        False) with no balance condition, pinned on the fill instant existing,
+        the state's stored ``cp`` / ``ra`` / ``rp``, ``shard_count`` and
+        ``expressed_ms`` (the item's ``xi``). Returns False when a pin failed and
+        the return was dropped (an under-admission).
+        """
+        ...
+
     def speculative_consume(
         self,
         entity_id: str,
@@ -908,8 +984,13 @@ class SyncRepositoryProtocol(Protocol):
         now_ms: int | None = None,
         avoid_shards: frozenset[int] = frozenset(),
         avoid_parent_shards: frozenset[int] = frozenset(),
+        write_budget: "WriteBudget | None" = None,
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
+
+        ``write_budget`` (ADR-154, #819): the writes the acquire may still send
+        on items storing fill instants, shared by every resource of a
+        multi-resource acquire; the limiter passes it only then.
 
         Issues an UpdateItem with ADD -consumed and condition
         ``attribute_exists(PK) AND tk >= consumed`` for each limit.

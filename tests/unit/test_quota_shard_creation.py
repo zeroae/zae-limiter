@@ -219,15 +219,16 @@ class TestSlowPathShardCreation:
         assert await shard_balances(repo, "q-part", "rpd", 2) == [200_000, 499_000]
         assert await spendable(repo, "q-part", "rpd", 2) == 699
 
-    async def test_a_dripping_limit_is_untouched(self, limiter):
-        """The regression pin. A spent dripping shard still mints its new
-        sibling a full share, and its own balance is not clamped early."""
+    async def test_a_dripping_limit_is_not_funded_by_a_move(self, limiter):
+        """A dripping shard the client creates beside others starts empty
+        (ADR-156): no move, no fresh share, and its sibling keeps its balance.
+        Before #821 it minted a full share here."""
         limit = Limit.per_minute("rpm", 1000)
         repo = await self._seed(limiter, "d-spent", limit)
         await drain_shard(repo, "d-spent", "rpm", 0)
 
-        assert await materialise(limiter, "d-spent", "rpm", 1) == 1
-        assert await shard_balances(repo, "d-spent", "rpm", 2) == [2_000, 499_000]
+        assert await materialise(limiter, "d-spent", "rpm", 1) == 0
+        assert await shard_balances(repo, "d-spent", "rpm", 2) == [2_000, 0]
 
     async def test_a_reset_edge_restores_exactly_the_configured_quota(self, limiter):
         """#222 §3.6 sets each shard to its share, so a doubled entity comes

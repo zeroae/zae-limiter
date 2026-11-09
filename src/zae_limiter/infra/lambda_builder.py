@@ -4,7 +4,8 @@ Uses aws-lambda-builders to install the ``[lambda]`` extra pip dependencies
 (aws-lambda-powertools) for the Lambda target platform (Linux x86_64), then
 copies the ``zae_limiter_aggregator`` package and a minimal ``zae_limiter``
 stub (``schema.py``, ``bucket.py``, ``models.py``, ``exceptions.py``,
-``schedule.py``) into the artifact.  This ensures:
+``schedule.py``, ``fill_instant.py``, ``fill_sync.py``, ``shard_raise.py``)
+into the artifact.  This ensures:
 
 1. Cross-platform builds work (macOS/Windows host → Linux Lambda)
 2. The deployed code matches what's installed locally (dev versions work)
@@ -85,6 +86,11 @@ def build_lambda_package() -> bytes:
     - ``zae_limiter/models.py`` (dataclasses used by bucket.py)
     - ``zae_limiter/exceptions.py`` (exceptions used by models.py)
     - ``zae_limiter/schedule.py`` (cron evaluation for scheduled limits, #222)
+    - ``zae_limiter/fill_instant.py`` (fill-instant arithmetic, imported by
+      bucket.py and processor.py, #818)
+    - ``zae_limiter/fill_sync.py`` and ``zae_limiter/shard_raise.py`` (the
+      dripping-bucket raise, ADR-156, #821; ``shard_raise`` imports
+      ``fill_sync``)
 
     The full ``zae_limiter`` package is *not* included (it depends on
     aiobotocore which is not needed by the aggregator).
@@ -189,6 +195,18 @@ def build_lambda_package() -> bytes:
         # ImportError at cold start. Its only
         # non-stdlib dependency is cronsim, which the [lambda] extra installs.
         shutil.copy2(zae_limiter_path / "schedule.py", dest_zae_limiter / "schedule.py")
+
+        # fill_instant.py — fill-instant arithmetic (ADR-154, #818), imported by
+        # bucket.py and processor.py. Pure: its only intra-package import is
+        # `schedule`, vendored above.
+        shutil.copy2(zae_limiter_path / "fill_instant.py", dest_zae_limiter / "fill_instant.py")
+
+        # shard_raise.py — the dripping-bucket raise (ADR-156, #821), shared
+        # with the client so both send the same transaction; it imports
+        # fill_sync.py for one limit's schedule. Pure: schema, schedule and
+        # fill_instant are vendored above.
+        for module in ("fill_sync.py", "shard_raise.py"):
+            shutil.copy2(zae_limiter_path / module, dest_zae_limiter / module)
 
         # Create zip from artifacts
         zip_buffer = io.BytesIO()

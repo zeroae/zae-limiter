@@ -10,7 +10,8 @@ from dataclasses import dataclass
 # 0.8.0: Composite limit config items (ADR-114 for configs)
 # 0.9.0: Bucket PK migration (GHSA-76rv) - per-(entity, resource, shard) partition keys
 # 0.10.0: Local Secondary Indexes (ADR-123) - 5 LSI slots, odd=ALL / even=KEYS_ONLY
-CURRENT_SCHEMA_VERSION = "0.10.0"
+# 0.11.0: Fill instants (ADR-154) - dripping limits store `b_{name}_fi`, converted lazily
+CURRENT_SCHEMA_VERSION = "0.11.0"
 
 # The first release whose readers understand a `reset_after` limit (ADR-141).
 # A client predating it cannot enforce one: the config is stored under `w_`

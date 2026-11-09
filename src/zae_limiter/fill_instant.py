@@ -17,13 +17,15 @@ can land between integers, a re-expression against changed parameters, rounds
 toward the smaller balance (the later ``Z``).
 
 Pure: integers only, no I/O, and nothing imported beyond the standard library and
-``schedule``, so both Lambda packages can vendor it (#820, #821). Nothing in the
-library calls it yet.
+``schedule``, so both Lambda packages can vendor it, and both do: ``bucket.py``
+projects a stored fill instant through it (#818, the aggregator), and
+``fill_sync`` re-expresses one under a parameter change (#820, the provisioner).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import threading
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from .schedule import MAX_STORED_MILLI, MAX_TOKENS, ScheduleEntry, effective_params, next_boundary
@@ -33,16 +35,30 @@ from .schedule import MAX_STORED_MILLI, MAX_TOKENS, ScheduleEntry, effective_par
 #: push a fill instant toward ``MAX_STORED_MILLI`` (ADR-154).
 MAX_AMOUNT_MILLI = MAX_TOKENS * 1000
 
+#: Writes a request may send beyond one per hard limit before it is answered as
+#: contended (ADR-154, #724). Theorem 4 (proofs §5): with only admissions landing
+#: in between, a request on ``L`` limits is decided within ``L + 2`` writes;
+#: returns landing in between can delay it indefinitely (Theorem 3(c)).
+FILL_INSTANT_EXTRA_WRITES = 2
+
 #: Above this utilisation estimate (per mille) a stale image showing a full
 #: bucket is more likely wrong than right: a request finds the bucket not full
 #: with probability ``u`` (proofs §6), so the not-full write goes first.
 NOT_FULL_FIRST_ABOVE_PERMILLE = 500
 
 
+class FillInstantOverflowError(ValueError):
+    """A computed fill instant outside DynamoDB's exact integer range (ADR-154, #824).
+
+    Never degraded under ``on_unavailable=ALLOW``: ``acquire()`` raises it as
+    ``RateLimiterUnavailable`` in every mode, as it does an IAM denial (#751).
+    """
+
+
 def _stored(value: int) -> int:
     """``value``, checked against DynamoDB's exact integer range."""
     if abs(value) > MAX_STORED_MILLI:
-        raise ValueError(
+        raise FillInstantOverflowError(
             f"fill instant value {value} is outside DynamoDB's exact range "
             f"(|value| <= {MAX_STORED_MILLI})"
         )
@@ -402,3 +418,35 @@ def split(z: int, t_ms: int, params: ShardParams) -> tuple[ShardParams, int, int
     kept = min(doubled_balance, share)
     moved = max(0, doubled_balance - share)
     return new, _stored(at + share - kept), _stored(at + share - moved)
+
+
+@dataclass
+class WriteBudget:
+    """The writes one request may still send before it is answered as contended.
+
+    Starts at :data:`FILL_INSTANT_EXTRA_WRITES`; every item a request plans
+    adds its hard limits (:meth:`add_limits`), so a multi-resource acquire's
+    budget counts every resource's limits (ADR-154, ADR-148). Shared by every
+    write of the request, including a cascade parent's; safe across the sync
+    orchestration pool's threads.
+    """
+
+    cap: int = FILL_INSTANT_EXTRA_WRITES
+    sent: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    _planned: set[tuple[str, str, int]] = field(default_factory=set, repr=False, compare=False)
+
+    def add_limits(self, key: tuple[str, str, int], count: int) -> None:
+        """Count one item's hard limits into the cap, once per item (``key``)."""
+        with self._lock:
+            if key not in self._planned:
+                self._planned.add(key)
+                self.cap += count
+
+    def take(self) -> bool:
+        """Spend one write; ``False`` when the cap is already reached."""
+        with self._lock:
+            if self.sent >= self.cap:
+                return False
+            self.sent += 1
+            return True

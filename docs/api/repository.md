@@ -149,13 +149,13 @@ Implement this protocol to use a different storage backend (e.g., for testing).
     after a reset raced the retry but never lands one in the wrong period.
 
     **Known gaps (not a backend's to close).** A resource- or system-level
-    change never reaches the bucket item (it propagates through the TTL). A
-    lowered schedule there lets a refund land above the new ceiling until the
-    next slow pass clamps it; a reset-schedule change there leaves the period
-    guard following the lease's cron, so a reset under the new cron before
-    the old edge can let the old period's refund land. An entity-level change
-    reaches the item, and any reset-schedule change on the item drops the
-    in-flight quota refunds (one per open lease per change).
+    change reaches the bucket item through its fan-out (#823), but not one
+    its discovery missed. There, a lowered schedule lets a refund land above
+    the new ceiling until the next slow pass clamps it, and a reset-schedule
+    change leaves the period guard following the lease's cron, so a reset
+    under the new cron before the old edge can let the old period's refund
+    land. Any reset-schedule change that reaches the item drops the in-flight
+    quota refunds (one per open lease per change).
 
 !!! warning "Changed in v0.17.0: moving an entity (ADR-150)"
     A custom backend must implement `set_parent`, `build_owner_check` and
@@ -210,6 +210,42 @@ Implement this protocol to use a different storage backend (e.g., for testing).
     discovery, strongly consistent). It is optional: on a backend without it the
     limiter falls back to `get_buckets(entity_id)` filtered to the resource, as
     before, so an existing backend keeps working unchanged.
+
+!!! warning "Changing in v0.18.0: fill instants (ADR-154, #818)"
+    A dripping limit is stored as a fill instant, `b_{name}_fi`, in place of
+    `b_{name}_tk` (`schema.BUCKET_FIELD_FI`), beside an item-level expression
+    instant `xi`. A custom backend must decode one onto
+    `BucketState.fill_instant` / `expressed_ms` (and `stored_fill_instant` /
+    `stored_expressed_ms`, the values read), and accept
+    **`build_composite_normal(fill_instants=, expressed=, pin_shard_count_equal=)`**:
+    for each `FillInstantWrite`, SET `b_{name}_fi` and ADD `b_{name}_tc`, pinned
+    on the fill instant read (or, for a conversion, on no fill instant and the
+    `tk` read, which the write REMOVEs) and on the stored `cp` / `ra` / `rp`;
+    SET `xi` pinned on the one read; pin `shard_count`. `speculative_consume`
+    must refuse an item carrying `xi` (it holds no `tk` for its dripping limits)
+    and report it as `SCHEDULE_BOUNDARY`; the repository's own fill-instant fast
+    path (#819) then writes it, which a custom backend may leave to the slow
+    path. `speculative_consume` also takes `write_budget=` (passed only by a
+    multi-resource acquire) and may return `SpeculativeFailureReason.UNDECIDED`,
+    the contended 429. A backend must implement `return_fill_instants`, the
+    exact return of a fill instant (`ADD b_{name}_fi -c·S·rp` pinned on what the
+    debit was computed against), which compensation and lease refunds call, and
+    `debit_fill_instants`, ADR-154's debit pair with no upper bound, which a
+    positive lease adjustment calls and which must never drop a debit (#820).
+    Every bucket created stores its dripping limits, the reserved `wcu`
+    included, as fill instants (#821).
+
+!!! note "New in v0.18.0: `raise_shards` (optional, ADR-156, #821)"
+    At `wcu` exhaustion the limiter raises a bucket holding a dripping limit
+    through `raise_shards(entity_id, resource, current_count)`, which must
+    double the count with the total balance conserved: a raise marker `rx` (a
+    deadline) on every shard, then one transaction re-expressing each shard at
+    the new count and creating the shard it splits off holding its balance above
+    the new share (`zae_limiter.shard_raise.plan_raise` builds it from the items
+    read). It returns the count now cached. Every write that moves a fill
+    instant, `xi` or the shard count must refuse a live marker
+    (`schema.raise_guard`). It is optional: on a backend without it the limiter
+    calls `bump_shard_count`, as for a quota-only bucket.
 
 ::: zae_limiter.repository_protocol.RepositoryProtocol
     options:

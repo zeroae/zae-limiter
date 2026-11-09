@@ -14,14 +14,17 @@ from collections.abc import Callable, Iterable
 from dataclasses import InitVar, dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
+from . import fill_instant
 from .bucket import (
-    calculate_available,
-    force_consume,
+    express_at,
+    fill_params,
     retry_after_for_deficit,
+    settle,
     try_consume,
     window_end_in_force,
 )
 from .exceptions import LeaseExpiredError, RateLimitExceeded, ValidationError
+from .fill_images import FillImageCache
 from .models import (
     BucketState,
     CreditCeiling,
@@ -33,7 +36,7 @@ from .models import (
     QuotaDonorDebit,
     QuotaPeriodPin,
 )
-from .schedule import next_reset_edge, prev_reset_edge
+from .schedule import MAX_TOKENS, next_reset_edge, prev_reset_edge
 from .schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
@@ -51,13 +54,17 @@ from .schema import (
     BUCKET_FIELD_VU,
     BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
+    BUCKET_FIELD_XI,
     WCU_LIMIT_NAME,
     bucket_attr,
     calculate_bucket_ttl_seconds,
     calculate_ttl,
     decode_stamp,
     explicit_schedule_overrides,
+    parse_bucket_pk,
+    raise_deadline,
 )
+from .sync_repository_protocol import FillInstantWrite
 
 _CONFLICT_MAX_RETRIES = 3
 _CONFLICT_BASE_DELAY_S = 0.025
@@ -101,13 +108,32 @@ class LeaseEntry:
     _seed: bool = False
     _granted: bool = False
     _donor_debit: QuotaDonorDebit | None = None
+    _created_empty: bool = False
     _soft_trusted: bool = False
     _soft_restamp: bool = False
     _stamp_deadline_ms: int | None = None
+    _fill_xi: int | None = None
     _bypass: bool = False
     _bypass_until_ms: int | None = None
     _bypass_restamp: tuple[int | None, int | None] | None = None
     _stored_top_up: bool = False
+
+
+def check_amounts(amounts: dict[str, int], method: str) -> None:
+    """Refuse an amount larger than ``MAX_TOKENS`` in magnitude, before any I/O (#824).
+
+    ``MAX_TOKENS`` bounds a limit's configuration (#570); an amount past it
+    would push a fill instant out of DynamoDB's exact integer range (ADR-154).
+    A magnitude, since ``adjust()`` takes negative amounts and a return moves a
+    fill instant as far as a debit.
+    """
+    too_large = sorted((name for name, amount in amounts.items() if abs(amount) > MAX_TOKENS))
+    if too_large:
+        raise ValidationError(
+            method,
+            ", ".join(too_large),
+            f"amounts must be at most MAX_TOKENS ({MAX_TOKENS}) in magnitude",
+        )
 
 
 def credit_ceilings(
@@ -438,6 +464,22 @@ class SeedNotAppliedError(RateLimitExceeded):
         super().__init__(statuses, contended=True)
 
 
+class FillInstantLostError(RateLimitExceeded):
+    """A slow-path write carrying fill instants did not land (#818).
+
+    Its fill instants were computed exactly from what the pass read, and a
+    lost pin means something moved since. The consumption-only retry cannot
+    follow: it debits ``tk``, which a limit stored as a fill instant does not
+    carry, and writing one beside it would admit twice (ADR-154). Nothing was
+    written, so the acquire re-plans once from a fresh read
+    (`SyncRateLimiter._slow_acquire`); a second loss stands as the contended 429
+    (#724) it is raised as.
+    """
+
+    def __init__(self, statuses: list[LimitStatus]) -> None:
+        super().__init__(statuses, contended=True)
+
+
 class BypassLostError(Exception):
     """A bypass-shaped slow-path write found the bucket's stamp gone (internal, #311).
 
@@ -520,6 +562,8 @@ class SyncLease:
     _resources: tuple[str, ...] = ()
     _unknown_keys_by_resource: dict[str, frozenset[str]] = field(default_factory=dict)
     _declared_by_resource: dict[str, frozenset[str]] = field(init=False, default_factory=dict)
+    _consumes: list["SyncLease"] = field(default_factory=list)
+    _admit: Callable[[str, dict[str, int]], "SyncLease | None"] | None = None
     compute_images: InitVar[bool] = True
 
     def __post_init__(self, compute_images: bool = True) -> None:
@@ -617,11 +661,14 @@ class SyncLease:
         ]
 
     def _consumed_in(self, resource: str | None) -> dict[str, int]:
-        """Total consumed amounts by limit name, for one resource."""
+        """Total consumed amounts by limit name, for one resource, `consume()` calls included."""
         result: dict[str, int] = {}
         for entry in self._scoped(resource):
             name = entry.limit.name
             result[name] = result.get(name, 0) + entry.consumed
+        for inner in self._consumes:
+            for name, amount in inner._consumed_in(resource).items():
+                result[name] = result.get(name, 0) + amount
         return result
 
     def _bypassed_in(self, resource: str | None) -> bool:
@@ -645,7 +692,7 @@ class SyncLease:
                 entry.limit.name
                 for entry in self._scoped(resource)
                 if entry.limit.soft and entry.state.tokens_milli < 0
-            }
+            }.union(*(inner._overdrawn_in(resource) for inner in self._consumes))
         )
 
     @property
@@ -743,9 +790,21 @@ class SyncLease:
 
     def consume(self, **amounts: int) -> None:
         """
-        Consume additional capacity from the buckets.
+        Consume additional capacity, written when called (ADR-153, #822).
 
-        Raises RateLimitExceeded if any bucket has insufficient capacity.
+        Admitted exactly as ``acquire()`` admits a request for these amounts,
+        in the same write and round trip: the speculative write (one write
+        when this process predicts it), else the slow path. It is committed
+        before this call returns, so concurrent callers see it at once, and it
+        can raise inside the caller's block.
+
+        A rejected call debits nothing and leaves the lease open. A call that
+        landed is rolled back with the lease when the block raises, and
+        committed with it otherwise; ``lease.consumed`` includes it, and it is
+        never written again at exit. Under ``on_unavailable=ALLOW`` a backend
+        error lets the call through unwritten, as it lets ``acquire()``
+        through. The amounts may land on another shard of the bucket than
+        the initial consumption (ADR-134).
 
         Only limits declared in ``acquire(consume=...)`` can be consumed;
         other keys are reported (Issue #455) and ignored.
@@ -754,66 +813,68 @@ class SyncLease:
 
         Args:
             **amounts: Mapping of limit_name -> amount to consume
+
+        Raises:
+            ValidationError: If an amount is above ``MAX_TOKENS`` (#824);
+                nothing is sent.
+            RateLimitExceeded: If a limit cannot cover it, or the bucket is
+                contended (``contended=True``); nothing was debited.
+            ResourceDisabled: If the resource was disabled since the acquire.
+            RateLimiterUnavailable: On a backend error under ``on_unavailable=BLOCK``.
+            LeaseExpiredError: If the lease has already exited.
         """
         self._require_open()
+        check_amounts(amounts, "consume")
         self._check_declared(amounts, "consume")
         self._consume_in(self._primary, amounts)
 
     def _consume_in(self, resource: str | None, amounts: dict[str, int]) -> None:
-        """Consume ``amounts`` from ``resource``'s declared limits, all or none."""
-        now_ms = self.repository._now_ms()
-        statuses: list[LimitStatus] = []
-        updates: list[tuple[LeaseEntry, int, int]] = []
-        scoped = self._scoped(resource)
-        for entry in scoped:
-            amount = amounts.get(entry.limit.name, 0)
-            if amount <= 0:
-                continue
-            result = try_consume(entry.state, amount, now_ms)
-            status = LimitStatus(
-                entity_id=entry.entity_id,
-                resource=entry.resource,
-                limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(
-                    entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
-                ),
-                available=result.available,
-                requested=amount,
-                exceeded=not result.success,
-                retry_after_seconds=result.retry_after_seconds,
-                resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
+        """Admit and commit ``amounts`` of ``resource``'s declared limits, all or none."""
+        if self.degraded:
+            return
+        if resource is None or resource == self._primary:
+            declared = self._declared_names
+        else:
+            declared = self._declared_by_resource.get(resource, frozenset())
+        wanted = {
+            name: amount for name, amount in amounts.items() if name in declared and amount > 0
+        }
+        if not wanted:
+            return
+        if self._admit is None:
+            raise RuntimeError("consume() needs a lease yielded by SyncRateLimiter.acquire()")
+        target = resource if resource is not None else self.entries[0].resource
+        inner = self._admit(target, wanted)
+        if inner is not None:
+            for earlier in (self, *self._consumes):
+                earlier._follow_fill_pins(inner)
+            self._consumes.append(inner)
+
+    def _follow_fill_pins(self, landed: "SyncLease") -> None:
+        """Move this lease's return pins past a later write of its own (#822).
+
+        A ``consume()`` call that took the slow path moved its item's ``xi``,
+        on which this lease's exact returns are pinned (ADR-155), and would
+        drop them. That write was pinned on the ``xi`` it read: when it read
+        this lease's pin, nothing else wrote the item's fill instants in
+        between (a reset included), so the pin follows it.
+        """
+        moved = {
+            (entry.entity_id, entry.resource, entry._shard_id): (
+                entry.state.stored_expressed_ms,
+                entry._fill_xi,
             )
-            statuses.append(status)
-            if result.success:
-                updates.append((entry, result.new_tokens_milli, result.new_last_refill_ms))
-        for entry in scoped:
-            if entry.limit.name not in amounts:
-                available = calculate_available(entry.state, now_ms)
-                statuses.append(
-                    LimitStatus(
-                        entity_id=entry.entity_id,
-                        resource=entry.resource,
-                        limit_name=entry.limit.name,
-                        limit=entry.limit.per_shard(
-                            entry.state.report_shard_count, now_ms, entry.state.report_top_up_milli
-                        ),
-                        available=available,
-                        requested=0,
-                        exceeded=False,
-                        retry_after_seconds=0.0,
-                        resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
-                    )
-                )
-        violations = [s for s in statuses if s.exceeded]
-        if violations:
-            raise RateLimitExceeded(statuses)
-        for entry, new_tokens, new_refill in updates:
-            entry.state.tokens_milli = new_tokens
-            entry.state.last_refill_ms = new_refill
-            amount = amounts.get(entry.limit.name, 0)
-            entry.consumed += amount
-            if entry.state.total_consumed_milli is not None:
-                entry.state.total_consumed_milli += amount * 1000
+            for entry in landed.entries
+            if entry._fill_xi is not None and entry.state.stored_expressed_ms is not None
+        }
+        for entry in self.entries:
+            key = (entry.entity_id, entry.resource, entry._shard_id)
+            if key not in moved:
+                continue
+            read, written = moved[key]
+            pin = entry._fill_xi if entry._fill_xi is not None else entry.state.stored_expressed_ms
+            if pin == read:
+                entry._fill_xi = written
 
     def adjust(self, **amounts: int) -> None:
         """
@@ -839,21 +900,46 @@ class SyncLease:
 
         Args:
             **amounts: Mapping of limit_name -> delta (positive = consume more)
+
+        Raises:
+            ValidationError: If a delta, or the lease's net adjustment of a
+                limit, is above ``MAX_TOKENS`` in magnitude (#824); nothing is
+                recorded.
         """
         self._require_open()
+        check_amounts(amounts, "adjust")
         self._check_declared(amounts, "adjust")
         self._apply_adjust(amounts, self._primary)
 
-    def _apply_adjust(self, amounts: dict[str, int], resource: str | None = None) -> None:
-        """Apply adjust() deltas to declared entries (shared with release())."""
+    def _apply_adjust(
+        self, amounts: dict[str, int], resource: str | None = None, method: str = "adjust"
+    ) -> None:
+        """Apply adjust() deltas to declared entries (shared with release()).
+
+        Each call is bounded on its own (:func:`check_amounts`), and so is the
+        net the exit writes per limit, ``consumed - _initial_consumed``: two
+        accepted calls could otherwise add up past ``MAX_TOKENS`` and fail at
+        exit instead (#824). Refused before anything is recorded.
+        """
+        too_large = sorted(
+            entry.limit.name
+            for entry in self._scoped(resource)
+            if amounts.get(entry.limit.name, 0)
+            and abs(entry.consumed + amounts[entry.limit.name] - entry._initial_consumed)
+            > MAX_TOKENS
+        )
+        if too_large:
+            raise ValidationError(
+                method,
+                ", ".join(too_large),
+                f"a lease's net adjustment must stay within MAX_TOKENS ({MAX_TOKENS})",
+            )
         now_ms = self.repository._now_ms()
         for entry in self._scoped(resource):
             amount = amounts.get(entry.limit.name, 0)
             if amount == 0:
                 continue
-            new_tokens, new_refill = force_consume(entry.state, amount, now_ms)
-            entry.state.tokens_milli = new_tokens
-            entry.state.last_refill_ms = new_refill
+            settle(entry.state, amount, now_ms)
             entry.consumed += amount
             if entry.state.total_consumed_milli is not None:
                 entry.state.total_consumed_milli += amount * 1000
@@ -875,10 +961,16 @@ class SyncLease:
 
         Args:
             **amounts: Mapping of limit_name -> amount to return
+
+        Raises:
+            ValidationError: If an amount, or the lease's net adjustment of a
+                limit, is above ``MAX_TOKENS`` in magnitude (#824); nothing is
+                recorded.
         """
         self._require_open()
+        check_amounts(amounts, "release")
         self._check_declared(amounts, "release")
-        self._apply_adjust({k: -v for k, v in amounts.items()}, self._primary)
+        self._apply_adjust({k: -v for k, v in amounts.items()}, self._primary, "release")
 
     def _commit_initial(self) -> None:
         """Write initial consumption to DynamoDB on context enter (Issue #309).
@@ -904,6 +996,11 @@ class SyncLease:
             return
         now_ms = self.repository._now_ms()
         repo = self.repository
+        if any(
+            entry.state.raise_until_ms is not None and entry.state.raise_until_ms > now_ms
+            for entry in (*self.entries, *self._carriers)
+        ):
+            raise _contention_rejection(self.entries, now_ms)
         groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in (*self.entries, *self._carriers):
             key = (entry.entity_id, entry.resource, entry._shard_id)
@@ -916,6 +1013,7 @@ class SyncLease:
         ] = []
         credit_images: dict[tuple[str, str, int], CreditImage | None] = {}
         period_images: dict[tuple[str, str, int], CreditImage | None] = {}
+        fill_xis: dict[tuple[str, str, int], int] = {}
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
             has_custom_config = group_entries[0]._has_custom_config
@@ -964,6 +1062,13 @@ class SyncLease:
                     )
                 )
                 created = items[-1].get("Put") if isinstance(items[-1], dict) else None
+                created_xi = (
+                    created.get("Item", {}).get(BUCKET_FIELD_XI, {}).get("N")
+                    if isinstance(created, dict)
+                    else None
+                )
+                if created_xi is not None:
+                    fill_xis[entity_id, resource, shard_id] = int(created_xi)
                 credit_images[entity_id, resource, shard_id] = credit_image_from_item(
                     created.get("Item") if isinstance(created, dict) else None
                 )
@@ -992,9 +1097,33 @@ class SyncLease:
                     (e._original_rf_ms for e in group_entries if not e._seed),
                     group_entries[0]._original_rf_ms,
                 )
+                stamped: int | None = None
+                if any(e.state.fill_instant is not None for e in group_entries):
+                    stamped, _read = _expressed(group_entries)
+                    for e in group_entries:
+                        express_at(e.state, stamped)
+                fill_writes: dict[str, FillInstantWrite] = {}
                 for entry in group_entries:
                     name = entry.limit.name
                     consumed_milli = entry.consumed * 1000
+                    if not entry._seed and entry.state.fill_instant is not None:
+                        read_fi = entry.state.stored_fill_instant
+                        pair = _pair_for(entry, consumed_milli)
+                        if pair is None and entry.state.fill_instant == read_fi:
+                            continue
+                        fill_writes[name] = FillInstantWrite(
+                            fill_instant=entry.state.fill_instant,
+                            consumed_milli=consumed_milli,
+                            read_fill_instant=read_fi,
+                            read_tokens_milli=entry._original_tokens_milli
+                            if read_fi is None
+                            else None,
+                            capacity_milli=entry.state.capacity_milli,
+                            refill_amount_milli=entry.state.refill_amount_milli,
+                            refill_period_ms=entry.state.refill_period_ms,
+                            pair=pair,
+                        )
+                        continue
                     if entry._seed:
                         seeds[name] = entry.state
                         restarted = (
@@ -1105,6 +1234,8 @@ class SyncLease:
                         continue
                     soft_stamps[e.limit.name] = wanted
                     soft_reads[e.limit.name] = e.state.soft_until_ms
+                if fill_writes and stamped is not None:
+                    fill_xis[entity_id, resource, shard_id] = stamped
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
@@ -1130,7 +1261,11 @@ class SyncLease:
                         pin_shard_count=min(pin, default=None),
                         rf_ms=written_rf,
                         clear_vu=not boundaries,
-                        pin_vu=read_state is not None,
+                        pin_vu=read_state is not None
+                        and (
+                            bool(consumed)
+                            or any(state.fill_instant is None for state in seeds.values())
+                        ),
                         expected_vu=read_state.stored_vu_ms if read_state is not None else None,
                         owner=(owner_entry._cascade, owner_entry._parent_id)
                         if owner_entry is not None
@@ -1152,6 +1287,19 @@ class SyncLease:
                         owner_pinc=owner_entry._parent_incarnation
                         if owner_entry is not None
                         else None,
+                        fill_instants=fill_writes or None,
+                        expressed=_expressed(group_entries)
+                        if fill_writes
+                        or any(e._seed and e.state.fill_instant is not None for e in group_entries)
+                        else None,
+                        pin_shard_count_equal=next(
+                            (
+                                e.state.shard_count
+                                for e in group_entries
+                                if e.limit.name in fill_writes and e.limit.name != WCU_LIMIT_NAME
+                            ),
+                            None,
+                        ),
                     )
                 )
                 if windows:
@@ -1212,6 +1360,14 @@ class SyncLease:
             )
         if lost_bypass:
             raise BypassLostError(lost_bypass) from condition_exc
+        if condition_failed and any(
+            e.state.fill_instant is not None and e.consumed > 0
+            for group in groups.values()
+            for e in group
+        ):
+            raise FillInstantLostError(
+                _contention_rejection(self.entries, now_ms).statuses
+            ) from condition_exc
         reissued_creates: set[tuple[str, str, int]] = set()
         if condition_failed:
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
@@ -1348,6 +1504,10 @@ class SyncLease:
                         images = _retry_failure_images(
                             retry_exc, [key for key, _group in retry_groups]
                         )
+                        if any(
+                            raise_deadline(image, now_ms) is not None for image in images.values()
+                        ):
+                            raise _contention_rejection(self.entries, now_ms) from retry_exc
                         if _still_unseeded(retry_unseeded, images, bool(retry_maybe_missing)) and (
                             not _genuinely_short(retry_groups, images, now_ms)
                         ):
@@ -1382,6 +1542,7 @@ class SyncLease:
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
             key = (entry.entity_id, entry.resource, entry._shard_id)
+            entry._fill_xi = fill_xis.get(key)
             if key in credit_images:
                 entry._image = entry._period_image = credit_images[key]
             elif key in period_images:
@@ -1425,7 +1586,8 @@ class SyncLease:
         attempt = 0
         while True:
             try:
-                self.repository.transact_write(items)
+                written = self.repository.transact_write(items)
+                _remember_fill_images(self.repository, items, written)
                 return None
             except Exception as exc:
                 if _is_condition_check_failure(exc):
@@ -1642,16 +1804,28 @@ class SyncLease:
         """
         if self._committed or self._rolled_back:
             return
+        for inner in self._consumes:
+            inner._committed = True
         if not self._has_adjustments:
             self._committed = True
             return
         writes = self._adjust_writes(
             lambda entry: (entry.consumed - entry._initial_consumed) * 1000
         )
+        returns = self._fill_returns(
+            lambda entry: (entry.consumed - entry._initial_consumed) * 1000
+        )
+        debits = self._fill_debits(lambda entry: (entry.consumed - entry._initial_consumed) * 1000)
         self._committed = True
         failures = self._write_credits_independently(writes)
+        returned = self._send_fill_returns(returns)
+        debited = self._send_fill_debits(debits)
         if failures:
             raise failures[0][1]
+        if returned:
+            raise returned[0]
+        if debited:
+            raise debited[0]
 
     def _rollback(self) -> None:
         """Write compensating deltas to restore consumed tokens (Issue #309).
@@ -1671,9 +1845,15 @@ class SyncLease:
         if self._committed or self._rolled_back:
             return
         self._rolled_back = True
+        for inner in self._consumes:
+            inner._rollback()
         if not self._initial_committed:
             return
         writes = self._adjust_writes(lambda entry: -entry._initial_consumed * 1000)
+        for exc in self._send_fill_returns(
+            self._fill_returns(lambda entry: -entry._initial_consumed * 1000)
+        ):
+            logger.warning("Failed to return a fill instant on rollback (%s)", type(exc).__name__)
         for (_entity_id, resource, shard_id, *_rest), exc in self._write_credits_independently(
             writes
         ):
@@ -1700,11 +1880,15 @@ class SyncLease:
         now_ms = self.repository._now_ms()
         writes: list[_CreditWrite] = []
         for (entity_id, resource, shard_id), group_entries in groups.items():
+            shape = _bypass_shape(group_entries)
             deltas: dict[str, int] = {}
             for entry in group_entries:
                 delta = delta_of(entry)
-                if delta != 0:
-                    deltas[entry.limit.name] = delta
+                if delta == 0:
+                    continue
+                if entry.state.fill_instant is not None and (not shape):
+                    continue
+                deltas[entry.limit.name] = delta
             if not deltas:
                 continue
             images = {e._image for e in group_entries}
@@ -1719,9 +1903,108 @@ class SyncLease:
                 period_image,
             )
             pin = image.pin if image is not None else None
-            shape = _bypass_shape(group_entries)
             writes.append((entity_id, resource, shard_id, deltas, ceilings, pin, shape))
         return writes
+
+    def _fill_returns(
+        self, delta_of: Callable[[LeaseEntry], int]
+    ) -> list[tuple[str, str, int, dict[str, tuple[int, BucketState]], int, int]]:
+        """The exact returns of this lease's fill-instant credits, per bucket item (#819).
+
+        ``(entity, resource, shard, returns, xi, shard_count)``: every entry
+        stored as a fill instant whose delta is negative, on an item written in
+        the enforce shape (a bypassed one never had its fill instant debited).
+        Pinned on the ``xi`` the item held once this lease's commit landed.
+        """
+        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
+        for entry in self.entries:
+            groups.setdefault((entry.entity_id, entry.resource, entry._shard_id), []).append(entry)
+        returns = []
+        for (entity_id, resource, shard_id), group_entries in groups.items():
+            if _bypass_shape(group_entries):
+                continue
+            credits = {
+                e.limit.name: (-delta_of(e), e.state)
+                for e in group_entries
+                if e.state.fill_instant is not None and delta_of(e) < 0
+            }
+            if not credits:
+                continue
+            first = group_entries[0]
+            xi = first._fill_xi if first._fill_xi is not None else first.state.stored_expressed_ms
+            if xi is None:
+                continue
+            count = next(
+                (e.state.shard_count for e in group_entries if e.limit.name != WCU_LIMIT_NAME), 1
+            )
+            returns.append((entity_id, resource, shard_id, credits, xi, count))
+        return returns
+
+    def _fill_debits(
+        self, delta_of: Callable[[LeaseEntry], int]
+    ) -> list[tuple[str, str, int, dict[str, int]]]:
+        """This lease's positive fill-instant adjustments, per bucket item (ADR-155).
+
+        ``(entity, resource, shard, debits)`` in millitokens: each written by
+        ADR-154's debit pair, never dropped. A bypassed item never debits.
+        """
+        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
+        for entry in self.entries:
+            groups.setdefault((entry.entity_id, entry.resource, entry._shard_id), []).append(entry)
+        debits = []
+        for (entity_id, resource, shard_id), group_entries in groups.items():
+            if _bypass_shape(group_entries):
+                continue
+            owed = {
+                e.limit.name: delta_of(e)
+                for e in group_entries
+                if e.state.fill_instant is not None and delta_of(e) > 0
+            }
+            if owed:
+                debits.append((entity_id, resource, shard_id, owed))
+        return debits
+
+    def _send_fill_debits(
+        self, debits: list[tuple[str, str, int, dict[str, int]]]
+    ) -> list[Exception]:
+        """Send each debit on its own; the errors of those that could not land (ADR-155)."""
+        repo = self.repository
+
+        def _send(debit: tuple[str, str, int, dict[str, int]]) -> Exception | None:
+            entity_id, resource, shard_id, owed = debit
+            try:
+                repo.debit_fill_instants(entity_id, resource, shard_id, owed)
+            except Exception as exc:
+                return exc
+            return None
+
+        if not debits:
+            return []
+        outcomes = self._run_in_executor(*[lambda debit=debit: _send(debit) for debit in debits])
+        return [exc for exc in outcomes if exc is not None]
+
+    def _send_fill_returns(
+        self, returns: list[tuple[str, str, int, dict[str, tuple[int, BucketState]], int, int]]
+    ) -> list[Exception]:
+        """Send each exact return on its own; the errors of those that failed (#819)."""
+        repo = self.repository
+
+        def _send(
+            ret: tuple[str, str, int, dict[str, tuple[int, BucketState]], int, int],
+        ) -> Exception | None:
+            entity_id, resource, shard_id, credits, xi, count = ret
+            try:
+                repo.return_fill_instants(
+                    entity_id, resource, shard_id, credits, expressed_ms=xi, shard_count=count
+                )
+            except Exception as exc:
+                return exc
+            return None
+
+        if not returns:
+            return []
+        outcomes = self._run_in_executor(*[lambda ret=ret: _send(ret) for ret in returns])
+        return [exc for exc in outcomes if exc is not None]
 
     def _write_credits_independently(
         self, writes: list[_CreditWrite]
@@ -1919,8 +2202,9 @@ class SyncLeaseResource:
     ``adjust()``, ``consume()``, ``release()`` and ``consumed`` behave exactly
     as the lease-level methods do, scoped to this resource's declared limits:
     the ones named for it in ``acquire()``'s ``consume`` (the primary
-    resource) or ``also`` (every other one). Nothing is written until the
-    lease's context exits, where every resource is reconciled together.
+    resource) or ``also`` (every other one). ``consume()`` is written when
+    called (#822); adjustments are written when the lease's context exits,
+    where every resource is reconciled together.
     """
 
     def __init__(self, lease: "SyncLease", name: str) -> None:
@@ -1947,11 +2231,14 @@ class SyncLeaseResource:
         """Consume more of this resource; see :meth:`SyncLease.consume`.
 
         Raises:
+            ValidationError: If an amount is above ``MAX_TOKENS`` (#824);
+                nothing is requested.
             RateLimitExceeded: If any of this resource's limits cannot cover it.
             LeaseExpiredError: If the lease has already exited.
         """
         lease = self._lease
         lease._require_open()
+        check_amounts(amounts, "consume")
         lease._check_declared(amounts, "consume", self.name)
         lease._consume_in(self.name, amounts)
 
@@ -1961,10 +2248,14 @@ class SyncLeaseResource:
         Never raises for capacity: the bucket may go negative.
 
         Raises:
+            ValidationError: If a delta, or the lease's net adjustment of a
+                limit, is above ``MAX_TOKENS`` in magnitude (#824); nothing is
+                recorded.
             LeaseExpiredError: If the lease has already exited.
         """
         lease = self._lease
         lease._require_open()
+        check_amounts(amounts, "adjust")
         lease._check_declared(amounts, "adjust", self.name)
         lease._apply_adjust(amounts, self.name)
 
@@ -1972,12 +2263,16 @@ class SyncLeaseResource:
         """Return unused capacity of this resource; see :meth:`SyncLease.release`.
 
         Raises:
+            ValidationError: If an amount, or the lease's net adjustment of a
+                limit, is above ``MAX_TOKENS`` in magnitude (#824); nothing is
+                recorded.
             LeaseExpiredError: If the lease has already exited.
         """
         lease = self._lease
         lease._require_open()
+        check_amounts(amounts, "release")
         lease._check_declared(amounts, "release", self.name)
-        lease._apply_adjust({k: -v for k, v in amounts.items()}, self.name)
+        lease._apply_adjust({k: -v for k, v in amounts.items()}, self.name, "release")
 
     def __repr__(self) -> str:
         return f"SyncLeaseResource({self.name!r})"
@@ -2104,6 +2399,47 @@ def _stamp_deadline(entry: LeaseEntry, now_ms: int, repo: Any) -> int:
     return int(repo._stamp_deadline(now_ms))
 
 
+def _pair_for(entry: LeaseEntry, consumed_milli: int) -> fill_instant.Write | None:
+    """ADR-154's write that takes ``entry``'s read fill instant to the one the pass computed.
+
+    Chosen from the read (#820): not full when the read shows ``z >= t``, full
+    otherwise, at the clock reading the pass admitted at, bounded by the slack
+    for a hard limit and unbounded for a soft one. None when no such write
+    reproduces it exactly — a conversion from ``tk``, a re-expression across a
+    schedule boundary, nothing consumed — which the pinned ``SET`` writes.
+    """
+    state = entry.state
+    read = state.stored_fill_instant
+    if read is None or consumed_milli <= 0 or state.fill_instant is None:
+        return None
+    t_ms = state.last_refill_ms
+    params = fill_params(state, max(t_ms, state.expressed_ms or t_ms))
+    if read >= fill_instant.stamp(t_ms, params):
+        pair = fill_instant.not_full_write(t_ms, consumed_milli, params, bounded=not state.soft)
+    else:
+        pair = fill_instant.full_write(t_ms, consumed_milli, params)
+    if not pair.applies(read) or pair.apply(read) != state.fill_instant:
+        return None
+    return pair
+
+
+def _expressed(group_entries: list[LeaseEntry]) -> tuple[int, int | None]:
+    """The expression instant a write of fill instants stamps, and the one it read (#818).
+
+    The latest any of its fill instants was expressed at, and the item's `xi` as
+    the pass read it, off any limit read from the item.
+    """
+    stamped = max(
+        e.state.expressed_ms
+        for e in group_entries
+        if e.state.fill_instant is not None and e.state.expressed_ms is not None
+    )
+    read = next(
+        (e.state.stored_expressed_ms for e in group_entries if e.state.stored_vu_read), None
+    )
+    return (stamped, read)
+
+
 def _bypass_deadline(group: list[LeaseEntry], now_ms: int, repo: Any) -> int:
     """The deadline a bypassed group's write stamps (ADR-151 decision 8).
 
@@ -2136,6 +2472,31 @@ def _soft_trusted(group: list[LeaseEntry]) -> frozenset[str]:
     return frozenset(
         e.limit.name for e in group if e._soft_trusted and e.state.soft and (not e._seed)
     )
+
+
+def _remember_fill_images(
+    repo: "SyncRepositoryProtocol", items: list[dict[str, Any]], written: dict[str, Any] | None
+) -> None:
+    """Keep what a landed commit wrote as the fast path's image of its shards (#821).
+
+    A create's ``Put`` is the item exactly, and so is a single update's
+    ``ALL_NEW``. Without it, the first fast-path request after this process's
+    own slow pass on a shard storing fill instants sent today's write only to
+    have it refused and learn the image (+1 WCU). An image decides no
+    admission (``fill_images``), so a stale one costs at most a failed write.
+    A backend without the cache keeps nothing.
+    """
+    cache = getattr(repo, "_fill_images", None)
+    if not isinstance(cache, FillImageCache):
+        return
+    images = [item["Put"]["Item"] for item in items if isinstance(item, dict) and "Put" in item]
+    if isinstance(written, dict):
+        images.append(written)
+    for image in images:
+        pk = image.get("PK", {}).get("S", "")
+        if BUCKET_FIELD_XI not in image or "/BUCKET#" not in pk:
+            continue
+        cache.store(parse_bucket_pk(pk), image)
 
 
 def _transact_retrying_conflict(

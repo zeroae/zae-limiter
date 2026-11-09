@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.fixtures.balances import balance_milli, stored_fill_instant
 from zae_limiter import RateLimitExceeded, SyncRateLimiter, schema
 from zae_limiter.models import Limit
 
@@ -36,7 +37,8 @@ def test_a_soft_limit_goes_into_debt(sync_repository):
         with limiter.acquire("u", "llm", {"rpm": 1, "tpm": 8}) as lease:
             pass
     assert lease.overdrawn == ["tpm"]
-    assert int(_item(sync_repository, "u", "llm")["b_tpm_tk"]["N"]) < 0
+    item = _item(sync_repository, "u", "llm")
+    assert balance_milli(sync_repository, item, "tpm", sync_repository._now_ms()) < 0
 
 
 def test_a_bypass_admits_and_debits_nothing(sync_repository):
@@ -44,13 +46,14 @@ def test_a_bypass_admits_and_debits_nothing(sync_repository):
     limiter = SyncRateLimiter(repository=sync_repository)
     with limiter.acquire("u", "api", {"rpm": 1}):
         pass
+    before = stored_fill_instant(_item(sync_repository, "u", "api"), "rpm")
     sync_repository.bypass_resource("api")
     for _ in range(5):
         with limiter.acquire("u", "api", {"rpm": 1}) as lease:
             assert lease.bypassed is True
     item = _item(sync_repository, "u", "api")
     assert int(item["b_rpm_tc"]["N"]) == 6_000
-    assert int(item["b_rpm_tk"]["N"]) <= 1_000
+    assert stored_fill_instant(item, "rpm") == before  # nothing debited (#821: a fill instant)
 
 
 def test_a_stamp_left_behind_stops_admitting_past_its_deadline(sync_repository):
