@@ -3,7 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from botocore.exceptions import ClientError, EndpointConnectionError
+from botocore.exceptions import ClientError, EndpointConnectionError, WaiterError
 
 from zae_limiter import StackOptions
 from zae_limiter.exceptions import StackAlreadyExistsError, StackOperationError
@@ -539,6 +539,142 @@ class TestDeleteStack:
                 await manager.delete_stack("test-stack")
 
             assert "Not authorized" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_wait_raises_stack_operation_error(self) -> None:
+        """A wait ending in DELETE_FAILED raises the documented error, not WaiterError."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.delete_stack = AsyncMock()
+            mock_client.describe_stack_events = AsyncMock(
+                return_value={
+                    "StackEvents": [
+                        {
+                            "LogicalResourceId": "RateLimitsTable",
+                            "ResourceStatus": "DELETE_FAILED",
+                            "ResourceStatusReason": "Internal server error",
+                        }
+                    ]
+                }
+            )
+            mock_waiter = MagicMock()
+            mock_waiter.wait = AsyncMock(
+                side_effect=WaiterError(
+                    "StackDeleteComplete",
+                    "Waiter encountered a terminal failure state",
+                    {"Stacks": [{"StackStatus": "DELETE_FAILED"}]},
+                )
+            )
+            mock_client.get_waiter.return_value = mock_waiter
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+
+            with pytest.raises(StackOperationError) as exc_info:
+                await manager.delete_stack("test-stack")
+
+            assert "terminal failure state" in str(exc_info.value)
+            assert exc_info.value.events[0]["logical_id"] == "RateLimitsTable"
+            assert isinstance(exc_info.value.__cause__, WaiterError)
+            # Deleted once more before giving up (#812)
+            assert mock_client.delete_stack.call_count == 2
+
+    @staticmethod
+    def _delete_waiter_error(status: str) -> WaiterError:
+        return WaiterError(
+            "StackDeleteComplete",
+            "Waiter encountered a terminal failure state",
+            {"Stacks": [{"StackStatus": status}]},
+        )
+
+    @pytest.mark.asyncio
+    async def test_retries_a_delete_that_ended_in_delete_failed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A transient DELETE_FAILED (DynamoDB 500) is deleted again and succeeds (#812)."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.delete_stack = AsyncMock()
+            mock_client.describe_stack_events = AsyncMock(
+                return_value={
+                    "StackEvents": [
+                        {
+                            "ResourceType": "AWS::CloudFormation::Stack",
+                            "LogicalResourceId": "test-stack",
+                            "ResourceStatus": "DELETE_FAILED",
+                        },
+                        {
+                            "ResourceType": "AWS::DynamoDB::Table",
+                            "LogicalResourceId": "RateLimitsTable",
+                            "ResourceStatus": "DELETE_FAILED",
+                            "ResourceStatusReason": "Internal server error",
+                        },
+                    ]
+                }
+            )
+            mock_waiter = MagicMock()
+            mock_waiter.wait = AsyncMock(
+                side_effect=[self._delete_waiter_error("DELETE_FAILED"), None]
+            )
+            mock_client.get_waiter.return_value = mock_waiter
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            with caplog.at_level("WARNING"):
+                await manager.delete_stack("test-stack")
+
+            assert mock_client.delete_stack.call_count == 2
+            assert mock_waiter.wait.call_count == 2
+            assert "RateLimitsTable: Internal server error" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_a_wait_that_timed_out(self) -> None:
+        """A delete still in progress when the wait gives up is not re-issued."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.delete_stack = AsyncMock()
+            mock_client.describe_stack_events = AsyncMock(return_value={"StackEvents": []})
+            mock_waiter = MagicMock()
+            mock_waiter.wait = AsyncMock(
+                side_effect=WaiterError(
+                    "StackDeleteComplete",
+                    "Max attempts exceeded",
+                    {"Stacks": [{"StackStatus": "DELETE_IN_PROGRESS"}]},
+                )
+            )
+            mock_client.get_waiter.return_value = mock_waiter
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            with pytest.raises(StackOperationError, match="Max attempts exceeded"):
+                await manager.delete_stack("test-stack")
+
+            assert mock_client.delete_stack.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_retry_that_finds_the_stack_gone_is_success(self) -> None:
+        """The second delete reporting "does not exist" means the first one finished."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.delete_stack = AsyncMock(
+                side_effect=[
+                    None,
+                    ClientError(
+                        {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}},
+                        "DeleteStack",
+                    ),
+                ]
+            )
+            mock_client.describe_stack_events = AsyncMock(return_value={"StackEvents": []})
+            mock_waiter = MagicMock()
+            mock_waiter.wait = AsyncMock(side_effect=self._delete_waiter_error("DELETE_FAILED"))
+            mock_client.get_waiter.return_value = mock_waiter
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            await manager.delete_stack("test-stack")
+
+            assert mock_client.delete_stack.call_count == 2
 
 
 class TestDeployLambdaCode:
