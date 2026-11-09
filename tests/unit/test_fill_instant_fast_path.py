@@ -172,10 +172,11 @@ class TestRetries:
         async def overtake(write: dict[str, Any]) -> None:
             if not recorder.writes:  # another consumer lands first, once
                 await _set_fi(repo, "e1", "rpm", fi.stamp(clock.now, P_RPM) + 1)
+                clock.now += 5_000  # the clock moves on before the retry is built
 
         recorder.before = overtake
         async with limiter.acquire("e1", RESOURCE, consume={"rpm": 1}):
-            clock.now += 5_000  # the clock moves on while the request retries
+            pass
         assert len(recorder.writes) == 2
         stamps = {w["ExpressionAttributeValues"][":zs0"]["N"] for w in recorder.writes}
         assert len(stamps) == 1
