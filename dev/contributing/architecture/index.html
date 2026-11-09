@@ -4785,10 +4785,10 @@ failed write's <code>ALL_OLD</code> with the same <code>t</code>, and answers a 
 write budget as contended (#724). Stored values are scaled by the undivided refill
 amount: <code>d</code> is <code>c × S × rp</code> and the slack <code>(C_b − c × S) × rp</code> (capacities in millitokens,
 <code>rp</code> in milliseconds, <code>S</code> shards, <code>C_b</code> the undivided capacity), so nothing is divided and no
-rounding enters. Every write is pinned on the <code>cp</code> / <code>ra</code> / <code>rp</code>, schedule, <code>shard_count</code> and
-<code>xi</code> it was computed against (ADR-155), and a write that changes any of them re-expresses the
-fill instant in the same write (<code>re_express</code>: the balance is kept, or trimmed to the new
-ceiling, never raised).</p>
+rounding enters. Every write is pinned on the <code>cp</code> / <code>ra</code> / <code>rp</code>, <code>shard_count</code> and <code>xi</code> it was
+computed against (ADR-155), and a write that changes any of them, or the schedule, re-expresses
+the fill instant in the same write and stamps a new <code>xi</code> (<code>re_express</code>: the balance is kept, or
+trimmed to the new ceiling, never raised), so the pin on <code>xi</code> is also the pin on the schedule.</p>
 <h3 id="mathematical-formulas">Mathematical Formulas<a class="headerlink" href="#mathematical-formulas" title="Permanent link">&para;</a></h3>
 <p>The refill and drift formulas below apply to a dripping limit still stored as <code>tk</code> (an item
 written before v0.18.0, until its next slow pass converts it). A quota does not drip, and a

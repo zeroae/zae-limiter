@@ -3723,7 +3723,7 @@
 
 
 <h1 id="adr-149-reset-and-top-up-are-in-place-rf-locked-passes-over-every-shard">ADR-149: Reset and top-up are in-place, rf-locked passes over every shard<a class="headerlink" href="#adr-149-reset-and-top-up-are-in-place-rf-locked-passes-over-every-shard" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
+<p><strong>Status:</strong> Accepted (amended by <a href="../155-fill-instant-writers/">ADR-155</a>: a dripping limit's reset and top-up set its fill instant from the read, pinned on it, not by a token delta)
 <strong>Date:</strong> 2026-10-09
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/470">#470</a>
 <strong>Amends:</strong> <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a> (I1, I7, I8: a top-up is an operator grant above the plan), <a href="../139-duration-reset-windows/">ADR-139</a> (a session top-up with no live window opens one at the top-up instant: an operator action, not an admitted request, anchors it)

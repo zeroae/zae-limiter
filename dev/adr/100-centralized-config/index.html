@@ -3990,6 +3990,11 @@ below, each of which owns one architectural choice. Those records stay immutable
 <td>The resolved level decides whether a bucket persists or expires</td>
 </tr>
 <tr>
+<td>Default-level change propagation</td>
+<td><a href="../153-admission-contract-for-dripping-limits/">ADR-153</a></td>
+<td>A resource- or system-level change fans out, change-only, to the active buckets that level decides</td>
+</tr>
+<tr>
 <td>Schedules on config</td>
 <td><a href="../135-scheduled-limits/">ADR-135</a></td>
 <td>Per-limit <code>sched</code>/<code>rsched</code>, with one <code>sched_tz</code> hoisted per item</td>
@@ -4014,7 +4019,7 @@ below, each of which owns one architectural choice. Those records stay immutable
 - Clean upgrade path to v0.6.0 full schema migration</p>
 <p><strong>Negative:</strong>
 - Config resolution is stale for up to the cache TTL (60s by default; entity-level setters evict eagerly)
-- Resource- and system-level changes reach an existing bucket only when its TTL expires, not within the cache TTL (<a href="../136-entity-config-bucket-ttl/">ADR-136</a>)
+- Resource- and system-level changes reach existing buckets through a fan-out when they are written, not through TTL expiry (<a href="../153-admission-contract-for-dripping-limits/">ADR-153</a>); a bucket created from config cached before the change and missed by the fan-out keeps the old parameters until the level changes again or its TTL expires (<a href="../136-entity-config-bucket-ttl/">ADR-136</a>)
 - Additional complexity in resolution logic
 - Breaking change for explicit-limits-only users</p>
 <h2 id="access-patterns-added">Access Patterns Added<a class="headerlink" href="#access-patterns-added" title="Permanent link">&para;</a></h2>

@@ -3784,11 +3784,11 @@
 
 
 <h1 id="adr-154-fill-instant-fast-path-for-dripping-limits">ADR-154: Fill-instant fast path for dripping limits<a class="headerlink" href="#adr-154-fill-instant-fast-path-for-dripping-limits" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-11-07
 <strong>Issue:</strong> Refs <a href="https://github.com/zeroae/zae-limiter/issues/808">#808</a>
 <strong>Partially supersedes:</strong> <a href="../115-add-based-writes-lazy-refill/">ADR-115</a> for dripping limits (refill materialised into <code>tk</code> under the shared <code>rf</code> lock, and its write paths)
-<strong>Amends:</strong> <a href="../002-integer-arithmetic-millitokens/">ADR-002</a> (a dripping limit's state is a scaled time, still an exact integer), <a href="../114-composite-bucket-items/">ADR-114</a> (the fill instant replaces <code>tk</code> for dripping limits), <a href="../135-scheduled-limits/">ADR-135</a> (the fast path evaluates the stored schedule on the client), <a href="../147-client-side-rejection-cache/">ADR-147</a> (an image may choose which conditional write is sent), <a href="../151-non-enforcing-limits/">ADR-151</a> (a soft limit is debited by a separate write after admission)
+<strong>Amends:</strong> <a href="../002-integer-arithmetic-millitokens/">ADR-002</a> (a dripping limit's state is a scaled time, still an exact integer), <a href="../114-composite-bucket-items/">ADR-114</a> (the fill instant replaces <code>tk</code> for dripping limits), <a href="../134-random-shard-selection/">ADR-134</a> (a dripping limit's share on each of <code>S</code> shards is exactly <code>1/S</code> of its capacity and refill, never floored by <code>// shard_count</code>; random selection stands), <a href="../135-scheduled-limits/">ADR-135</a> (the fast path evaluates the stored schedule on the client), <a href="../147-client-side-rejection-cache/">ADR-147</a> (an image may choose which conditional write is sent), <a href="../151-non-enforcing-limits/">ADR-151</a> (on the fast path a soft limit is debited by a separate write after admission, given up after a fixed number of failed writes)
 <strong>Related:</strong> <a href="../146-per-resource-cascade-policy/">ADR-146</a>, <a href="../148-multi-resource-acquire/">ADR-148</a>, <a href="../153-admission-contract-for-dripping-limits/">ADR-153</a>, <a href="../155-fill-instant-writers/">ADR-155</a>, <a href="../156-dripping-shard-raises/">ADR-156</a>
 <strong>Design:</strong> <a href="../../contributing/fill-instant-proofs/">Fill-instant proofs</a> (the bounds, and the behaviour with many consumers)</p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
@@ -3814,12 +3814,12 @@ without using the shared <code>rf</code> as its refill baseline; every fast-path
 hard limit, one of two writes whose condition proves which side of the write's clock reading
 <code>t</code> that instant lies on (not full: add <code>c/r</code> under <code>t ≤ z ≤ t + (C − c)/r</code>; full: set
 <code>t + c/r</code> under <code>z &lt; t</code>), pinned as ADR-155 requires and kept beside today's guards, while a
-soft limit takes no part and is debited afterwards as ADR-155 debits a positive adjustment.
-The client must not send the full write when <code>c</code> exceeds the per-shard capacity in force
-(rejecting without a write), predicts each side from its images and an estimate of the shard's
-utilisation, retries with the same <code>t</code> from the image each failed write returns, answers a
-request still undecided after a fixed number of writes as contended (#724), and never lets an
-image decide an admission.</p>
+soft limit takes no part and is debited afterwards by the debit pair ADR-155 gives a positive
+adjustment, given up after a fixed number of failed writes. The client must not send the full
+write when <code>c</code> exceeds the per-shard capacity in force (rejecting without a write), predicts each
+side from its images and an estimate of the shard's utilisation, retries with the same <code>t</code> from
+the image each failed write returns, answers a request still undecided after a fixed number of
+writes as contended (#724), and never lets an image decide an admission.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - Meets ADR-153's bound for any number of consumers, in one round trip whenever every limit's
@@ -3827,8 +3827,8 @@ image decide an admission.</p>
   failed fast-path write is three. Only a hard limit can reject (ADR-151).
 - Nothing refills a dripping limit and no write can lift it above capacity, so the aggregator's
   refill and trim (#317), the self-trimming credit (#721) and #808 go away for these limits.
-- No share is divided by the shard count, so a heavily sharded entity's per-shard rate can no
-  longer floor to zero.</p>
+- No share is divided by the shard count (amending ADR-134's <code>// shard_count</code> shares), so a
+  heavily sharded entity's per-shard rate can no longer floor to zero.</p>
 <p><strong>Negative:</strong>
 - Every hard limit on the write must be predicted, the reserved <code>wcu</code> included, from a
   per-shard utilisation estimate kept beside ADR-147's cache. A bucket near full written by many
@@ -3838,7 +3838,9 @@ image decide an admission.</p>
   resource's limits.
 - A request whose writes keep being overtaken, which takes tokens returned between them, is
   answered as contended though tokens may remain: an under-admission. A request naming a soft
-  limit costs one more write, and a soft debit that keeps failing loses only reporting.
+  limit costs one more write. A soft debit still failing after its fixed number of writes, or
+  meeting a backend error, is logged and dropped, its debt and <code>tc</code> alike: only reporting (usage
+  and the overdraw) is lost, since a soft limit never rejects.
 - Every other writer changes with it (ADR-155, ADR-156), and <code>RepositoryProtocol</code>'s write
   builders change, which breaks custom backends (ADR-108). An item without a fill instant is
   converted from its <code>tk</code> and <code>rf</code> on its next slow pass. The schema version moves to 0.11.0

@@ -3723,7 +3723,7 @@
 
 
 <h1 id="adr-151-soft-limits-and-bypass-decided-on-the-bucket-item">ADR-151: Soft limits and bypass, decided on the bucket item<a class="headerlink" href="#adr-151-soft-limits-and-bypass-decided-on-the-bucket-item" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
+<p><strong>Status:</strong> Accepted (amended by <a href="../154-fill-instant-fast-path/">ADR-154</a>: on the fast path a soft limit is debited after admission; by <a href="../156-dripping-shard-raises/">ADR-156</a>: a raise copies <code>bypass</code> and soft deadlines onto new shards)
 <strong>Date:</strong> 2026-10-09
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/467">#467</a>, <a href="https://github.com/zeroae/zae-limiter/issues/311">#311</a>
 <strong>Amends:</strong> <a href="../115-add-based-writes-lazy-refill/">ADR-115</a> (a soft limit may go negative on admission, not only on adjust), <a href="../125-resource-disable/">ADR-125</a> (<code>disabled</code> gains a fourth value, <code>bypass</code>), <a href="../139-duration-reset-windows/">ADR-139</a> (a window opens on the first <em>enforced</em> admitted request; a bypassed one does not anchor it), <a href="../147-client-side-rejection-cache/">ADR-147</a> (local rejection never rejects on a soft or bypassed limit)

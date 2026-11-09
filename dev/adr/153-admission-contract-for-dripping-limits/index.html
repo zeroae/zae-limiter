@@ -3773,11 +3773,11 @@
 
 
 <h1 id="adr-153-admission-contract-for-dripping-limits">ADR-153: Admission contract for dripping limits<a class="headerlink" href="#adr-153-admission-contract-for-dripping-limits" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-11-06
 <strong>Issue:</strong> Refs <a href="https://github.com/zeroae/zae-limiter/issues/808">#808</a>, <a href="https://github.com/zeroae/zae-limiter/issues/587">#587</a>, <a href="https://github.com/zeroae/zae-limiter/issues/731">#731</a>
 <strong>Partially supersedes:</strong> <a href="../133-client-shard-creation/">ADR-133</a> for dripping limits (a new shard is funded by moving tokens, and the 1.5x doubling transient becomes a defect)
-<strong>Amends:</strong> <a href="../135-scheduled-limits/">ADR-135</a> (refill is integrated across schedule windows), <a href="../136-entity-config-bucket-ttl/">ADR-136</a> (resource- and system-level changes reach active buckets within the config cache TTL), <a href="../148-multi-resource-acquire/">ADR-148</a> (<code>lease.consume()</code> debits when called)
+<strong>Amends:</strong> <a href="../135-scheduled-limits/">ADR-135</a> (refill is integrated across schedule windows; a resource- or system-level change, a schedule change included, fans out to active buckets instead of waiting for their TTL to expire; the slow path takes a dripping limit's capacity, refill and schedule from the item, a quota's schedules and window length from config), <a href="../136-entity-config-bucket-ttl/">ADR-136</a> (resource- and system-level changes fan out to active buckets, so TTL expiry is no longer how they arrive), <a href="../148-multi-resource-acquire/">ADR-148</a> (<code>lease.consume()</code> debits when called)
 <strong>Related:</strong> <a href="../100-centralized-config/">ADR-100</a>, <a href="../125-resource-disable/">ADR-125</a>, <a href="../141-reset-after-version-gate/">ADR-141</a>, <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a>, <a href="../151-non-enforcing-limits/">ADR-151</a>, <a href="../154-fill-instant-fast-path/">ADR-154</a>, <a href="../155-fill-instant-writers/">ADR-155</a>, <a href="../156-dripping-shard-raises/">ADR-156</a>
 <strong>Design:</strong> <a href="../../contributing/fill-instant-proofs/">Fill-instant proofs</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
@@ -3798,10 +3798,9 @@ between.</p>
 <p>Quotas keep ADR-145's per-period conservation (I8). Soft and bypassed limits (ADR-151),
 <code>on_unavailable=ALLOW</code> and degraded leases are non-enforcing by design and are outside the
 bound, as is the reserved <code>wcu</code> budget, which belongs to each partition (ADR-156). An operator
-reset or top-up (ADR-149) adds what it grants. Configuration and stamp
-changes take effect within the config cache TTL and <code>stamp_ttl</code>, except on a bucket a change's
-fan-out missed (Consequences). The bound assumes every process sharing the table runs the
-release that ships it.</p>
+reset or top-up (ADR-149) adds what it grants. Configuration and stamp changes take effect
+within the config cache TTL and <code>stamp_ttl</code>, except on a bucket a change's fan-out missed
+(Consequences). The bound assumes every process sharing the table runs the release that ships it.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
 <p>For every dripping limit outside the exclusions above, tokens debited (by <code>acquire()</code>,
 <code>lease.consume()</code> and positive adjustments) minus tokens returned (release, negative
@@ -3822,9 +3821,9 @@ bound through ADR-154, every other writer through ADR-155, and shard raises thro
 <p><strong>Negative:</strong>
 - #808 is a defect, and its fix is ADR-154's change of representation.
 - A new shard of an existing dripping bucket is funded by moving tokens from the shard it splits
-  off (ADR-156), so it can start nearly empty; only a bucket's first shard, or a limit added
-  after its item existed, starts full. This partially supersedes ADR-133 and reverses #587's
-  ruling for dripping limits.
+  off, and a missing one is created empty (ADR-156); only a shard 0 created when no other shard
+  of its bucket is known or found, or a limit added after its item existed, starts full. This
+  partially supersedes ADR-133 and reverses #587's ruling for dripping limits.
 - Refill is integrated across schedule windows (amending ADR-135): a limit raised at a boundary
   accrues from there instead of arriving full.
 - <code>lease.consume()</code> debits when called, admitted as <code>acquire()</code> admits a request (one write and
@@ -3833,11 +3832,12 @@ bound through ADR-154, every other writer through ADR-155, and shard raises thro
   methods keep their meaning.
 - A lowered resource- or system-level limit must reach active buckets: a fan-out ADR-136
   rejected as O(all buckets) replaces ADR-135's and ADR-100's arrival at TTL expiry; a
-  namespace-wide fan-out is the decision ADR-125 deferred. The slow path does not take capacity
-  and refill from config, because from a cached config it wrote an older change back over a
-  newer one. A bucket created from configuration cached before a change, and missed by both of
-  its discovery passes, keeps the old parameters until the level changes again or its TTL
-  expires: an accepted residual.
+  namespace-wide fan-out is the decision ADR-125 deferred. The slow path does not take a
+  dripping limit's capacity, refill or schedule from config: from a cached config it wrote an
+  older change back over a newer one, and a fill instant expressed under a schedule other than
+  its item's reads as full or as a vast debt (#841). A bucket created from configuration cached
+  before a change, and missed by both of its discovery passes, keeps the old parameters, read
+  consistently, until the level changes again or its TTL expires: an accepted residual.
 - Clock skew reaches the ceiling too: a write stamped before a boundary that lowers capacity can
   land after it and spend the old ceiling, which is why <code>C</code> covers the <code>s</code> before the window.
 - Each shard is its own bucket, so a positive adjustment's debt holds back only its shard while

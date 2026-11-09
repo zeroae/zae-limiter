@@ -3723,7 +3723,7 @@
 
 
 <h1 id="adr-148-one-acquire-may-debit-several-resources-all-or-none">ADR-148: One acquire may debit several resources, all or none<a class="headerlink" href="#adr-148-one-acquire-may-debit-several-resources-all-or-none" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
+<p><strong>Status:</strong> Accepted (amended by <a href="../153-admission-contract-for-dripping-limits/">ADR-153</a>: <code>lease.consume()</code> debits when called)
 <strong>Date:</strong> 2026-10-09
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/675">#675</a>
 <strong>Amends:</strong> <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a> (a covered slot whose move is dropped to fit one transaction is granted 0 this period: an under-admission, neither a move nor a fresh grant)
