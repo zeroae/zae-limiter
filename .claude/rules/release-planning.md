@@ -29,17 +29,23 @@ For each Proposed ADR whose work ships in this release, run `/adr accept <number
 LocalStack and moto emulate DynamoDB, Lambda and CloudFormation; they do not prove IAM
 boundaries, real transaction semantics, stream timing or deploy behaviour.
 
+The `AWS E2E` workflow (`.github/workflows/aws-e2e.yml`, #189) runs the suite through GitHub
+OIDC on every push to `main` and to a `release/*` branch, so the release branch's push gives the
+run. For any other commit, dispatch the workflow on it, or label its PR `aws-e2e`. The local run
+still works:
+
 ```bash
 aws sso login --profile zeroae-code/AWSPowerUserAccess   # if the session expired
 AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run pytest -m aws --run-aws -v
 ```
 
 - Run it on the release commit (the SHA to be tagged), never on a branch that will be merged or
-  rebased afterwards.
-- Record the result in the release PR body: commit SHA, date, pass/fail counts.
+  rebased afterwards. A run on `main` does not count for a release commit that is not `main`.
+- Record the result in the release PR body: commit SHA, date, pass/fail counts, and the run link.
 - A failure blocks the tag. An infrastructure blip (throttling, a stack timeout) may be re-run
   once; a second failure is investigated, not retried.
-- It costs real money and takes a while, which is why it runs once per release, not per PR.
+- It costs real money and takes ~20 minutes, which is why it runs on merges and release pushes
+  but not on every PR push (label the PR to opt in).
   See `aws-testing.md` for the profile and IAM flags.
 
 ## Project Scopes

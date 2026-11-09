@@ -194,6 +194,8 @@ zae-limiter cfn-template > template.yaml
 zae-limiter lambda-export --output lambda.zip
 ```
 
+**Stack delete retries once (#812).** `StackManager.delete_stack` (CLI `delete --wait`, `Repository.delete_stack()`, the sync twin) re-issues the delete when the wait ends in `DELETE_FAILED`: DynamoDB `DeleteTable` intermittently returns HTTP 500 and a second delete clears it. A wait that times out is not retried; a delete that fails both times raises `StackOperationError` with the stack events (never botocore's `WaiterError`). Every AWS test teardown goes through it.
+
 **Lambda Deployment Details:**
 - The CLI automatically builds a deployment package using `aws-lambda-builders` for cross-platform compatibility
 - Only `[lambda]` extra dependencies (aws-lambda-powertools) are pip-installed; `boto3` is provided by the Lambda runtime
