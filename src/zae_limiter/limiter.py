@@ -26,6 +26,7 @@ from .bucket import (
     express_created,
     settle,
     try_consume,
+    under_item_schedule,
     window_end_in_force,
     would_refill_satisfy,
 )
@@ -2750,11 +2751,14 @@ class RateLimiter:
         would materialise it as an undeclared limit: the **configured**
         ``Limit`` (``configured``, the entity's resolved config) supplies the
         schedule, the reset schedule and the window length, and the item
-        supplies the state. Reading those off the item instead let a
-        resource- or system-level change that never fans out to buckets
+        supplies the state. Reading a quota's off the item instead let a
+        resource- or system-level change that never fanned out to buckets
         (daily to monthly) go on resetting daily on every override pass — 31
-        admitted in a month configured for 10. A limit on the item that config
-        no longer has is skipped, as such a pass skips it.
+        admitted in a month configured for 10. A dripping limit is the
+        exception, as on every slow pass: it keeps its item's schedule, under
+        which its fill instant is stored (``under_item_schedule``, #841). A
+        limit on the item that config no longer has is skipped, as such a pass
+        skips it.
 
         The steps are the slow path's for an undeclared limit: open an
         elapsed window, apply a pending reset or roll (a quota re-granted at
@@ -2778,7 +2782,9 @@ class RateLimiter:
             # The item's own soft stamp decides, as on a pass served from the
             # config cache: nothing is consumed, so nothing is restamped.
             limit = replace(config[state.limit_name], soft=state.soft)
-            # What `_do_acquire` attaches to an existing state from config.
+            # What `_do_acquire` attaches to an existing state: a dripping
+            # limit's schedule from its item (#841), anything else's from config.
+            limit = under_item_schedule(limit, state)
             adopt_schedule(state, limit.schedule, now_ms)
             state.reset_sched = limit.reset_schedule
             stored_rsa = state.reset_after_seconds
@@ -2904,14 +2910,15 @@ class RateLimiter:
                 # renews or removes it.
                 return None
 
-            # See `_do_acquire`: the resolved config, not the item, is what
-            # makes the parent's refill and ceiling schedule-aware here.
+            # See `_do_acquire`: a dripping limit keeps its item's schedule
+            # (#841), under which its fill instant is stored; a quota's comes
+            # from the resolved config.
+            limit = under_item_schedule(limit, existing)
             adopt_schedule(existing, limit.schedule, now_ms)
-            # And the reset schedule alongside it, for the same reason and from
-            # the same source: `try_consume` reads it to decide whether a reset
-            # edge beats the drip in a rejection's `retry_after_seconds`
-            # (#222 §7). Attaching one without the other would leave a quota's
-            # rejection quoting a drip that ADR-137 says does not exist.
+            # And the reset schedule, from config: `try_consume` reads it to
+            # decide whether a reset edge beats the drip in a rejection's
+            # `retry_after_seconds` (#222 §7). Without it a quota's rejection
+            # would quote a drip that ADR-137 says does not exist.
             existing.reset_sched = limit.reset_schedule
             # And the duration window's length (ADR-139), from config for the
             # same reason: a resource- or system-level `reset_after` never
@@ -4251,15 +4258,17 @@ class RateLimiter:
                 else:
                     is_new = False
                     state = existing
-                    # A bucket item read back carries no schedule of its own
-                    # yet (`_deserialize_composite_bucket` reads the base
-                    # params only), and the config this acquire just resolved
-                    # is the fresher of the two anyway — an item stamped
-                    # before the last `set_limits` would still hold the old
-                    # one. Attaching it here is what makes `effective_params`
-                    # apply on the slow path at all; without it the refill and
-                    # the ceiling below come out at the base rate while `vu`
-                    # claims the window was honoured.
+                    # A dripping limit is read, debited and written under the
+                    # schedule stored on its item, never the config's (#841):
+                    # its fill instant is scaled by that schedule's refill
+                    # amount and every other reader reads it under the item's,
+                    # so config cached before a change (or a bucket the change
+                    # missed) would store one read as full, or as a vast debt.
+                    # The limit carries that schedule from here, so `vu`, the
+                    # statuses and the lease follow it too. A change reaches
+                    # the item through its fan-out, as capacity and refill do
+                    # (ADR-153). A quota takes config's: its `tk` is an amount.
+                    limit = under_item_schedule(limit, state)
                     adopt_schedule(state, limit.schedule, now_ms)
                     # The reset schedule travels with it. `try_consume` reads
                     # it for the rejection estimate (#222 §7), so a bucket that
@@ -4605,6 +4614,9 @@ class RateLimiter:
         statuses = []
         for limit in reported:
             state = existing.get((entity_id, resource, limit.name))
+            if state is not None:
+                # A dripping limit's window is its item's, as on the pass (#841).
+                limit = under_item_schedule(limit, state)
             statuses.append(
                 LimitStatus(
                     entity_id=entity_id,

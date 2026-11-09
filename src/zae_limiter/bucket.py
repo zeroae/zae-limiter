@@ -202,15 +202,52 @@ def express_at(state: BucketState, t_ms: int) -> None:
     state.fill_instant, state.expressed_ms = z, max(t_ms, expressed)
 
 
+def reads_item_schedule(state: BucketState, limit: Limit) -> bool:
+    """Whether an existing item's ``state`` is read under the item's own schedule (#841).
+
+    True for a dripping limit, stored as a fill instant or as a pre-v0.18
+    ``tk`` the slow path is about to convert to one. A fill instant is scaled
+    by the refill amount its schedule put in force (ADR-154), and every reader
+    (the fast path, other processes, the reset planner) re-expresses it under
+    the schedule stored on the item, never under anyone's config. Expressed
+    under another schedule and written without it, it reads as full or as a
+    debt of about ``t × Δra``: a stale config cache, or a bucket a change's
+    fan-out missed, did exactly that. A schedule change reaches the item only
+    through the fan-out (#468, #823), which re-expresses its fill instants and
+    rewrites the schedule in one write, as ADR-153 already has capacity and
+    refill reach it. A bucket the fan-out missed keeps its old schedule, read
+    consistently, until the level changes again or its TTL runs out.
+
+    A quota keeps config's schedule: its ``tk`` is an amount, scaled by
+    nothing, so no schedule misreads it. So does a limit config now makes a
+    quota.
+    """
+    return not limit.is_quota and (state.fill_instant is not None or state.is_dripping_state)
+
+
+def under_item_schedule(limit: Limit, state: BucketState) -> Limit:
+    """``limit`` with ``state``'s stored schedule, when :func:`reads_item_schedule` (#841).
+
+    Everything the slow path derives for the limit then follows the schedule
+    its write is computed under: the refill, the ceiling, the ``vu`` it votes,
+    the per-shard capacity and retry estimate a rejection reports, and the
+    lease's statuses. Otherwise ``limit`` itself.
+    """
+    if not reads_item_schedule(state, limit) or limit.schedule == state.sched:
+        return limit
+    return replace(limit, schedule=state.sched)
+
+
 def adopt_schedule(state: BucketState, sched: tuple[ScheduleEntry, ...], now_ms: int) -> None:
     """Give ``state`` the schedule ``sched``, re-expressing a fill instant at ``now_ms``.
 
-    The slow path takes the schedule from config, the fresher source. A fill
-    instant is scaled by the refill amount the item's own schedule put in force,
-    so read against another schedule it would be misread, ten times too far
-    ahead or behind across a 0.1x window: it is re-expressed at ``now_ms`` from
-    the parameters in force under the old schedule to those under the new,
-    keeping the balance or trimming it to the new share (ADR-155).
+    The slow path gives a quota config's schedule. A dripping limit keeps its
+    item's (:func:`reads_item_schedule`): callers pass it the schedule from
+    :func:`under_item_schedule`, which makes this a no-op. A fill instant handed
+    another schedule anyway (a limit config now makes a quota) is re-expressed
+    at ``now_ms`` from the parameters in force under the old schedule to those
+    under the new, keeping the balance or trimming it to the new share
+    (ADR-155), since read against another schedule it would be misread.
     """
     if state.fill_instant is None or sched == state.sched:
         state.sched = sched
