@@ -26,6 +26,7 @@ LocalStack to spawn Lambda functions as Docker containers.
 import asyncio
 import time
 from datetime import datetime
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -44,6 +45,7 @@ from zae_limiter import (
     __version__,
     schema,
 )
+from zae_limiter.bucket import balance_milli_at
 from zae_limiter.cli import cli
 from zae_limiter.sync_repository import SyncRepository
 from zae_limiter.version import CURRENT_SCHEMA_VERSION
@@ -1562,8 +1564,11 @@ class TestE2EScheduleBoundaries:
         buckets = {
             b.limit_name: b for b in await sched_repo.get_buckets("lease-1", resource="gpt-4")
         }
-        assert buckets["rpm"].tokens_milli == (1000 - 15) * 1000
-        assert buckets["tpm"].tokens_milli == 100_000 * 1000
+        # A fill instant is exact at any instant (ADR-154): by INSIDE the
+        # bucket had refilled, the boundary halved its ceiling to 500, and the
+        # adjustment debited 5 from that. Only `rpm` was declared.
+        assert balance_milli_at(buckets["rpm"], INSIDE) == (500 - 5) * 1000
+        assert balance_milli_at(buckets["tpm"], INSIDE) == 100_000 * 1000
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_concurrent_traffic_at_the_boundary_never_over_admits(self, sched_repo):
@@ -1644,7 +1649,9 @@ class TestE2EScheduleBoundaries:
         )
         async with limiter.acquire("shard-1", "gpt-4", consume={"rpm": 1}):
             pass
-        await sched_repo.bump_shard_count("shard-1", "gpt-4", 1)
+        # A dripping bucket is raised, its balance split between the shards
+        # (ADR-156); a doubling would leave shard 1 to be created empty.
+        assert await sched_repo.raise_shards("shard-1", "gpt-4", 1) == 2
 
         real_select = sched_repo.select_shard
 
@@ -1656,8 +1663,7 @@ class TestE2EScheduleBoundaries:
             return _select
 
         try:
-            # Shard 1 does not exist yet; the acquire that draws it creates it
-            # with its share of the capacity in force at BEFORE (ADR-133).
+            # The raise created shard 1 holding its half of the balance.
             for shard in (0, 1):
                 sched_repo.select_shard = pin(shard)
                 async with limiter.acquire("shard-1", "gpt-4", consume={"rpm": 1}):
@@ -1856,6 +1862,7 @@ class TestE2EScheduleThroughTheProvisioner:
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_an_applied_schedule_reaches_an_existing_bucket(self, prov_repo):
+        from zae_limiter_provisioner import bucket_sync
         from zae_limiter_provisioner.handler import _handle_cli
 
         limiter = RateLimiter(repository=prov_repo)
@@ -1864,37 +1871,41 @@ class TestE2EScheduleThroughTheProvisioner:
         async with limiter.acquire("prov-1", "gpt-4", consume={"rpm": 1}):
             pass
 
-        result = _handle_cli(
-            {
-                "action": "apply",
-                "table_name": prov_repo.table_name,
-                "namespace_id": prov_repo._namespace_id,
-                "manifest": {
-                    "namespace": "default",
-                    "entities": {
-                        "prov-1": {
-                            "resources": {
-                                "gpt-4": {
-                                    "limits": {
-                                        "rpm": {
-                                            "capacity": 1000,
-                                            "schedule": [
-                                                {
-                                                    "cron": "* 9-17 * * MON-FRI",
-                                                    "tz": "America/New_York",
-                                                    "scale": 0.5,
-                                                }
-                                            ],
+        # The sync stamps `xi` from its own clock, and a fill instant is never
+        # read before its `xi` (ADR-154): run the apply between BEFORE and
+        # INSIDE rather than at today's wall clock, which is past INSIDE.
+        with patch.object(bucket_sync, "read_clock_ms", lambda: BEFORE + 60_000):
+            result = _handle_cli(
+                {
+                    "action": "apply",
+                    "table_name": prov_repo.table_name,
+                    "namespace_id": prov_repo._namespace_id,
+                    "manifest": {
+                        "namespace": "default",
+                        "entities": {
+                            "prov-1": {
+                                "resources": {
+                                    "gpt-4": {
+                                        "limits": {
+                                            "rpm": {
+                                                "capacity": 1000,
+                                                "schedule": [
+                                                    {
+                                                        "cron": "* 9-17 * * MON-FRI",
+                                                        "tz": "America/New_York",
+                                                        "scale": 0.5,
+                                                    }
+                                                ],
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
+                        },
                     },
                 },
-            },
-            None,
-        )
+                None,
+            )
         assert result["status"] == "applied"
         assert result["errors"] == []
 
@@ -1950,24 +1961,6 @@ class TestE2EScheduleWithTheAggregator:
         """Wait until `*/2` next changes state, plus a second of slack."""
         await asyncio.sleep(60 - (time.time() % 60) + 1)
 
-    @staticmethod
-    async def _poll_bucket(repo, entity_id, resource, predicate, timeout=60.0):
-        """Poll the raw bucket item until `predicate` holds, or time out.
-
-        A fixed sleep has to be sized for the worst LocalStack stream-to-Lambda
-        latency on the slowest machine that will ever run this, which makes the
-        common case slow and the rare case flaky anyway. Returns the last item
-        seen either way, so the assertion that follows reports the real values.
-        """
-        deadline = time.monotonic() + timeout
-        item = {}
-        while time.monotonic() < deadline:
-            item = await _raw_bucket_item(repo, entity_id, resource)
-            if item and predicate(item):
-                return item
-            await asyncio.sleep(1.0)
-        return item
-
     @pytest.mark.slow
     @pytest.mark.asyncio(loop_scope="class")
     async def test_the_aggregator_trims_to_the_scheduled_ceiling(self, aggr_repo):
@@ -1998,13 +1991,13 @@ class TestE2EScheduleWithTheAggregator:
         assert bucket.tokens_milli <= bucket.ceiling_milli(now_ms)
 
     @pytest.mark.asyncio(loop_scope="class")
-    async def test_the_aggregator_restamps_an_expired_vu(self, aggr_repo):
-        """`vu = 0` after a fan-out must be replaced by a real boundary by
-        whichever refiller gets there first, or the bucket is pinned to the
-        slow path. Here that is the aggregator — deliberately nothing else:
-        no client request follows the fan-out, because the first one would
-        re-stamp `vu` itself and the assertion would pass with the Lambda
-        switched off entirely.
+    async def test_an_expired_vu_leaves_a_dripping_bucket_on_the_fast_path(self, aggr_repo):
+        """`vu = 0` after a fan-out used to pin a bucket to the slow path until
+        a refiller re-stamped it. A fill instant is never conditioned on `vu`:
+        a boundary is caught through `xi` (ADR-155), so the next request is
+        admitted on the fast path with the stamp still 0. And the aggregator
+        writes no dripping limit since #821 (ADR-156): it leaves the item
+        alone once the stream has been processed.
         """
         limiter = RateLimiter(repository=aggr_repo)
         await aggr_repo.set_limits(
@@ -2015,9 +2008,6 @@ class TestE2EScheduleWithTheAggregator:
         async with limiter.acquire("aggr-vu", "gpt-4", consume={"rpm": 1}):
             pass
 
-        # Force `vu = 0` through the fan-out, and drop the ceiling far enough
-        # that the aggregator's clamp is a guaranteed negative delta: it only
-        # re-stamps `vu` in a write it was going to make anyway.
         await aggr_repo.set_limits(
             "aggr-vu",
             [Limit.per_minute("rpm", 10).with_schedule(self.ALTERNATING)],
@@ -2026,13 +2016,17 @@ class TestE2EScheduleWithTheAggregator:
         before = await _raw_bucket_item(aggr_repo, "aggr-vu", "gpt-4")
         assert int(before[schema.BUCKET_FIELD_VU]["N"]) == 0, "precondition: the fan-out expired vu"
 
-        item = await self._poll_bucket(
-            aggr_repo,
-            "aggr-vu",
-            "gpt-4",
-            lambda i: int(i.get(schema.BUCKET_FIELD_VU, {}).get("N", "0")) > 0,
-        )
-        assert int(item[schema.BUCKET_FIELD_VU]["N"]) > aggr_repo._now_ms()
+        await asyncio.sleep(15)  # stream + Lambda
+        assert await _raw_bucket_item(aggr_repo, "aggr-vu", "gpt-4") == before
+
+        async with limiter.acquire("aggr-vu", "gpt-4", consume={"rpm": 1}):
+            pass
+        after = await _raw_bucket_item(aggr_repo, "aggr-vu", "gpt-4")
+        # The fast path moves neither `rf` nor `xi`; only its fill instant.
+        assert after[schema.BUCKET_FIELD_RF] == before[schema.BUCKET_FIELD_RF]
+        assert after[schema.BUCKET_FIELD_XI] == before[schema.BUCKET_FIELD_XI]
+        fill = schema.bucket_attr("rpm", schema.BUCKET_FIELD_FI)
+        assert int(after[fill]["N"]) > int(before[fill]["N"])
 
     @pytest.mark.slow
     @pytest.mark.asyncio(loop_scope="class")
