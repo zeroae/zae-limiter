@@ -2435,6 +2435,12 @@ class SyncRateLimiter:
                         raise
                     period_redone = True
                     fill_reread = isinstance(lost, FillInstantLostError)
+                    if fill_reread:
+                        redo = self._redo_lost_fill_instants(
+                            entity_id, [(resource, consume)], limits_override
+                        )
+                        if redo is not None:
+                            return redo[0]
                 except OwnerStampLostError:
                     if owner_reread:
                         raise
@@ -2705,6 +2711,24 @@ class SyncRateLimiter:
             except (PeriodNotAppliedError, SeedNotAppliedError, FillInstantLostError) as lost:
                 if redone:
                     raise
+                if isinstance(lost, FillInstantLostError):
+                    redo = self._redo_lost_fill_instants(
+                        entity_id, [(part[0], part[1]) for part in slow_parts], None
+                    )
+                    if redo is not None:
+                        merged = SyncLease(
+                            repository=self._repository,
+                            entries=[entry for part_lease in redo for entry in part_lease.entries],
+                            compute_images=False,
+                        )
+                        merged._initial_committed = True
+                        return (
+                            merged,
+                            {
+                                part[0]: plan._unknown_keys
+                                for part, plan in zip(slow_parts, planned, strict=True)
+                            },
+                        )
                 return plan_and_commit(
                     disable_moves,
                     moves_contended,
@@ -2790,6 +2814,72 @@ class SyncRateLimiter:
         except Exception:
             return None
         return None
+
+    def _redo_lost_fill_instants(
+        self, entity_id: str, parts: list[tuple[str, dict[str, int]]], limits: list[Limit] | None
+    ) -> list[SyncLease] | None:
+        """Retry a slow pass whose fill-instant write lost, through ADR-154's pair.
+
+        The slow pass's write is pinned on what it read (``rf``, ``xi``, each
+        fill instant), so concurrent passes on one bucket serialise and a
+        loser's re-plan loses again; with no consumption-only retry for a fill
+        instant (#818) a burst that all missed the fast path — a new bucket, a
+        schedule boundary, a ``vu = 0`` stamp — got mostly contended 429s.
+        ADR-154's two writes commute with concurrent debits, so the loser asks
+        them first, from a fresh image and with its own write budget. A genuine
+        exhaustion raises as a fast rejection would. Not with
+        ``speculative_writes=False``: those writes trust the item's own owner
+        stamps, which that caller asked the slow path to check.
+
+        Returns:
+            One committed lease per part, or None when any part needs the slow
+            path again (a boundary, a missing shard, a part the override
+            forbids). Whatever landed is then refunded and the caller re-plans.
+        """
+        if not self._speculative_writes or (
+            limits is not None
+            and any(
+                (limit.soft and limit.name in consume for _, consume in parts for limit in limits)
+            )
+        ):
+            return None
+        budget = WriteBudget()
+        landed: list[SyncLease] = []
+
+        def _attempt(resource: str, consume: dict[str, int]) -> SyncLease | None | Exception:
+            try:
+                outcome = self._try_speculative_acquire(
+                    entity_id=entity_id,
+                    resource=resource,
+                    consume=consume,
+                    use_rejection_cache=False,
+                    write_budget=budget,
+                )
+            except Exception as exc:
+                return exc
+            if outcome[0] is not None:
+                landed.append(outcome[0])
+            return outcome[0]
+
+        try:
+            outcomes = self._run_in_executor(
+                *[
+                    lambda name=name, amounts=amounts: _attempt(name, amounts)
+                    for name, amounts in parts
+                ]
+            )
+        except BaseException:
+            self._refund(landed)
+            raise
+        errors = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
+        if errors:
+            self._refund(landed)
+            raise self._combined_error(errors, [])
+        leases = [outcome for outcome in outcomes if isinstance(outcome, SyncLease)]
+        if len(leases) < len(parts) or any(_waived_against_override(x, limits) for x in leases):
+            self._refund(landed)
+            return None
+        return leases
 
     def _refund(self, leases: list[SyncLease]) -> None:
         """Refund every debit these committed leases wrote, concurrently (ADR-148).

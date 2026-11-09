@@ -5507,7 +5507,7 @@ class TestSpeculativeAcquire:
         transact_call_count = 0
 
         def mock_speculative(
-            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None, **kwargs
         ):
             nonlocal call_count
             call_count += 1
@@ -5518,7 +5518,13 @@ class TestSpeculativeAcquire:
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
             return original_speculative(
-                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+                entity_id,
+                resource,
+                consume,
+                ttl_seconds,
+                shard_id=shard_id,
+                now_ms=now_ms,
+                **kwargs,
             )
 
         def mock_transact_write(items):
