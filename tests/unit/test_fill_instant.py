@@ -574,6 +574,8 @@ class TestBounds:
         too_much = MAX_TOKENS * 1000 + 1
         for call in (
             lambda: fi.plan_first(T0, too_much, p, soft=True),
+            lambda: fi.plan_first(T0, too_much, p),  # hard: refused, not rejected
+            lambda: fi.plan_retry(T0, too_much, p, fi.created_full(T0, p)),
             lambda: fi.debit_write(T0, too_much, p),
             lambda: fi.returned(fi.created_full(T0, p), too_much, p),
             lambda: fi.topped_up(fi.created_full(T0, p), too_much, p),

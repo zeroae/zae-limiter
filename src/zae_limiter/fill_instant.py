@@ -216,6 +216,7 @@ def plan_first(
     not asked for. A hard limit whose amount exceeds the per-shard capacity in
     force is rejected here, because the full write's condition would admit it.
     """
+    _amount(amount_milli, "amount")  # refused before a rejection is decided
     if not soft and exceeds_share(amount_milli, params):
         return None
     if utilisation_permille is not None and utilisation_permille < 0:
@@ -246,6 +247,7 @@ def plan_retry(
     rejected: the failure showed the bucket past its slack, which only more
     admissions can follow.
     """
+    _amount(amount_milli, "amount")  # refused before a rejection is decided
     if not soft and exceeds_share(amount_milli, params):
         return None
     at = stamp(t_ms, params)
