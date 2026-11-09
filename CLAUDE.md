@@ -1904,6 +1904,8 @@ Config items are written with full-replace `PutItem` at every level, so storage 
 
 **Caching:** 60s TTL in-memory cache per Repository instance (configurable via `config_cache_ttl` parameter on Repository constructor, 0 to disable). Use `repo.invalidate_config_cache()` for immediate refresh. Use `repo.get_cache_stats()` for monitoring. `set_limits()` and `delete_limits()` auto-evict relevant cache entries. Negative caching for entities without custom config. Config resolution is handled by `repo.resolve_limits()` (ADR-122).
 
+**A change reaches buckets already in use.** An entity-level `set_limits()` / `delete_limits()` re-stamps every shard of the entity's buckets (#468, #487). Since #823 (ADR-153) a resource- or system-level change does too: `set_resource_defaults()` / `set_system_defaults()` and their deletes fan the change out (`Repository._fanout_params`, change-only, from the config write's `ALL_OLD`) to every active bucket the level decides, leaving one on entity config alone; a manifest apply owes the same as a `sync` fan-out. The bucket TTL is no longer the only way a resource or system default reaches an active entity. Details, cost and residuals: [Pre-Shard Buckets](#pre-shard-buckets-ghsa-76rv-2r9v-c5m6-v090).
+
 **Cost impact:** 1.5 RCU per cache miss (one GetItem per level, reduced from 2 RCU with per-limit items). With caching, `acquire()` costs 1-2 RCU per request regardless of limit count (O(1) via composite items, ADR-114/115).
 
 ### Disabling Resources and Entities (ADR-125)
