@@ -481,6 +481,42 @@ class TestWritersAndTheMarker:
         assert sleeps and sleeps[0] <= 700
         assert (await _balances(repo, "e1", "rpm", 1, clock.now))[0] == RPM.capacity * 1000
 
+    async def test_the_consumption_only_retry_refuses_a_live_marker(self, limiter, clock) -> None:
+        from botocore.exceptions import ClientError
+
+        repo = limiter._repository
+        await repo.set_limits("e1", [RPM, QUOTA], resource=RESOURCE)
+        await _spend_on(limiter, "e1", 0, rpm=1, rpd=1)
+        client = await repo._get_client()
+        await _hold(repo, "e1", 0, clock.now + 1_000, clock.now)
+        live = repo.build_composite_retry("e1", RESOURCE, {"rpd": 1_000}, now_ms=clock.now)
+        with pytest.raises(ClientError, match="ConditionalCheckFailed"):
+            await client.update_item(**live["Update"])
+        clock.now += 1_001  # the marker lapsed
+        expired = repo.build_composite_retry("e1", RESOURCE, {"rpd": 1_000}, now_ms=clock.now)
+        await client.update_item(**expired["Update"])
+        item = await _item(repo, "e1", 0)
+        assert item is not None and item[bucket_attr("rpd", schema.BUCKET_FIELD_TK)] == {
+            "N": str(QUOTA.capacity * 1000 - 2_000)
+        }
+
+    async def test_a_re_expression_refuses_a_live_marker(self, limiter, clock) -> None:
+        repo = limiter._repository
+        await repo.set_limits("e1", [RPM], resource=RESOURCE)
+        await _spend_on(limiter, "e1", 0, rpm=1)
+        await _hold(repo, "e1", 0, clock.now + 1_000, clock.now)
+        clock.now += 500
+        item = await _item(repo, "e1", 0)
+        assert item is not None
+        xi = item[schema.BUCKET_FIELD_XI]
+        await repo._reexpress_item("e1", RESOURCE, 0, item, clock.now)
+        assert (await _item(repo, "e1", 0) or {})[schema.BUCKET_FIELD_XI] == xi  # refused
+        clock.now += 501  # the marker lapsed
+        item = await _item(repo, "e1", 0)
+        assert item is not None
+        await repo._reexpress_item("e1", RESOURCE, 0, item, clock.now)
+        assert (await _item(repo, "e1", 0) or {})[schema.BUCKET_FIELD_XI] == {"N": str(clock.now)}
+
     async def test_the_aggregator_refill_refuses_a_live_marker(self, limiter, clock) -> None:
         import boto3
 

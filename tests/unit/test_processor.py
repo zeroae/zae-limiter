@@ -609,6 +609,44 @@ class TestProcessStreamRecords:
         assert result.errors == []
         assert mock_table.update_item.call_count == 2
 
+    def test_a_dripping_fill_instant_is_counted_and_never_refilled(self) -> None:
+        """#821: a fill instant's usage still reaches the snapshot from `tc`; the
+        aggregator writes nothing to the bucket, however spent it is."""
+        p = fill_instant.ShardParams(100_000_000, 100_000_000, 60_000, 1)
+        now = 1704067200000
+
+        def image(tc: int, spent: int) -> dict:
+            return {
+                "PK": {"S": "default/BUCKET#e1#gpt-4#0"},
+                "SK": {"S": "#STATE"},
+                "entity_id": {"S": "e1"},
+                "resource": {"S": "gpt-4"},
+                "rf": {"N": str(now - 60_000)},
+                "xi": {"N": str(now - 60_000)},
+                "shard_count": {"N": "1"},
+                "b_tpm_cp": {"N": "100000000"},
+                "b_tpm_ra": {"N": "100000000"},
+                "b_tpm_rp": {"N": "60000"},
+                "b_tpm_fi": {"N": str(fill_instant.stamp(now, p) + fill_instant.span(spent, p))},
+                "b_tpm_tc": {"N": str(tc)},
+            }
+
+        record = {
+            "eventName": "MODIFY",
+            "dynamodb": {"OldImage": image(0, 0), "NewImage": image(95_000_000, 95_000_000)},
+        }
+        with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
+            mock_table = MagicMock()
+            mock_boto.resource.return_value.Table.return_value = mock_table
+            result = process_stream_records([record], "test_table", ["hourly"])
+
+        assert result.errors == []
+        assert result.snapshots_updated == 1
+        assert result.refills_written == 0
+        (call,) = mock_table.update_item.call_args_list  # the snapshot only
+        assert "#STATE" not in str(call.kwargs["Key"])
+        mock_table.meta.client.transact_write_items.assert_not_called()
+
     def test_multiple_windows(self) -> None:
         """Updates multiple window types."""
         records = [self._make_record()]
