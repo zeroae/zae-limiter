@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794259394496,
+  "lastUpdate": 1794263919370,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -71801,6 +71801,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.006074393189734644",
             "extra": "mean: 885.9240440000008 msec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8035c44e912b27c2cae8dd2f784e2b07d569ca2a",
+          "message": "🔧 chore: release prep v0.18.0 (#846)\n\n## Release Prep: v0.18.0\n\n**Theme:** Strict admission for dripping limits: fill instants and\nADR-153's bound, so a burst never admits more than capacity plus refill.\n`lease.consume()` admits when called, and resource- and system-level\nlimit changes reach buckets in use. Also ships the v0.17.1 fixes, since\nv0.17.1 was never released.\n**Milestone:**\n[v0.18.0](https://github.com/zeroae/zae-limiter/milestone/30)\n**Epic:** #816\n\nThis PR resolves the ADR consistency review (below), moves ADR-153 to\nADR-156 from Proposed to Accepted, and corrects CLAUDE.md and one code\ncomment. It changes no behaviour.\n\n---\n\n## Pre-Release Checklist\n\n### Milestone Status\n- [x] All issues closed (39/40; the one open item is epic #816, which\ncloses after this release)\n- [x] All PRs merged (#827, #829, #831–#837 for the epic, #842 and #843\nfrom release prep, plus the v0.17.1 work)\n- [x] Narrative epic success criteria met: 5 of 7 are checked on #816;\nthis PR's head carries the other two (the ADRs accepted, the AWS e2e\npassed), to be checked off once it merges\n- [x] Ad-hoc work tagged to milestone (v0.17.1's closed work moved to\nv0.18.0; the rest went to v0.19.0)\n\n### Code Quality\n- [x] CI passing on main (`025329c6`, #843's merge; its head `83ee46b6`\npassed lint, build, CodeQL, unit, integration, e2e, benchmarks and both\ncodecov checks)\n- [x] No regressions in test suite\n- [x] New features have test coverage: ADR-153's sliding-window harness,\nthe dripping-limit conservation fuzz, and the #808 reproductions, which\nnow pass without `xfail`\n- [x] No security vulnerabilities introduced (CodeQL green)\n- [x] AWS e2e suite passed on the release commit (`pytest -m aws\n--run-aws`): `84e19b04`, 2026-11-09, 83 passed, 2 skipped, 1 xfailed, 2\nxpassed\n([run](https://github.com/zeroae/zae-limiter/actions/runs/42703477393))\n\n### Backwards Compatibility\n- [x] Breaking changes documented below\n- [x] New parameters have defaults\n- [x] Deprecated features have migration path\n\n### Documentation\n- [x] CLAUDE.md reflects current state (writer table, pricing,\ninvariants 2 and 11, fill-instant readers and returns)\n- [x] docs/ site updated: token-bucket guide, architecture, performance,\nmigrations (schema 0.11.0), API notes, and the fill-instant proofs\n- [x] API docstrings complete\n- [x] CLI help text accurate (no CLI changes in this release)\n\n---\n\n## Changes in This Release\n\n### ✨ Features\n- Store dripping limits as fill instants on bucket items, converting\nlegacy `tk` items lazily (#818)\n- Admit dripping limits on the fast path with the fill-instant write\npair (ADR-154, #819)\n- Make every other writer of a fill instant exact (ADR-155, #820)\n- Raise dripping buckets with a marker and one conserving transaction\n(ADR-156, #821)\n- Pure fill-instant arithmetic with property tests against an exact\nstrict bucket (#817)\n- Opt-in debug metrics for provisioner applies (`--debug`,\n`ZAEL_PROVISIONER_DEBUG`) (#795)\n\n### ⚡ Performance\n- The provisioner shares one client and runs fan-outs concurrently: a\n1322-limit apply finishes in 13 s, down from 109 s (#795)\n\n### 🐛 Bug Fixes\n- A burst after a bucket sat full no longer admits up to ~2x capacity\n(#808, fixed by epic #816)\n- `lease.consume()` writes when called; two leases admitted 18 against\n10 (#822)\n- A lowered resource- or system-level limit now reaches buckets in use\n(#823)\n- Amounts above `MAX_TOKENS` are rejected, and an overflow never\ndegrades under `on_unavailable=ALLOW` (#824)\n- `check_availability` reads shard 0 by key, so a just-created bucket is\nno longer reported full (#791)\n- `Custom::ZaeLimiterLimits` keeps its CloudFormation response under\n4096 bytes (#798)\n- The provisioner keeps the registries the `list` commands read (#797)\n- Provisioner Lambda timeout and memory raised to 15 minutes / 2048 MB\nfor large applies (#794)\n- A stack delete that ends in `DELETE_FAILED` is retried once (#812)\n\n### ✅ Tests\n- ADR-153's sliding-window harness, the dripping-limit conservation\nfuzz, and capacity benchmarks (#825)\n- The two config writers are pinned to identical table state (#809)\n\n### 👷 CI\n- AWS e2e through GitHub OIDC (#189), run on every merge to `main`\n(#828), with a daily reaper for `zci-*` stacks\n\n### 📝 Documentation\n- ADR-153 to ADR-156 (Accepted in this PR), the fill-instant proofs, and\nthe schema 0.11.0 migration notes\n\n---\n\n## Open Issues\n\n| Issue | Title | Status |\n|-------|-------|--------|\n| #816 | Implement the fill-instant fast path and strict admission\ncontract | Non-blocking: closes after the tag, once its last two\ncriteria hold |\n\n---\n\n## Found During Release Prep\n\nRelease prep checked the epic's code against its ADRs. That turned up\ntwo defects introduced in this cycle, both now fixed:\n\n- **#839** (PR #842, merged): a positive `adjust()` on a dripping limit\nraised `RateLimiterUnavailable` from the lease's exit when its bucket\nitem was gone (entity deleted, limit removed, or a default-limit bucket\nTTL-swept during a long call). v0.17.0 skipped it (#721), and so does\nthis release now.\n- **#841** (PR #843, merged): after a schedule change, one slow pass\nfrom a process whose config cache predated it re-expressed the fill\ninstant into the old schedule and wrote it without the schedule. A 0.5x\nchange made the bucket read as a debt of about 2.5×10⁸ tokens, a lockout\nthat is permanent at entity level. A 2x change admitted 2501 against a\nbound of about 1001. The slow path now takes a dripping limit's schedule\nfrom its item, as it already took capacity and refill.\n\nFiled for v0.19.0, none a regression against v0.17.0:\n\n| Issue | Title |\n|-------|-------|\n| #840 | A swept shard 0 can be created full when its only siblings are\ntoo new for GSI3 (suspected, needs a measurement) |\n| #844 | A slow pass with stale cached config re-stamps a quota's vu\nafter a schedule fan-out |\n| #845 | A rejection from a stale-cache slow pass reports config's base\ncapacity beside the item's refill |\n\nThe 40 open Dependabot alerts on `main` are all in `uv.lock`, the\ndevelopment lockfile. The wheel ships only `pyproject.toml`'s version\nranges, and none of the alerts is new in this release. A lockfile\nrefresh is a separate follow-up.\n\n---\n\n## Breaking Changes\n\n### Every client and Lambda sharing a table must run v0.18.0 or later\n\n**What changed:** Dripping limits (the reserved `wcu` included) are\nstored as fill instants (`b_{name}_fi`, item-level `xi`) instead of\n`tk`. Items convert lazily on their next slow pass; there is no scan and\nno migration to run. Schema 0.11.0 refuses no 0.x client and there is\n**no version gate** (ADR-153). A pre-0.18 client or aggregator writing\n`tk` beside a converted fill instant admits twice.\n\n**Migration path:** upgrade the stack's Lambdas and every client\ntogether:\n```bash\npip install -U \"zae-limiter>=0.18.0\"   # every application that shares the table\nzae-limiter upgrade --name <stack>     # aggregator and provisioner Lambdas\n```\n\n### `lease.consume()` is decided against the live bucket and written\nwhen called\n\n**What changed:** In v0.17.0 `consume()` checked the lease's in-memory\nstate and sent its debit at the lease's exit, so two leases could each\npass the check and admit 18 against 10. It is now admitted through\n`acquire()`'s own path and written before it returns (#822; amends\nADR-148). Each call costs one write. Other callers see the debit at\nonce. It can raise `RateLimitExceeded` where the in-memory check passed,\nincluding the contended 429 (#724). `adjust()` still allows debt.\n\n**Migration path:** code that already handles `RateLimitExceeded` from\n`consume()` needs no change. Code that relied on `consume()` passing\nbecause the lease's own state had room should expect a rejection when\nother callers have spent the bucket meanwhile.\n\n### Amounts above `MAX_TOKENS` raise `ValidationError`\n\n**What changed:** `acquire()` amounts, `consume()`, `adjust()` and\n`release()` raise `ValidationError` for an amount above `MAX_TOKENS`\n(10^15) in magnitude, and when a lease's net adjustment of a limit would\npass it. A computed overflow raises `RateLimiterUnavailable` under every\n`on_unavailable` mode (#824).\n\n### Resource- and system-level limit changes write buckets\n\n**What changed:** `set_resource_defaults()` / `set_system_defaults()`\n(and their deletes, and the provisioner) now fan a changed limit out to\nevery bucket using it, instead of waiting for TTL expiry. The cost is\nO(buckets) on an admin path (#823; amends ADR-135, ADR-136).\n\n### The aggregator no longer refills dripping limits\n\n**What changed:** A fill instant refills by itself, so the aggregator\nrefills, trims and clones only quotas. A new shard of a dripping bucket\ncan start nearly empty; a raise moves balance from its parent shard\n(ADR-156; partially supersedes ADR-133).\n\n### `RepositoryProtocol` (custom backends)\n\n**What changed:** New members `return_fill_instants` and\n`debit_fill_instants`, plus the optional `raise_shards`. New keywords on\n`build_composite_normal`; `speculative_consume` takes `write_budget=`\nand may return `SpeculativeFailureReason.UNDECIDED`. See\n`docs/api/repository.md`.\n\n---\n\n## ADR Consistency Review\n\nADR-153 to ADR-156 were checked against the 54 other Accepted ADRs. No\nconflict blocks acceptance. Every conflict that changes enforcement is\ndeclared somewhere in the set. This PR resolves what the review left\nopen before the records become immutable:\n\n- **Scope:** ADR-153 now names the two ADR-135 consequences it reverses,\nADR-154 declares its amendment of ADR-134 (shares are exact, never\nfloored), and ADR-156 declares its amendment of ADR-151 (a raise copies\n`bypass` and soft deadlines, pinned on the parent's).\n- **Ambiguities:**\n- A failed soft debit is given up after a few writes, debt and `tc`\nalike; a positive adjustment raises from the exit.\n- A swept shard 0 starts full only when no other shard is known or\nfound.\n  - A created shard's quotas keep ADR-145's funding.\n  - A slow-path write still carries the owner and soft/bypass stamps.\n  - ADR-155 binds a raise's writes to existing shards.\n- **Code disagreements, corrected in the records:**\n- A dripping reset or top-up stays in ADR-149's `rf`-locked transaction.\n  - A return during a raise waits it out.\n- The slow path takes a dripping limit's schedule from its item (#841).\n- **Bookkeeping:**\n- \"Amended by\" / \"partially superseded by\" back-references on ADR-002,\n114, 115, 120, 133, 134, 135, 136, 147, 148, 149 and 151.\n- ADR-100's index no longer says default-level changes wait for TTL\nexpiry.\n\n---\n\n## Verification Results\n\n### AWS e2e\n\n| Commit | Date | Result | Run |\n|---|---|---|---|\n| `3e3432e8` (main, the #837 merge) | 2026-11-09 | 83 passed, 2 skipped,\n1 xfailed, 2 xpassed (19 min 29 s) |\n[42668712608](https://github.com/zeroae/zae-limiter/actions/runs/42668712608)\n|\n| `025329c6` (main, the #843 merge) | 2026-11-09 | 83 passed, 2 skipped,\n1 xfailed, 2 xpassed (17 min 2 s) |\n[42701700707](https://github.com/zeroae/zae-limiter/actions/runs/42701700707)\n|\n| **`84e19b04` (this PR's head, the release commit)** | 2026-11-09 |\n**83 passed, 2 skipped, 1 xfailed, 2 xpassed** (18 min 45 s) |\n[42703477393](https://github.com/zeroae/zae-limiter/actions/runs/42703477393)\n|\n\n### Provisioner on AWS (carried from v0.17.1, which never shipped)\n\nSame 1322-limit manifest each time (661 levels: system, 20 resources,\n640 entities, one resource each, rpm+tpm), empty table, us-east-1,\n`--no-aggregator`.\n\n| Run | Commit | End to end | In Lambda | DynamoDB calls |\n|---|---|---|---|---|\n| #794 alone, 2048 MB / 900 s (2026-11-03) | `65d866d4` | 109 s | 45.7 s\n| — |\n| main, initial apply (2026-11-06) | `1bcc38b1` | 13 s | 9.8 s | 5,806 |\n| main, `--full` re-apply (all 2,000 fan-outs) | `1bcc38b1` | 30 s |\n27.6 s | 16,446 |\n\n- Initial apply phases: fan-outs 6.2 s; config writes, plan and\nwrite-ahead ~1.1 s each. DynamoDB p50 ~12 ms, p95 ~23 ms, no retries or\nthrottling. Max memory used 103-107 MB.\n- The production baseline these runs fix: a 1270-limit apply killed at\n300 s / 256 MB (it needed 7 min 15 s).\n- `upgrade` from a 0.17.0 stack changed only `ProvisionerFunction`\n(Modify, no replacement): 256 MB / 300 s → 2048 MB / 900 s.\n- #799 on AWS (`c37e5c0e`): on 0.17.0, a 100-resource\n`Custom::ZaeLimiterLimits` create failed with \"Response object is too\nlong.\" and its rollback stuck in `ROLLBACK_FAILED`. After `upgrade`, the\nstuck stack deleted, the create reached `CREATE_COMPLETE`, a 100-level\nupdate reached `UPDATE_COMPLETE`, and the `ZAEL_PROVISIONER_CFN_RESULT`\nlog line held all 100 changes.\n- #797 on AWS: a 640-entity concurrent apply created 661 levels with 0\nerrors (Lambda 22.0 s).\n- All test stacks were deleted.\n\n---\n\n## Next Steps\n\nAfter this PR is merged:\n\n1. Create the release tag. It must be **annotated** and on the\n**release-prep commit** (this PR's head, whose tree the AWS e2e run\ncovered), not on the merge commit:\n   ```bash\n   git fetch origin main --tags\ngit tag -a v0.18.0 <release-prep-commit> -m \"v0.18.0: strict admission\nfor dripping limits\"\n   git push origin v0.18.0\n   ```\n`release.yml` refuses a lightweight tag before building anything. If it\ndoes, delete the tag (`git push --delete origin v0.18.0`, `git tag -d\nv0.18.0`) and re-tag.\n2. Verify GitHub Actions creates the release and publishes to PyPI\n3. Check off #816's last two criteria and close it\n4. Check the conda-forge feedstock bump (no runtime dependency changed\nsince v0.17.0; only the `ruff` pin in the build and dev requirements\nmoved, 0.17.1 to 0.17.3)\n\n---\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-11-09T17:36:37-05:00",
+          "tree_id": "90043e12005f8798d39b826f3705a8d9f4dea3a3",
+          "url": "https://github.com/zeroae/zae-limiter/commit/8035c44e912b27c2cae8dd2f784e2b07d569ca2a"
+        },
+        "date": 1794263918059,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 117.82068273744424,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006828294437129141",
+            "extra": "mean: 8.487474157898365 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 94.04533246780892,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00116794638914796",
+            "extra": "mean: 10.6331699166707 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 62.89990897251849,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007413631885750623",
+            "extra": "mean: 15.898274199997786 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 190.74316509445524,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013808351475453083",
+            "extra": "mean: 5.242651811428232 msec\nrounds: 175"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 117.92574858309474,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024909668466889317",
+            "extra": "mean: 8.479912249998259 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 117.83839527875455,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003768650005896203",
+            "extra": "mean: 8.486198387498689 msec\nrounds: 80"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 64.9120159005895,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003003130141618143",
+            "extra": "mean: 15.40546824999959 msec\nrounds: 52"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 115.06488326571859,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002318482525576655",
+            "extra": "mean: 8.690748833340459 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 92.94256092110636,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00023002558225751837",
+            "extra": "mean: 10.75933340000006 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 63.9522239027635,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003745115050067828",
+            "extra": "mean: 15.636672800002316 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 115.7337574229668,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00033674756679545484",
+            "extra": "mean: 8.640521333333595 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 98.13656553104495,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003175616328787429",
+            "extra": "mean: 10.189881769233669 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 190.58130672631154,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00017049861220812032",
+            "extra": "mean: 5.2471043313606405 msec\nrounds: 169"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 123.75585722934092,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002571292821771619",
+            "extra": "mean: 8.080425625001553 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 122.79233201179848,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00023228767087194984",
+            "extra": "mean: 8.143831000000189 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 60.79412446672597,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0026357672800102687",
+            "extra": "mean: 16.448958000000857 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 64.50588959775757,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002544545376179233",
+            "extra": "mean: 15.502460414634188 msec\nrounds: 41"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 120.05877242307581,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013491384157312422",
+            "extra": "mean: 8.32925391304264 msec\nrounds: 115"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 2.8476948597544163,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006334258985800547",
+            "extra": "mean: 351.1612195999959 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 54.17846114206658,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000172866596788984",
+            "extra": "mean: 18.45751944444866 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 11.664627440944184,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014259183071939293",
+            "extra": "mean: 85.72927040000309 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 12.191835842587201,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007015912201771222",
+            "extra": "mean: 82.02210175000128 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 60.22043298059736,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00037499966988700556",
+            "extra": "mean: 16.605659416666658 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 56.596103922934965,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024623144351323245",
+            "extra": "mean: 17.669060777781926 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 7.983567297822652,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0078487630462535",
+            "extra": "mean: 125.25728946666845 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 5.614283664257716,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08552135352852032",
+            "extra": "mean: 178.11711338461797 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 58.31255502691786,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00022454625710416999",
+            "extra": "mean: 17.148965596489237 msec\nrounds: 57"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 56.61103332687667,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024052828894087765",
+            "extra": "mean: 17.664401111103544 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 4.989921037821026,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09324843094176338",
+            "extra": "mean: 200.40397281249867 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 1.0476557705080978,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0061347387097771",
+            "extra": "mean: 954.5119953999915 msec\nrounds: 5"
           }
         ]
       }
